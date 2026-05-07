@@ -132,7 +132,7 @@ beforeEach(() => {
 
 afterEach(() => {
   for (const sid of Array.from(http.sessions.keys())) {
-    registry.kill(sid);
+    void registry.kill(sid);
     http.sessions.delete(sid);
   }
 });

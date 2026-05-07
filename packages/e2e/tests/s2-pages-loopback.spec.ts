@@ -478,38 +478,46 @@ test('S2 — HTTPS browser → loopback daemon (full lifecycle: CORS + PNA + tok
   const deleteResp = await deletePromise;
   expect(deleteResp.status(), 'DELETE /api/sessions/:sid must be 2xx').toBeLessThan(300);
 
-  // Wire-level proof the SPA tore the per-session ws down.
+  // Task #758: EXIT-only strict assertion.
   //
-  // Subtlety on EXIT vs ws close:
-  //   The daemon's runtime.mts emits an EXIT frame (FrameType=0x07) only
-  //   from the PTY's onExit broadcast loop, AND only to subscribers whose
-  //   ws is still readyState === OPEN. The SPA's onCloseSession path
-  //   (Sidebar.tsx) calls api.deleteSession() FIRST and then synchronously
-  //   `runtime.detach(sid)` (which calls ws.close() locally). The DELETE
-  //   handler in http.mts triggers `registry.kill(sid)` which sends SIGTERM
-  //   to the PTY — the PTY's onExit fires asynchronously a moment later,
-  //   by which point the local ws is already CLOSING and the daemon's
-  //   broadcast loop skips it. Net result: the EXIT frame is not reliably
-  //   observable on the close-button path.
+  // The DELETE handler now `await`s registry.kill (which awaits the PTY's
+  // onExit -> EXIT broadcast loop) BEFORE returning 200. Because the SPA's
+  // onCloseSession path detaches its ws only after seeing the DELETE
+  // response, the daemon's broadcast lands while the client ws is still
+  // OPEN. Therefore the EXIT frame (FrameType=0x07) is now reliably
+  // observable on Playwright's framereceived listener.
   //
-  //   The user-visible "session is gone" signal is therefore the ws.close
-  //   event (Playwright reports it via the 'close' listener on the ws),
-  //   plus the DELETE 200 + the row vanishing from the sidebar. We assert
-  //   all three so a regression that fakes any one of them still trips.
-  //
-  //   A stricter EXIT-frame test would need a different teardown — e.g.
-  //   typing `/exit` into the REPL so claude itself exits and the daemon
-  //   broadcasts EXIT before the SPA detaches. That's outside this task's
-  //   scope (and orthogonal to the S2 chain we're proving here); follow-up
-  //   coverage can land alongside #753+.
+  // Pre-#758 this test accepted "EXIT frame OR ws.close OR DELETE 2xx" as
+  // a three-way OR because the race made EXIT undeliverable; PR #1148
+  // documents the original race in detail. With #758 we tighten to the
+  // wire-level invariant: an EXIT frame MUST appear in wsFrames within
+  // 5s of the DELETE response.
+  await expect
+    .poll(
+      () =>
+        wsFrames
+          .slice(framesBeforeClose)
+          .filter((f) => f.dir === 'received' && f.type === 0x07).length,
+      {
+        message:
+          'expected daemon to broadcast EXIT frame (FrameType=0x07) before DELETE 200 (Task #758)',
+        timeout: 5_000,
+        intervals: [100, 200, 500],
+      },
+    )
+    .toBeGreaterThan(0);
+
+  // ws close still expected (SPA detaches after DELETE). Keep this as a
+  // secondary assertion since it's free and helps localise regressions
+  // (EXIT seen but ws never closed -> SPA detach broken; ws closed but
+  // no EXIT -> daemon broadcast regressed).
   await expect
     .poll(() => wsClosed.length - closesBeforeClose, {
       message: 'expected at least one ws close event after DELETE /api/sessions/:sid',
-      timeout: 15_000,
+      timeout: 5_000,
       intervals: [200, 500, 1_000],
     })
     .toBeGreaterThan(0);
-  void framesBeforeClose;
 
   // Sidebar row should be gone — closeSession() pruned the store.
   await expect(

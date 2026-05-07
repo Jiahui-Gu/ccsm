@@ -100,7 +100,7 @@ async function makeFixture(opts: { throwOnce?: boolean } = {}): Promise<Fixture>
 
 async function tearDown(fx: Fixture): Promise<void> {
   for (const sid of Array.from(fx.http.sessions.keys())) {
-    fx.registry.kill(sid);
+    void fx.registry.kill(sid);
     fx.http.sessions.delete(sid);
   }
   await new Promise<void>((resolve) => fx.http.server.close(() => resolve()));
@@ -112,7 +112,7 @@ describe('POST /api/sessions (T#668: spawns at HTTP layer)', () => {
   afterAll(async () => { await tearDown(fx); });
   afterEach(() => {
     for (const sid of Array.from(fx.http.sessions.keys())) {
-      fx.registry.kill(sid);
+      void fx.registry.kill(sid);
       fx.http.sessions.delete(sid);
     }
     fx.records.length = 0;
@@ -164,7 +164,7 @@ describe('POST /api/sessions/:sid/resume (T#668)', () => {
   afterAll(async () => { await tearDown(fx); });
   afterEach(() => {
     for (const sid of Array.from(fx.http.sessions.keys())) {
-      fx.registry.kill(sid);
+      void fx.registry.kill(sid);
       fx.http.sessions.delete(sid);
     }
     fx.records.length = 0;
@@ -192,7 +192,7 @@ describe('POST /api/sessions/:sid/resume (T#668)', () => {
     expect(fx.records.length).toBe(1);
     expect(fx.records[0]!.mode).toBe('create');
     // Step 2: simulate the runtime dying without removing the stub row.
-    fx.registry.kill(sid);
+    void fx.registry.kill(sid);
     // Force-remove the runtime entry too (kill is async via setTimeout in
     // real code, and our fake pty never fires onExit). We mimic the
     // post-restart state by clearing the runtime via a fresh resume call:
@@ -285,6 +285,160 @@ describe('POST /api/sessions/:sid/resume (T#668)', () => {
       await tearDown(failing);
     }
   });
+});
+
+// Task #758: DELETE /api/sessions/:sid must broadcast the EXIT frame
+// (FrameType=0x07) to OPEN ws subscribers BEFORE returning 200. The SPA
+// detaches its ws only after seeing the DELETE response, so the daemon's
+// onExit fan-out must run while the client ws is still OPEN — otherwise
+// the EXIT is silently dropped (PR #1148 race). We assert ordering by
+// recording timestamps of "EXIT frame received" vs "DELETE response done".
+describe('DELETE /api/sessions/:sid (Task #758: awaits PTY exit before 200)', () => {
+  interface ExitableFakePty extends PtyLike {
+    triggerExit(code: number): void;
+  }
+
+  function makeExitableFactory(): {
+    factory: PtyFactory;
+    instances: ExitableFakePty[];
+  } {
+    const instances: ExitableFakePty[] = [];
+    const factory: PtyFactory = () => {
+      let exitCb: ((e: { exitCode: number; signal?: number | undefined }) => void) | null = null;
+      const pty: ExitableFakePty = {
+        write: () => {},
+        resize: () => {},
+        kill: () => {
+          // Don't auto-exit — test drives onExit explicitly.
+        },
+        onData: () => {},
+        onExit: (cb) => {
+          exitCb = cb;
+        },
+        triggerExit(code) {
+          exitCb?.({ exitCode: code });
+        },
+      };
+      instances.push(pty);
+      return pty;
+    };
+    return { factory, instances };
+  }
+
+  async function makeFx(): Promise<{
+    http: DaemonHttp;
+    registry: RuntimeRegistry;
+    baseUrl: string;
+    instances: ExitableFakePty[];
+  }> {
+    const { factory, instances } = makeExitableFactory();
+    const http = createDaemonHttp({ token: TOKEN });
+    const registry = createRuntimeRegistry({
+      sessions: http.sessions,
+      ptyFactory: factory,
+    });
+    http.setRegistry(registry);
+    await new Promise<void>((resolve, reject) => {
+      http.server.once('error', reject);
+      http.server.listen(0, '127.0.0.1', () => {
+        http.server.removeListener('error', reject);
+        resolve();
+      });
+    });
+    const addr = http.server.address() as AddressInfo;
+    return { http, registry, baseUrl: `http://127.0.0.1:${addr.port}`, instances };
+  }
+
+  it('broadcasts EXIT frame to OPEN subscribers BEFORE the 200 response', async () => {
+    const fx = await makeFx();
+    try {
+      const create = await fetch(`${fx.baseUrl}/api/sessions`, {
+        method: 'POST',
+        headers: authedHeaders(),
+        body: JSON.stringify({ cwd: '/tmp' }),
+      });
+      const { sid } = (await create.json()) as { sid: string };
+      expect(fx.instances.length).toBe(1);
+
+      // Attach a fake subscriber so we can observe the EXIT broadcast
+      // without spinning up real ws plumbing. The runtime's onExit only
+      // sends to subscribers whose readyState === OPEN.
+      const received: Array<{ at: number; firstByte: number }> = [];
+      const fakeSock = {
+        readyState: 1,
+        OPEN: 1,
+        send(data: Uint8Array): void {
+          received.push({ at: Date.now(), firstByte: data[0] ?? 0 });
+        },
+        close(): void {
+          this.readyState = 3;
+        },
+      };
+      const rt = fx.registry.get(sid);
+      expect(rt).toBeDefined();
+      rt!.subscribers.set(
+        fakeSock as unknown as Parameters<typeof rt.subscribers.set>[0],
+        { paused: false, pausedQueue: [], pausedBytes: 0 },
+      );
+
+      // Fire DELETE in parallel with a short delayed exit trigger. If the
+      // DELETE handler awaits registry.kill (which awaits exitPromise), the
+      // response timestamp must be strictly later than the EXIT broadcast.
+      const deleteStart = Date.now();
+      const deleteP = fetch(`${fx.baseUrl}/api/sessions/${sid}`, {
+        method: 'DELETE',
+        headers: authedHeaders(),
+      });
+      await new Promise((r) => setTimeout(r, 30));
+      const triggerAt = Date.now();
+      fx.instances[0]!.triggerExit(0);
+
+      const resp = await deleteP;
+      const respDoneAt = Date.now();
+
+      expect(resp.status).toBe(200);
+      const exitFrames = received.filter((r) => r.firstByte === 0x07);
+      expect(exitFrames.length, 'expected exactly one EXIT frame').toBe(1);
+      expect(exitFrames[0]!.at).toBeGreaterThanOrEqual(triggerAt);
+      expect(exitFrames[0]!.at).toBeLessThanOrEqual(respDoneAt);
+      expect(respDoneAt - deleteStart).toBeGreaterThanOrEqual(20);
+    } finally {
+      for (const sid of Array.from(fx.http.sessions.keys())) {
+        void fx.registry.kill(sid);
+        fx.http.sessions.delete(sid);
+      }
+      await new Promise<void>((resolve) => fx.http.server.close(() => resolve()));
+    }
+  });
+
+  it('returns 200 even if the PTY hangs (await timeout falls through)', async () => {
+    const fx = await makeFx();
+    try {
+      const create = await fetch(`${fx.baseUrl}/api/sessions`, {
+        method: 'POST',
+        headers: authedHeaders(),
+        body: JSON.stringify({ cwd: '/tmp' }),
+      });
+      const { sid } = (await create.json()) as { sid: string };
+
+      // Never trigger exit -> handler hits the 2000ms timeout, then 200.
+      const t0 = Date.now();
+      const resp = await fetch(`${fx.baseUrl}/api/sessions/${sid}`, {
+        method: 'DELETE',
+        headers: authedHeaders(),
+      });
+      const elapsed = Date.now() - t0;
+      expect(resp.status).toBe(200);
+      expect(elapsed).toBeGreaterThanOrEqual(1500);
+      expect(elapsed).toBeLessThanOrEqual(3500);
+    } finally {
+      for (const sid of Array.from(fx.http.sessions.keys())) {
+        void fx.registry.kill(sid);
+        fx.http.sessions.delete(sid);
+      }
+      await new Promise<void>((resolve) => fx.http.server.close(() => resolve()));
+    }
+  }, 10_000);
 });
 
 // Task #700: GET / must serve the built SPA from packages/frontend-web/dist.

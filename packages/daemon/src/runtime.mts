@@ -80,6 +80,15 @@ export interface RuntimeSession {
   exited: boolean;
   exitCode: number;
   ring: RingBuffer;
+  /**
+   * Task #758: resolves AFTER the EXIT frame (FrameType=0x07) has been
+   * broadcast to all OPEN subscribers and `exited` flipped to true. The
+   * DELETE handler awaits this (with timeout) so that the HTTP 200 is
+   * only returned once the wire-level EXIT has reached subscribers — the
+   * client's own ws is still OPEN at that moment because it only detaches
+   * after seeing the DELETE response. Resolves with the exit code.
+   */
+  exitPromise: Promise<number>;
 }
 
 export interface RuntimeRegistryOptions {
@@ -97,8 +106,14 @@ export interface RuntimeRegistry {
   get(sid: string): RuntimeSession | undefined;
   /** Has `sid` got a live runtime? */
   has(sid: string): boolean;
-  /** SIGTERM the PTY (and after 2s, SIGKILL if still alive). */
-  kill(sid: string): void;
+  /**
+   * SIGTERM the PTY (and after 2s, SIGKILL if still alive). Resolves once the
+   * EXIT frame has been broadcast to OPEN subscribers (i.e. the PTY truly
+   * exited and onExit ran), or after `awaitExitTimeoutMs` (default 2000ms)
+   * if the PTY hangs — whichever first. Task #758: the DELETE handler
+   * `await`s this so the HTTP 200 lands AFTER the wire-level EXIT.
+   */
+  kill(sid: string, awaitExitTimeoutMs?: number): Promise<void>;
   /** Iterate over all live runtimes (for shutdown). */
   entries(): IterableIterator<[string, RuntimeSession]>;
   /** Tear down everything (used by attached.shutdown). */
@@ -132,7 +147,18 @@ const defaultPtyFactory: PtyFactory = (opts) => {
   return {
     write: (d) => pty.write(d),
     resize: (c, r) => pty.resize(c, r),
-    kill: (s) => pty.kill(s),
+    kill: (s) => {
+      // Task #758: node-pty's WindowsTerminal.kill() THROWS if you pass any
+      // signal name ("Signals not supported on windows."). On Windows we
+      // must call kill() with no argument (which routes to TerminateJobObject
+      // — a hard, immediate kill). The shared PtyLike interface accepts an
+      // optional signal so POSIX callers can still pass SIGTERM / SIGKILL.
+      if (process.platform === 'win32') {
+        pty.kill();
+      } else {
+        pty.kill(s);
+      }
+    },
     onData: (cb) => {
       pty.onData(cb);
     },
@@ -177,7 +203,13 @@ export function createRuntimeRegistry(opts: RuntimeRegistryOptions): RuntimeRegi
       exited: false,
       exitCode: 0,
       ring: new RingBuffer(),
+      // Filled in below — onExit resolves it after the EXIT broadcast loop.
+      exitPromise: undefined as unknown as Promise<number>,
     };
+    let resolveExit!: (code: number) => void;
+    rt.exitPromise = new Promise<number>((r) => {
+      resolveExit = r;
+    });
     runtime.set(sid, rt);
 
     pty.onData((data) => {
@@ -241,29 +273,70 @@ export function createRuntimeRegistry(opts: RuntimeRegistryOptions): RuntimeRegi
       const live = sessions.get(sid);
       if (live) live.alive = false;
       runtime.delete(sid);
+      // Task #758: signal awaiters (DELETE handler) AFTER broadcast + map
+      // cleanup so anyone awaiting `kill()` sees a fully-settled runtime.
+      resolveExit(code);
     });
 
     return rt;
   }
 
-  function kill(sid: string): void {
+  function kill(sid: string, awaitExitTimeoutMs = 2000): Promise<void> {
     const rt = runtime.get(sid);
-    if (!rt || rt.exited) return;
-    try {
-      rt.pty.kill('SIGTERM');
-    } catch (err) {
-      console.warn(`[ccsm/runtime] kill SIGTERM sid=${sid}:`, (err as Error).message);
+    if (!rt) return Promise.resolve();
+    if (rt.exited) {
+      // onExit already fired — exitPromise is already settled.
+      return rt.exitPromise.then(() => undefined);
     }
-    const t = setTimeout(() => {
-      if (!rt.exited) {
-        try {
-          rt.pty.kill('SIGKILL');
-        } catch {
-          // ignore
+    // Task #758: send the strongest available signal up-front. On POSIX we
+    // start with SIGTERM (gives `claude` a chance to flush state) and
+    // escalate to SIGKILL after 200ms if it hasn't exited; on Windows
+    // node-pty's kill() ignores the signal name and always calls
+    // TerminateJobObject which is a hard kill, so SIGTERM/SIGKILL are
+    // equivalent there. The aggressive escalation matters because the
+    // DELETE handler awaits the EXIT broadcast — a slow `claude` shutdown
+    // (it can dump hundreds of OUTPUT frames as the SIGINT renders before
+    // it actually exits) would otherwise hit the 2s await timeout and the
+    // EXIT frame would land too late, after the client already detached.
+    const isWindows = process.platform === 'win32';
+    try {
+      rt.pty.kill(isWindows ? 'SIGKILL' : 'SIGTERM');
+    } catch (err) {
+      console.warn(`[ccsm/runtime] kill sid=${sid}:`, (err as Error).message);
+    }
+    if (!isWindows) {
+      const escalate = setTimeout(() => {
+        if (!rt.exited) {
+          try {
+            rt.pty.kill('SIGKILL');
+          } catch {
+            // ignore
+          }
         }
-      }
-    }, 2000);
-    t.unref();
+      }, 200);
+      escalate.unref();
+    }
+    // Race the PTY's onExit (which fires after EXIT broadcast) against a
+    // wall-clock timeout. Timeout path returns void without rejecting — the
+    // caller (DELETE handler) still wants to send 200 to avoid HTTP hang on
+    // a wedged PTY. We log a warning so wedged PTYs are visible in logs.
+    return new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        console.warn(
+          `[ccsm/runtime] kill sid=${sid}: PTY did not exit within ${awaitExitTimeoutMs}ms; ` +
+            `EXIT frame may have been delivered late.`,
+        );
+        resolve();
+      }, awaitExitTimeoutMs);
+      timer.unref();
+      rt.exitPromise.then(() => {
+        clearTimeout(timer);
+        resolve();
+      }, () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
   }
 
   function shutdownAll(): void {
@@ -275,7 +348,7 @@ export function createRuntimeRegistry(opts: RuntimeRegistryOptions): RuntimeRegi
           // ignore
         }
       }
-      kill(sid);
+      void kill(sid);
     }
     runtime.clear();
   }
