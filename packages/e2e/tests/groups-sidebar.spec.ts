@@ -9,11 +9,12 @@
 // WHY DEV-MODE (vite + mock daemon):
 //   The xterm/ws boot path is irrelevant to the sidebar contract under
 //   test, and the real `claude` CLI is not available on CI. We mock just
-//   the two endpoints the sidebar hits — POST /api/sessions and
-//   DELETE /api/sessions/:sid — and reject ws upgrades (the disconnect
-//   notice doesn't block anything in the sidebar). MainPane's bootstrap
-//   path will create the *first* session on its own; subsequent sessions
-//   are driven by the user clicking + New Session, which is what we test.
+//   the three endpoints the sidebar hits — GET /api/sessions (useBootstrap
+//   hydration), POST /api/sessions, and DELETE /api/sessions/:sid — and
+//   reject ws upgrades (the disconnect notice doesn't block anything in
+//   the sidebar). The bootstrap GET returns an empty list and the spec
+//   drives session creation via explicit + New Session clicks (MainPane's
+//   auto-create-on-mount path was removed in Task #716).
 //
 // SCOPE:
 //   Mirrors the dispatch spec's e2e checklist: + New Session twice, click
@@ -58,6 +59,15 @@ async function startMockDaemon(): Promise<MockDaemon> {
   const deletedSids: string[] = [];
   const server = createServer((req, res) => {
     const url = req.url ?? '/';
+    // GET /api/sessions — useBootstrap (#670) calls this on App mount to
+    // hydrate the store. Return an empty list so the sidebar starts clean
+    // and the spec drives session creation via + New Session clicks.
+    if (req.method === 'GET' && url === '/api/sessions') {
+      res.statusCode = 200;
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ sessions: [] }));
+      return;
+    }
     if (req.method === 'POST' && url === '/api/sessions') {
       // Drain the body so the socket doesn't stall on Windows.
       req.on('data', () => {});
@@ -225,19 +235,21 @@ test('groups-sidebar — multi-session add / setActive / close', async ({
       .locator('[data-testid="sidebar-groups"]')
       .waitFor({ state: 'attached', timeout: 10_000 });
 
-    // ---- Stage 1: bootstrap session arrives ----
+    // ---- Stage 1: click + New Session → first session row appears ----
     //
-    // MainPane auto-creates the first session on mount. The sidebar should
-    // render exactly one session row, marked active. We use [data-active]
-    // (only the `<li>` wrapper carries that attribute, the inner row/close
-    // buttons don't) so the locator counts session rows, not their children.
+    // useBootstrap (#670) hydrates the store from GET /api/sessions; our
+    // mock returns an empty list, so the sidebar starts with zero rows and
+    // the user (this spec) drives creation explicitly. Earlier MainPane
+    // revisions auto-created the first session on mount — that bootstrap
+    // path was removed in Task #716, see MainPane.tsx for the rationale.
     const rows = page.locator('[data-testid^="sidebar-session-"][data-active]');
+    await page.locator('[data-testid="sidebar-new-session"]').click();
     await rows.first().waitFor({ state: 'attached', timeout: 10_000 });
     await expect(rows).toHaveCount(1, { timeout: 5_000 });
 
     await snap(page, testInfo, '01-after-bootstrap');
 
-    // ---- Stage 2: click + New Session → second row appears, active ----
+    // ---- Stage 2: click + New Session again → second row appears, active ----
     await page.locator('[data-testid="sidebar-new-session"]').click();
     await expect(rows).toHaveCount(2, { timeout: 5_000 });
 
