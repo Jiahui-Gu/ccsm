@@ -1,6 +1,6 @@
-# ccsm-web Roadmap
+# ccsm Roadmap
 
-本文档记录 ccsm-web 当前的鉴权 / 部署演进路线图 (S0 → S5), 描述前端、Tauri 壳、Cloudflare 中间层、本地 daemon 与鉴权方式在每个阶段的形态。
+本文档记录 ccsm 当前的鉴权 / 部署演进路线图 (S0 → S5), 描述前端、Tauri 壳、Cloudflare 中间层、本地 daemon 与鉴权方式在每个阶段的形态。
 
 **当前位置**: S0 完工 (wave-1 + wave-2 主线 14/14)。S1 进行中 2/4: PR #36 wave-2.5 已落 Tauri 注入 `CCSM_TOKEN` env + 端口固定 9876; 还差 (a) token 移到 `~/.ccsm/token` (现硬编码), (b) web 前端不再依赖 URL `?token=`。
 

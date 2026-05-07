@@ -1,4 +1,4 @@
-# ccsm-web changelog
+# ccsm changelog
 
 ## v0.1.0 — Phase 3 acceptance + walking-skeleton ready
 
