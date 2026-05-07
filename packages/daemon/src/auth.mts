@@ -48,16 +48,28 @@ function extractBearer(header: string | string[] | undefined): string | null {
 /**
  * Validates token + origin for /api/* requests. On rejection writes a JSON
  * error response and returns false; caller should not write further.
+ *
+ * Origin policy (#672):
+ *   - Per the Fetch spec, browsers OMIT the `Origin` header on same-origin
+ *     simple GET/HEAD requests (Origin is only attached for CORS-relevant
+ *     requests). Because the SPA + API are served same-origin (daemon serves
+ *     dist in prod; vite proxies /api/* to the daemon in dev so the browser
+ *     still sees same-origin), the `GET /api/sessions` request that
+ *     `useBootstrap` issues arrives with NO Origin header. Treat that as
+ *     same-origin and allow it through (token is still verified below).
+ *   - When an Origin IS present, it must be in the allowlist (loopback
+ *     http/https). A cross-origin attacker (evil.com) still gets 403.
  */
 export function requireAuth(
   req: IncomingMessage,
   res: ServerResponse,
   expectedToken: string,
 ): boolean {
-  const origin = req.headers.origin;
-  if (!isAllowedOrigin(typeof origin === 'string' ? origin : undefined)) {
+  const rawOrigin = req.headers.origin;
+  const origin = typeof rawOrigin === 'string' && rawOrigin.length > 0 ? rawOrigin : undefined;
+  if (origin !== undefined && !isAllowedOrigin(origin)) {
     console.warn(
-      `[ccsm] auth: rejected origin=${JSON.stringify(origin ?? null)} url=${req.url}`,
+      `[ccsm] auth: rejected origin=${JSON.stringify(rawOrigin ?? null)} url=${req.url}`,
     );
     writeJson(res, 403, { error: 'forbidden_origin' });
     return false;

@@ -13,7 +13,8 @@
 //     5. Origin from non-allowed host                                  -> 403 + JSON error
 //     6. Origin with non-http(s) protocol (file://)                    -> 403
 //     7. Unparseable Origin                                            -> 403
-//     8. missing Origin header                                         -> 403
+//     8. missing Origin (#672) — treated as same-origin, 200 if token valid;
+//        wrong token still 401 (8b) so dropping Origin can't bypass auth.
 //   WS /ws upgrade
 //     9. no token query param                                          -> close (handshake refused)
 //    10. wrong token query param                                       -> close (handshake refused)
@@ -226,13 +227,21 @@ describe('HTTP /api/* negative paths (T12)', () => {
     await expectErrorJson(r, 403, 'forbidden_origin');
   });
 
-  it('8. missing Origin -> 403 (T3 enforces same-origin via allowlist)', async () => {
-    // node fetch lets us omit Origin entirely; the daemon rejects per
-    // DESIGN.md §4 G5 (allowlist requires loopback Origin).
+  it('8. missing Origin -> 200 when token valid (#672: same-origin per fetch spec)', async () => {
+    // Per the Fetch spec, browsers OMIT Origin on same-origin simple GETs.
+    // Treat absent Origin as same-origin and pass — token is still verified.
     const r = await fetch(`${baseHttp}/api/sessions`, {
       headers: { Authorization: `Bearer ${TOKEN}` },
     });
-    await expectErrorJson(r, 403, 'forbidden_origin');
+    expect(r.status).toBe(200);
+  });
+
+  it('8b. missing Origin + wrong token -> 401 (token check still applies)', async () => {
+    // Defense: dropping Origin must NOT skip token verification.
+    const r = await fetch(`${baseHttp}/api/sessions`, {
+      headers: { Authorization: 'Bearer wrong-token' },
+    });
+    await expectErrorJson(r, 401, 'unauthorized');
   });
 });
 

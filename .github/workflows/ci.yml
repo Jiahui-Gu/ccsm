@@ -79,8 +79,8 @@ jobs:
       - name: Build
         run: pnpm -r build
 
-      - name: 'Run e2e (excludes p1-smoke + p3-stress: both need authed claude)'
-        # p1-smoke + p3-stress spawn the real `claude` CLI which requires
+      - name: 'Run e2e (excludes p1-smoke + p3-stress + session-persistence: all need authed claude)'
+        # p1-smoke + p3-stress + session-persistence spawn the real `claude` CLI which requires
         # interactive auth on first run. CI runners have no Anthropic
         # credentials and no way to seed `~/.claude/`, so the PTY exits
         # immediately and the assertions can't run. Acceptance evidence for
@@ -93,7 +93,7 @@ jobs:
         shell: bash
         env:
           CI: 'true'
-        run: pnpm -F @ccsm/e2e exec playwright test --grep-invert "p1-smoke|p3-stress"
+        run: pnpm -F @ccsm/e2e exec playwright test --grep-invert "p1-smoke|p3-stress|session-persistence"
 
       - name: Upload snapshots
         if: always()

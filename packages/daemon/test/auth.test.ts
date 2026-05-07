@@ -80,7 +80,10 @@ describe('auth', () => {
     expect(r.status).toBe(403);
   });
 
-  it('rejects POST /api/sessions with missing Origin (403)', async () => {
+  it('accepts POST /api/sessions with missing Origin (same-origin per fetch spec) when token is valid (200)', async () => {
+    // #672 — Browsers OMIT Origin on same-origin simple GET/HEAD; the daemon
+    // must treat absent Origin as same-origin so useBootstrap's GET
+    // /api/sessions does not 403 after page.reload(). Token is still required.
     const r = await fetch(`${baseUrl}/api/sessions`, {
       method: 'POST',
       headers: {
@@ -89,8 +92,24 @@ describe('auth', () => {
       },
       body: '{}',
     });
-    expect(r.status).toBe(403);
+    expect(r.status).toBe(200);
   });
+
+  it('still rejects POST /api/sessions with missing Origin when token is wrong (401, not 200)', async () => {
+    // Defense: dropping Origin must NOT bypass token check.
+    const r = await fetch(`${baseUrl}/api/sessions`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer wrong-token',
+        'Content-Type': 'application/json',
+      },
+      body: '{}',
+    });
+    expect(r.status).toBe(401);
+  });
+  // Note: cross-origin evil.com -> 403 is already covered by
+  // "rejects POST /api/sessions with bad Origin (403)" above. #672 keeps
+  // that defense intact (only missing Origin is treated as same-origin).
 
   it('serves GET / without auth (200 or 503 depending on dist presence)', async () => {
     const r = await fetch(`${baseUrl}/`);
