@@ -31,18 +31,27 @@ export const DEFAULT_DAEMON_BASE = 'http://127.0.0.1:9876';
 export interface ResolveTokenDeps {
   /** Search portion of the current URL, e.g. `?token=abc`. */
   search: string;
-  /** fetch implementation. Must accept a relative URL. */
+  /** fetch implementation. */
   fetch: typeof globalThis.fetch;
+  /**
+   * Daemon base URL (Task #719 / S2-T4). When the SPA is served from a
+   * different origin than the daemon (e.g. Cloudflare Pages → loopback
+   * daemon), `/token` must be requested as an absolute URL or the browser
+   * will hit the SPA host instead. Pass the result of `resolveDaemonBase()`
+   * here. When omitted or empty, falls back to the relative `/token` path
+   * (same-origin / daemon-embedded SPA).
+   */
+  daemonBase?: string;
 }
 
 /**
  * Returns the daemon bearer token, or null if neither the URL nor the
  * daemon `/token` endpoint produced one.
  *
- * Priority (Task #696):
+ * Priority (Task #696, cross-origin extension Task #719):
  *   1. URL `?token=` — back-compat with legacy `ccsm ready: ...?token=` URL.
- *   2. GET /token (same-origin) — preferred path so users can just open
- *      `http://127.0.0.1:9876/` with no query string.
+ *   2. GET <daemonBase>/token — same-origin in the daemon-embedded case;
+ *      cross-origin (with CORS, see daemon http.mts) when SPA is on Pages.
  *   3. null — caller surfaces a friendly "daemon offline / no token" UI.
  *
  * The function is pure w.r.t. its `deps` argument (no window / sessionStorage
@@ -52,8 +61,10 @@ export async function resolveToken(deps: ResolveTokenDeps): Promise<string | nul
   const fromUrl = new URLSearchParams(deps.search).get('token');
   if (fromUrl && fromUrl.length > 0) return fromUrl;
 
+  const base = deps.daemonBase && deps.daemonBase.length > 0 ? deps.daemonBase : '';
+  const tokenUrl = `${base}/token`;
   try {
-    const res = await deps.fetch('/token');
+    const res = await deps.fetch(tokenUrl);
     if (!res.ok) return null;
     const body = (await res.json()) as { token?: unknown };
     if (typeof body.token === 'string' && body.token.length > 0) {
