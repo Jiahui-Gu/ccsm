@@ -1,4 +1,4 @@
-// Tauri shell entrypoint — Wave-2 T10 (#685).
+// Tauri shell entrypoint — Wave-2 T10 (#685) + T12 (#678).
 //
 // Listener race contract (see ~/.claude/projects/.../project_tauri2_spike_2026_05_07.md):
 // `daemon-ready` / `daemon-exit` / `daemon-error` are emitted by the Rust
@@ -8,24 +8,28 @@
 //
 // Therefore the order below is fixed:
 //   1. listen('daemon-ready', ...)   — register, await unlisten Promise
-//   2. listen('daemon-exit', ...)
+//   2. listen('daemon-exit', ...)    — T12 surfaces this in a UI banner
 //   3. listen('daemon-error', ...)
 //   4. listen('daemon-stderr', ...)  — optional, log only
 //   5. invoke('start_daemon')        — fire spawn AFTER listeners are live
 //   6. await readyPromise            — block on first daemon-ready / error
 //   7. build hostConfig from handshake
-//   8. createRoot(...).render(<App hostConfig={...} />)
+//   8. createRoot(...).render(<ShellRoot hostConfig={...} />)
 //
-// Scope (T10): start daemon, get hostConfig, render the same UI as
-// frontend-web (empty session list). Reconnect / token rotation / +new
-// session wiring belongs to T11/T12.
+// T12 scope (#678): close (×) + reconnect verification. Close button + WS
+// reconnect already work end-to-end via @ccsm/ui Sidebar + @ccsm/core
+// SessionRuntime (5-attempt budget, identical to wave-1). The only code
+// change required is surfacing `daemon-exit` to the user — T10 only logged
+// it to the console. ShellRoot below owns that state and renders a thin
+// banner above <App> when the daemon process dies (e.g. external taskkill).
 
-import { StrictMode } from 'react';
+import { StrictMode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { App } from './App';
 import { buildTauriHostConfig, type Handshake } from './hostConfig';
+import type { HostConfig } from '@ccsm/ui';
 import '@ccsm/ui/styles.css';
 
 interface DaemonExitEvent {
@@ -34,6 +38,75 @@ interface DaemonExitEvent {
 }
 interface DaemonErrorEvent {
   reason: string;
+}
+
+interface ShellRootProps {
+  hostConfig: HostConfig;
+}
+
+/**
+ * ShellRoot — owns the post-bootstrap UI state.
+ *
+ * Currently tracks one thing: whether the daemon process is still alive.
+ * `daemon-exit` is emitted by the Rust side when the spawned `node daemon`
+ * child exits for any reason (clean shutdown, crash, external taskkill).
+ * After bootstrap we are past the readyPromise, so the listener registered
+ * in `bootstrap()` is gone; we register a fresh one here that sets state
+ * instead of just logging.
+ *
+ * UX: a single non-dismissable banner above <App>. The user can keep
+ * interacting with already-attached sessions (their ws will reconnect up
+ * to the SessionRuntime budget then go to `disconnected`), but new
+ * actions like + New Session will fail with the existing alert path.
+ * Restarting the app re-spawns the daemon (Job Object cleans up first),
+ * which is the documented recovery (Plan §C item 1).
+ */
+function ShellRoot({ hostConfig }: ShellRootProps) {
+  const [daemonExit, setDaemonExit] = useState<DaemonExitEvent | null>(null);
+
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    let cancelled = false;
+    void listen<DaemonExitEvent>('daemon-exit', (e) => {
+      // eslint-disable-next-line no-console
+      console.warn('[tauri] daemon-exit', e.payload);
+      setDaemonExit(e.payload);
+    }).then((u) => {
+      if (cancelled) {
+        u();
+      } else {
+        unlisten = u;
+      }
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  return (
+    <>
+      {daemonExit !== null && (
+        <div
+          role="alert"
+          data-testid="daemon-exit-banner"
+          style={{
+            background: '#3a1f1f',
+            color: '#f5d0d0',
+            padding: '6px 12px',
+            fontSize: '13px',
+            fontFamily: 'system-ui, sans-serif',
+            borderBottom: '1px solid #6b2a2a',
+          }}
+        >
+          Daemon offline ({daemonExit.reason}
+          {daemonExit.code !== null ? `, code=${daemonExit.code}` : ''}).
+          Restart the app to reconnect.
+        </div>
+      )}
+      <App hostConfig={hostConfig} />
+    </>
+  );
 }
 
 async function bootstrap(): Promise<void> {
@@ -64,8 +137,12 @@ async function bootstrap(): Promise<void> {
     },
   );
 
-  // 2. daemon-exit — daemon process exited. T10 just logs; T12 will surface
-  //    a disconnected state in the UI.
+  // 2. daemon-exit — bootstrap-time listener. We log here AND keep the
+  //    listener live (no unlisten on success path) so an exit during the
+  //    bootstrap window between invoke() and ShellRoot's effect mounting
+  //    is not lost. ShellRoot registers its own listener that drives the
+  //    UI banner; events arriving after both are live will fire both
+  //    callbacks, which is fine (idempotent: console.warn + setState).
   const unlistenExit: UnlistenFn = await listen<DaemonExitEvent>(
     'daemon-exit',
     (e) => {
@@ -119,10 +196,11 @@ async function bootstrap(): Promise<void> {
     tokenPresent: !!hostConfig.getToken(),
   });
 
-  // 8. mount the React app with the freshly-built hostConfig.
+  // 8. mount the React app with the freshly-built hostConfig wrapped in
+  //    ShellRoot so post-bootstrap daemon-exit events surface as a banner.
   createRoot(rootEl).render(
     <StrictMode>
-      <App hostConfig={hostConfig} />
+      <ShellRoot hostConfig={hostConfig} />
     </StrictMode>,
   );
 }
