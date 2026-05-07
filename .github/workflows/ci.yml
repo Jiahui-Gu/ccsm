@@ -150,6 +150,75 @@ jobs:
           path: packages/e2e/playwright-report/
           if-no-files-found: ignore
 
+  s2-acceptance:
+    # Task #763 (S2-收口-E): dedicated job for s2-pages-loopback +
+    # s2-spoof-origin specs, which the main `e2e` job excludes via
+    # `--grep-invert s2-pages-loopback` (because pre-#763 the spec needed
+    # an authed `claude` CLI with no CI credentials path, and was only run
+    # in PRs that touched the spec). This job re-includes them on a clean
+    # matrix runner so working tip always has cross-OS evidence the S2
+    # cross-origin chain (CORS + PNA + classifyOrigin) actually holds.
+    # chromium-only: firefox/webkit/edge ran locally on Windows in #752 and
+    # are not in the CI cost budget (webkit additionally test.skip()s the
+    # loopback spec — see s2-pages-loopback.spec.ts header).
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright Chromium
+        run: pnpm e2e:install
+
+      - name: Install claude CLI (required by daemon node-pty spawn in s2-pages-loopback)
+        # s2-pages-loopback step 7 spawns a real `claude` PTY through the
+        # daemon to drive the keystroke INPUT → OUTPUT echo assertion. The
+        # CLI must be on PATH for node-pty to find it. Pinned (not `latest`)
+        # so failures point at code changes, not silent CLI behaviour drift.
+        run: npm install -g @anthropic-ai/claude-code@2.1.131
+
+      - name: Build
+        run: pnpm -r build
+
+      - name: Run s2-acceptance specs (s2-pages-loopback + s2-spoof-origin, chromium)
+        # `shell: bash` so the `|` in the grep regex is parsed by bash, not
+        # by PowerShell on windows-latest (where `|` is a pipeline operator).
+        shell: bash
+        env:
+          CI: 'true'
+        run: pnpm -F @ccsm/e2e-web exec playwright test --grep "s2-pages-loopback|s2-spoof-origin" --project chromium
+
+      - name: Upload snapshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s2-acceptance-snapshots-${{ matrix.os }}
+          path: packages/e2e/snapshots/
+          if-no-files-found: ignore
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s2-acceptance-playwright-report-${{ matrix.os }}
+          path: packages/e2e/playwright-report/
+          if-no-files-found: ignore
+
   e2e-tauri:
     # Task #723 [S1-followup]: Tauri 2 desktop smoke via tauri-driver +
     # WebDriverIO. Windows-only (Tauri 2 webview = WebView2 = Edge, driven by
