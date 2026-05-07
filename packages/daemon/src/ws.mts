@@ -25,6 +25,7 @@ import {
 import type { WebSocket as WSWebSocket } from 'ws';
 import { WebSocketServer } from 'ws';
 
+import { classifyOrigin } from './auth.mjs';
 import type {
   RuntimeRegistry,
   RuntimeSession,
@@ -54,21 +55,10 @@ export interface AttachedWs {
 export type { PtyFactory, PtyLike, SessionLike } from './runtime.mjs';
 
 // ---- Auth helpers (mirrors auth.mts logic for ws upgrade) ---------------
-
-const ALLOWED_ORIGIN_HOSTS = new Set(['127.0.0.1', 'localhost']);
-const ALLOWED_ORIGIN_PROTOCOLS = new Set(['http:', 'https:']);
-
-function isAllowedOrigin(origin: string | undefined): boolean {
-  if (!origin) return false;
-  let url: URL;
-  try {
-    url = new URL(origin);
-  } catch {
-    return false;
-  }
-  if (!ALLOWED_ORIGIN_PROTOCOLS.has(url.protocol)) return false;
-  return ALLOWED_ORIGIN_HOSTS.has(url.hostname);
-}
+// Origin policy is shared with HTTP via `classifyOrigin` (auth.mts):
+//   - 'absent'   -> same-origin per #672, allow.
+//   - 'allowed'  -> loopback http(s) or `tauri://localhost` (T2 #675).
+//   - 'rejected' -> close upgrade with 403.
 
 function constantTimeEquals(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
@@ -103,7 +93,8 @@ export function attachWebSocket(server: HttpServer, opts: AttachWsOptions): Atta
     }
 
     const origin = typeof req.headers.origin === 'string' ? req.headers.origin : undefined;
-    if (!isAllowedOrigin(origin)) {
+    // 'absent' = same-origin (#672), allow; 'allowed' = loopback or tauri://localhost.
+    if (classifyOrigin(origin) === 'rejected') {
       console.warn(`[ccsm/ws] reject origin=${JSON.stringify(origin ?? null)}`);
       rejectUpgrade(socket, 403, 'Forbidden');
       return;

@@ -250,6 +250,44 @@ describe('ws upgrade auth', () => {
     expect(d.ws.readyState).toBe(WebSocket.CLOSED);
   });
 
+  // T2 #675: Tauri 2 webview always sends `Origin: tauri://localhost`. The
+  // daemon must whitelist that exact value (and nothing else under tauri:).
+  it('accepts Origin: tauri://localhost (T2 #675)', async () => {
+    const sid = await createSid();
+    const d = dial(`${baseWs}/ws?sid=${sid}&token=${TOKEN}`, {
+      Origin: 'tauri://localhost',
+    });
+    await waitOpen(d.ws);
+    expect(d.ws.readyState).toBe(WebSocket.OPEN);
+    d.ws.close();
+  });
+
+  it('rejects Origin: tauri://evil (only tauri://localhost is allow-listed)', async () => {
+    const sid = await createSid();
+    const d = dial(`${baseWs}/ws?sid=${sid}&token=${TOKEN}`, {
+      Origin: 'tauri://evil',
+    });
+    const closed = await d.closed;
+    expect(closed.code).toBeGreaterThanOrEqual(1000);
+    expect(d.ws.readyState).toBe(WebSocket.CLOSED);
+  });
+
+  // #672 regression: ws upgrade with NO Origin header must still succeed
+  // (treated as same-origin). The `ws` Node client does NOT auto-add an
+  // Origin header (unlike the browser API), so constructing a WebSocket
+  // without any `headers` option produces a no-Origin upgrade.
+  it('accepts ws upgrade with absent Origin (same-origin per #672)', async () => {
+    const sid = await createSid();
+    const ws = new WebSocket(`${baseWs}/ws?sid=${sid}&token=${TOKEN}`);
+    await new Promise<void>((resolve, reject) => {
+      ws.once('open', () => resolve());
+      ws.once('error', reject);
+      ws.once('close', (code) => reject(new Error(`closed before open: ${code}`)));
+    });
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+    ws.close();
+  });
+
   it('rejects when sid is unknown (handshake refused)', async () => {
     const d = dial(`${baseWs}/ws?sid=this-sid-does-not-exist&token=${TOKEN}`);
     const closed = await d.closed;

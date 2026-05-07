@@ -278,15 +278,20 @@ describe('WS /ws upgrade negative paths (T12)', () => {
     expect(ptySpawnCount).toBe(before);
   });
 
-  it('12. missing Origin -> handshake refused', async () => {
+  it('12. missing Origin -> handshake ACCEPTED (same-origin per #672 / T2 #675)', async () => {
+    // Updated for T2 #675: ws upgrade now mirrors HTTP auth — absent Origin
+    // is treated as same-origin (browsers omit it on same-origin upgrades),
+    // so the handshake must succeed. Token is still verified above.
     const before = ptySpawnCount;
     const d = dial(
       `${baseWs}/ws?sid=${validSid}&token=${TOKEN}`,
       { Origin: '' }, // sentinel: drop Origin entirely
     );
     const ok = await d.opened;
-    expect(ok).toBe(false);
+    expect(ok).toBe(true);
+    // A subscriber on an existing runtime should NOT trigger a fresh spawn.
     expect(ptySpawnCount).toBe(before);
+    d.ws.close();
   });
 
   it('13. unknown sid -> handshake refused, no PTY spawn', async () => {

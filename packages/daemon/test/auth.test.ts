@@ -117,6 +117,93 @@ describe('auth', () => {
   });
 });
 
+// T2 #675 — Tauri origin whitelist + CORS for desktop shell.
+describe('CORS + Tauri origin (T2 #675)', () => {
+  it('accepts POST /api/sessions with Origin: tauri://localhost', async () => {
+    const r = await fetch(`${baseUrl}/api/sessions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${TOKEN}`,
+        Origin: 'tauri://localhost',
+        'Content-Type': 'application/json',
+      },
+      body: '{}',
+    });
+    expect(r.status).toBe(200);
+    // CORS header echoes the allow-listed Tauri origin.
+    expect(r.headers.get('access-control-allow-origin')).toBe('tauri://localhost');
+    expect(r.headers.get('vary')).toContain('Origin');
+  });
+
+  it('rejects Origin: tauri://evil (only tauri://localhost is allow-listed)', async () => {
+    const r = await fetch(`${baseUrl}/api/sessions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${TOKEN}`,
+        Origin: 'tauri://evil',
+        'Content-Type': 'application/json',
+      },
+      body: '{}',
+    });
+    expect(r.status).toBe(403);
+  });
+
+  it('OPTIONS /api/sessions preflight returns 200 + full CORS headers (no auth required)', async () => {
+    const r = await fetch(`${baseUrl}/api/sessions`, {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'tauri://localhost',
+        'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'authorization, content-type',
+      },
+    });
+    expect(r.status).toBe(200);
+    expect(r.headers.get('access-control-allow-origin')).toBe('tauri://localhost');
+    const allowMethods = r.headers.get('access-control-allow-methods') ?? '';
+    expect(allowMethods).toMatch(/GET/);
+    expect(allowMethods).toMatch(/POST/);
+    expect(allowMethods).toMatch(/DELETE/);
+    expect(allowMethods).toMatch(/OPTIONS/);
+    const allowHeaders = r.headers.get('access-control-allow-headers') ?? '';
+    expect(allowHeaders).toMatch(/Authorization/i);
+    expect(allowHeaders).toMatch(/Content-Type/i);
+  });
+
+  it('OPTIONS preflight succeeds even with no Authorization header (preflight is pre-auth)', async () => {
+    // Browsers (and Tauri webview) issue OPTIONS without credentials. The
+    // daemon must respond with CORS headers BEFORE running requireAuth,
+    // otherwise the actual request is never sent.
+    const r = await fetch(`${baseUrl}/api/sessions`, {
+      method: 'OPTIONS',
+      headers: { Origin: 'tauri://localhost' },
+    });
+    expect(r.status).toBe(200);
+    expect(r.headers.get('access-control-allow-origin')).toBe('tauri://localhost');
+  });
+
+  it('attaches CORS headers even on auth failure (so browser can read 401 body)', async () => {
+    const r = await fetch(`${baseUrl}/api/sessions`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer wrong',
+        Origin: 'tauri://localhost',
+        'Content-Type': 'application/json',
+      },
+      body: '{}',
+    });
+    expect(r.status).toBe(401);
+    expect(r.headers.get('access-control-allow-origin')).toBe('tauri://localhost');
+  });
+
+  it('falls back to Allow-Origin: * when Origin header is absent', async () => {
+    const r = await fetch(`${baseUrl}/api/sessions`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    expect(r.status).toBe(200);
+    expect(r.headers.get('access-control-allow-origin')).toBe('*');
+  });
+});
+
 describe('sessions CRUD (in-memory stub)', () => {
   it('creates, lists, and deletes a session', async () => {
     // POST creates.

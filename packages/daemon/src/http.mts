@@ -22,7 +22,7 @@ import type {
   SessionInfo,
 } from '@ccsm/shared';
 
-import { requireAuth } from './auth.mjs';
+import { classifyOrigin, requireAuth } from './auth.mjs';
 import type { KvDb } from './db.mjs';
 import {
   createPersistController,
@@ -101,6 +101,43 @@ function writeText(res: ServerResponse, status: number, body: string): void {
   res.statusCode = status;
   res.setHeader('content-type', 'text/plain; charset=utf-8');
   res.end(body);
+}
+
+// ---- CORS (T2 #675) -----------------------------------------------------
+// All `/api/*` responses (including 401/403/404/500) carry CORS headers so
+// browsers (web SPA same-origin via vite proxy / Tauri webview at
+// `tauri://localhost`) can read the body. The Tauri webview treats fetches
+// to http://127.0.0.1:* as cross-origin, hence we need real CORS even though
+// the daemon is loopback-only.
+//
+// We echo the request Origin when it's allow-listed (loopback/tauri); for
+// any other case (incl. absent header — same-origin) we fall back to '*'.
+// '*' is safe because we DO NOT use cookies — auth is a Bearer token in the
+// `Authorization` header which the SPA / Tauri shell injects explicitly.
+//
+// Vary: Origin is set so any caching layer keys on the Origin header.
+const CORS_ALLOW_HEADERS = 'Authorization, Content-Type';
+const CORS_ALLOW_METHODS = 'GET, POST, DELETE, OPTIONS';
+
+function applyCorsHeaders(req: IncomingMessage, res: ServerResponse): void {
+  const rawOrigin = req.headers.origin;
+  const origin = typeof rawOrigin === 'string' && rawOrigin.length > 0 ? rawOrigin : undefined;
+  const allowOrigin = origin !== undefined && classifyOrigin(origin) === 'allowed' ? origin : '*';
+  res.setHeader('Access-Control-Allow-Origin', allowOrigin);
+  res.setHeader('Vary', 'Origin');
+  res.setHeader('Access-Control-Allow-Methods', CORS_ALLOW_METHODS);
+  res.setHeader('Access-Control-Allow-Headers', CORS_ALLOW_HEADERS);
+  // No credentials: we use Bearer tokens, not cookies.
+}
+
+function handleCorsPreflight(req: IncomingMessage, res: ServerResponse): void {
+  applyCorsHeaders(req, res);
+  // Cache preflight for 10 min — keeps Tauri webview from re-issuing OPTIONS
+  // on every fetch. Spec lets browsers cap at their discretion (Chromium 2h).
+  res.setHeader('Access-Control-Max-Age', '600');
+  // Spec allows 200 or 204; manager validation script greps for 200 explicitly.
+  res.statusCode = 200;
+  res.end();
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
@@ -347,6 +384,13 @@ export function createDaemonHttp(opts: DaemonHttpOptions): DaemonHttp {
       }
 
       if (path.startsWith('/api/')) {
+        // CORS headers attach to EVERY /api/* response (including
+        // requireAuth's 401/403). Preflight short-circuits before auth.
+        applyCorsHeaders(req, res);
+        if (method === 'OPTIONS') {
+          handleCorsPreflight(req, res);
+          return;
+        }
         await handleApi(req, res, url, sessions, expectedToken, persist, registry);
         return;
       }
