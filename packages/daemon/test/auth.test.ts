@@ -11,6 +11,7 @@ import type {
 } from '@ccsm/shared';
 
 import { createDaemonHttp, type DaemonHttp } from '../src/http.mjs';
+import { classifyOrigin } from '../src/auth.mjs';
 
 const TOKEN = 'test-token-do-not-use-in-prod-0123456789abcdef';
 const GOOD_ORIGIN = 'http://localhost:1234';
@@ -260,5 +261,109 @@ describe('sessions CRUD (in-memory stub)', () => {
       },
     });
     expect(r.status).toBe(200);
+  });
+});
+
+// S2 #702 — Cloudflare Pages prod origin allow-list + Chrome PNA preflight.
+// The web SPA is hosted at `https://cc-sm.pages.dev`. From the user's browser
+// it issues cross-origin loopback fetches into the daemon. Only the exact
+// production origin is allowed; spoof variants and PR-preview subdomains are
+// rejected. Chrome 120+ PNA further requires the daemon to opt-in to private
+// network access via a preflight echo header.
+describe('S2 #702 — Cloudflare Pages origin allow-list (classifyOrigin)', () => {
+  it('classifyOrigin("https://cc-sm.pages.dev") === "allowed" (prod host)', () => {
+    expect(classifyOrigin('https://cc-sm.pages.dev')).toBe('allowed');
+  });
+
+  it('classifyOrigin("https://cc-sm-evil.pages.dev") === "rejected" (sibling spoof)', () => {
+    expect(classifyOrigin('https://cc-sm-evil.pages.dev')).toBe('rejected');
+  });
+
+  it('classifyOrigin("https://cc-sm.pages.dev.attacker.com") === "rejected" (suffix spoof)', () => {
+    expect(classifyOrigin('https://cc-sm.pages.dev.attacker.com')).toBe('rejected');
+  });
+
+  it('classifyOrigin("http://cc-sm.pages.dev") === "rejected" (http stripped, must be https)', () => {
+    expect(classifyOrigin('http://cc-sm.pages.dev')).toBe('rejected');
+  });
+
+  it('classifyOrigin("https://abc123.cc-sm.pages.dev") === "rejected" (PR-preview default off)', () => {
+    // T8 will introduce an opt-in flag for preview deploys; until then,
+    // every preview subdomain MUST be rejected to keep the prod attack
+    // surface tight.
+    expect(classifyOrigin('https://abc123.cc-sm.pages.dev')).toBe('rejected');
+  });
+
+  it('classifyOrigin(undefined) === "absent" (regression for #672 same-origin)', () => {
+    // Browsers omit Origin on same-origin GET/HEAD; daemon treats absent
+    // as same-origin. This must keep working alongside the new pages.dev
+    // allow-list entry.
+    expect(classifyOrigin(undefined)).toBe('absent');
+  });
+
+  it('keeps tauri://localhost === "allowed" (T2 #675 regression)', () => {
+    expect(classifyOrigin('tauri://localhost')).toBe('allowed');
+  });
+});
+
+describe('S2 #702 — pages.dev integration through the HTTP server', () => {
+  it('accepts POST /api/sessions with Origin: https://cc-sm.pages.dev (200)', async () => {
+    const r = await fetch(`${baseUrl}/api/sessions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${TOKEN}`,
+        Origin: 'https://cc-sm.pages.dev',
+        'Content-Type': 'application/json',
+      },
+      body: '{}',
+    });
+    expect(r.status).toBe(200);
+    expect(r.headers.get('access-control-allow-origin')).toBe('https://cc-sm.pages.dev');
+  });
+
+  it('rejects POST /api/sessions with Origin: https://cc-sm-evil.pages.dev (403)', async () => {
+    const r = await fetch(`${baseUrl}/api/sessions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${TOKEN}`,
+        Origin: 'https://cc-sm-evil.pages.dev',
+        'Content-Type': 'application/json',
+      },
+      body: '{}',
+    });
+    expect(r.status).toBe(403);
+  });
+});
+
+describe('S2 #702 — Chrome PNA preflight echo', () => {
+  it('OPTIONS with Access-Control-Request-Private-Network: true echoes Allow-Private-Network: true', async () => {
+    const r = await fetch(`${baseUrl}/api/sessions`, {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'https://cc-sm.pages.dev',
+        'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'authorization, content-type',
+        'Access-Control-Request-Private-Network': 'true',
+      },
+    });
+    expect(r.status).toBe(200);
+    expect(r.headers.get('access-control-allow-private-network')).toBe('true');
+    expect(r.headers.get('access-control-allow-origin')).toBe('https://cc-sm.pages.dev');
+  });
+
+  it('OPTIONS WITHOUT the PNA request header does NOT advertise Allow-Private-Network', async () => {
+    // Don't volunteer PNA capability to peers that didn't ask for it.
+    const r = await fetch(`${baseUrl}/api/sessions`, {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'https://cc-sm.pages.dev',
+        'Access-Control-Request-Method': 'POST',
+      },
+    });
+    expect(r.status).toBe(200);
+    expect(r.headers.get('access-control-allow-private-network')).toBeNull();
+    // Other preflight headers still intact.
+    expect(r.headers.get('access-control-allow-origin')).toBe('https://cc-sm.pages.dev');
+    expect(r.headers.get('access-control-allow-methods')).toMatch(/POST/);
   });
 });
