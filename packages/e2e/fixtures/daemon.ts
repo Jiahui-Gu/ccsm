@@ -34,7 +34,20 @@ export interface DaemonHandle {
   proc: ChildProcess;
 }
 
-export async function startDaemon(): Promise<DaemonHandle> {
+export interface StartDaemonOptions {
+  /**
+   * Extra env vars merged on top of `process.env` for the spawned daemon.
+   *
+   * Task #753 (S2 spoof-origin e2e): used to opt the daemon into the
+   * `CCSM_ALLOW_PAGES_PREVIEWS=1` flag so the e2e suite can verify the
+   * env-gated `*.cc-sm.pages.dev` allow-list at the HTTP layer, against a
+   * second independently-spawned daemon process (must NOT mutate the
+   * shared worker daemon's env mid-flight).
+   */
+  extraEnv?: Record<string, string>;
+}
+
+export async function startDaemon(opts: StartDaemonOptions = {}): Promise<DaemonHandle> {
   const useDist = existsSync(DAEMON_DIST_ENTRY);
   const useSrc = !useDist && existsSync(DAEMON_SRC_ENTRY);
 
@@ -52,7 +65,7 @@ export async function startDaemon(): Promise<DaemonHandle> {
 
   const proc = spawn(cmd, args, {
     cwd: DAEMON_PKG_DIR,
-    env: { ...process.env, NODE_ENV: 'test' },
+    env: { ...process.env, NODE_ENV: 'test', ...(opts.extraEnv ?? {}) },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
