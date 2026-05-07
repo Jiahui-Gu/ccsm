@@ -140,7 +140,7 @@ beforeEach(() => {
 afterEach(() => {
   // Close any sessions created during the test so PTYs don't leak.
   for (const sid of Array.from(http.sessions.keys())) {
-    registry.kill(sid);
+    void registry.kill(sid);
     http.sessions.delete(sid);
   }
 });
@@ -411,7 +411,13 @@ describe('ws frame round-trip via fake PTY', () => {
     await d.closed;
     // Server cleanup runs on close event; give it a tick.
     await new Promise((r) => setTimeout(r, 20));
-    expect(fpty.killed).toContain('SIGTERM');
+    // Task #758: kill signal is platform-specific. POSIX gets SIGTERM (with
+    // a 200ms SIGKILL escalation backstop); Windows ignores signal names
+    // (node-pty throws on them) and uses TerminateJobObject directly, which
+    // we surface as a no-arg kill — the default ptyFactory adapter records
+    // that as the literal string 'SIGKILL' for parity in tests.
+    const expected = process.platform === 'win32' ? 'SIGKILL' : 'SIGTERM';
+    expect(fpty.killed).toContain(expected);
   });
 });
 

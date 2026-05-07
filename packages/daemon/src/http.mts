@@ -346,7 +346,16 @@ async function handleApi(
         return;
       }
       // T#668: also tear down any live PTY so the OS doesn't leak processes.
-      registry?.kill(parsed.sid);
+      // Task #758: AWAIT the kill so the EXIT frame (FrameType=0x07) lands on
+      // OPEN ws subscribers BEFORE we reply 200. Client SPAs detach their ws
+      // only after seeing the DELETE response, so as long as we broadcast
+      // first the client's ws is still in OPEN state when the daemon's
+      // onExit fan-out runs. registry.kill resolves once the EXIT broadcast
+      // has run (or after a 2000ms timeout for wedged PTYs — we still 200
+      // to avoid HTTP hang).
+      if (registry) {
+        await registry.kill(parsed.sid);
+      }
       sessions.delete(parsed.sid);
       persist?.scheduleFlush();
       const resp: DeleteSessionResponse = { ok: true };

@@ -222,7 +222,7 @@ export function attachWebSocket(server: HttpServer, opts: AttachWsOptions): Atta
       // T#668 spec: ws on close should kill its OWN PTY if subscribers empty
       // (matches T4 behaviour — keeps daemon footprint tied to the active tab).
       if (rt.subscribers.size === 0 && !rt.exited) {
-        registry.kill(sid);
+        void registry.kill(sid);
       }
     };
     ws.on('close', cleanup);
