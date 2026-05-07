@@ -335,6 +335,61 @@ describe('S2 #702 — pages.dev integration through the HTTP server', () => {
   });
 });
 
+// S2 T2 (Task #727) — verify applyCorsHeaders + ws upgrade auto-inherit T1's
+// classifyOrigin allow-list for `https://cc-sm.pages.dev`. T1 (PR #1141) added
+// the host to classifyOrigin; this group asserts that the HTTP CORS path
+// (applyCorsHeaders in http.mts) and the OPTIONS preflight handler echo the
+// origin (NOT `*`) and emit the standard CORS response headers — without any
+// further changes to http.mts. Companion ws.test.ts case covers ws.mts.
+describe('S2 T2 #727 — applyCorsHeaders auto-inherits cc-sm.pages.dev (no src changes)', () => {
+  it('echoes Origin (not *) on a normal POST from https://cc-sm.pages.dev', async () => {
+    // applyCorsHeaders branch: origin defined && classifyOrigin === 'allowed'
+    // → ACAO echoes `origin`. The * fallback is exercised by the
+    // "falls back to Allow-Origin: * when Origin header is absent" case.
+    const r = await fetch(`${baseUrl}/api/sessions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${TOKEN}`,
+        Origin: 'https://cc-sm.pages.dev',
+        'Content-Type': 'application/json',
+      },
+      body: '{}',
+    });
+    expect(r.status).toBe(200);
+    expect(r.headers.get('access-control-allow-origin')).toBe('https://cc-sm.pages.dev');
+    expect(r.headers.get('access-control-allow-origin')).not.toBe('*');
+    expect(r.headers.get('vary')).toContain('Origin');
+  });
+
+  it('OPTIONS preflight from https://cc-sm.pages.dev → 200 + echo + standard CORS headers', async () => {
+    // Standard CORS preflight (no PNA): different from the PNA echo case
+    // above — this asserts the baseline preflight response is correct when
+    // the origin is the prod Pages host. Pre-auth: no Authorization header.
+    const r = await fetch(`${baseUrl}/api/sessions`, {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'https://cc-sm.pages.dev',
+        'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'authorization, content-type',
+      },
+    });
+    expect(r.status).toBe(200);
+    expect(r.headers.get('access-control-allow-origin')).toBe('https://cc-sm.pages.dev');
+    expect(r.headers.get('access-control-allow-origin')).not.toBe('*');
+    const allowMethods = r.headers.get('access-control-allow-methods') ?? '';
+    expect(allowMethods).toMatch(/GET/);
+    expect(allowMethods).toMatch(/POST/);
+    expect(allowMethods).toMatch(/DELETE/);
+    expect(allowMethods).toMatch(/OPTIONS/);
+    const allowHeaders = r.headers.get('access-control-allow-headers') ?? '';
+    expect(allowHeaders).toMatch(/Authorization/i);
+    expect(allowHeaders).toMatch(/Content-Type/i);
+    expect(r.headers.get('vary')).toContain('Origin');
+    // PNA header NOT advertised when the request didn't ask for it.
+    expect(r.headers.get('access-control-allow-private-network')).toBeNull();
+  });
+});
+
 describe('S2 #702 — Chrome PNA preflight echo', () => {
   it('OPTIONS with Access-Control-Request-Private-Network: true echoes Allow-Private-Network: true', async () => {
     const r = await fetch(`${baseUrl}/api/sessions`, {
