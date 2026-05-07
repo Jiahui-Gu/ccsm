@@ -67,6 +67,15 @@ async function startMockDaemon(): Promise<MockDaemon> {
   const createdSids: string[] = [];
   const server = createServer((req, res) => {
     const url = req.url ?? '/';
+    // GET /api/sessions — useBootstrap (#670) hydrates the store on App
+    // mount. Return an empty list so the spec drives creation explicitly
+    // via + New Session clicks (MainPane auto-create was removed in #716).
+    if (req.method === 'GET' && url === '/api/sessions') {
+      res.statusCode = 200;
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ sessions: [] }));
+      return;
+    }
     if (req.method === 'POST' && url === '/api/sessions') {
       req.on('data', () => {});
       req.on('end', () => {
@@ -328,8 +337,12 @@ test('scrollback — per-session buffer + replay on switch + lastSeq reconnect',
       .locator('[data-testid="sidebar-groups"]')
       .waitFor({ state: 'attached', timeout: 10_000 });
 
-    // ---- Stage A: bootstrap session arrives, push OUTPUT into it ----
+    // ---- Stage A: create session A via + New Session, push OUTPUT into it ----
+    //
+    // useBootstrap hydrates from GET /api/sessions (mocked empty); MainPane
+    // auto-create was removed in #716. Drive creation explicitly.
     const rows = page.locator('[data-testid^="sidebar-session-"][data-active]');
+    await page.locator('[data-testid="sidebar-new-session"]').click();
     await expect(rows).toHaveCount(1, { timeout: 10_000 });
     const sidA = await rows.first().getAttribute('data-testid');
     expect(sidA).not.toBeNull();
