@@ -3,8 +3,18 @@ name: ci
 on:
   pull_request:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.gitignore'
+      - 'LICENSE'
   push:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.gitignore'
+      - 'LICENSE'
   schedule:
     # T14 (#681): nightly Windows tauri build at 08:00 UTC. Rust toolchain
     # warm-up + tauri build is ~10 min; running it on every PR is wasteful.
