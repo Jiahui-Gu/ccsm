@@ -1,0 +1,75 @@
+name: deploy-pages
+
+# Task #724 [S2-T6]: Cloudflare Pages deploy pipeline for the web frontend.
+#
+# Triggers:
+#   - push to main: every merge that touches frontend-web (or its workspace
+#     deps) ships to https://cc-sm.pages.dev.
+#   - workflow_dispatch: manual redeploy from the Actions tab (e.g. after
+#     rotating env vars in the Cloudflare dashboard, or rolling back).
+#
+# Secrets (must be configured on the ccsm repo before this workflow runs
+# successfully — pending owner action):
+#   - CLOUDFLARE_API_TOKEN: scoped token with Pages:Edit on account.
+#   - CLOUDFLARE_ACCOUNT_ID: account containing the `cc-sm` Pages project.
+#
+# Architectural note: this deploys ONLY the web frontend (DESIGN.md §11
+# Deployment Topologies — "Cloudflare Pages = static SPA, no daemon"). The
+# Tauri shell guard in ci.yml enforces that frontend-tauri never references
+# pages.dev, so this pipeline and the Tauri pipeline cannot accidentally
+# converge.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/frontend-web/**'
+      - 'packages/ui/**'
+      - 'packages/shared/**'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - '.github/workflows/deploy-pages.yml'
+  workflow_dispatch:
+
+# Concurrency: only one Pages deploy at a time on main; cancel stale runs.
+concurrency:
+  group: deploy-pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build workspace deps (shared + ui required by frontend-web)
+        run: pnpm -F @ccsm/shared build && pnpm -F @ccsm/ui build
+
+      - name: Build frontend-web (pages mode)
+        run: pnpm -F @ccsm/frontend-web build:pages
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # `pages deploy` is the v3 wrangler subcommand for Pages uploads.
+          # --project-name pins the target Pages project (cc-sm).
+          # --branch=main mirrors the git branch so the Pages dashboard
+          # surfaces deploys under the production environment.
+          command: pages deploy packages/frontend-web/dist --project-name=cc-sm --branch=main
