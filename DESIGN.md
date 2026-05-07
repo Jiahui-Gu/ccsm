@@ -383,3 +383,152 @@ ccsm 自 S2 起同时存在三种入口拓扑, 任一拓扑离线 / 下线均不
 
 - 2026-05-07 初版。web + daemon only, 桌面端 deferred。
 - 2026-05-07 §11 Deployment Topologies: Tauri shell guard — 三拓扑独立, Tauri 永不 fetch Pages (Task #711, S2-T10)。
+- 2026-05-08 §13 Deployment Modes 架构图 — 三种模式 ASCII + 安全约束 (Task #720, S2-T11)。
+
+---
+
+## §13 Deployment Modes 架构图
+
+§11 锁了"三拓扑互不依赖"的红线, 本节给三种模式各画一张架构图 + 标
+静态资源走向 / daemon 位置 / origin / cross-vs-same-origin / 安全约束,
+对应 [README.md "Deployment modes"](./README.md#deployment-modes) 用户
+视角的 dev 视角补完。
+
+### 模式 1 — Cloudflare Pages + 本地 daemon (S2)
+
+```
++------------------------+        HTTPS GET (cached, 0 origin trip)
+| Browser (Chrome ≥120)  | -----------------------------+
+| origin:                |                              v
+|   https://cc-sm        |                   +----------------------+
+|   .pages.dev           |                   | Cloudflare CDN edge  |
++----+-------------------+                   | (静态 SPA bundle)    |
+     |                                       +----------+-----------+
+     | (SPA boots in browser)                           |
+     |                                                  | (build artifact)
+     | fetch + ws → loopback (cross-origin + PNA)       v
+     |                                       +----------------------+
+     +-------------------------------------> | local ccsm daemon    |
+                                             | 127.0.0.1:9876       |
+                                             | serves /api/* + /ws  |
+                                             | (no static here in   |
+                                             |  this mode — SPA on  |
+                                             |  CDN)                |
+                                             +----------------------+
+
+origin (browser)   : https://cc-sm.pages.dev
+origin (daemon)    : http://127.0.0.1:9876
+relation           : cross-origin (HTTPS → HTTP loopback)
+static asset path  : Cloudflare CDN (`/_headers` immutable for /assets/*)
+daemon location    : 用户本机, loopback only
+token bootstrap    : URL `?token=` → sessionStorage; 或 `GET <daemonBase>/token`
+```
+
+安全约束:
+
+- daemon `classifyOrigin()` allow-list 必须含 `https://cc-sm.pages.dev`
+  (S2-T1)。仿冒域 / PR-preview 子域默认拒 (除非 `CCSM_ALLOW_PAGES_PREVIEWS=1`,
+  S2-T8)。
+- Chromium ≥120 PNA: HTTPS 页 fetch loopback 时浏览器发
+  `Access-Control-Request-Private-Network: true`, daemon **必须**回
+  `Access-Control-Allow-Private-Network: true`, 否则 SPA 被拦 (S2-T1)。
+- W3C Secure Contexts §3.1 把 `127.0.0.1` 列为 Potentially Trustworthy,
+  HTTPS 页 fetch/ws loopback 不算 mixed content。
+- Cloudflare Pages 仅是 CDN, **不参与鉴权也不代理流量**, token 不离开
+  用户本机 ↔ 浏览器闭环。
+
+### 模式 2 — daemon-embedded (经典模式, S0/S1)
+
+```
++------------------------+
+| Browser                |
+| origin:                |
+|   http://127.0.0.1     |
+|   :17832               |
++----+-------------------+
+     |
+     | http GET / (静态 SPA, 同源)
+     | http /api/* + ws /ws (同源, 无 CORS / PNA)
+     v
++------------------------+
+| local ccsm daemon      |
+| 127.0.0.1:17832        |
+|  - HTTP server:        |
+|    · static (frontend- |
+|      web bundle 内嵌)  |
+|    · /api/sessions     |
+|  - WS server: /ws      |
++------------------------+
+
+origin (browser)   : http://127.0.0.1:17832
+origin (daemon)    : http://127.0.0.1:17832
+relation           : same-origin (无 CORS / 无 PNA preflight)
+static asset path  : daemon 内嵌 (frontend-web build artifact 打进 daemon dist)
+daemon location    : 用户本机, loopback only
+token bootstrap    : URL `?token=` (daemon stdout 给的那条)
+```
+
+安全约束:
+
+- 同源, 不需要 CORS / PNA。
+- token 仍走 `Authorization: Bearer` (HTTP) / `?token=` (WS)。
+- `classifyOrigin()` 允许 `null` (file://) 之外的本机 loopback origin。
+
+### 模式 3 — Tauri 桌面壳
+
+```
++-----------------------------------------------+
+| ccsm-tauri.exe (Rust 进程)                    |
+|                                               |
+|   +--------------------+   stdout handshake   |
+|   | embedded webview   |   (port + token)     |
+|   | origin:            | <-------+            |
+|   |   http://127.0.0.1 |         |            |
+|   |   :<port>/?token=  |         |            |
+|   +---------+----------+         |            |
+|             |                    |            |
+|             | http + ws (同源)   |            |
+|             v                    |            |
+|   +--------------------+         |            |
+|   | spawned daemon     |---------+            |
+|   | child process      |                      |
+|   | 127.0.0.1:<port>   |                      |
+|   |  · static SPA      |                      |
+|   |  · /api + /ws      |                      |
+|   +--------------------+                      |
+|                                               |
++-----------------------------------------------+
+
+origin (webview)   : http://127.0.0.1:<port> (daemon-served, 同模式 2)
+origin (daemon)    : http://127.0.0.1:<port>
+relation           : same-origin (webview 不指向 pages.dev)
+static asset path  : daemon 内嵌 (跟模式 2 共用 build)
+daemon location    : Tauri 进程 spawn 的 child, 随 Tauri 退出而退出
+token bootstrap    : Rust 读 daemon stdout, 拼进 webview initial URL
+```
+
+安全约束:
+
+- Tauri webview URL **必须**是 `http://127.0.0.1:<port>/...`, **不得**指向
+  `https://cc-sm.pages.dev` (§11 红线 + CI grep guard, S2-T10)。
+- daemon `classifyOrigin()` 同模式 2: 只放 loopback origin。Tauri 自身的
+  `tauri://localhost` (custom-protocol 资源 URL) 不会出现在 daemon 收到的
+  Origin 头里 (webview 加载的是 daemon URL, 不是 Tauri custom protocol)。
+- 离线可用: 安装包自带前端 bundle (build 时打进 daemon binary), 不依赖
+  Cloudflare Pages 在线。
+- daemon child 生命周期绑 Tauri 主进程, Tauri 退出 → daemon SIGTERM →
+  PTY SIGHUP, 不留僵尸 session。
+
+### 三模式对照表
+
+| 维度 | 模式 1 (Pages+local) | 模式 2 (embedded) | 模式 3 (Tauri) |
+|------|----------------------|-------------------|----------------|
+| 静态资源去哪 | Cloudflare CDN | daemon 内嵌 serve | daemon 内嵌 (随 app 安装) |
+| daemon 位置 | 用户本机 loopback | 用户本机 loopback | Tauri spawn 的 child |
+| browser origin | `https://cc-sm.pages.dev` | `http://127.0.0.1:<port>` | `http://127.0.0.1:<port>` |
+| daemon origin | `http://127.0.0.1:9876` | 同 browser | 同 browser |
+| same/cross-origin | cross | same | same |
+| CORS | 必须 (Pages allow-list) | 不需要 | 不需要 |
+| PNA preflight | 必须 (Chrome ≥120) | 不需要 | 不需要 |
+| 离线可用 | ❌ (Pages 必须可达取 SPA) | ✅ | ✅ |
+| 安装方式 | 跑 daemon + 开浏览器 | 跑 daemon + 开浏览器 | 装 ccsm-tauri 双击 |
