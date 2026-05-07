@@ -17,6 +17,14 @@
     "./api/sessions": {
       "types": "./dist/api/sessions.d.ts",
       "import": "./dist/api/sessions.js"
+    },
+    "./runtime/session-runtime": {
+      "types": "./dist/runtime/session-runtime.d.ts",
+      "import": "./dist/runtime/session-runtime.js"
+    },
+    "./runtime/types": {
+      "types": "./dist/runtime/types.d.ts",
+      "import": "./dist/runtime/types.js"
     }
   },
   "scripts": {
