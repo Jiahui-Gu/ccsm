@@ -10,6 +10,7 @@ function reset(): void {
     sessions: [],
     activeSid: null,
     status: 'idle',
+    sessionStatuses: {},
   });
 }
 
@@ -94,5 +95,56 @@ describe('store — multi-session table (T9 / #656)', () => {
     const state = useStore.getState();
     expect(state.sessions.map((s) => s.sid)).toEqual(['s1']);
     expect(state.activeSid).toBe('s1');
+  });
+});
+
+describe('store — hydrateSessions (#670 bootstrap)', () => {
+  beforeEach(() => {
+    reset();
+  });
+
+  it('appends rows on a fresh store', () => {
+    const { hydrateSessions } = useStore.getState();
+    hydrateSessions([
+      { sid: 's1', createdAt: 1, alive: true },
+      { sid: 's2', createdAt: 2, alive: true },
+      { sid: 's3', createdAt: 3, alive: false },
+    ]);
+    const state = useStore.getState();
+    expect(state.sessions.map((s) => s.sid)).toEqual(['s1', 's2', 's3']);
+    expect(state.sessions).toHaveLength(3);
+  });
+
+  it('does NOT touch activeSid (bootstrap must not yank focus)', () => {
+    const { hydrateSessions } = useStore.getState();
+    expect(useStore.getState().activeSid).toBeNull();
+    hydrateSessions([
+      { sid: 's1', createdAt: 1, alive: true },
+      { sid: 's2', createdAt: 2, alive: true },
+    ]);
+    // Even though sessions appeared, no auto-promotion: user picks.
+    expect(useStore.getState().activeSid).toBeNull();
+  });
+
+  it('is idempotent — re-hydrating the same sids does not duplicate rows', () => {
+    const { hydrateSessions } = useStore.getState();
+    const rows = [
+      { sid: 's1', createdAt: 1, alive: true },
+      { sid: 's2', createdAt: 2, alive: true },
+    ];
+    hydrateSessions(rows);
+    hydrateSessions(rows);
+    hydrateSessions([...rows, { sid: 's2', createdAt: 99, alive: false }]);
+    const state = useStore.getState();
+    expect(state.sessions.map((s) => s.sid)).toEqual(['s1', 's2']);
+    // First-write-wins on the row contents (we filter on sid, no replace).
+    expect(state.sessions.find((s) => s.sid === 's2')?.createdAt).toBe(2);
+  });
+
+  it('does not clobber sessionStatuses (runtime owns ws status)', () => {
+    useStore.setState({ sessionStatuses: { s1: 'open' } });
+    const { hydrateSessions } = useStore.getState();
+    hydrateSessions([{ sid: 's1', createdAt: 1, alive: true }]);
+    expect(useStore.getState().sessionStatuses).toEqual({ s1: 'open' });
   });
 });
