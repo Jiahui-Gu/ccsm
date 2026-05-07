@@ -128,6 +128,86 @@ jobs:
           path: packages/e2e/playwright-report/
           if-no-files-found: ignore
 
+  e2e-tauri:
+    # Task #723 [S1-followup]: Tauri 2 desktop smoke via tauri-driver +
+    # WebDriverIO. Windows-only (Tauri 2 webview = WebView2 = Edge, driven by
+    # msedgedriver pre-installed on `windows-latest`). Runs only on
+    # workflow_dispatch / schedule / push-to-main because the debug `tauri
+    # build` Rust compile is ~10 min cold (cached subsequent), too slow for
+    # every PR. swatinem/rust-cache hot path keeps reruns under ~3 min.
+    #
+    # Architecture:
+    #   wdio  ──HTTP──>  tauri-driver (port 4444)  ──spawns──>  msedgedriver
+    #                                              ──launches──> ccsm-tauri.exe
+    # Spec scope = react-shell-mounts smoke (no daemon API click), per
+    # packages/e2e-tauri/tests/smoke.spec.ts header doc.
+    if: github.event_name != 'pull_request'
+    runs-on: windows-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install Rust toolchain (stable msvc)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: packages/frontend-tauri/src-tauri -> target
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Cache cargo bin (tauri-driver)
+        # `cargo install tauri-driver` is ~3 min cold; cache the built binary
+        # keyed on the cargo registry index so it survives until tauri-driver
+        # ships an upstream release.
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/tauri-driver.exe
+          key: cargo-bin-tauri-driver-v2-${{ runner.os }}
+
+      - name: Install tauri-driver (if not cached)
+        shell: bash
+        run: |
+          if [ ! -f "$HOME/.cargo/bin/tauri-driver.exe" ]; then
+            cargo install tauri-driver --locked
+          else
+            echo "tauri-driver cached at $HOME/.cargo/bin/tauri-driver.exe"
+          fi
+
+      - name: Build workspace (shared/core/ui/daemon required by tauri build)
+        run: pnpm -r build
+
+      - name: Tauri build (debug)
+        # Debug build is ~3 min on hot rust-cache (vs ~10 min release for
+        # the nightly `tauri-build` job). Smoke spec only needs the .exe;
+        # no .msi packaging, so debug profile suffices.
+        run: pnpm -F @ccsm/frontend-tauri tauri build --debug
+
+      - name: Run e2e-tauri smoke
+        shell: bash
+        env:
+          # wdio.conf.ts defaults TAURI_E2E_APP to target/release; we built
+          # debug, so override. msedgedriver.exe is pre-installed on
+          # `windows-latest` runners under C:/Program Files (x86)/Microsoft/Edge/Application
+          # but the simpler path is the bundled one in `C:/SeleniumWebDrivers/EdgeDriver/msedgedriver.exe`.
+          TAURI_E2E_APP: ${{ github.workspace }}/packages/frontend-tauri/src-tauri/target/debug/ccsm-tauri.exe
+          TAURI_E2E_MSEDGEDRIVER: C:/SeleniumWebDrivers/EdgeDriver/msedgedriver.exe
+        run: pnpm -F @ccsm/e2e-tauri test
+
   tauri-build:
     # T14 (#681): nightly Windows tauri build producing the .msi artifact.
     # Skipped on pull_request (Rust compile is ~10 min and blocks PR cycle);
