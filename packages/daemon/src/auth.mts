@@ -17,15 +17,40 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 // (Cloudflare Pages). It issues cross-origin loopback fetches to the local
 // daemon (which still binds 127.0.0.1) so we must allow the exact origin
 // `https://cc-sm.pages.dev` and ONLY that — no PR-preview subdomains
-// (`https://abc123.cc-sm.pages.dev` is reject-by-default; T8 #?? will gate
-// preview origins behind an explicit opt-in flag), no spoof variants
+// (`https://abc123.cc-sm.pages.dev` is reject-by-default; see S2 #721 / T8
+// below for the opt-in env flag), no spoof variants
 // (`https://cc-sm-evil.pages.dev`, `https://cc-sm.pages.dev.attacker.com`),
 // and no http (Chrome's PNA + mixed-content rules require https for the
 // loopback initiator).
+//
+// S2 #721 / T8: when `CCSM_ALLOW_PAGES_PREVIEWS=1` is set in the daemon's
+// process env, single-label `*.cc-sm.pages.dev` preview subdomains over https
+// are additionally allow-listed. This is a developer / dogfood opt-in for
+// reviewing Cloudflare Pages PR previews against a local daemon; it is OFF
+// by default so end-user installs keep the tightest possible origin surface.
+// Constraints kept even when opt-in is on:
+//   - protocol MUST be https (no http preview)
+//   - exactly ONE label between scheme and `cc-sm.pages.dev`
+//     (`abc123.cc-sm.pages.dev` ✓, `a.b.cc-sm.pages.dev` ✗,
+//      `cc-sm.pages.dev` is the prod host handled separately)
+//   - that label MUST be a non-empty DNS label (alnum + hyphen, no dot)
+//   - suffix matched as `.cc-sm.pages.dev` (with leading dot) so
+//     `evil-cc-sm.pages.dev` cannot squeeze through
 const ALLOWED_ORIGIN_HOSTS = new Set(['127.0.0.1', 'localhost']);
 const ALLOWED_ORIGIN_PROTOCOLS = new Set(['http:', 'https:']);
 const TAURI_ORIGIN = 'tauri://localhost';
 const PAGES_PROD_ORIGIN = 'https://cc-sm.pages.dev';
+const PAGES_PREVIEW_SUFFIX = '.cc-sm.pages.dev';
+// Single DNS label: alnum, may contain internal hyphens, 1..63 chars.
+// (Conservative; Cloudflare Pages preview hosts are deploy-id hashes that
+// match this shape.)
+const PAGES_PREVIEW_LABEL_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
+
+function pagesPreviewsEnabled(): boolean {
+  // Read on every call so tests can flip the flag mid-suite without
+  // re-importing the module. The env access is cheap.
+  return process.env.CCSM_ALLOW_PAGES_PREVIEWS === '1';
+}
 
 function writeJson(res: ServerResponse, status: number, body: unknown): void {
   res.statusCode = status;
@@ -74,6 +99,19 @@ export function classifyOrigin(rawOrigin: string | undefined): 'absent' | 'allow
     url = new URL(rawOrigin);
   } catch {
     return 'rejected';
+  }
+  // S2 #721 / T8: opt-in `*.cc-sm.pages.dev` preview subdomains.
+  // Checked BEFORE the loopback host gate so a preview origin doesn't get
+  // spuriously rejected as "not 127.0.0.1/localhost". Must still be https,
+  // exactly one label deep, and that label must look like a real DNS label.
+  if (pagesPreviewsEnabled() && url.protocol === 'https:') {
+    const host = url.hostname;
+    if (host.endsWith(PAGES_PREVIEW_SUFFIX) && host !== PAGES_PREVIEW_SUFFIX.slice(1)) {
+      const label = host.slice(0, host.length - PAGES_PREVIEW_SUFFIX.length);
+      if (label.length > 0 && !label.includes('.') && PAGES_PREVIEW_LABEL_RE.test(label)) {
+        return 'allowed';
+      }
+    }
   }
   if (!ALLOWED_ORIGIN_PROTOCOLS.has(url.protocol)) return 'rejected';
   if (!ALLOWED_ORIGIN_HOSTS.has(url.hostname)) return 'rejected';

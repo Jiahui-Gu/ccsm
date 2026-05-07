@@ -3,7 +3,7 @@
 // auth path and the in-memory session CRUD stub.
 
 import type { AddressInfo } from 'node:net';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import type {
   CreateSessionResponse,
@@ -365,5 +365,79 @@ describe('S2 #702 — Chrome PNA preflight echo', () => {
     // Other preflight headers still intact.
     expect(r.headers.get('access-control-allow-origin')).toBe('https://cc-sm.pages.dev');
     expect(r.headers.get('access-control-allow-methods')).toMatch(/POST/);
+  });
+});
+
+// S2 #721 / T8 — opt-in `*.cc-sm.pages.dev` preview subdomain allow-list.
+// Default OFF: PR-preview subdomains are rejected (already covered above).
+// When `CCSM_ALLOW_PAGES_PREVIEWS=1` is set, single-label https preview
+// subdomains are accepted; spoof / multi-label / http variants stay rejected.
+describe('S2 #721 / T8 — CCSM_ALLOW_PAGES_PREVIEWS opt-in', () => {
+  const ENV_KEY = 'CCSM_ALLOW_PAGES_PREVIEWS';
+  let savedEnv: string | undefined;
+
+  beforeEach(() => {
+    savedEnv = process.env[ENV_KEY];
+  });
+
+  afterEach(() => {
+    if (savedEnv === undefined) delete process.env[ENV_KEY];
+    else process.env[ENV_KEY] = savedEnv;
+  });
+
+  it('default (env unset): preview subdomain rejected', () => {
+    delete process.env[ENV_KEY];
+    expect(classifyOrigin('https://abc123.cc-sm.pages.dev')).toBe('rejected');
+  });
+
+  it('CCSM_ALLOW_PAGES_PREVIEWS=0: preview subdomain still rejected', () => {
+    process.env[ENV_KEY] = '0';
+    expect(classifyOrigin('https://abc123.cc-sm.pages.dev')).toBe('rejected');
+  });
+
+  it('CCSM_ALLOW_PAGES_PREVIEWS=1: single-label https preview accepted', () => {
+    process.env[ENV_KEY] = '1';
+    expect(classifyOrigin('https://abc123.cc-sm.pages.dev')).toBe('allowed');
+    expect(classifyOrigin('https://deploy-preview-42.cc-sm.pages.dev')).toBe('allowed');
+  });
+
+  it('opt-in: prod host still allowed (regression)', () => {
+    process.env[ENV_KEY] = '1';
+    expect(classifyOrigin('https://cc-sm.pages.dev')).toBe('allowed');
+  });
+
+  it('opt-in: http preview rejected (must be https)', () => {
+    process.env[ENV_KEY] = '1';
+    expect(classifyOrigin('http://abc123.cc-sm.pages.dev')).toBe('rejected');
+  });
+
+  it('opt-in: multi-label preview rejected (only single label allowed)', () => {
+    process.env[ENV_KEY] = '1';
+    expect(classifyOrigin('https://a.b.cc-sm.pages.dev')).toBe('rejected');
+  });
+
+  it('opt-in: sibling spoof still rejected (cc-sm-evil.pages.dev)', () => {
+    process.env[ENV_KEY] = '1';
+    expect(classifyOrigin('https://cc-sm-evil.pages.dev')).toBe('rejected');
+    expect(classifyOrigin('https://x.cc-sm-evil.pages.dev')).toBe('rejected');
+  });
+
+  it('opt-in: suffix spoof still rejected (cc-sm.pages.dev.attacker.com)', () => {
+    process.env[ENV_KEY] = '1';
+    expect(classifyOrigin('https://abc.cc-sm.pages.dev.attacker.com')).toBe('rejected');
+  });
+
+  it('opt-in: empty / dotted label rejected (defensive)', () => {
+    process.env[ENV_KEY] = '1';
+    // `.cc-sm.pages.dev` parses to host `cc-sm.pages.dev` (the prod host) so
+    // is handled by the exact-match branch; the empty-label form below would
+    // only arise via crafted hostnames and must not become "allowed".
+    expect(classifyOrigin('https://_.cc-sm.pages.dev')).toBe('rejected');
+  });
+
+  it('opt-in does not loosen unrelated origins (evil.com still rejected)', () => {
+    process.env[ENV_KEY] = '1';
+    expect(classifyOrigin('https://evil.com')).toBe('rejected');
+    expect(classifyOrigin('http://evil.com')).toBe('rejected');
   });
 });
