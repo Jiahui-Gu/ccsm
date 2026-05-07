@@ -122,9 +122,27 @@ function decodeFramePayload(buf: Uint8Array): { type: number; seq: number; text:
 }
 
 test('S2 — HTTPS browser → loopback daemon (full lifecycle: CORS + PNA + token + create + I/O + reload + close)', async (
-  { page, daemonUrl, token, _httpsPreview },
+  { page, daemonUrl, token, _httpsPreview, browserName },
   testInfo,
 ) => {
+  // Task #752 — per-browser known-issue gating.
+  //
+  // WebKit (WebKitGTK / Safari engine on Windows): does NOT implement the
+  // Private Network Access (PNA) preflight protocol AND blocks fetches from
+  // a secure HTTPS context to a plaintext http://127.0.0.1 origin as mixed
+  // content. The S2 chain is precisely "HTTPS Pages-like origin →
+  // http://127.0.0.1:<dport> daemon", so the bootstrap GET /api/sessions
+  // never leaves the browser on webkit (apiHits stays empty). This is a
+  // browser-engine policy gap, not a daemon/SPA bug — the same chain works
+  // in chromium/firefox/edge. Followup #754 (Tauri tauri://localhost shape)
+  // and #755 (CI matrix) will revisit webkit coverage via a non-mixed
+  // transport. Until then we skip with this explicit reason.
+  test.skip(
+    browserName === 'webkit',
+    'webkit blocks HTTPS → http://127.0.0.1 mixed-content fetch and lacks PNA; ' +
+      'S2 chain is unreachable from webkit. Followup: #754 (Tauri shape) / #755 (CI).',
+  );
+
   // Generous: daemon spawn (~2s) + frontend boot (~2s) + claude PTY warmup
   // (~3-10s on cold cwd) + REPL trust prompt + reload + close.
   test.setTimeout(120_000);
