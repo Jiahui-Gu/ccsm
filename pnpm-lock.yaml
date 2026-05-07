@@ -88,6 +88,9 @@ importers:
 
   packages/frontend-tauri:
     dependencies:
+      '@ccsm/ui':
+        specifier: workspace:*
+        version: link:../ui
       '@tauri-apps/api':
         specifier: ^2.1.1
         version: 2.11.0
