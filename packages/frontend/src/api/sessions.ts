@@ -6,6 +6,7 @@ import {
   type CreateSessionRequest,
   type CreateSessionResponse,
   type DeleteSessionResponse,
+  type ListSessionsResponse,
 } from '@ccsm/shared';
 
 export class HttpError extends Error {
@@ -77,4 +78,31 @@ export async function deleteSession(
     );
   }
   return (await res.json()) as DeleteSessionResponse;
+}
+
+/**
+ * GET /api/sessions — list every session the daemon currently knows about.
+ * Used by App bootstrap (#670) to hydrate the store on page load so a
+ * browser refresh doesn't appear to wipe the user's session list.
+ *
+ * Auth + error semantics mirror createSession: 200 → parsed body, anything
+ * else → HttpError carrying the status. Network failures (fetch reject)
+ * propagate unchanged so callers can distinguish transport vs. HTTP.
+ */
+export async function listSessions(
+  token: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<ListSessionsResponse> {
+  const res = await fetchImpl(API_PATHS.sessions, {
+    method: 'GET',
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new HttpError(
+      res.status,
+      `GET ${API_PATHS.sessions} failed: ${res.status} ${text}`.trim(),
+    );
+  }
+  return (await res.json()) as ListSessionsResponse;
 }

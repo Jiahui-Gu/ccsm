@@ -73,6 +73,13 @@ interface Store {
    */
   closeSession: (sid: string) => void;
   /**
+   * Bulk-append sessions returned by the bootstrap GET /api/sessions call
+   * (#670). Idempotent on every sid (uses `sessions.some` to dedupe), and
+   * intentionally does NOT touch `activeSid` or `sessionStatuses` — the
+   * user's manual selection wins, and the runtime owns ws status.
+   */
+  hydrateSessions: (rows: SessionInfo[]) => void;
+  /**
    * @deprecated Prefer `setSessionStatus(sid, status)` so the per-sid map is
    * the source of truth. Kept so tests that pre-date T10 keep working.
    */
@@ -149,6 +156,19 @@ export const useStore = create<Store>((set) => ({
     }),
 
   setStatus: (status) => set({ status }),
+
+  hydrateSessions: (rows) =>
+    set((state) => {
+      // Append-only merge: skip any sid we already know about so a refetch
+      // (or a duplicate row from the daemon) won't double-row the table.
+      // Deliberately leave activeSid + sessionStatuses untouched: bootstrap
+      // shouldn't yank focus, and ws status is owned by session-runtime.
+      const fresh = rows.filter(
+        (row) => !state.sessions.some((existing) => existing.sid === row.sid),
+      );
+      if (fresh.length === 0) return state;
+      return { sessions: [...state.sessions, ...fresh] };
+    }),
 
   setSessionStatus: (sid, status) =>
     set((state) => {
