@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import { Terminal } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import 'xterm/css/xterm.css';
-import { useApi, useGetToken, useRuntime } from '../runtime-context';
+import { useGetToken, useRuntime } from '../runtime-context';
 import { useStore } from '../store';
 
 // MainPane (Task #662 / T10 — DESIGN.md §7).
@@ -14,16 +14,26 @@ import { useStore } from '../store';
 //   so a session's bytes keep flowing into its scrollback even when the
 //   user is looking at a different session. MainPane now only:
 //     1. owns ONE xterm instance (renderer-side concern),
-//     2. attaches each known sid to the runtime (idempotent),
-//     3. on activeSid change, clears xterm and replays the new sid's
+//     2. on activeSid change, clears xterm and replays the new sid's
 //        scrollback from the runtime,
-//     4. subscribes to the runtime's OUTPUT/RESET pub-sub and writes only
+//     3. subscribes to the runtime's OUTPUT/RESET pub-sub and writes only
 //        the active sid's bytes into xterm in real time.
+//
+// Task #716 — NO AUTO-CREATE ON BOOTSTRAP:
+//   Earlier MainPane revisions auto-fired POST /api/sessions when the store
+//   had zero sessions on first paint (preserving the "open page → terminal
+//   attaches" UX from T6). That broke browser refresh: the daemon's session
+//   list survives reloads, but the in-memory store starts empty, so MainPane
+//   would race useBootstrap's GET /api/sessions and POST a brand-new session
+//   on every F5. The fix is to delete the auto-create bootstrap effect
+//   entirely; useBootstrap's listSessions is now the only path that
+//   populates the store on load, and the user must click + New Session in
+//   the sidebar to mint a fresh sid. The "no active session" notice already
+//   guides them to the button. (Tauri shell: same change applies — refresh
+//   should reattach existing sessions, not multiply them.)
 //
 // LIFECYCLE INVARIANTS (preserved from T9):
 //
-//   - Bootstrap is one-shot (StrictMode dev double-invoke must not
-//     double-POST /api/sessions).
 //   - xterm is renderer-owned: rebuilt on each effect run, threaded through
 //     `termRef` so long-lived runtime listeners always write into the
 //     currently-mounted Terminal.
@@ -34,9 +44,6 @@ import { useStore } from '../store';
 export function MainPane() {
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Bootstrap guard — never reset on cleanup. Survives StrictMode.
-  const bootstrappedRef = useRef(false);
-
   // Always points at the currently mounted Terminal so long-lived runtime
   // listeners survive StrictMode's mount/unmount cycle.
   const termRef = useRef<Terminal | null>(null);
@@ -45,12 +52,9 @@ export function MainPane() {
   const activeSidRef = useRef<string | null>(null);
 
   const token = useStore((s) => s.token);
-  const sessions = useStore((s) => s.sessions);
   const activeSid = useStore((s) => s.activeSid);
-  const addSession = useStore((s) => s.addSession);
 
   const runtime = useRuntime();
-  const api = useApi();
   const hostGetToken = useGetToken();
 
   // Token resolution: prefer the store cache, but fall back to the shell-
@@ -98,42 +102,14 @@ export function MainPane() {
     };
   }, []);
 
-  // ---- bootstrap effect ----
+  // ---- bootstrap effect REMOVED (Task #716) ----
   //
-  // Auto-create the first session when the page loads with no sessions in
-  // the store. Preserves the T6 UX ("open page → terminal attaches"). The
-  // sidebar's + New Session button drives subsequent sessions through the
-  // same store API, so this effect only ever fires once per page lifetime.
-  useEffect(() => {
-    if (bootstrappedRef.current) return;
-    const tok = getToken();
-    if (!tok) return;
-    if (sessions.length > 0) return;
-
-    bootstrappedRef.current = true;
-    void (async () => {
-      try {
-        const resp = await api.createSession(tok);
-        const createdAt =
-          typeof resp.createdAt === 'number' ? resp.createdAt : Date.now();
-        // Task #673: attach must happen AFTER the daemon has spawned the PTY
-        // (i.e. AFTER createSession returns 200). Doing it here, scoped to
-        // a sid we just minted, is the only way to guarantee the ws upgrade
-        // finds a runtime entry on the daemon side. The old "attach every
-        // hydrated sid" effect (removed below) raced the lazy /resume path
-        // and burned the 5-attempt reconnect budget on close(1008).
-        runtime.attach(resp.sid, tok);
-        addSession({ sid: resp.sid, createdAt, alive: true });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        // Reset the guard so the user can click + New Session and retry —
-        // we only intended to one-shot the *automatic* bootstrap.
-        bootstrappedRef.current = false;
-        const t = termRef.current;
-        if (t) writeNoticeTo(t, `[failed to create session: ${msg}]`);
-      }
-    })();
-  }, [sessions.length, addSession]);
+  // Auto-create on empty store caused a fresh POST /api/sessions on every
+  // browser refresh (because the in-memory store starts empty even though
+  // the daemon still has the old sessions). useBootstrap (listSessions) now
+  // owns "what's already alive on the daemon"; the user clicks + New Session
+  // for new sids. The "[no active session — click + New Session]" notice in
+  // the xterm lifecycle effect below covers the empty-store first paint.
 
   // ---- runtime attach is owned by user-action callers (Task #673) ----
   //
