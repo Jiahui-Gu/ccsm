@@ -272,6 +272,34 @@ describe('ws upgrade auth', () => {
     expect(d.ws.readyState).toBe(WebSocket.CLOSED);
   });
 
+  // S2 T2 (Task #727): ws upgrade must auto-inherit T1's classifyOrigin
+  // allow-list for `https://cc-sm.pages.dev`. ws.mts calls
+  // `classifyOrigin(origin)` and rejects on 'rejected'. After T1 (PR #1141)
+  // the prod Pages host classifies as 'allowed', so the upgrade should yield
+  // a 101 (ws OPEN) without any further change to ws.mts.
+  it('accepts Origin: https://cc-sm.pages.dev (S2 T2 #727)', async () => {
+    const sid = await createSid();
+    const d = dial(`${baseWs}/ws?sid=${sid}&token=${TOKEN}`, {
+      Origin: 'https://cc-sm.pages.dev',
+    });
+    await waitOpen(d.ws);
+    expect(d.ws.readyState).toBe(WebSocket.OPEN);
+    d.ws.close();
+  });
+
+  it('rejects Origin: https://cc-sm-evil.pages.dev (sibling spoof, S2 T2 #727)', async () => {
+    // Defense-in-depth: confirm the ws path also rejects the spoof variant
+    // that classifyOrigin marks 'rejected'. Without this we could regress
+    // ws.mts independently of http.mts.
+    const sid = await createSid();
+    const d = dial(`${baseWs}/ws?sid=${sid}&token=${TOKEN}`, {
+      Origin: 'https://cc-sm-evil.pages.dev',
+    });
+    const closed = await d.closed;
+    expect(closed.code).toBeGreaterThanOrEqual(1000);
+    expect(d.ws.readyState).toBe(WebSocket.CLOSED);
+  });
+
   // #672 regression: ws upgrade with NO Origin header must still succeed
   // (treated as same-origin). The `ws` Node client does NOT auto-add an
   // Origin header (unlike the browser API), so constructing a WebSocket
