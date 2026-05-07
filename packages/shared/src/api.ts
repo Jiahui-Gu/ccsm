@@ -25,8 +25,17 @@ export interface DeleteSessionResponse {
   ok: true;
 }
 
+// Task #668: explicit response shape for POST /api/sessions/:sid/resume.
+// Success returns { ok: true }; failure returns { error: string } (e.g.
+// 'pty_spawn_failed', 'not_found'). Kept as a union so callers must branch.
+export type ResumeSessionResponse =
+  | { ok: true }
+  | { error: string };
+
 export const API_PATHS = {
   sessions: '/api/sessions',
   session: (sid: string): string => `/api/sessions/${encodeURIComponent(sid)}`,
+  sessionResume: (sid: string): string =>
+    `/api/sessions/${encodeURIComponent(sid)}/resume`,
   ws: '/ws',
 } as const;

@@ -1,6 +1,11 @@
 // HTTP server: static SPA + REST sessions API (DESIGN.md §4, F1, F3).
-// In-memory session stub only — real PTY spawn lives in T4. Frame codec and
-// ws server also live in T4; this module deliberately knows nothing about them.
+//
+// Task #668: PTY spawn moved here from ws.mts. POST /api/sessions both creates
+// a session row and synchronously spawns `claude --session-id <sid>`.
+// POST /api/sessions/:sid/resume re-spawns `claude --resume <sid>` for an
+// existing session row whose runtime has died (e.g. after a daemon restart
+// once #667 lands). DELETE /api/sessions/:sid kills the runtime + drops the
+// stub. WS /ws is now subscribe-only — see ws.mts.
 
 import { randomUUID } from 'node:crypto';
 import { createReadStream, existsSync, statSync } from 'node:fs';
@@ -13,6 +18,7 @@ import type {
   CreateSessionResponse,
   DeleteSessionResponse,
   ListSessionsResponse,
+  ResumeSessionResponse,
   SessionInfo,
 } from '@ccsm/shared';
 
@@ -23,18 +29,10 @@ import {
   loadSessionsFromDb,
   type PersistController,
 } from './persist.mjs';
+import type { RuntimeRegistry } from './runtime.mjs';
 
-// API path constants — duplicated locally (not imported as a runtime value
-// from @ccsm/shared) so the daemon does not pull in @ccsm/shared at runtime.
-// The shared package is type-only here. The integration test asserts these
-// paths against the URL shapes in DESIGN.md §4; the contract types above
-// keep response shape drift caught by the typechecker.
 const API_SESSIONS = '/api/sessions';
 
-// Resolve frontend dist relative to this source file. After tsc build the
-// emitted file lives at packages/daemon/dist/http.mjs, so going up two dirs
-// lands in packages/daemon, and one more in packages/, giving us
-// packages/frontend/dist.
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const FRONTEND_DIST = resolve(HERE, '..', '..', 'frontend', 'dist');
 const FRONTEND_INDEX = join(FRONTEND_DIST, 'index.html');
@@ -52,8 +50,6 @@ const MIME_TYPES: Record<string, string> = {
   '.map': 'application/json; charset=utf-8',
 };
 
-// NOTE (T4): added optional `cwd` so the ws layer (ws.mts) can spawn the
-// node-pty in the right working directory. Routing/auth logic untouched.
 export interface StubSession {
   sid: string;
   createdAt: number;
@@ -71,6 +67,13 @@ export interface DaemonHttpOptions {
   /** Override the persist debounce window (ms). Tests use this to make the
    *  flush deterministic; production uses the default. */
   persistDebounceMs?: number;
+  /**
+   * Optional runtime registry. When present, POST /api/sessions and the new
+   * POST /api/sessions/:sid/resume route synchronously spawn / re-spawn the
+   * PTY before responding. When omitted (legacy callers / unit tests that
+   * only exercise auth) the routes degrade to the stub-only behaviour.
+   */
+  registry?: RuntimeRegistry;
 }
 
 export interface DaemonHttp {
@@ -79,6 +82,13 @@ export interface DaemonHttp {
   /** Persist controller. `null` when no db was supplied. The daemon entry
    *  point uses this to flushNow() on SIGINT before closing the db. */
   persist: PersistController | null;
+  /**
+   * Inject the runtime registry after construction. We expose this as a
+   * setter so index.mts can break the http<->registry construction cycle
+   * (registry needs http.sessions; http needs registry to spawn). Tests that
+   * exercise the spawn paths can also pass `registry` up-front via opts.
+   */
+  setRegistry(registry: RuntimeRegistry): void;
 }
 
 function writeJson(res: ServerResponse, status: number, body: unknown): void {
@@ -97,7 +107,7 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   return await new Promise((resolveBody, rejectBody) => {
     const chunks: Buffer[] = [];
     let total = 0;
-    const MAX = 64 * 1024; // 64 KiB ceiling for stub session-create payloads
+    const MAX = 64 * 1024;
     req.on('data', (chunk: Buffer) => {
       total += chunk.length;
       if (total > MAX) {
@@ -144,14 +154,12 @@ function serveIndex(res: ServerResponse): void {
 }
 
 function serveAsset(res: ServerResponse, urlPath: string): void {
-  // urlPath looks like /assets/foo.js — strip leading /assets/.
   const rel = urlPath.replace(/^\/assets\//, '');
   if (rel.length === 0 || rel.includes('\0')) {
     writeText(res, 404, 'not found');
     return;
   }
   const target = normalize(join(FRONTEND_ASSETS, rel));
-  // Path traversal guard: target must stay inside FRONTEND_ASSETS.
   const assetsRoot = FRONTEND_ASSETS.endsWith(sep) ? FRONTEND_ASSETS : FRONTEND_ASSETS + sep;
   if (target !== FRONTEND_ASSETS && !target.startsWith(assetsRoot)) {
     writeText(res, 404, 'not found');
@@ -164,6 +172,26 @@ function toSessionInfo(s: StubSession): SessionInfo {
   return { sid: s.sid, createdAt: s.createdAt, alive: s.alive };
 }
 
+// Match `/api/sessions/:sid` and `/api/sessions/:sid/resume`. Returns null if
+// neither shape matches. The sid segment is decoded; resume is a literal flag.
+function parseSessionPath(path: string): { sid: string; resume: boolean } | null {
+  if (!path.startsWith(`${API_SESSIONS}/`)) return null;
+  const rest = path.slice(API_SESSIONS.length + 1);
+  if (rest.length === 0) return null;
+  const segments = rest.split('/');
+  if (segments.length === 1) {
+    const sid = decodeURIComponent(segments[0] as string);
+    if (sid.length === 0) return null;
+    return { sid, resume: false };
+  }
+  if (segments.length === 2 && segments[1] === 'resume') {
+    const sid = decodeURIComponent(segments[0] as string);
+    if (sid.length === 0) return null;
+    return { sid, resume: true };
+  }
+  return null;
+}
+
 async function handleApi(
   req: IncomingMessage,
   res: ServerResponse,
@@ -171,6 +199,7 @@ async function handleApi(
   sessions: Map<string, StubSession>,
   expectedToken: string,
   persist: PersistController | null,
+  registry: RuntimeRegistry | undefined,
 ): Promise<void> {
   if (!requireAuth(req, res, expectedToken)) return;
 
@@ -187,7 +216,6 @@ async function handleApi(
       writeJson(res, 400, { error: 'bad_json' });
       return;
     }
-    // T4: persist cwd so ws.mts can spawn node-pty with it.
     const sid = randomUUID();
     const createdAt = Date.now();
     const stub: StubSession = { sid, createdAt, alive: true };
@@ -195,6 +223,19 @@ async function handleApi(
       stub.cwd = body.cwd;
     }
     sessions.set(sid, stub);
+
+    if (registry) {
+      // T#668: spawn the PTY synchronously. If it fails, roll back the stub
+      // so a retry can mint a fresh sid (and the user doesn't see a ghost row
+      // they can't connect to).
+      const spawned = registry.spawn(sid, stub, 'create');
+      if (!spawned) {
+        sessions.delete(sid);
+        writeJson(res, 500, { error: 'pty_spawn_failed' });
+        return;
+      }
+    }
+
     persist?.scheduleFlush();
     const resp: CreateSessionResponse = { sid, createdAt };
     writeJson(res, 200, resp);
@@ -210,34 +251,64 @@ async function handleApi(
     return;
   }
 
+  // POST /api/sessions/:sid/resume  -- T#668
   // DELETE /api/sessions/:sid
-  if (path.startsWith(`${API_SESSIONS}/`) && method === 'DELETE') {
-    const sid = decodeURIComponent(path.slice(API_SESSIONS.length + 1));
-    if (sid.length === 0 || sid.includes('/')) {
-      writeJson(res, 404, { error: 'not_found' });
+  const parsed = parseSessionPath(path);
+  if (parsed) {
+    if (parsed.resume && method === 'POST') {
+      const stub = sessions.get(parsed.sid);
+      if (!stub) {
+        writeJson(res, 404, { error: 'not_found' });
+        return;
+      }
+      // Idempotent: already alive -> just say ok. (Frontend may double-fire
+      // resume on tab focus / reconnect; we don't want to leak PTYs.)
+      if (registry?.has(parsed.sid)) {
+        const resp: ResumeSessionResponse = { ok: true };
+        writeJson(res, 200, resp);
+        return;
+      }
+      if (!registry) {
+        // No runtime layer attached at all -- not a state we hit in prod, but
+        // it keeps the route honest under unit-test isolation.
+        writeJson(res, 500, { error: 'no_runtime' });
+        return;
+      }
+      const spawned = registry.spawn(parsed.sid, stub, 'resume');
+      if (!spawned) {
+        writeJson(res, 500, { error: 'pty_spawn_failed' });
+        return;
+      }
+      // Mark the stub as alive again so subsequent GET reflects state.
+      stub.alive = true;
+      persist?.scheduleFlush();
+      const resp: ResumeSessionResponse = { ok: true };
+      writeJson(res, 200, resp);
       return;
     }
-    if (!sessions.has(sid)) {
-      writeJson(res, 404, { error: 'not_found' });
+
+    if (!parsed.resume && method === 'DELETE') {
+      if (!sessions.has(parsed.sid)) {
+        writeJson(res, 404, { error: 'not_found' });
+        return;
+      }
+      // T#668: also tear down any live PTY so the OS doesn't leak processes.
+      registry?.kill(parsed.sid);
+      sessions.delete(parsed.sid);
+      persist?.scheduleFlush();
+      const resp: DeleteSessionResponse = { ok: true };
+      writeJson(res, 200, resp);
       return;
     }
-    sessions.delete(sid);
-    persist?.scheduleFlush();
-    const resp: DeleteSessionResponse = { ok: true };
-    writeJson(res, 200, resp);
-    return;
   }
 
   writeJson(res, 404, { error: 'not_found' });
 }
 
-/**
- * Build (but do not start) the daemon HTTP server. Caller is responsible for
- * `.listen()` and lifecycle.
- */
 export function createDaemonHttp(opts: DaemonHttpOptions): DaemonHttp {
   const sessions = new Map<string, StubSession>();
   const expectedToken = opts.token;
+  let registry: RuntimeRegistry | undefined = opts.registry;
 
   // Persistence wiring (#667). When a db is supplied we hydrate the map
   // from the 'sessions' KV blob before the server starts accepting
@@ -265,8 +336,6 @@ export function createDaemonHttp(opts: DaemonHttpOptions): DaemonHttp {
       const path = url.pathname;
       const method = req.method ?? 'GET';
 
-      // Static SPA shell. The browser strips the query before the server
-      // ever sees it for static GETs, but `new URL` handles either way.
       if (path === '/' && method === 'GET') {
         serveIndex(res);
         return;
@@ -278,7 +347,7 @@ export function createDaemonHttp(opts: DaemonHttpOptions): DaemonHttp {
       }
 
       if (path.startsWith('/api/')) {
-        await handleApi(req, res, url, sessions, expectedToken, persist);
+        await handleApi(req, res, url, sessions, expectedToken, persist, registry);
         return;
       }
 
@@ -297,5 +366,12 @@ export function createDaemonHttp(opts: DaemonHttpOptions): DaemonHttp {
     }
   }
 
-  return { server, sessions, persist };
+  return {
+    server,
+    sessions,
+    persist,
+    setRegistry(r) {
+      registry = r;
+    },
+  };
 }

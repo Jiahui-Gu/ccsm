@@ -38,11 +38,11 @@ import WebSocket from 'ws';
 
 import { createDaemonHttp, type DaemonHttp } from '../src/http.mjs';
 import {
-  attachWebSocket,
-  type AttachedWs,
+  createRuntimeRegistry,
   type PtyFactory,
   type PtyLike,
-} from '../src/ws.mjs';
+} from '../src/runtime.mjs';
+import { attachWebSocket, type AttachedWs } from '../src/ws.mjs';
 
 const TOKEN = 'test-token-do-not-use-in-prod-0123456789abcdef';
 const GOOD_ORIGIN = 'http://localhost:1234';
@@ -72,10 +72,15 @@ let validSid: string;
 
 beforeAll(async () => {
   http = createDaemonHttp({ token: TOKEN });
+  const registry = createRuntimeRegistry({
+    sessions: http.sessions,
+    ptyFactory: noopPtyFactory,
+  });
+  http.setRegistry(registry);
   attached = attachWebSocket(http.server, {
     token: TOKEN,
     sessions: http.sessions,
-    ptyFactory: noopPtyFactory,
+    registry,
   });
   await new Promise<void>((resolve, reject) => {
     http.server.once('error', reject);

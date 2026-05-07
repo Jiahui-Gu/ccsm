@@ -28,11 +28,12 @@ import {
 
 import { createDaemonHttp, type DaemonHttp } from '../src/http.mjs';
 import {
-  attachWebSocket,
-  type AttachedWs,
+  createRuntimeRegistry,
   type PtyFactory,
   type PtyLike,
-} from '../src/ws.mjs';
+  type RuntimeRegistry,
+} from '../src/runtime.mjs';
+import { attachWebSocket, type AttachedWs } from '../src/ws.mjs';
 
 const TOKEN = 'test-token-do-not-use-in-prod-0123456789abcdef';
 const GOOD_ORIGIN = 'http://localhost:1234';
@@ -50,8 +51,8 @@ interface FakePty extends PtyLike {
   lastResize: { cols: number; rows: number } | null;
   /** Spy: kill signals received. */
   killed: string[];
-  /** Spy: cwd/cols/rows the factory was constructed with. */
-  spawnOpts: { cwd: string; cols: number; rows: number };
+  /** Spy: cwd/cols/rows/sid/mode the factory was constructed with. */
+  spawnOpts: { cwd: string; cols: number; rows: number; sid: string; mode: 'create' | 'resume' };
 }
 
 function makeFakePtyFactory(): { factory: PtyFactory; instances: FakePty[] } {
@@ -96,6 +97,7 @@ function makeFakePtyFactory(): { factory: PtyFactory; instances: FakePty[] } {
 
 let http: DaemonHttp;
 let attached: AttachedWs;
+let registry: RuntimeRegistry;
 let baseHttp: string;
 let baseWs: string;
 let ptyFactoryState: { factory: PtyFactory; instances: FakePty[] };
@@ -103,10 +105,15 @@ let ptyFactoryState: { factory: PtyFactory; instances: FakePty[] };
 beforeAll(async () => {
   ptyFactoryState = makeFakePtyFactory();
   http = createDaemonHttp({ token: TOKEN });
+  registry = createRuntimeRegistry({
+    sessions: http.sessions,
+    ptyFactory: ptyFactoryState.factory,
+  });
+  http.setRegistry(registry);
   attached = attachWebSocket(http.server, {
     token: TOKEN,
     sessions: http.sessions,
-    ptyFactory: ptyFactoryState.factory,
+    registry,
   });
   await new Promise<void>((resolve, reject) => {
     http.server.once('error', reject);
@@ -133,6 +140,7 @@ beforeEach(() => {
 afterEach(() => {
   // Close any sessions created during the test so PTYs don't leak.
   for (const sid of Array.from(http.sessions.keys())) {
+    registry.kill(sid);
     http.sessions.delete(sid);
   }
 });
@@ -338,5 +346,49 @@ describe('ws frame round-trip via fake PTY', () => {
     // Server cleanup runs on close event; give it a tick.
     await new Promise((r) => setTimeout(r, 20));
     expect(fpty.killed).toContain('SIGTERM');
+  });
+});
+
+// T#668: ws is now subscribe-only. A stub session row that has NO live
+// runtime (e.g. survived a daemon restart, or never had POST /resume called)
+// must not cause a spawn at upgrade time. Connecting closes the ws with
+// code 1008 + 'session_not_spawned' so the frontend can branch to /resume.
+describe('ws T#668: subscribe-only (no spawn on connect)', () => {
+  it('closes with 1008 session_not_spawned for a stub with no runtime', async () => {
+    // Seed a stub row directly (bypasses the POST /api/sessions path that
+    // would spawn). Mimics the post-restart "row exists, runtime gone" state.
+    const sid = 'stub-without-runtime-12345';
+    http.sessions.set(sid, { sid, createdAt: Date.now(), alive: false, cwd: '/x' });
+    const before = ptyFactoryState.instances.length;
+
+    const d = dial(`${baseWs}/ws?sid=${sid}&token=${TOKEN}`);
+    const closed = await d.closed;
+
+    // ws sees the post-handshake close. Reason carries 'session_not_spawned'.
+    expect(closed.reason).toBe('session_not_spawned');
+    // Most importantly: NO PTY was spawned by the upgrade.
+    expect(ptyFactoryState.instances.length).toBe(before);
+  });
+
+  it('forwards live OUTPUT to a subscriber once the session has been spawned via HTTP', async () => {
+    // POST /api/sessions spawns; ws then subscribes and receives.
+    const sid = await createSid('/work');
+    expect(ptyFactoryState.instances.length).toBe(1);
+    const fpty = ptyFactoryState.instances[0]!;
+    expect(fpty.spawnOpts.sid).toBe(sid);
+    expect(fpty.spawnOpts.mode).toBe('create');
+
+    const d = dial(`${baseWs}/ws?sid=${sid}&token=${TOKEN}`);
+    await waitOpen(d.ws);
+
+    fpty.emitData('post-spawn-output');
+    const out = await d.nextFrame();
+    expect(out).not.toBeNull();
+    const dec = decodeFrame(out!);
+    expect(dec.type).toBe(FrameType.OUTPUT);
+    expect(Buffer.from(dec.payload).toString('utf8')).toBe('post-spawn-output');
+
+    d.ws.close();
+    await d.closed;
   });
 });

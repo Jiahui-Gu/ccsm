@@ -5,6 +5,7 @@ import { randomBytes } from 'node:crypto';
 
 import { openDb } from './db.mjs';
 import { createDaemonHttp } from './http.mjs';
+import { createRuntimeRegistry } from './runtime.mjs';
 import { attachWebSocket } from './ws.mjs';
 
 const DEFAULT_PORT = 17832;
@@ -67,8 +68,13 @@ async function main(): Promise<void> {
   // requests. CCSM_DB_PATH lets tests/lifecycle scripts point at a temp file.
   const dbPath = process.env.CCSM_DB_PATH;
   const db = openDb(dbPath ? { path: dbPath } : undefined);
+  // T#668: HTTP needs the spawn registry, and the registry needs the sessions
+  // Map that createDaemonHttp owns. We break the cycle by creating http
+  // first, then the registry, then attaching it to http via setRegistry().
   const http = createDaemonHttp({ token, db });
-  attachWebSocket(http.server, { token, sessions: http.sessions });
+  const registry = createRuntimeRegistry({ sessions: http.sessions });
+  http.setRegistry(registry);
+  attachWebSocket(http.server, { token, sessions: http.sessions, registry });
 
   const { port } = await listenWithRetry(http, startPort, PORT_RETRY_MAX);
 

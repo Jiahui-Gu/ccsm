@@ -26,11 +26,12 @@ import { decodeFrame, FrameType } from '@ccsm/shared';
 
 import { createDaemonHttp, type DaemonHttp } from '../src/http.mjs';
 import {
-  attachWebSocket,
-  type AttachedWs,
+  createRuntimeRegistry,
   type PtyFactory,
   type PtyLike,
-} from '../src/ws.mjs';
+  type RuntimeRegistry,
+} from '../src/runtime.mjs';
+import { attachWebSocket, type AttachedWs } from '../src/ws.mjs';
 
 const TOKEN = 'test-token-do-not-use-in-prod-0123456789abcdef';
 const GOOD_ORIGIN = 'http://localhost:1234';
@@ -41,7 +42,7 @@ interface FakePty extends PtyLike {
   written: string[];
   lastResize: { cols: number; rows: number } | null;
   killed: string[];
-  spawnOpts: { cwd: string; cols: number; rows: number };
+  spawnOpts: { cwd: string; cols: number; rows: number; sid: string; mode: 'create' | 'resume' };
 }
 
 function makeFakePtyFactory(): { factory: PtyFactory; instances: FakePty[] } {
@@ -84,6 +85,7 @@ function makeFakePtyFactory(): { factory: PtyFactory; instances: FakePty[] } {
 
 let http: DaemonHttp;
 let attached: AttachedWs;
+let registry: RuntimeRegistry;
 let baseHttp: string;
 let baseWs: string;
 let ptyFactoryState: { factory: PtyFactory; instances: FakePty[] };
@@ -91,10 +93,15 @@ let ptyFactoryState: { factory: PtyFactory; instances: FakePty[] };
 beforeAll(async () => {
   ptyFactoryState = makeFakePtyFactory();
   http = createDaemonHttp({ token: TOKEN });
+  registry = createRuntimeRegistry({
+    sessions: http.sessions,
+    ptyFactory: ptyFactoryState.factory,
+  });
+  http.setRegistry(registry);
   attached = attachWebSocket(http.server, {
     token: TOKEN,
     sessions: http.sessions,
-    ptyFactory: ptyFactoryState.factory,
+    registry,
   });
   await new Promise<void>((resolve, reject) => {
     http.server.once('error', reject);
@@ -119,6 +126,7 @@ beforeEach(() => {
 
 afterEach(() => {
   for (const sid of Array.from(http.sessions.keys())) {
+    registry.kill(sid);
     http.sessions.delete(sid);
   }
 });
