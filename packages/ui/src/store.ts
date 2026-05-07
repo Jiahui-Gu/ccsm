@@ -26,7 +26,7 @@
 
 import type { SessionInfo } from '@ccsm/shared';
 import { create } from 'zustand';
-import type { WsStatus } from './ws/client';
+import type { WsStatus } from '@ccsm/core';
 
 interface Store {
   // ---- auth ----

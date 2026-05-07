@@ -2,8 +2,7 @@ import { useEffect, useRef } from 'react';
 import { Terminal } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import 'xterm/css/xterm.css';
-import { createSession } from '../api/sessions';
-import { sessionRuntime } from '../session-runtime';
+import { useApi, useGetToken, useRuntime } from '../runtime-context';
 import { useStore } from '../store';
 
 // MainPane (Task #662 / T10 — DESIGN.md §7).
@@ -29,7 +28,7 @@ import { useStore } from '../store';
 //     `termRef` so long-lived runtime listeners always write into the
 //     currently-mounted Terminal.
 //   - Runtime entries OUTLIVE the React effect cycle (that's the whole
-//     point of T10): we never call `sessionRuntime.detach()` on cleanup.
+//     point of T10): we never call `runtime.detach()` on cleanup.
 //     Detach happens only when the user closes the row from the sidebar.
 
 export function MainPane() {
@@ -50,16 +49,19 @@ export function MainPane() {
   const activeSid = useStore((s) => s.activeSid);
   const addSession = useStore((s) => s.addSession);
 
-  // Token resolution: prefer the store cache, but fall back to sessionStorage
-  // at action-time. The store eagerly snapshots sessionStorage at module load
-  // (main.tsx writes the token before React mounts), but unit tests stash the
-  // token in beforeEach *after* the store module evaluated, so reading from
-  // the live sessionStorage keeps both paths working without forcing every
-  // test to also call `useStore.setState({ token })`.
-  const resolveToken = (): string | null => {
+  const runtime = useRuntime();
+  const api = useApi();
+  const hostGetToken = useGetToken();
+
+  // Token resolution: prefer the store cache, but fall back to the shell-
+  // injected getToken at action-time. The store eagerly snapshots its
+  // initial value at module load, but unit tests stash the token in
+  // beforeEach *after* the store module evaluated, so reading through the
+  // shell hook (which on web hits sessionStorage) keeps both paths working
+  // without forcing every test to also call useStore.setState({ token }).
+  const getToken = (): string | null => {
     if (token) return token;
-    if (typeof window === 'undefined') return null;
-    return sessionStorage.getItem('ccsm.token');
+    return hostGetToken();
   };
 
   // ---- runtime output listener (mounted once, lives forever) ----
@@ -76,7 +78,7 @@ export function MainPane() {
   // (their bytes are already in scrollback) so they never participate in
   // backpressure — only the rendering subscriber gates the daemon.
   useEffect(() => {
-    const unsubscribe = sessionRuntime.subscribeOutput((sid, payload) => {
+    const unsubscribe = runtime.subscribeOutput((sid, payload) => {
       if (sid !== activeSidRef.current) return;
       const t = termRef.current;
       if (!t) return;
@@ -86,9 +88,9 @@ export function MainPane() {
         t.reset();
         return;
       }
-      sessionRuntime.notePendingWrite(sid);
+      runtime.notePendingWrite(sid);
       t.write(new TextDecoder().decode(payload, { stream: true }), () => {
-        sessionRuntime.noteWriteFlushed(sid);
+        runtime.noteWriteFlushed(sid);
       });
     });
     return () => {
@@ -104,14 +106,14 @@ export function MainPane() {
   // same store API, so this effect only ever fires once per page lifetime.
   useEffect(() => {
     if (bootstrappedRef.current) return;
-    const tok = resolveToken();
+    const tok = getToken();
     if (!tok) return;
     if (sessions.length > 0) return;
 
     bootstrappedRef.current = true;
     void (async () => {
       try {
-        const resp = await createSession(tok);
+        const resp = await api.createSession(tok);
         const createdAt =
           typeof resp.createdAt === 'number' ? resp.createdAt : Date.now();
         // Task #673: attach must happen AFTER the daemon has spawned the PTY
@@ -120,7 +122,7 @@ export function MainPane() {
         // finds a runtime entry on the daemon side. The old "attach every
         // hydrated sid" effect (removed below) raced the lazy /resume path
         // and burned the 5-attempt reconnect budget on close(1008).
-        sessionRuntime.attach(resp.sid, tok);
+        runtime.attach(resp.sid, tok);
         addSession({ sid: resp.sid, createdAt, alive: true });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -164,7 +166,7 @@ export function MainPane() {
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
-    const tok = resolveToken();
+    const tok = getToken();
 
     // Always rebuild the xterm: it is renderer-owned. StrictMode dev cleanup
     // disposes the first one; we need a fresh Terminal for mount #2 anyway.
@@ -201,7 +203,7 @@ export function MainPane() {
       // If `entry` is missing it means an upstream caller forgot to
       // attach — surface it instead of silently opening a ws against a
       // sid the daemon has not spawned (root cause of #673).
-      const entry = sessionRuntime.get(activeSid);
+      const entry = runtime.get(activeSid);
       if (!entry) {
         // eslint-disable-next-line no-console
         console.warn(
@@ -219,17 +221,17 @@ export function MainPane() {
       }
       // Push the current viewport so the daemon PTY matches the freshly
       // built Terminal (avoids the node-pty default 80x24 sticking around).
-      sessionRuntime.sendResize(activeSid, term.cols, term.rows);
+      runtime.sendResize(activeSid, term.cols, term.rows);
     }
 
     // ---- xterm input/resize wiring ----
     const inputDisp = term.onData((data) => {
       const sid = activeSidRef.current;
-      if (sid) sessionRuntime.sendInput(sid, data);
+      if (sid) runtime.sendInput(sid, data);
     });
     const resizeDisp = term.onResize(({ cols, rows }) => {
       const sid = activeSidRef.current;
-      if (sid) sessionRuntime.sendResize(sid, cols, rows);
+      if (sid) runtime.sendResize(sid, cols, rows);
     });
 
     const onWindowResize = (): void => {

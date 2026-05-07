@@ -4,7 +4,7 @@
 //   The bug being verified (StrictMode double-mount blanking out MainPane)
 //   only reproduces under Vite's *dev* server, because production builds
 //   strip <StrictMode>. The existing T0.5 daemon fixture serves the *built*
-//   frontend from `packages/frontend/dist`, which would mask the regression.
+//   frontend from `packages/frontend-web/dist`, which would mask the regression.
 //
 //   So this spec spawns:
 //     1. A minimal mock HTTP server on 127.0.0.1:17832 that answers the one
@@ -14,9 +14,9 @@
 //        the daemon also avoids depending on an unrelated tech-debt where
 //        packages/shared/dist emits extension-less ESM imports that Node 22
 //        strict mode cannot resolve (out-of-scope for #658 / P1-3).
-//     2. `pnpm -F @ccsm/frontend dev` — Vite dev server on :5173, which
+//     2. `pnpm -F @ccsm/frontend-web dev` — Vite dev server on :5173, which
 //        proxies /api and /ws to 127.0.0.1:17832 per
-//        packages/frontend/vite.config.ts.
+//        packages/frontend-web/vite.config.ts.
 //
 //   Then it navigates to http://127.0.0.1:5173/?token=<token>, waits for
 //   the xterm DOM to appear, and snaps a PNG + TXT for manager review.
@@ -111,7 +111,7 @@ async function startVite(): Promise<ViteHandle> {
     'pnpm',
     [
       '-F',
-      '@ccsm/frontend',
+      '@ccsm/frontend-web',
       'exec',
       'vite',
       '--port',

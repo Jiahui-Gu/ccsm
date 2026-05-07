@@ -25,9 +25,13 @@ module.exports = {
   },
   overrides: [
     {
-      // Frontend: ban any desktop-shell API usage so the web bundle stays
-      // portable to Electron / Tauri / PWA later (see DESIGN.md §7, §10).
-      files: ['packages/frontend/**/*.{ts,tsx,js,jsx,mjs,cjs}'],
+      // Frontend-web + shared UI: ban any desktop-shell API usage so the
+      // web bundle and the shared @ccsm/ui layer stay portable to Tauri /
+      // PWA later (see DESIGN.md §7, §10).
+      files: [
+        'packages/frontend-web/**/*.{ts,tsx,js,jsx,mjs,cjs}',
+        'packages/ui/**/*.{ts,tsx,js,jsx,mjs,cjs}',
+      ],
       rules: {
         'no-restricted-imports': [
           'error',

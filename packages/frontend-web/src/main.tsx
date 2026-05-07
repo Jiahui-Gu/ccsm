@@ -1,7 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
-import './styles.css';
+import '@ccsm/ui/styles.css';
 
 // Capture token from URL search params and stash in sessionStorage so the rest
 // of the app can pick it up later (consumption is wired in T6).

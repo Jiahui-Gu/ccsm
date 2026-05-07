@@ -1,4 +1,4 @@
-# @ccsm/e2e
+# @ccsm/e2e-web
 
 End-to-end test rig for **ccsm-web**. Built on Playwright (headless Chromium)
 with a daemon child-process fixture and a custom screenshot helper that emits
@@ -32,7 +32,7 @@ packages/e2e/
 ## Local usage
 
 ```sh
-pnpm -F @ccsm/e2e install-browsers   # one-time, ~150MB chromium download
+pnpm -F @ccsm/e2e-web install-browsers   # one-time, ~150MB chromium download
 pnpm -r build                        # build daemon + frontend (T3/T5)
 pnpm e2e                             # run the suite from repo root
 ```
@@ -65,7 +65,7 @@ Both `snapshots/` and `playwright-report/` are uploaded as artifacts.
 
 ## Boundaries
 
-- This package does NOT import from `@ccsm/daemon` / `@ccsm/frontend` —
+- This package does NOT import from `@ccsm/daemon` / `@ccsm/frontend-web` —
   it only spawns the daemon binary and drives the frontend over HTTP.
 - Visual regression diffing is out of scope (no pixelmatch / percy).
 - Vitest browser mode, Cypress, Storybook, and Chromatic are explicitly

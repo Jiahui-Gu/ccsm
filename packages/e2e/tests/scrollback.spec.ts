@@ -113,7 +113,7 @@ async function startVite(): Promise<ViteHandle> {
     'pnpm',
     [
       '-F',
-      '@ccsm/frontend',
+      '@ccsm/frontend-web',
       'exec',
       'vite',
       '--port',

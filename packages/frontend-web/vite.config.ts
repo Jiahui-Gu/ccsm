@@ -24,8 +24,4 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
   },
-  test: {
-    environment: 'jsdom',
-    globals: true,
-  },
 });

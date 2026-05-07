@@ -56,7 +56,7 @@
 //   This spec spawns a real `claude` PTY. CI has no Anthropic credentials
 //   so we add `session-persistence` to the same grep-invert that already
 //   skips p1-smoke / p3-stress. Run locally with:
-//     pnpm -F @ccsm/e2e exec playwright test session-persistence --reporter=list
+//     pnpm -F @ccsm/e2e-web exec playwright test session-persistence --reporter=list
 //
 // Daemon lifecycle ownership:
 //   Unlike p1-smoke (which uses the worker-scoped daemon fixture), this
@@ -227,7 +227,7 @@ async function startVite(): Promise<ViteHandle> {
     'pnpm',
     [
       '-F',
-      '@ccsm/frontend',
+      '@ccsm/frontend-web',
       'exec',
       'vite',
       '--port',

@@ -31,8 +31,8 @@ jobs:
       - name: Lint
         run: pnpm -r lint
 
-      - name: Build shared (required for typecheck of dependents)
-        run: pnpm -F @ccsm/shared build
+      - name: Build shared + core + ui (required for typecheck of dependents)
+        run: pnpm -F @ccsm/shared build && pnpm -F @ccsm/core build && pnpm -F @ccsm/ui build
 
       - name: Typecheck
         run: pnpm -r typecheck
@@ -93,7 +93,7 @@ jobs:
         shell: bash
         env:
           CI: 'true'
-        run: pnpm -F @ccsm/e2e exec playwright test --grep-invert "p1-smoke|p3-stress|session-persistence"
+        run: pnpm -F @ccsm/e2e-web exec playwright test --grep-invert "p1-smoke|p3-stress|session-persistence"
 
       - name: Upload snapshots
         if: always()

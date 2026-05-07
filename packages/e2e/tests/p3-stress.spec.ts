@@ -22,7 +22,7 @@
 //   simultaneous in-flight xterm writes to trip session-runtime's
 //   PAUSE_THRESHOLD (16). The actual T11 wiring is already proven by the
 //   unit tests in packages/daemon/test/ws-backpressure.test.ts (4 cases) and
-//   packages/frontend/test/session-runtime.test.ts. This spec therefore
+//   packages/frontend-web/test/session-runtime.test.ts. This spec therefore
 //   asserts the *invariants* that hold regardless of whether PAUSE trips:
 //
 //     - At least one binary frame goes out (proves WS is alive).
@@ -74,7 +74,7 @@ async function startVite(): Promise<ViteHandle> {
     'pnpm',
     [
       '-F',
-      '@ccsm/frontend',
+      '@ccsm/frontend-web',
       'exec',
       'vite',
       '--port',
@@ -316,7 +316,7 @@ test.describe('p3-stress', () => {
     // frames, not 16+ simultaneous in-flight xterm writes (the
     // PAUSE_THRESHOLD condition in session-runtime.ts). The unit tests at
     // packages/daemon/test/ws-backpressure.test.ts (4 cases, all green)
-    // and packages/frontend/test/session-runtime.test.ts already prove the
+    // and packages/frontend-web/test/session-runtime.test.ts already prove the
     // PAUSE/RESUME wiring is correct end-to-end on the daemon and runtime
     // sides — this spec exercises the path with a *real* PTY and asserts
     // the system stays correct + responsive whether or not PAUSE happens

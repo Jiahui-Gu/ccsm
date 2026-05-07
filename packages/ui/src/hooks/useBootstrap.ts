@@ -12,17 +12,19 @@
 //   - Retrying on transient failure (post-MVP — today we just warn).
 
 import { useEffect } from 'react';
-import { HttpError, listSessions } from '../api/sessions';
+import { HttpError, useApi } from '../runtime-context';
 import { useStore } from '../store';
 
 export function useBootstrap(): void {
   const token = useStore((s) => s.token);
   const hydrateSessions = useStore((s) => s.hydrateSessions);
+  const api = useApi();
 
   useEffect(() => {
     if (!token) return;
     let cancelled = false;
-    listSessions(token)
+    api
+      .listSessions(token)
       .then((r) => {
         if (cancelled) return;
         hydrateSessions(r.sessions);
@@ -45,5 +47,5 @@ export function useBootstrap(): void {
     return () => {
       cancelled = true;
     };
-  }, [token, hydrateSessions]);
+  }, [token, hydrateSessions, api]);
 }

@@ -48,7 +48,7 @@ proxied):
 # terminal 1
 pnpm -F @ccsm/daemon dev
 # terminal 2
-pnpm -F @ccsm/frontend dev
+pnpm -F @ccsm/frontend-web dev
 ```
 
 Then open `http://127.0.0.1:5173/?token=<token-from-daemon-stdout>`.
@@ -58,9 +58,9 @@ Then open `http://127.0.0.1:5173/?token=<token-from-daemon-stdout>`.
 - **Daemon** (`packages/daemon`): `pnpm -F @ccsm/daemon test` — unit /
   integration tests for HTTP auth, WS handshake, ring buffer, replay,
   backpressure, negative paths, and lifecycle (47 + 1 skipped on win32).
-- **Frontend** (`packages/frontend`): `pnpm -F @ccsm/frontend test` —
+- **Frontend** (`packages/frontend-web`): `pnpm -F @ccsm/frontend-web test` —
   component + session-runtime unit tests.
-- **End-to-end** (`packages/e2e`): `pnpm -F @ccsm/e2e test` — Playwright
+- **End-to-end** (`packages/e2e`): `pnpm -F @ccsm/e2e-web test` — Playwright
   specs that spin up the real daemon + Vite + browser. `p1-smoke` and
   `p3-stress` need an authed `claude` on the dev's machine (CI skips them).
 

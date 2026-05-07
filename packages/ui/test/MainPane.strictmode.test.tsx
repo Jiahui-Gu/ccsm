@@ -54,8 +54,8 @@ const runtimeSubscribeOutput = vi.hoisted(() =>
   }),
 );
 
-vi.mock('../src/session-runtime', () => ({
-  sessionRuntime: {
+vi.mock('../src/runtime-context', () => ({
+  useRuntime: () => ({
     attach: runtimeAttach,
     detach: runtimeDetach,
     has: runtimeHas,
@@ -65,6 +65,35 @@ vi.mock('../src/session-runtime', () => ({
     notePendingWrite: runtimeNotePendingWrite,
     noteWriteFlushed: runtimeNoteWriteFlushed,
     subscribeOutput: runtimeSubscribeOutput,
+  }),
+  useApi: () => ({
+    createSession: async (token: string) => {
+      const res = await globalThis.fetch(
+        `${typeof window !== 'undefined' ? window.location.origin : ''}/api/sessions`,
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({}),
+        },
+      );
+      return res.json();
+    },
+    deleteSession: async () => ({ ok: true }),
+    listSessions: async () => ({ sessions: [] }),
+    resumeSession: async () => ({ ok: true }),
+  }),
+  useGetToken: () => () => 'test-token',
+  HttpError: class extends Error {
+    constructor(
+      public readonly status: number,
+      message: string,
+    ) {
+      super(message);
+      this.name = 'HttpError';
+    }
   },
 }));
 

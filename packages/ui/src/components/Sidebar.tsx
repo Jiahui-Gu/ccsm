@@ -27,12 +27,11 @@
 
 import { useRef, useState } from 'react';
 import {
-  createSession,
-  deleteSession,
-  resumeSession,
   HttpError,
-} from '../api/sessions';
-import { sessionRuntime } from '../session-runtime';
+  useApi,
+  useGetToken,
+  useRuntime,
+} from '../runtime-context';
 import { useStore } from '../store';
 
 const notImplemented = (): void => {
@@ -76,32 +75,36 @@ export function Sidebar() {
   const closeSessionInStore = useStore((s) => s.closeSession);
 
   // Track which sid the user most recently asked to switch to. If the user
-  // clicks A, we kick off `resumeSession(A)`, then they impatiently click B
+  // clicks A, we kick off `api.resumeSession(A)`, then they impatiently click B
   // before A's POST settles, we MUST NOT setActive(A) when A's promise
   // finally resolves — that would yank focus away from B. The ref is the
   // single source of truth for "the click that wins"; any in-flight resume
   // whose sid no longer matches the ref bails out before touching the store.
   const pendingResumeRef = useRef<string | null>(null);
 
-  // Mirror MainPane.resolveToken: prefer the store cache, fall back to
-  // sessionStorage at action time so unit tests that stash the token in
-  // beforeEach (after the store module evaluated) still authenticate.
-  const resolveToken = (): string | null => {
+  const runtime = useRuntime();
+  const api = useApi();
+  const hostGetToken = useGetToken();
+
+  // Mirror MainPane.getToken: prefer the store cache, fall back to the
+  // shell-injected getToken at action time so unit tests that stash the
+  // token in beforeEach (after the store module evaluated) still
+  // authenticate.
+  const getToken = (): string | null => {
     if (token) return token;
-    if (typeof window === 'undefined') return null;
-    return sessionStorage.getItem('ccsm.token');
+    return hostGetToken();
   };
 
   const onNewSession = async (): Promise<void> => {
     if (creating) return;
-    const tok = resolveToken();
+    const tok = getToken();
     if (!tok) {
       alert('no token — append ?token=<t> to the URL and reload');
       return;
     }
     setCreating(true);
     try {
-      const resp = await createSession(tok);
+      const resp = await api.createSession(tok);
       // Daemon contract: createdAt is required. Some test stubs (T6) omit
       // it; fall back to Date.now() so the row still renders an HH:MM column
       // instead of "NaN:NaN".
@@ -110,7 +113,7 @@ export function Sidebar() {
       // Task #673: attach AFTER createSession returns 200 (daemon has just
       // spawned the PTY, so the ws upgrade will find a RuntimeRegistry
       // entry instead of being closed with 1008, 'session_not_spawned').
-      sessionRuntime.attach(resp.sid, tok);
+      runtime.attach(resp.sid, tok);
       addSession({ sid: resp.sid, createdAt, alive: true });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -146,8 +149,8 @@ export function Sidebar() {
    *
    *   2. Anything else (`idle` / `disconnected` / `exited` / undefined) →
    *      POST /resume (so the daemon spawns `claude --resume <sid>`),
-   *      THEN `sessionRuntime.detach(sid)` to drop any stale entry,
-   *      THEN `sessionRuntime.attach(sid, tok)` for a fresh ws against
+   *      THEN `runtime.detach(sid)` to drop any stale entry,
+   *      THEN `runtime.attach(sid, tok)` for a fresh ws against
    *      the freshly-spawned PTY, THEN `setActive`. Detach+attach (rather
    *      than just attach) is required because attach is idempotent on
    *      existing entries — without an explicit detach, a stale entry
@@ -183,7 +186,7 @@ export function Sidebar() {
     // entry still has hasEverAttached=true → slow path → /resume. After a
     // page reload there is no entry at all → undefined → slow path. Both
     // correct.
-    const runtimeEntry = sessionRuntime.get(sid);
+    const runtimeEntry = runtime.get(sid);
     const hasEverAttached = runtimeEntry?.hasEverAttached ?? false;
     if (
       status === 'attached' ||
@@ -194,7 +197,7 @@ export function Sidebar() {
       return;
     }
 
-    const tok = resolveToken();
+    const tok = getToken();
     if (!tok) {
       alert('no token — append ?token=<t> to the URL and reload');
       return;
@@ -202,7 +205,7 @@ export function Sidebar() {
 
     pendingResumeRef.current = sid;
     try {
-      await resumeSession(tok, sid);
+      await api.resumeSession(tok, sid);
       // Race guard: a later click may have superseded us. Only commit if
       // we're still the most recent click.
       if (pendingResumeRef.current !== sid) return;
@@ -212,8 +215,8 @@ export function Sidebar() {
       // a `disconnected` entry left over from a prior daemon process (or
       // a previous failed reconnect cycle) would never reopen its ws and
       // the user would never see the resumed transcript.
-      sessionRuntime.detach(sid);
-      sessionRuntime.attach(sid, tok);
+      runtime.detach(sid);
+      runtime.attach(sid, tok);
       setActive(sid);
     } catch (err) {
       // Same race guard for the failure branch — if the user already moved
@@ -233,21 +236,21 @@ export function Sidebar() {
   };
 
   const onCloseSession = async (sid: string): Promise<void> => {
-    const tok = resolveToken();
+    const tok = getToken();
     if (!tok) {
       // Nothing to call on the daemon, but still prune locally so the UI
       // doesn't stick. This branch is mostly for defensive parity with the
       // create path — by the time we have a session row, we have a token.
-      sessionRuntime.detach(sid);
+      runtime.detach(sid);
       closeSessionInStore(sid);
       return;
     }
     try {
-      await deleteSession(tok, sid);
+      await api.deleteSession(tok, sid);
       // Tear the per-session ws + scrollback down BEFORE pruning the store
       // row, so the runtime listener can't fire on a sid the UI no longer
       // knows about. Order matters: detach() is synchronous + idempotent.
-      sessionRuntime.detach(sid);
+      runtime.detach(sid);
       closeSessionInStore(sid);
     } catch (err) {
       const msg =

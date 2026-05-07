@@ -1,32 +1,66 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup, act } from '@testing-library/react';
 
-// Task #673: Sidebar now drives sessionRuntime.attach (after createSession or
-// resumeSession returns 200) so the ws upgrade always finds a daemon-side
-// PTY. Mock the runtime so unit tests can assert the attach/detach contract
-// without opening real WebSockets.
-const runtimeAttach = vi.hoisted(() => vi.fn());
-const runtimeDetach = vi.hoisted(() => vi.fn());
-const runtimeGet = vi.hoisted(() =>
-  vi.fn<
+// Task #673 / Wave-2 T6: Sidebar reads runtime + api from RuntimeProvider
+// context (was a module singleton pre-T6). Mock the context module so unit
+// tests can assert the attach/detach contract + intercept fetch through
+// our own bound api stub, without standing up a real <RuntimeProvider>.
+const HttpErrorMock = vi.hoisted(() => {
+  return class HttpErrorMock extends Error {
+    constructor(
+      public readonly status: number,
+      message: string,
+    ) {
+      super(message);
+      this.name = 'HttpError';
+    }
+  };
+});
+
+// fetchUrl + apiStub + runtimeStub are referenced from the vi.mock factory
+// below; vi.mock hoists to top of file so all referenced values must be
+// declared via vi.hoisted() to be evaluated first.
+const fetchUrl = vi.hoisted(() => (path: string) => {
+  const base =
+    typeof window !== 'undefined' && window.location
+      ? window.location.origin
+      : '';
+  return `${base}${path}`;
+});
+
+const apiStub = vi.hoisted(() => ({
+  createSession: vi.fn(),
+  deleteSession: vi.fn(),
+  listSessions: vi.fn(),
+  resumeSession: vi.fn(),
+}));
+
+const runtimeStub = vi.hoisted(() => ({
+  attach: vi.fn(),
+  detach: vi.fn(),
+  has: vi.fn(() => false),
+  get: vi.fn<
     (sid: string) =>
       | { reconnectAttempts: number; hasEverAttached: boolean }
       | undefined
   >(() => undefined),
-);
+  sendInput: vi.fn(),
+  sendResize: vi.fn(),
+  notePendingWrite: vi.fn(),
+  noteWriteFlushed: vi.fn(),
+  subscribeOutput: vi.fn(() => () => {}),
+}));
 
-vi.mock('../src/session-runtime', () => ({
-  sessionRuntime: {
-    attach: runtimeAttach,
-    detach: runtimeDetach,
-    has: vi.fn(() => false),
-    get: runtimeGet,
-    sendInput: vi.fn(),
-    sendResize: vi.fn(),
-    notePendingWrite: vi.fn(),
-    noteWriteFlushed: vi.fn(),
-    subscribeOutput: vi.fn(() => () => {}),
-  },
+// Aliases for tests that already reference these names.
+const runtimeAttach = runtimeStub.attach;
+const runtimeDetach = runtimeStub.detach;
+const runtimeGet = runtimeStub.get;
+
+vi.mock('../src/runtime-context', () => ({
+  useRuntime: () => runtimeStub,
+  useApi: () => apiStub,
+  useGetToken: () => () => 'test-token',
+  HttpError: HttpErrorMock,
 }));
 
 import { Sidebar } from '../src/components/Sidebar';
@@ -64,6 +98,60 @@ describe('Sidebar', () => {
         text: async () => '',
       }) as unknown as Response,
     ) as unknown as typeof fetch;
+    // Wire api stubs to call globalThis.fetch with the same URL shape the
+    // real @ccsm/core wrappers produce (baseUrl prefix is the jsdom origin;
+    // tests assert with toContain so the prefix is harmless).
+    apiStub.createSession.mockReset();
+    apiStub.createSession.mockImplementation(async (token: string) => {
+      const res = await globalThis.fetch(fetchUrl('/api/sessions'), {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({}),
+      });
+      if (!res.ok) throw new HttpErrorMock(res.status, 'create failed');
+      return res.json();
+    });
+    apiStub.deleteSession.mockReset();
+    apiStub.deleteSession.mockImplementation(
+      async (token: string, sid: string) => {
+        const res = await globalThis.fetch(
+          fetchUrl(`/api/sessions/${sid}`),
+          {
+            method: 'DELETE',
+            headers: { authorization: `Bearer ${token}` },
+          },
+        );
+        if (res.status === 404) return { ok: true };
+        if (!res.ok) throw new HttpErrorMock(res.status, 'delete failed');
+        return res.json();
+      },
+    );
+    apiStub.listSessions.mockReset();
+    apiStub.listSessions.mockImplementation(async (token: string) => {
+      const res = await globalThis.fetch(fetchUrl('/api/sessions'), {
+        method: 'GET',
+        headers: { authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new HttpErrorMock(res.status, 'list failed');
+      return res.json();
+    });
+    apiStub.resumeSession.mockReset();
+    apiStub.resumeSession.mockImplementation(
+      async (token: string, sid: string) => {
+        const res = await globalThis.fetch(
+          fetchUrl(`/api/sessions/${sid}/resume`),
+          {
+            method: 'POST',
+            headers: { authorization: `Bearer ${token}` },
+          },
+        );
+        if (!res.ok) throw new HttpErrorMock(res.status, 'resume failed');
+        return { ok: true };
+      },
+    );
   });
 
   afterEach(() => {
@@ -201,7 +289,7 @@ describe('Sidebar', () => {
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(String(fetchMock.mock.calls[0]![0])).toBe(
+    expect(String(fetchMock.mock.calls[0]![0])).toContain(
       '/api/sessions/bbbb2222/resume',
     );
     // detach must precede attach so a stale entry can't shortcut openWs.
@@ -356,7 +444,7 @@ describe('Sidebar', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [calledUrl, calledInit] = fetchMock.mock.calls[0]!;
-    expect(String(calledUrl)).toBe('/api/sessions');
+    expect(String(calledUrl)).toMatch(/\/api\/sessions$/);
     expect((calledInit as RequestInit).method).toBe('POST');
 
     const state = useStore.getState();
@@ -371,7 +459,7 @@ describe('Sidebar', () => {
 
   it('clicking an idle session row POSTs /resume then setActive', async () => {
     const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
-      expect(String(url)).toBe('/api/sessions/bbbb2222/resume');
+      expect(String(url)).toContain('/api/sessions/bbbb2222/resume');
       expect(init.method).toBe('POST');
       const headers = init.headers as Record<string, string>;
       expect(headers.authorization).toBe('Bearer test-token');
