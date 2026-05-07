@@ -1,5 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createSession, deleteSession, listSessions, HttpError } from '../src/api/sessions';
+import {
+  createSession,
+  deleteSession,
+  listSessions,
+  resumeSession,
+  HttpError,
+} from '../src/api/sessions';
 
 describe('api/sessions.createSession', () => {
   it('POSTs to /api/sessions with Bearer token and returns the parsed sid', async () => {
@@ -137,5 +143,57 @@ describe('api/sessions.listSessions (#670)', () => {
     await expect(
       listSessions('t', fetchMock as unknown as typeof fetch),
     ).rejects.toBe(boom);
+  });
+});
+
+describe('api/sessions.resumeSession (#671 / #668)', () => {
+  it('POSTs to /api/sessions/:sid/resume with Bearer token and returns {ok:true}', async () => {
+    const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
+      expect(url).toBe('/api/sessions/sid-abc/resume');
+      expect(init.method).toBe('POST');
+      const headers = init.headers as Record<string, string>;
+      expect(headers.authorization).toBe('Bearer secret-token');
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    const got = await resumeSession(
+      'secret-token',
+      'sid-abc',
+      fetchMock as unknown as typeof fetch,
+    );
+    expect(got).toEqual({ ok: true });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws HttpError(404) when the daemon no longer knows the sid', async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response('{"error":"not_found"}', { status: 404 }),
+    );
+    await expect(
+      resumeSession('t', 'ghost', fetchMock as unknown as typeof fetch),
+    ).rejects.toMatchObject({ name: 'HttpError', status: 404 });
+  });
+
+  it('throws HttpError(500) when pty spawn fails', async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response('{"error":"pty_spawn_failed"}', { status: 500 }),
+    );
+    await expect(
+      resumeSession('t', 's1', fetchMock as unknown as typeof fetch),
+    ).rejects.toMatchObject({ name: 'HttpError', status: 500 });
+  });
+
+  it('encodes the sid into the URL path', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      expect(url).toBe('/api/sessions/weird%20sid/resume');
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    await resumeSession(
+      't',
+      'weird sid',
+      fetchMock as unknown as typeof fetch,
+    );
   });
 });

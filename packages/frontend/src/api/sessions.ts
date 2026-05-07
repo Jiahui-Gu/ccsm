@@ -7,6 +7,7 @@ import {
   type CreateSessionResponse,
   type DeleteSessionResponse,
   type ListSessionsResponse,
+  type ResumeSessionResponse,
 } from '@ccsm/shared';
 
 export class HttpError extends Error {
@@ -105,4 +106,42 @@ export async function listSessions(
     );
   }
   return (await res.json()) as ListSessionsResponse;
+}
+
+/**
+ * POST /api/sessions/:sid/resume — task #668. Asks the daemon to (re-)spawn
+ * a PTY runtime for an already-known sid (typically a row that was hydrated
+ * from `listSessions` on bootstrap but never attached this page lifetime).
+ *
+ * Success → `{ ok: true }`. The daemon also responds 404 when the sid is
+ * unknown (caller should prune the row) and 5xx on spawn failure (caller
+ * should keep the row + let the user retry); both surface as `HttpError`
+ * with the matching status so the UI can branch on it.
+ */
+export async function resumeSession(
+  token: string,
+  sid: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ ok: true }> {
+  const res = await fetchImpl(API_PATHS.sessionResume(sid), {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new HttpError(
+      res.status,
+      `POST ${API_PATHS.sessionResume(sid)} failed: ${res.status} ${text}`.trim(),
+    );
+  }
+  // Narrow the union from @ccsm/shared down to the success arm. The error
+  // arm is unreachable on a 2xx by the daemon's own contract (#668).
+  const body = (await res.json()) as ResumeSessionResponse;
+  if (!('ok' in body) || body.ok !== true) {
+    throw new HttpError(
+      res.status,
+      `POST ${API_PATHS.sessionResume(sid)} returned 2xx without ok:true`,
+    );
+  }
+  return { ok: true };
 }

@@ -25,8 +25,13 @@
 // Per the dispatch spec we MUST NOT touch the daemon to add/move state for
 // these placeholders; they remain noop alerts so the layout shows complete.
 
-import { useState } from 'react';
-import { createSession, deleteSession, HttpError } from '../api/sessions';
+import { useRef, useState } from 'react';
+import {
+  createSession,
+  deleteSession,
+  resumeSession,
+  HttpError,
+} from '../api/sessions';
 import { sessionRuntime } from '../session-runtime';
 import { useStore } from '../store';
 
@@ -65,9 +70,18 @@ export function Sidebar() {
   const token = useStore((s) => s.token);
   const sessions = useStore((s) => s.sessions);
   const activeSid = useStore((s) => s.activeSid);
+  const sessionStatuses = useStore((s) => s.sessionStatuses);
   const addSession = useStore((s) => s.addSession);
   const setActive = useStore((s) => s.setActive);
   const closeSessionInStore = useStore((s) => s.closeSession);
+
+  // Track which sid the user most recently asked to switch to. If the user
+  // clicks A, we kick off `resumeSession(A)`, then they impatiently click B
+  // before A's POST settles, we MUST NOT setActive(A) when A's promise
+  // finally resolves — that would yank focus away from B. The ref is the
+  // single source of truth for "the click that wins"; any in-flight resume
+  // whose sid no longer matches the ref bails out before touching the store.
+  const pendingResumeRef = useRef<string | null>(null);
 
   // Mirror MainPane.resolveToken: prefer the store cache, fall back to
   // sessionStorage at action time so unit tests that stash the token in
@@ -99,6 +113,67 @@ export function Sidebar() {
       alert(`failed to create session: ${msg}`);
     } finally {
       setCreating(false);
+    }
+  };
+
+  /**
+   * Row click handler — task #671. Two paths:
+   *
+   *   1. Sid already has a live runtime entry (status `connecting` or
+   *      `attached`) → fast path: just `setActive`. This covers every
+   *      session created or attached in the current page lifetime that
+   *      still has a usable ws.
+   *
+   *   2. Sid is `idle` (typical of rows hydrated by #670 from
+   *      `listSessions` after a fresh page load) or in a terminal
+   *      `disconnected` / `exited` state (ws is gone, daemon will need
+   *      to re-spawn) → POST the daemon's /resume endpoint to spawn a
+   *      runtime, THEN `setActive`. The MainPane's existing attach flow
+   *      will pick it up.
+   *
+   * Errors:
+   *   - 404 → daemon doesn't know this sid anymore. Prune the row from
+   *     the store so the sidebar reflects reality.
+   *   - other → leave the row in place; user can click again to retry.
+   */
+  const onSelectSession = async (sid: string): Promise<void> => {
+    const status = sessionStatuses[sid];
+    // Fast path: the runtime is already live (in-flight or attached). No
+    // need to ask the daemon to re-spawn; setActive is enough.
+    if (status === 'connecting' || status === 'attached') {
+      pendingResumeRef.current = null;
+      setActive(sid);
+      return;
+    }
+
+    const tok = resolveToken();
+    if (!tok) {
+      alert('no token — append ?token=<t> to the URL and reload');
+      return;
+    }
+
+    pendingResumeRef.current = sid;
+    try {
+      await resumeSession(tok, sid);
+      // Race guard: a later click may have superseded us. Only commit if
+      // we're still the most recent click.
+      if (pendingResumeRef.current !== sid) return;
+      pendingResumeRef.current = null;
+      setActive(sid);
+    } catch (err) {
+      // Same race guard for the failure branch — if the user already moved
+      // on, swallow the error rather than nuking an unrelated row.
+      if (pendingResumeRef.current !== sid) return;
+      pendingResumeRef.current = null;
+      if (err instanceof HttpError && err.status === 404) {
+        // eslint-disable-next-line no-console
+        console.warn(`session ${sid} no longer exists on daemon, pruning row`);
+        closeSessionInStore(sid);
+      } else {
+        const msg = err instanceof Error ? err.message : String(err);
+        // eslint-disable-next-line no-console
+        console.warn(`failed to resume session ${sid}: ${msg}`);
+      }
     }
   };
 
@@ -198,7 +273,9 @@ export function Sidebar() {
                       type="button"
                       className="sidebar__session-row"
                       data-testid={`sidebar-session-row-${s.sid}`}
-                      onClick={() => setActive(s.sid)}
+                      onClick={() => {
+                        void onSelectSession(s.sid);
+                      }}
                     >
                       <span className="sidebar__session-marker">
                         {isActive ? '*' : ' '}
