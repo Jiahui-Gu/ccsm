@@ -3,7 +3,7 @@ name = "ccsm-tauri"
 version = "0.0.0"
 edition = "2021"
 description = "ccsm Tauri 2 desktop shell"
-authors = ["ccsm-web contributors"]
+authors = ["ccsm contributors"]
 
 [lib]
 name = "ccsm_tauri_lib"

@@ -3,12 +3,18 @@
 //   2. missing key returns null
 //   3. persistence across close/reopen
 //   4. corruption detection — non-sqlite junk file is backed up and replaced
+//   5. ccsm-web → ccsm legacy default-path fallback (Task #730)
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { openDb } from './db.mjs';
+import {
+  defaultDbPath,
+  legacyDefaultDbPath,
+  openDb,
+  resolveDefaultDbPath,
+} from './db.mjs';
 
 let tmpDir: string;
 let dbPath: string;
@@ -78,5 +84,69 @@ describe('openDb', () => {
     const entries = fs.readdirSync(tmpDir);
     const backups = entries.filter((name) => /\.corrupt-\d+$/.test(name));
     expect(backups.length).toBeGreaterThan(0);
+  });
+});
+
+describe('resolveDefaultDbPath (ccsm-web → ccsm legacy fallback)', () => {
+  let homeDir: string;
+  let homedirSpy: ReturnType<typeof vi.spyOn>;
+  let savedAppData: string | undefined;
+
+  beforeEach(() => {
+    homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-home-'));
+    homedirSpy = vi.spyOn(os, 'homedir').mockReturnValue(homeDir);
+    savedAppData = process.env.APPDATA;
+    // Redirect %APPDATA% (used by defaultDbPath on win32) into our fake home so
+    // the test is hermetic on every platform.
+    process.env.APPDATA = path.join(homeDir, 'AppData/Roaming');
+  });
+
+  afterEach(() => {
+    homedirSpy.mockRestore();
+    if (savedAppData === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = savedAppData;
+    try {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    } catch {
+      // best-effort
+    }
+  });
+
+  it('returns the new path when no db file exists at either location', () => {
+    expect(resolveDefaultDbPath()).toBe(defaultDbPath());
+  });
+
+  it('returns the new path when both files exist (legacy ignored)', () => {
+    const newPath = defaultDbPath();
+    fs.mkdirSync(path.dirname(newPath), { recursive: true });
+    fs.writeFileSync(newPath, '');
+    const legacy = legacyDefaultDbPath();
+    fs.mkdirSync(path.dirname(legacy), { recursive: true });
+    fs.writeFileSync(legacy, '');
+
+    expect(resolveDefaultDbPath()).toBe(newPath);
+  });
+
+  it('falls back to the legacy ccsm-web path when only legacy exists', () => {
+    const legacy = legacyDefaultDbPath();
+    fs.mkdirSync(path.dirname(legacy), { recursive: true });
+    fs.writeFileSync(legacy, '');
+
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+    try {
+      expect(resolveDefaultDbPath()).toBe(legacy);
+      const warned = stderrSpy.mock.calls.some((c) =>
+        String(c[0]).includes('legacy db'),
+      );
+      expect(warned).toBe(true);
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  });
+
+  it('legacy and current paths differ (sanity check for the rename)', () => {
+    expect(legacyDefaultDbPath()).not.toBe(defaultDbPath());
+    expect(legacyDefaultDbPath()).toMatch(/ccsm-web/);
+    expect(defaultDbPath()).not.toMatch(/ccsm-web/);
   });
 });

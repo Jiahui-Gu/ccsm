@@ -7,8 +7,13 @@
 //   - `user_version = 1` is hard-coded. There is no migration framework yet —
 //     when schema changes, bump the version and add explicit handling.
 //   - Default DB path:
-//       Windows: %APPDATA%/ccsm-web/ccsm.db
-//       *nix:    ~/.ccsm-web/ccsm.db
+//       Windows: %APPDATA%/ccsm/ccsm.db
+//       *nix:    ~/.ccsm/ccsm.db
+//     Legacy fallback: if the new path has no db file but a legacy
+//     `ccsm-web/ccsm.db` exists at the corresponding old location, the legacy
+//     file is opened in place (with a stderr warning) so users keep their data
+//     after the ccsm-web → ccsm rename. No automatic migration — the legacy
+//     file is read where it is.
 //   - Corruption recovery: on open, run `PRAGMA quick_check`. If it returns
 //     anything other than 'ok', rename the db / wal / shm files to
 //     `<name>.corrupt-<timestamp>` and re-open a fresh empty db. This mirrors
@@ -44,9 +49,42 @@ const USER_VERSION = 1;
 export function defaultDbPath(): string {
   if (process.platform === 'win32') {
     const base = process.env.APPDATA ?? path.join(os.homedir(), 'AppData/Roaming');
+    return path.join(base, 'ccsm', 'ccsm.db');
+  }
+  return path.join(os.homedir(), '.ccsm', 'ccsm.db');
+}
+
+/**
+ * Legacy default db path (pre `ccsm-web` → `ccsm` repo rename, 2026-05).
+ * Kept so existing users don't lose their KV state after upgrading: if no db
+ * exists at {@link defaultDbPath} but one exists here, we open the legacy file
+ * in place. No automatic copy/migration.
+ */
+export function legacyDefaultDbPath(): string {
+  if (process.platform === 'win32') {
+    const base = process.env.APPDATA ?? path.join(os.homedir(), 'AppData/Roaming');
     return path.join(base, 'ccsm-web', 'ccsm.db');
   }
   return path.join(os.homedir(), '.ccsm-web', 'ccsm.db');
+}
+
+/**
+ * Resolve the effective default db path, preferring the new location but
+ * falling back to the legacy `ccsm-web` location when the new file is absent
+ * and the legacy file exists. Emits a single stderr warning when the legacy
+ * fallback is taken.
+ */
+export function resolveDefaultDbPath(): string {
+  const current = defaultDbPath();
+  if (fs.existsSync(current)) return current;
+  const legacy = legacyDefaultDbPath();
+  if (legacy !== current && fs.existsSync(legacy)) {
+    process.stderr.write(
+      `ccsm: using legacy db at ${legacy} (move to ${current} to silence this warning)\n`,
+    );
+    return legacy;
+  }
+  return current;
 }
 
 function ensureParentDir(filePath: string): void {
@@ -113,7 +151,7 @@ function applySchema(db: Database.Database): void {
 }
 
 export function openDb(opts?: OpenDbOptions): KvDb {
-  const dbPath = opts?.path ?? defaultDbPath();
+  const dbPath = opts?.path ?? resolveDefaultDbPath();
   const db = openWithCorruptionGuard(dbPath);
   applySchema(db);
 

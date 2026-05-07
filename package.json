@@ -1,8 +1,12 @@
 {
-  "name": "ccsm-web",
+  "name": "ccsm",
   "version": "0.0.0",
   "private": true,
-  "description": "ccsm — Claude Code web session manager (monorepo root)",
+  "description": "ccsm — Claude Code session manager (monorepo root)",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Jiahui-Gu/ccsm.git"
+  },
   "engines": {
     "node": ">=20.0.0"
   },

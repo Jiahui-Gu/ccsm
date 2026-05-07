@@ -1,13 +1,13 @@
 # @ccsm/e2e-web
 
-End-to-end test rig for **ccsm-web**. Built on Playwright (headless Chromium)
+End-to-end test rig for **ccsm**. Built on Playwright (headless Chromium)
 with a daemon child-process fixture and a custom screenshot helper that emits
 both a `.png` and a `.txt` per snap.
 
 ## Why both PNG and TXT
 
 The manager driving this repo (Claude) cannot reliably view rendered pixels.
-**All acceptance evidence for ccsm-web tasks lives here as PNG + TXT pairs.**
+**All acceptance evidence for ccsm tasks lives here as PNG + TXT pairs.**
 The TXT contains page title, URL, visible text, the inventory of
 `data-testid` attributes, and any captured console warnings/errors — enough
 for the manager to `Read` and verify a feature without a human in the loop.

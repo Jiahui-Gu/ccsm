@@ -1,4 +1,4 @@
-# ccsm-web
+# ccsm
 
 Local Node daemon + browser tab for managing `claude` PTY sessions.
 
