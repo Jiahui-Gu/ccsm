@@ -13,6 +13,18 @@
 // processes — that itself is part of Phase 1's red signal.
 import { test, expect } from '@playwright/test';
 
+// R-13 (Task #31) — pipe SPA-side console / pageerror / requestfailed events
+// to the orchestrator's stderr so a red smoke run no longer needs the reader
+// to open the headed browser to find out *why* the SPA never reached the
+// post-token-boot UI. With these handlers in place a missing /token, a
+// failed CORS preflight, or an SPA throw all surface as a `[smoke spa …]`
+// line in the same stream as the stage markers.
+test.beforeEach(async ({ page }) => {
+  page.on('console', m => process.stderr.write(`[smoke spa console.${m.type()}] ${m.text()}\n`));
+  page.on('pageerror', e => process.stderr.write(`[smoke spa pageerror] ${e.message}\n${e.stack ?? ''}\n`));
+  page.on('requestfailed', r => process.stderr.write(`[smoke spa requestfailed] ${r.url()} -> ${r.failure()?.errorText}\n`));
+});
+
 test('cloud-mode happy path: open SPA, create session, run echo, see output', async ({ page }) => {
   // The Pages dev origin; SMOKE_BASE_URL is wired by the orchestrator.
   await page.goto('/');

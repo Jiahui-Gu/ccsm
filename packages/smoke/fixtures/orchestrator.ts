@@ -100,6 +100,60 @@ function spawnProc(opts: {
   return { name: opts.name, child, ready };
 }
 
+// R-13 (Task #31) — stage marker helper. Wraps each setup phase in a
+// monotonically-numbered `[smoke stage N/10: <name>]` start/ok/FAILED log line
+// so a red smoke run no longer needs the reader to guess which jump (cf-worker
+// spawn / pages-dev build / tauri spawn / daemon handshake / tunnel ws) of the
+// boot pipeline broke. Failures rethrow so globalSetup's catch arm runs the
+// existing teardown (line ~134); we do not change control flow.
+const STAGE_TOTAL = 10;
+async function runStage<T>(n: number, name: string, fn: () => Promise<T> | T): Promise<T> {
+  const start = Date.now();
+  process.stderr.write(`[smoke stage ${n}/${STAGE_TOTAL}: ${name}] start\n`);
+  try {
+    const result = await fn();
+    process.stderr.write(`[smoke stage ${n}/${STAGE_TOTAL}: ${name}] ok in ${Date.now() - start}ms\n`);
+    return result;
+  } catch (err) {
+    const msg = (err as Error).message;
+    process.stderr.write(
+      `[smoke stage ${n}/${STAGE_TOTAL}: ${name}] FAILED in ${Date.now() - start}ms: ${msg}\n`,
+    );
+    throw err;
+  }
+}
+
+// R-13 — attach a tail-watcher to the tauri child stdout/stderr that prints
+// stage markers 7-10 as their substrings flow by. These stages are logically
+// inside `await tauri.ready` (the lib.rs setup hook auto-spawns the daemon
+// child, the daemon handshake fires daemon-mgr's "daemon-ready" Tauri event,
+// and the daemon then dials the tunnel ws). Orchestrator does not drive them
+// directly, so we cannot wrap them in runStage; we observe them instead.
+// Observed-only marker: prints `[smoke stage N/10: <name>] observed at +Xms`
+// on first match, no FAILED variant (a missing stage manifests as the next
+// stage's runStage timing out, which still fingerprints which jump broke).
+function attachTauriStageWatcher(child: ChildProcess, t0: number): void {
+  const stages: Array<{ n: number; name: string; pattern: RegExp; seen: boolean }> = [
+    { n: 7, name: 'daemon spawn',          pattern: /daemon-mgr.*resolved daemon script|spawn_daemon_inner/i, seen: false },
+    { n: 8, name: 'daemonJob assign pid',  pattern: /job_object.*assign|daemon.*pid=\d+.*assigned/i,           seen: false },
+    { n: 9, name: 'daemon handshake ok',   pattern: /"ready"\s*:\s*true|handshake ok port=|daemon-ready/i,     seen: false },
+    { n: 10, name: 'tunnel ws connected',  pattern: /tunnel.*ws.*(connected|open)|tunnel-do.*upgrade/i,        seen: false },
+  ];
+  const watch = (chunk: Buffer): void => {
+    const text = chunk.toString('utf8');
+    for (const s of stages) {
+      if (!s.seen && s.pattern.test(text)) {
+        s.seen = true;
+        process.stderr.write(
+          `[smoke stage ${s.n}/${STAGE_TOTAL}: ${s.name}] observed at +${Date.now() - t0}ms\n`,
+        );
+      }
+    }
+  };
+  child.stdout?.on('data', watch);
+  child.stderr?.on('data', watch);
+}
+
 async function killHandle(h: ProcHandle): Promise<void> {
   return new Promise((resolveKill) => {
     if (h.child.exitCode !== null || h.child.signalCode !== null) {
@@ -154,7 +208,7 @@ async function globalSetupInner(): Promise<void> {
     readyTimeoutMs: 60_000,
   });
   handles.push(worker);
-  await worker.ready;
+  await runStage(1, 'cf-worker spawn ready', () => worker.ready);
 
   // 2. frontend-web Pages dev. Reverse-proxies /api/*, /token, /ws/*, /tunnel/*
   //    via functions/[[path]].ts to the worker above. Bound on PAGES_PORT.
@@ -174,27 +228,29 @@ async function globalSetupInner(): Promise<void> {
   //    README; cache-mtime gate is intentionally not added here to avoid
   //    drift between smoke and CI.
   const frontendWebCwd = join(REPO_ROOT, 'packages/frontend-web');
-  process.stderr.write('[pages-dev] building frontend-web dist/ (one-shot)…\n');
-  const buildStart = Date.now();
-  const buildResult = spawnSync(
-    'pnpm',
-    ['--filter', '@ccsm/frontend-web...', 'build'],
-    {
-      cwd: REPO_ROOT,
-      stdio: 'inherit',
-      shell: process.platform === 'win32',
-    },
-  );
-  if (buildResult.status !== 0) {
-    throw new Error(
-      `[pages-dev] frontend-web build failed (exit=${buildResult.status})`,
-    );
-  }
   const distDir = join(frontendWebCwd, 'dist');
-  try { statSync(distDir); } catch {
-    throw new Error(`[pages-dev] expected build output at ${distDir} but it does not exist`);
-  }
-  process.stderr.write(`[pages-dev] build done in ${Date.now() - buildStart}ms; serving ${distDir}\n`);
+  await runStage(2, 'pages-dev build done', () => {
+    process.stderr.write('[pages-dev] building frontend-web dist/ (one-shot)…\n');
+    const buildStart = Date.now();
+    const buildResult = spawnSync(
+      'pnpm',
+      ['--filter', '@ccsm/frontend-web...', 'build'],
+      {
+        cwd: REPO_ROOT,
+        stdio: 'inherit',
+        shell: process.platform === 'win32',
+      },
+    );
+    if (buildResult.status !== 0) {
+      throw new Error(
+        `[pages-dev] frontend-web build failed (exit=${buildResult.status})`,
+      );
+    }
+    try { statSync(distDir); } catch {
+      throw new Error(`[pages-dev] expected build output at ${distDir} but it does not exist`);
+    }
+    process.stderr.write(`[pages-dev] build done in ${Date.now() - buildStart}ms; serving ${distDir}\n`);
+  });
 
   const pages = spawnProc({
     name: 'pages-dev',
@@ -221,7 +277,7 @@ async function globalSetupInner(): Promise<void> {
     readyTimeoutMs: 60_000,
   });
   handles.push(pages);
-  await pages.ready;
+  await runStage(3, 'pages-dev spawn ready', () => pages.ready);
 
   // 3. Tauri release shell (R-9 v3.A, Task #15).
   //
@@ -251,7 +307,7 @@ async function globalSetupInner(): Promise<void> {
     );
   }
 
-  const tauri = spawnProc({
+  const tauri = await runStage(4, 'tauri spawn', () => spawnProc({
     name: 'tauri-release',
     cwd: REPO_ROOT,
     cmd: releaseExe,
@@ -273,8 +329,14 @@ async function globalSetupInner(): Promise<void> {
     // the Rust-side log or the daemon stdout passthrough.
     readyMatch: /daemon-ready|"ready"\s*:\s*true|handshake ok port=/i,
     readyTimeoutMs: 90_000,
-  });
+  }));
   handles.push(tauri);
+
+  // R-13 — start observing tauri child output for stage 7-10 substrings as
+  // soon as the child is alive, BEFORE the readyMatch await, so the markers
+  // print in real time rather than getting buffered behind stage 6.
+  const tauriT0 = Date.now();
+  attachTauriStageWatcher(tauri.child, tauriT0);
 
   // R-9 v3.D — bind the Tauri process tree to a Job Object with
   // KILL_ON_JOB_CLOSE *immediately after spawn, before awaiting ready*. This
@@ -294,21 +356,23 @@ async function globalSetupInner(): Promise<void> {
   // is the smoke-side equivalent for the case where smoke (the parent of
   // ccsm-tauri.exe) crashes.
   if (tauri.child.pid !== undefined) {
-    tauriJob = createSmokeJobObject();
-    try {
-      tauriJob.assign(tauri.child.pid);
-      process.stderr.write(`[smoke] assigned tauri pid=${tauri.child.pid} to Job Object\n`);
-    } catch (err) {
-      process.stderr.write(
-        `[smoke] WARN: failed to assign tauri pid=${tauri.child.pid} to Job Object: ${(err as Error).message}\n` +
-        `[smoke] WARN: descendants may zombie; smoke:build T4 fail-fast will catch on next run\n`,
-      );
-      try { tauriJob.close(); } catch { /* ignore */ }
-      tauriJob = null;
-    }
+    await runStage(5, 'tauriJob assign pid', () => {
+      tauriJob = createSmokeJobObject();
+      try {
+        tauriJob.assign(tauri.child.pid as number);
+        process.stderr.write(`[smoke] assigned tauri pid=${tauri.child.pid} to Job Object\n`);
+      } catch (err) {
+        process.stderr.write(
+          `[smoke] WARN: failed to assign tauri pid=${tauri.child.pid} to Job Object: ${(err as Error).message}\n` +
+          `[smoke] WARN: descendants may zombie; smoke:build T4 fail-fast will catch on next run\n`,
+        );
+        try { tauriJob.close(); } catch { /* ignore */ }
+        tauriJob = null;
+      }
+    });
   }
 
-  await tauri.ready;
+  await runStage(6, 'tauri ready', () => tauri.ready);
 
   process.env.SMOKE_BASE_URL = `http://127.0.0.1:${PAGES_PORT}`;
 }
