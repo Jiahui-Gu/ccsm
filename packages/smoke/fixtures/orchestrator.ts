@@ -1,53 +1,39 @@
-// Smoke orchestrator (Task #2).
+// Smoke orchestrator (Task #2 / R-9 v3.A split: build vs runtime).
 //
 // Brings up the 3 long-lived processes the cloud-mode happy path requires:
-//   1. wrangler dev    — runs the cf-worker (TunnelDO) on http://127.0.0.1:8787
+//   1. wrangler dev       — runs the cf-worker (TunnelDO) on http://127.0.0.1:8787
 //   2. wrangler pages dev — serves frontend-web's dist + Pages Functions
 //      `[[path]].ts` reverse-proxy on http://127.0.0.1:8788; Functions forward
 //      `/api/*` + `/token` + `/ws/*` + `/tunnel/*` to the worker above.
-//   3. tauri dev       — Rust shell that spawns the daemon as a child via
-//      `daemon_mgr::start_daemon`. The daemon prints handshake JSON
-//      `{ready, port, token}` on stdout; the shell parses it and emits a
-//      `daemon-ready` Tauri event. The shell is also responsible for setting
-//      `CCSM_TUNNEL_URL=ws://127.0.0.1:8787/tunnel/default` so the daemon
-//      dials our local wrangler dev worker instead of the prod
-//      `wss://cc-sm.pages.dev` tunnel.
+//   3. ccsm-tauri.exe (release) — already built by `pnpm smoke:build` into
+//      `packages/smoke/.fixtures/bin/ccsm-tauri.exe`. Spawned directly here.
+//      The Tauri lib.rs setup hook (R-4, Task #11) auto-spawns the daemon as
+//      a Rust child via `daemon_mgr::spawn_daemon_inner`; daemon_mgr resolves
+//      `packages/daemon/dist/index.mjs` via cwd-relative search, so we set
+//      cwd=REPO_ROOT when spawning the .exe.
+//
+// R-9 v3.A architecture (Task #15) — what we no longer do:
+//   - We do NOT spawn `cargo`. Cargo build is `pnpm smoke:build`'s job, run
+//     once before the smoke test, with --target-dir pinned to
+//     `.fixtures/cargo-target/` (physically isolated from the developer's
+//     `packages/frontend-tauri/src-tauri/target/`).
+//   - We do NOT spawn `vite` (frontend-tauri dev server). The release .exe
+//     already has the built frontendDist bundled (vite build ran during
+//     smoke:build).
+//   - We do NOT spawn `tauri dev` / `pnpm tauri dev`. The release .exe is
+//     what users actually run, and is what we test.
+//   - We do NOT need `VITE_DEV_PORT` / dev-port-collision dance — there is
+//     no dev server.
 //
 // Teardown reverses the spawn order. On Windows we rely on the Tauri Job
 // Object to reap the daemon descendant when the Tauri parent dies; non-windows
 // uses kill_on_drop semantics. wrangler dev / pages dev are killed via
-// process.kill on the spawn handle (their workerd children are reaped by the
-// shell on SIGTERM).
-//
-// Status (red phase, Task #2): this orchestrator is intentionally a single
-// file that exercises every plumbing concern listed above. Most of those
-// concerns are NOT yet implemented in the product:
-//   - Tauri's `start_daemon` does not accept / honor a CCSM_TUNNEL_URL env
-//     override (daemon_mgr.rs does not pass any tunnel-url env through).
-//   - `tauri dev` has no headless / no-window mode wired into tauri.conf.json
-//     so we can't run it on a CI-style headless workstation; the human dev
-//     sees a real window pop.
-//   - The webview's `App.tsx` does not auto-invoke `start_daemon` on mount,
-//     so the daemon is never spawned without a manual click.
-//   - The Pages Function `[[path]].ts` is configured for the production
-//     wss://cc-sm.pages.dev origin only; running it under wrangler pages dev
-//     against http://127.0.0.1:8787 requires either (a) a `?worker=` override
-//     param the Function honors, or (b) an env-var binding.
-//   - There is no `?daemon=` token-injection path that lets Playwright's
-//     chromium pick up the daemon-minted token without going through the
-//     SPA's sessionStorage bootstrap (the prod path uses a Pages Function
-//     header injection that doesn't fire under wrangler pages dev).
-//
-// All of those gaps are surfaced as the Phase 1 red output: the orchestrator
-// fails fast at the first missing piece. Phase 2 (turning red → green) is
-// scoped as a series of followup tasks (see PR body) so the changes do not
-// land in this single TDD-spec PR.
+// process.kill on the spawn handle.
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { findFreePort } from './find-port.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '../../..');
@@ -215,44 +201,55 @@ export default async function globalSetup(): Promise<void> {
   handles.push(pages);
   await pages.ready;
 
-  // 3. Tauri dev shell. Spawns the daemon as a Rust child via
-  //    daemon_mgr::start_daemon. We need the daemon to dial OUR local worker,
-  //    not the prod tunnel — that requires daemon_mgr.rs to honor a
-  //    CCSM_TUNNEL_URL env override (see followup #2-A).
+  // 3. Tauri release shell (R-9 v3.A, Task #15).
   //
-  //    R-7 fix (Task #9): the default vite dev port (1420) hard-wired in
-  //    `frontend-tauri/vite.config.ts` and `tauri.conf.json` collides when
-  //    the smoke orchestrator runs alongside a developer's own
-  //    `pnpm tauri dev`, or when CI runs more than one smoke pass on the
-  //    same host. We pick a free port here, hand it to vite via
-  //    `VITE_DEV_PORT`, and override Tauri's `build.devUrl` via the
-  //    `--config <path>` CLI flag (Tauri 2 merges this on top of
-  //    tauri.conf.json). We pass a *file path* rather than an inline JSON
-  //    string because on Windows pnpm's argv forwarding strips the embedded
-  //    double quotes and Tauri's clap parser then rejects the unquoted JSON.
-  //    Developers who run `pnpm tauri dev` without these get the unchanged
-  //    1420 default.
-  const taurFreePort = await findFreePort();
-  const taurDevUrl = `http://localhost:${taurFreePort}`;
-  const taurConfigPath = join(tempDataDir, 'tauri.smoke.conf.json');
-  writeFileSync(taurConfigPath, JSON.stringify({ build: { devUrl: taurDevUrl } }), 'utf8');
+  //    We spawn the prebuilt `ccsm-tauri.exe` from `.fixtures/bin/` directly.
+  //    `pnpm smoke:build` produces this artifact (cargo --release with an
+  //    isolated --target-dir under `.fixtures/cargo-target/`), so smoke runtime
+  //    never invokes cargo or vite. cwd is REPO_ROOT so daemon_mgr.rs's
+  //    cwd-relative search for `packages/daemon/dist/index.mjs` resolves.
+  //    The R-4 (Task #11) lib.rs setup hook auto-spawns the daemon — no
+  //    webview gesture needed.
+  //
+  //    FOLLOWUPs left for subsequent R-* tasks (see PR body):
+  //      - R-3: daemon_mgr does not propagate CCSM_TUNNEL_URL to the daemon
+  //        child yet, so the daemon dials the prod tunnel instead of our
+  //        wrangler dev worker. We still set the env on the parent for when
+  //        R-3 lands; the daemon currently ignores it.
+  //      - CCSM_DB_PATH is also computed here for when daemon_mgr starts
+  //        honoring an env override (today daemon_mgr pins db to
+  //        app_local_data_dir; smoke pollutes the real %LOCALAPPDATA% until
+  //        a follow-up adds an env override).
+  const exeName = process.platform === 'win32' ? 'ccsm-tauri.exe' : 'ccsm-tauri';
+  const releaseExe = join(__dirname, '..', '.fixtures', 'bin', exeName);
+  try { statSync(releaseExe); } catch {
+    throw new Error(
+      `[tauri-release] artifact missing: ${releaseExe}\n` +
+      `Run \`pnpm smoke:build\` first (one-shot release build).`,
+    );
+  }
+
   const tauri = spawnProc({
-    name: 'tauri-dev',
-    cwd: join(REPO_ROOT, 'packages/frontend-tauri'),
-    cmd: 'pnpm',
-    args: ['tauri', 'dev', '--config', taurConfigPath],
+    name: 'tauri-release',
+    cwd: REPO_ROOT,
+    cmd: releaseExe,
+    args: [],
     env: {
-      // FOLLOWUP: daemon_mgr.rs does not currently propagate this env to the
-      // daemon child. Smoke goes red here.
+      // FOLLOWUP (R-3): daemon_mgr.rs does not currently propagate this env
+      // to the daemon child; smoke goes red on the tunnel layer until R-3.
       CCSM_TUNNEL_URL: `ws://127.0.0.1:${WORKER_PORT}/tunnel/default`,
-      // Override db path to a smoke-private temp dir so we don't pollute the
-      // real %LOCALAPPDATA%/dev.ccsm.tauri/ccsm.db.
-      CCSM_DB_PATH: join(tempDataDir, 'ccsm.db'),
-      // Picked up by frontend-tauri/vite.config.ts; must match the devUrl
-      // override above.
-      VITE_DEV_PORT: String(taurFreePort),
+      // FOLLOWUP: daemon currently ignores parent CCSM_DB_PATH because
+      // daemon_mgr.rs pins it to app_local_data_dir. Set anyway so a
+      // follow-up that switches daemon_mgr to honor an override gets the
+      // smoke-private path automatically.
+      CCSM_DB_PATH: join(tempDataDir ?? tmpdir(), 'ccsm.db'),
     },
-    readyMatch: /daemon-ready|handshake ok port=/i,
+    // The lib.rs setup hook calls spawn_daemon_inner, which logs
+    // "[daemon-mgr] resolved daemon script: …" before spawning, then the
+    // daemon prints its `{"ready":true,...}` handshake on stdout which
+    // daemon_mgr forwards as a Tauri "daemon-ready" event. We match either
+    // the Rust-side log or the daemon stdout passthrough.
+    readyMatch: /daemon-ready|"ready"\s*:\s*true|handshake ok port=/i,
     readyTimeoutMs: 90_000,
   });
   handles.push(tauri);

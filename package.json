@@ -17,7 +17,9 @@
     "lint": "eslint . --max-warnings=0",
     "typecheck": "pnpm -r run typecheck",
     "test": "pnpm -r run test",
-    "smoke": "pnpm --filter @ccsm/smoke run smoke"
+    "smoke": "pnpm --filter @ccsm/smoke run smoke",
+    "smoke:build": "pnpm --filter @ccsm/smoke run smoke:build",
+    "smoke:run": "pnpm --filter @ccsm/smoke run smoke:run"
   },
   "devDependencies": {
     "@typescript-eslint/eslint-plugin": "^8.13.0",
