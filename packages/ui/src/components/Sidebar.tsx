@@ -313,7 +313,7 @@ export function Sidebar() {
               No sessions yet — click + New Session above
             </div>
           ) : (
-            <ul className="sidebar__session-list">
+            <ul className="sidebar__session-list" data-testid="session-list">
               {sessions.map((s) => {
                 const isActive = s.sid === activeSid;
                 return (

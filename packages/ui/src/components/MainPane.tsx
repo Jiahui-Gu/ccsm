@@ -239,7 +239,7 @@ export function MainPane() {
   }, [activeSid, token]);
 
   return (
-    <div className="main-pane">
+    <div className="main-pane" data-testid="terminal-pane">
       <div
         id="terminal"
         ref={containerRef}

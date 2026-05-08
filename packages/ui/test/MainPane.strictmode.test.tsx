@@ -228,6 +228,24 @@ describe('MainPane under React.StrictMode (T10 reshape of P1-3 regression)', () 
     expect(runtimeDetach).not.toHaveBeenCalled();
   });
 
+  it('exposes data-testid="terminal-pane" on the MainPane root (Task #28 smoke contract)', async () => {
+    // s3-happy-path.spec.ts probes getByTestId('terminal-pane') to click +
+    // assert the xterm scrollback. The host MUST be attached to a node that
+    // (a) is visible and (b) reflects the rendered terminal text. Anchor it
+    // on the .main-pane root so the testid stays stable regardless of which
+    // child contains the live xterm.
+    const { container } = render(
+      <StrictMode>
+        <MainPane />
+      </StrictMode>,
+    );
+
+    await flushMicrotasks();
+
+    const pane = container.querySelector('[data-testid="terminal-pane"]');
+    expect(pane).not.toBeNull();
+  });
+
   it('mounts a live xterm into the container after the StrictMode remount', async () => {
     const { container } = render(
       <StrictMode>
