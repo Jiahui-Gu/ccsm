@@ -204,6 +204,9 @@ importers:
       vitest:
         specifier: ^2.1.4
         version: 2.1.9(@types/node@22.19.17)(jsdom@25.0.1)
+      wrangler:
+        specifier: ^3.114.17
+        version: 3.114.17(@cloudflare/workers-types@4.20260508.1)
 
   packages/shared:
     devDependencies:
