@@ -219,12 +219,14 @@ export class TunnelDO extends DurableObject<Env> {
       // returns just the new one. CF closes the old socket on the wire when we
       // call .close(); the daemon side will just reconnect.
       const stale = this.getDaemonSocket();
+      console.log(`[TunnelDO] /tunnel/default: stale=${stale !== undefined}, allWs=${this.state.getWebSockets().length}`);
       if (stale !== undefined) {
         try { stale.close(1011, 'replaced by new daemon'); } catch { /* ignore */ }
       }
       const attachment: DaemonAttachment = { role: 'daemon' };
       this.state.acceptWebSocket(server, [TAG_DAEMON]);
       server.serializeAttachment(attachment);
+      console.log(`[TunnelDO] /tunnel/default: accepted, daemon count now=${this.state.getWebSockets(TAG_DAEMON).length}`);
       return new Response(null, { status: 101, webSocket: client });
     }
 
@@ -295,8 +297,9 @@ export class TunnelDO extends DurableObject<Env> {
     }
   }
 
-  override webSocketClose(ws: WebSocket, _code: number, _reason: string, _wasClean: boolean): void {
+  override webSocketClose(ws: WebSocket, code: number, reason: string, wasClean: boolean): void {
     const att = ws.deserializeAttachment() as SocketAttachment | null;
+    console.log(`[TunnelDO] webSocketClose role=${att?.role} code=${code} reason=${reason} wasClean=${wasClean}`);
     if (att === null) return;
     if (att.role === 'daemon') {
       this.handleDaemonClose();
