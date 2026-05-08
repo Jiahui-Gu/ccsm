@@ -84,6 +84,10 @@ test('cloud-mode happy path: open SPA, create session, run echo, see output', as
   });
 
   // Close the session (UI close button — daemon will tear down the PTY).
-  await page.getByRole('button', { name: /close session/i }).click();
+  // The close button uses CSS hover-only visibility (sidebar__session-close),
+  // so the a11y tree hides it until hover. Target by testid + hover first.
+  const closeBtn = page.getByTestId(/^sidebar-session-close-/).first();
+  await closeBtn.hover();
+  await closeBtn.click();
   await expect(page.getByTestId('terminal-pane')).not.toBeVisible({ timeout: 10_000 });
 });
