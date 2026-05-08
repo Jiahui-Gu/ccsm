@@ -173,11 +173,13 @@ describe('Sidebar', () => {
     }
   });
 
-  // Task #28 / R-12: smoke spec (s3-happy-path) probes data-testid="session-list"
-  // on the sessions <ul>. Missing this testid is what made dev-27's smoke run
-  // time out at getByTestId('session-list') even though the sidebar rendered
-  // correctly. Lock the contract so this can't regress silently.
-  it('exposes data-testid="session-list" on the sessions <ul> (smoke contract)', () => {
+  // Task #28 / R-12 / R-16: smoke spec (s3-happy-path) probes
+  // data-testid="session-list" BEFORE creating any session, so the testid
+  // must live on a stable wrapper that exists in BOTH empty and populated
+  // states. R-12 originally put the testid on the <ul>, which only renders
+  // when sessions.length > 0 — that broke smoke (Task #41 root cause).
+  // Lock the contract so this can't regress silently.
+  it('exposes data-testid="session-list" on a stable wrapper when sessions are populated', () => {
     useStore.setState({
       sessions: [
         { sid: 'aaaa1111', createdAt: 0, alive: true },
@@ -185,9 +187,19 @@ describe('Sidebar', () => {
       activeSid: 'aaaa1111',
     });
     render(<Sidebar />);
-    const list = screen.getByTestId('session-list');
-    expect(list).toBeDefined();
-    expect(list.tagName).toBe('UL');
+    const wrapper = screen.getByTestId('session-list');
+    expect(wrapper).toBeDefined();
+    // The <ul> with the actual session rows must be inside the wrapper.
+    expect(wrapper.querySelector('ul.sidebar__session-list')).not.toBeNull();
+  });
+
+  it('exposes data-testid="session-list" even when sessions is empty (R-16 contract)', () => {
+    // Default store state has sessions=[] — must still find the testid.
+    render(<Sidebar />);
+    const wrapper = screen.getByTestId('session-list');
+    expect(wrapper).toBeDefined();
+    // Empty-state hint lives inside the wrapper.
+    expect(wrapper.textContent).toMatch(/No sessions yet/);
   });
 
   it('shows the empty-state hint inside the GROUPS zone when sessions is empty', () => {
