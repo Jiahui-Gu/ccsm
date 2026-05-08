@@ -20,8 +20,11 @@
 //   - send() while not connected drops the frame (logs once). Caller must
 //     gate sends on getState() === 'connected' if they care.
 //   - Hello state: tracked per-connection (`helloSeen` reset on every dial).
-//     Until hello arrives, all inbound text frames are inspected as hello;
-//     binary or non-hello-text before hello → close 1008.
+//     Until hello arrives, raw passthrough is gated: binary frames and
+//     non-JSON text before hello → close 1008. JSON `{type:"http_req"}`
+//     control frames (Task #787) are accepted before hello — they're
+//     injected by the DO regardless of browser pairing and carry no browser
+//     token by design (Task #789, S3-D).
 //
 // timingSafeEqual constant-time comparison is reused from auth.mts (NOT
 // reimplemented) to honor the §1 5-tier "use existing in-repo" rule.
@@ -256,10 +259,18 @@ export class TunnelClient {
     });
 
     socket.on('message', (raw, isBinary) => {
-      // Hello-gate (Task #782): the FIRST frame after a browser pairs MUST be
-      // a JSON text frame `{type:"hello",token}`. Anything else → 1008 and
-      // we drop the frame (NOT forwarded to onFrame). After hello, raw
-      // passthrough resumes.
+      // Hello-gate (Task #782): a browser-paired daemon expects the FIRST
+      // text frame to be `{type:"hello",token}` so the daemon can authorize
+      // browser-bound raw OUTPUT/INPUT passthrough. Binary or non-JSON text
+      // before hello → 1008 (frame is NOT forwarded to onFrame).
+      //
+      // Task #789, S3-D: HTTP-over-tunnel control frames (`http_req`) are
+      // injected by the DO regardless of whether a browser is paired (the
+      // browser may hit `/api/*` directly without ever opening a /ws/default
+      // session). Those frames carry no browser token by design — the DO
+      // already gates HTTP entry — so they MUST be accepted before hello.
+      // We sniff text frames for `{type:"http_req"}` first; only "neither
+      // hello nor http_req" lands on the rejectHello path.
       if (!this.helloSeen) {
         if (isBinary) {
           this.rejectHello('binary frame before hello');
@@ -270,6 +281,13 @@ export class TunnelClient {
           : Array.isArray(raw)
             ? Buffer.concat(raw)
             : Buffer.from(raw as ArrayBuffer)).toString('utf8');
+        const ctrl = this.tryParseHttpReq(text);
+        if (ctrl !== null) {
+          // http_req is browser-pairing-independent; handle without flipping
+          // helloSeen so a subsequent browser pairing still requires hello.
+          void this.handleHttpReq(ctrl);
+          return;
+        }
         const hello = parseHello(text);
         if (hello === null) {
           this.rejectHello('malformed hello frame');

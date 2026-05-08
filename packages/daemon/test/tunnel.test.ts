@@ -488,4 +488,121 @@ describe('TunnelClient', () => {
     expect(onFrame).toHaveBeenCalledTimes(1);
     expect(onFrame.mock.calls[0][0]).toBe('not-a-control-frame');
   });
+
+  // ---- Task #789, S3-D: http_req allowed before hello ------------------
+
+  it('http_req before hello is accepted (browser may not be paired)', async () => {
+    // Reproduces the Task #789 bug: the DO forwards `/api/*` requests to the
+    // daemon ws as http_req frames whether or not a browser is paired. The
+    // pre-fix daemon hello-gate rejected http_req as a malformed hello and
+    // closed 1008, causing the daemon to reconnect-loop and the browser to
+    // see 502 from the DO's pendingHttp rejection path.
+    const fetchImpl = vi.fn(async () =>
+      new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } }),
+    );
+    const onFrame = vi.fn();
+    const client = new TunnelClient({
+      url: 'wss://x',
+      token: 'tok',
+      onFrame,
+      wsFactory: factory,
+      daemonLoopbackPort: 9999,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    client.start();
+    sockets[0].open();
+    expect(client.getBrowserToken()).toBeNull();
+
+    // No hello yet — the DO sends http_req directly.
+    sockets[0].pushText(JSON.stringify({
+      type: 'http_req',
+      id: 'pre-hello-1',
+      method: 'GET',
+      path: '/api/sessions',
+      headers: {},
+      body_b64: '',
+    }));
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+
+    // No 1008 close.
+    expect(sockets[0].closedCalls).toHaveLength(0);
+    // helloSeen stays false — a later browser pairing still requires hello.
+    expect(client.getBrowserToken()).toBeNull();
+    // http_res sent back.
+    const sent = sockets[0].sent.find((s) =>
+      typeof s === 'string' && s.includes('"type":"http_res"'),
+    ) as string | undefined;
+    expect(sent).toBeDefined();
+    const resFrame = JSON.parse(sent as string);
+    expect(resFrame.id).toBe('pre-hello-1');
+    expect(resFrame.status).toBe(200);
+    // onFrame NOT called for control frames.
+    expect(onFrame).not.toHaveBeenCalled();
+  });
+
+  it('after pre-hello http_req, a subsequent browser hello still flips helloSeen', async () => {
+    // Guard the invariant: handling http_req before hello must NOT silently
+    // mark helloSeen=true (otherwise a fake browser could skip the token
+    // check entirely by injecting an http_req as the first frame).
+    const fetchImpl = vi.fn(async () => new Response('', { status: 204 }));
+    const client = new TunnelClient({
+      url: 'wss://x',
+      token: 'good-token',
+      onFrame: () => {},
+      wsFactory: factory,
+      daemonLoopbackPort: 9999,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    client.start();
+    sockets[0].open();
+
+    sockets[0].pushText(JSON.stringify({
+      type: 'http_req',
+      id: 'p',
+      method: 'GET',
+      path: '/api/x',
+      headers: {},
+      body_b64: '',
+    }));
+    expect(client.getBrowserToken()).toBeNull();
+
+    // Now a browser pairs; hello with bad token must still be rejected.
+    sockets[0].pushText(JSON.stringify({ type: 'hello', token: 'WRONG' }));
+    expect(sockets[0].closedCalls).toHaveLength(1);
+    expect(sockets[0].closedCalls[0].code).toBe(1008);
+  });
+
+  it('binary frame before hello still closes 1008 even with http mux enabled', async () => {
+    // Raw passthrough channel must remain gated by hello.
+    const client = new TunnelClient({
+      url: 'wss://x',
+      token: 'tok',
+      onFrame: () => {},
+      wsFactory: factory,
+      daemonLoopbackPort: 9999,
+      fetchImpl: (async () => new Response('', { status: 204 })) as unknown as typeof fetch,
+    });
+    client.start();
+    sockets[0].open();
+    sockets[0].pushBinary(Buffer.from([1, 2, 3]));
+    expect(sockets[0].closedCalls).toHaveLength(1);
+    expect(sockets[0].closedCalls[0].code).toBe(1008);
+  });
+
+  it('non-control non-hello text before hello still closes 1008', async () => {
+    const client = new TunnelClient({
+      url: 'wss://x',
+      token: 'tok',
+      onFrame: () => {},
+      wsFactory: factory,
+      daemonLoopbackPort: 9999,
+      fetchImpl: (async () => new Response('', { status: 204 })) as unknown as typeof fetch,
+    });
+    client.start();
+    sockets[0].open();
+    sockets[0].pushText('plain-text-not-json');
+    expect(sockets[0].closedCalls).toHaveLength(1);
+    expect(sockets[0].closedCalls[0].code).toBe(1008);
+  });
 });
