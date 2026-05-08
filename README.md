@@ -82,6 +82,11 @@ token bootstrap 两条路径:
 浏览器可用; daemon 必须升级到带 PNA (Private Network Access) preflight
 支持的版本 (S2 起)。
 
+CI: 每次 push 到 `main` 或 `working` 且 diff 命中
+`packages/{frontend-web,ui,core,shared}` 时, `.github/workflows/deploy-pages.yml`
+自动构建并发布到 https://cc-sm.pages.dev (无需手动 `gh workflow run`)。
+也可在 Actions 页面 `workflow_dispatch` 手动重发 (e.g. 轮换 Cloudflare env 后)。
+
 ### 2. daemon-embedded (经典模式)
 
 单进程 `ccsm` 同时 serve frontend-web bundle + daemon API/WS, 浏览器直接
