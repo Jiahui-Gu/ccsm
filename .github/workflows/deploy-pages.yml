@@ -73,8 +73,14 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # Run wrangler from the frontend-web package so it picks up
+          # `wrangler.toml` (Task #785, S3-B). That config declares the
+          # TUNNEL_WORKER service binding consumed by `functions/[[path]].ts`,
+          # which reproxies /ws/default + /tunnel/default to the standalone
+          # ccsm-worker Worker (owner of the TunnelDO DO class).
+          workingDirectory: packages/frontend-web
           # `pages deploy` is the v3 wrangler subcommand for Pages uploads.
           # --project-name pins the target Pages project (cc-sm).
           # --branch=main mirrors the git branch so the Pages dashboard
           # surfaces deploys under the production environment.
-          command: pages deploy packages/frontend-web/dist --project-name=cc-sm --branch=main
+          command: pages deploy dist --project-name=cc-sm --branch=main
