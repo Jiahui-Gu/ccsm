@@ -1,0 +1,43 @@
+// S3 happy-path smoke (Task #2).
+//
+// Verifies the cloud-mode end-to-end pipeline:
+//   browser (Playwright chromium)
+//     → Pages dev (wrangler pages dev) reverse-proxy
+//       → cf-worker (wrangler dev) TunnelDO
+//         → outbound ws → daemon (Tauri-spawned)
+//           → node-pty session
+//
+// Scope: ONE happy path. Multi-session, reconnect, error recovery, UI polish
+// are out of scope (see PR body §"Out of scope"). Smoke goes red as long as
+// the orchestrator (fixtures/orchestrator.ts) cannot bring up all 3 child
+// processes — that itself is part of Phase 1's red signal.
+import { test, expect } from '@playwright/test';
+
+test('cloud-mode happy path: open SPA, create session, run echo, see output', async ({ page }) => {
+  // The Pages dev origin; SMOKE_BASE_URL is wired by the orchestrator.
+  await page.goto('/');
+
+  // Token boot: in cloud mode the SPA fetches /token via the Pages Function
+  // → cf-worker → tunnel → daemon. We assert the SPA reaches the
+  // post-token-boot UI rather than rendering the "no token" friendly error.
+  await expect(page.getByTestId('session-list')).toBeVisible({ timeout: 30_000 });
+
+  // Create a session — happy path uses default cwd / default args. The "new
+  // session" affordance lives in the @ccsm/ui SessionListPage.
+  await page.getByRole('button', { name: /new session/i }).click();
+  await expect(page.getByTestId('terminal-pane')).toBeVisible({ timeout: 30_000 });
+
+  // Send one command and assert PTY echo. The terminal is xterm.js; we read
+  // its rendered DOM rather than poking the terminal API directly.
+  await page.getByTestId('terminal-pane').click();
+  await page.keyboard.type('echo hello-from-smoke');
+  await page.keyboard.press('Enter');
+
+  await expect(page.getByTestId('terminal-pane')).toContainText('hello-from-smoke', {
+    timeout: 15_000,
+  });
+
+  // Close the session (UI close button — daemon will tear down the PTY).
+  await page.getByRole('button', { name: /close session/i }).click();
+  await expect(page.getByTestId('terminal-pane')).not.toBeVisible({ timeout: 10_000 });
+});
