@@ -43,10 +43,11 @@
 // scoped as a series of followup tasks (see PR body) so the changes do not
 // land in this single TDD-spec PR.
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { findFreePort } from './find-port.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '../../..');
@@ -218,11 +219,28 @@ export default async function globalSetup(): Promise<void> {
   //    daemon_mgr::start_daemon. We need the daemon to dial OUR local worker,
   //    not the prod tunnel — that requires daemon_mgr.rs to honor a
   //    CCSM_TUNNEL_URL env override (see followup #2-A).
+  //
+  //    R-7 fix (Task #9): the default vite dev port (1420) hard-wired in
+  //    `frontend-tauri/vite.config.ts` and `tauri.conf.json` collides when
+  //    the smoke orchestrator runs alongside a developer's own
+  //    `pnpm tauri dev`, or when CI runs more than one smoke pass on the
+  //    same host. We pick a free port here, hand it to vite via
+  //    `VITE_DEV_PORT`, and override Tauri's `build.devUrl` via the
+  //    `--config <path>` CLI flag (Tauri 2 merges this on top of
+  //    tauri.conf.json). We pass a *file path* rather than an inline JSON
+  //    string because on Windows pnpm's argv forwarding strips the embedded
+  //    double quotes and Tauri's clap parser then rejects the unquoted JSON.
+  //    Developers who run `pnpm tauri dev` without these get the unchanged
+  //    1420 default.
+  const taurFreePort = await findFreePort();
+  const taurDevUrl = `http://localhost:${taurFreePort}`;
+  const taurConfigPath = join(tempDataDir, 'tauri.smoke.conf.json');
+  writeFileSync(taurConfigPath, JSON.stringify({ build: { devUrl: taurDevUrl } }), 'utf8');
   const tauri = spawnProc({
     name: 'tauri-dev',
     cwd: join(REPO_ROOT, 'packages/frontend-tauri'),
     cmd: 'pnpm',
-    args: ['tauri', 'dev'],
+    args: ['tauri', 'dev', '--config', taurConfigPath],
     env: {
       // FOLLOWUP: daemon_mgr.rs does not currently propagate this env to the
       // daemon child. Smoke goes red here.
@@ -230,6 +248,9 @@ export default async function globalSetup(): Promise<void> {
       // Override db path to a smoke-private temp dir so we don't pollute the
       // real %LOCALAPPDATA%/dev.ccsm.tauri/ccsm.db.
       CCSM_DB_PATH: join(tempDataDir, 'ccsm.db'),
+      // Picked up by frontend-tauri/vite.config.ts; must match the devUrl
+      // override above.
+      VITE_DEV_PORT: String(taurFreePort),
     },
     readyMatch: /daemon-ready|handshake ok port=/i,
     readyTimeoutMs: 90_000,
