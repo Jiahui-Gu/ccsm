@@ -1,9 +1,5 @@
+import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './index';
-
-interface PairedSockets {
-  browser?: WebSocket | undefined;
-  daemon?: WebSocket | undefined;
-}
 
 /** Subprotocol prefix matching frontend-web/src/hostConfig.ts (Task #782). */
 const WS_SUBPROTOCOL_PREFIX = 'ccsm.';
@@ -14,6 +10,10 @@ const WS_SUBPROTOCOL_PREFIX = 'ccsm.';
  * deterministic upstream timeout instead of a Worker eviction.
  */
 const HTTP_OVER_TUNNEL_TIMEOUT_MS = 30_000;
+
+/** WebSocket Hibernation API tags (passed to state.acceptWebSocket). */
+const TAG_DAEMON = 'daemon';
+const TAG_BROWSER = 'browser';
 
 /**
  * Hello control frame the DO injects ahead of any browser→daemon traffic so
@@ -56,6 +56,23 @@ interface PendingHttp {
   resolve: (res: Response) => void;
   timer: ReturnType<typeof setTimeout>;
 }
+
+/**
+ * Per-socket state persisted across hibernation via ws.serializeAttachment.
+ * Browser sockets carry the bearer token extracted from Sec-WebSocket-Protocol
+ * so the daemon-side hello frame can be re-emitted if needed; daemon sockets
+ * carry no per-conn state today (helloSeen etc. live on the daemon side).
+ */
+interface BrowserAttachment {
+  role: 'browser';
+  token: string;
+}
+
+interface DaemonAttachment {
+  role: 'daemon';
+}
+
+type SocketAttachment = BrowserAttachment | DaemonAttachment;
 
 function buildHelloFrame(token: string): string {
   const frame: HelloFrame = { type: 'hello', token };
@@ -139,37 +156,52 @@ function extractBrowserToken(req: Request): { token: string; protocol: string } 
  *   /ws/default     — browser connects; closes 1011 if no daemon paired yet.
  *   /api/*, /token  — HTTP request multiplexed over the daemon ws (Task #787).
  *
- * Lifecycle:
- *   - On browser pair: DO extracts token from Sec-WebSocket-Protocol header,
- *     stores it on `browserToken`, echoes the same protocol on the 101
- *     response (RFC 6455 §4.2.2 — browser rejects the handshake otherwise),
- *     and emits a hello control frame `{type:"hello",token}` to the daemon
- *     before any browser->daemon raw forwarding (Task #782, S3-T6).
- *   - Frames (text + binary) after hello are forwarded as-is via ws.send.
- *     Text frames that parse as http_res control frames are routed to the
- *     pending HTTP request map instead of forwarded raw (Task #787, S3-C).
- *   - daemon close/error → browser closed with 1006/1011, both slots cleared
- *     so a fresh daemon can re-pair. Pending HTTP requests reject → 502.
- *   - browser close → daemon stays alive; next browser can re-pair. Token
- *     state is reset so a fresh browser gets re-authed.
+ * Hibernation (Task #790, S3-E): the DO uses Cloudflare's WebSocket
+ * Hibernation API (`state.acceptWebSocket` + `webSocketMessage` /
+ * `webSocketClose` / `webSocketError` class methods) so the runtime can
+ * evict the JS instance during idle periods without losing the daemon
+ * pairing. On wake, sockets are recovered via `state.getWebSockets(tag)`
+ * and per-socket state via `ws.deserializeAttachment()`.
+ *
+ * In-flight HTTP request promises (`pendingHttp`) are intentionally NOT
+ * persisted — hibernation invalidates the resolve closure, so any pending
+ * request at hibernate time is effectively dropped (browser retries).
  *
  * S3-T2 (Task #774). Token plumbing S3-T6 (Task #782). HTTP mux S3-C (Task #787).
+ * Hibernation S3-E (Task #790).
  */
-export class TunnelDO {
-  private state: DurableObjectState;
-  private env: Env;
-  private sockets: PairedSockets = {};
-  private browserToken: string | null = null;
+export class TunnelDO extends DurableObject<Env> {
   private pendingHttp = new Map<string, PendingHttp>();
 
   constructor(state: DurableObjectState, env: Env) {
-    this.state = state;
-    this.env = env;
-    void this.state;
-    void this.env;
+    super(state, env);
   }
 
-  async fetch(req: Request): Promise<Response> {
+  /** Convenience for state.getWebSockets — `this.ctx` is provided by the base class. */
+  private get state(): DurableObjectState {
+    return this.ctx;
+  }
+
+  /** Recover the daemon socket post-hibernation, or undefined if none.
+   * Filters by readyState so stale/closing sockets aren't selected. */
+  private getDaemonSocket(): WebSocket | undefined {
+    const arr = this.state.getWebSockets(TAG_DAEMON);
+    for (const ws of arr) {
+      if (ws.readyState === WebSocket.OPEN) return ws;
+    }
+    return undefined;
+  }
+
+  /** Recover the browser socket post-hibernation, or undefined if none. */
+  private getBrowserSocket(): WebSocket | undefined {
+    const arr = this.state.getWebSockets(TAG_BROWSER);
+    for (const ws of arr) {
+      if (ws.readyState === WebSocket.OPEN) return ws;
+    }
+    return undefined;
+  }
+
+  override async fetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const upgrade = req.headers.get('Upgrade');
 
@@ -190,14 +222,23 @@ export class TunnelDO {
     const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
 
     if (url.pathname.endsWith('/tunnel/default')) {
-      server.accept();
-      this.sockets.daemon = server;
-      this.wireDaemon(server);
+      // Don't proactively close any "stale" daemon ws here. CF's hibernation
+      // runtime fires webSocketClose on dead sockets and removes them from
+      // state on its own; readyState filtering in getDaemonSocket() handles
+      // the transient case. Closing here triggered a reconnect loop in prod
+      // because the still-open prior daemon ws (from a fast reconnect) got
+      // 1011'd by the next handshake, which the daemon then retried.
+      const attachment: DaemonAttachment = { role: 'daemon' };
+      this.state.acceptWebSocket(server, [TAG_DAEMON]);
+      server.serializeAttachment(attachment);
       return new Response(null, { status: 101, webSocket: client });
     }
 
     if (url.pathname.endsWith('/ws/default')) {
-      if (!this.sockets.daemon) {
+      const daemon = this.getDaemonSocket();
+      if (daemon === undefined) {
+        // No daemon paired — accept-and-close so the browser sees a clean 1011
+        // rather than a half-open handshake. We don't hibernate this socket.
         server.accept();
         server.close(1011, 'daemon offline');
         return new Response(null, { status: 101, webSocket: client });
@@ -210,17 +251,18 @@ export class TunnelDO {
         server.close(1008, 'missing token subprotocol');
         return new Response(null, { status: 101, webSocket: client });
       }
-      this.browserToken = extracted.token;
-      server.accept();
-      this.sockets.browser = server;
-      this.wireBrowser(server);
-      // Emit hello as the first daemon-bound frame. Synchronous send is fine
-      // here — the daemon ws is already accepted and we're inside the DO's
-      // single-threaded request handler.
+
+      // Don't proactively close any prior browser ws — same reasoning as the
+      // daemon path above. readyState filtering picks the live one.
+      const attachment: BrowserAttachment = { role: 'browser', token: extracted.token };
+      this.state.acceptWebSocket(server, [TAG_BROWSER]);
+      server.serializeAttachment(attachment);
+
+      // Emit hello as the first daemon-bound frame after this browser pair.
       try {
-        this.sockets.daemon?.send(buildHelloFrame(extracted.token));
+        daemon.send(buildHelloFrame(extracted.token));
       } catch {
-        /* daemon may have just dropped; close browser, slots clean up via daemon close */
+        /* daemon may have just dropped; cleanup happens via webSocketClose */
       }
       // Echo the chosen subprotocol on the 101 response so the browser
       // accepts the handshake (RFC 6455 §4.2.2 step 4).
@@ -234,9 +276,93 @@ export class TunnelDO {
     return new Response('Not Found', { status: 404 });
   }
 
+  // --- WebSocket Hibernation API event dispatch -------------------------
+  //
+  // Cloudflare runtime calls these class methods (instead of addEventListener
+  // callbacks) so the DO instance can be evicted during idle periods and
+  // re-instantiated lazily on next event. Sockets are recovered via
+  // state.getWebSockets(tag); per-socket state via ws.deserializeAttachment().
+
+  override webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): void {
+    const att = ws.deserializeAttachment() as SocketAttachment | null;
+    if (att === null) {
+      // Should not happen — we always serialize on accept. Defensive close.
+      try { ws.close(1011, 'no attachment'); } catch { /* ignore */ }
+      return;
+    }
+    if (att.role === 'daemon') {
+      this.handleDaemonMessage(message);
+    } else {
+      this.handleBrowserMessage(message);
+    }
+  }
+
+  override webSocketClose(ws: WebSocket, _code: number, _reason: string, _wasClean: boolean): void {
+    const att = ws.deserializeAttachment() as SocketAttachment | null;
+    if (att === null) return;
+    if (att.role === 'daemon') {
+      this.handleDaemonClose();
+    } else {
+      this.handleBrowserClose();
+    }
+  }
+
+  override webSocketError(ws: WebSocket, _err: unknown): void {
+    const att = ws.deserializeAttachment() as SocketAttachment | null;
+    if (att === null) return;
+    if (att.role === 'daemon') {
+      this.handleDaemonError();
+    }
+    // browser error: nothing to do (mirrors prior behavior — wireBrowser had no error handler).
+  }
+
+  private handleDaemonMessage(data: string | ArrayBuffer): void {
+    if (typeof data === 'string') {
+      const ctrl = tryParseControlFrame(data);
+      if (ctrl !== null) {
+        this.completeHttpRes(ctrl);
+        return;
+      }
+    }
+    const browser = this.getBrowserSocket();
+    if (browser !== undefined) {
+      try { browser.send(data); } catch { /* browser may have just dropped */ }
+    }
+  }
+
+  private handleBrowserMessage(data: string | ArrayBuffer): void {
+    const daemon = this.getDaemonSocket();
+    if (daemon !== undefined) {
+      try { daemon.send(data); } catch { /* daemon may have just dropped */ }
+    }
+  }
+
+  private handleDaemonClose(): void {
+    const browser = this.getBrowserSocket();
+    if (browser !== undefined) {
+      try { browser.close(1006, 'daemon disconnected'); } catch { /* ignore */ }
+    }
+    this.failAllPendingHttp(502, 'daemon disconnected');
+  }
+
+  private handleDaemonError(): void {
+    const browser = this.getBrowserSocket();
+    if (browser !== undefined) {
+      try { browser.close(1011, 'daemon error'); } catch { /* ignore */ }
+    }
+  }
+
+  private handleBrowserClose(): void {
+    // Daemon stays alive; nothing to do beyond letting CF drop the ws ref.
+  }
+
   /** Test-only accessor for the currently-paired browser token. */
   getBrowserTokenForTest(): string | null {
-    return this.browserToken;
+    const browser = this.getBrowserSocket();
+    if (browser === undefined) return null;
+    const att = browser.deserializeAttachment() as SocketAttachment | null;
+    if (att === null || att.role !== 'browser') return null;
+    return att.token;
   }
 
   /** Test-only accessor for in-flight HTTP request count. */
@@ -250,7 +376,8 @@ export class TunnelDO {
    * Daemon offline → 503 immediately. Daemon drop while pending → 502.
    */
   private async proxyHttp(req: Request): Promise<Response> {
-    if (!this.sockets.daemon) {
+    const daemon = this.getDaemonSocket();
+    if (daemon === undefined) {
       return new Response('daemon offline', { status: 503 });
     }
     const id = crypto.randomUUID();
@@ -277,7 +404,7 @@ export class TunnelDO {
       }, HTTP_OVER_TUNNEL_TIMEOUT_MS);
       this.pendingHttp.set(id, { resolve, timer });
       try {
-        this.sockets.daemon!.send(JSON.stringify(frame));
+        daemon.send(JSON.stringify(frame));
       } catch {
         clearTimeout(timer);
         this.pendingHttp.delete(id);
@@ -310,48 +437,5 @@ export class TunnelDO {
         headers: frame.headers,
       }),
     );
-  }
-
-  private wireDaemon(ws: WebSocket): void {
-    ws.addEventListener('message', (ev: MessageEvent) => {
-      // Inspect text frames for control-frame envelopes (Task #787).
-      // Binary frames + non-control text fall through to browser passthrough.
-      if (typeof ev.data === 'string') {
-        const ctrl = tryParseControlFrame(ev.data);
-        if (ctrl !== null) {
-          this.completeHttpRes(ctrl);
-          return;
-        }
-      }
-      this.sockets.browser?.send(ev.data);
-    });
-    ws.addEventListener('close', () => {
-      try {
-        this.sockets.browser?.close(1006, 'daemon disconnected');
-      } catch {
-        /* browser may already be gone */
-      }
-      this.failAllPendingHttp(502, 'daemon disconnected');
-      this.sockets.browser = undefined;
-      this.sockets.daemon = undefined;
-      this.browserToken = null;
-    });
-    ws.addEventListener('error', () => {
-      try {
-        this.sockets.browser?.close(1011, 'daemon error');
-      } catch {
-        /* browser may already be gone */
-      }
-    });
-  }
-
-  private wireBrowser(ws: WebSocket): void {
-    ws.addEventListener('message', (ev: MessageEvent) => {
-      this.sockets.daemon?.send(ev.data);
-    });
-    ws.addEventListener('close', () => {
-      this.sockets.browser = undefined;
-      this.browserToken = null;
-    });
   }
 }
