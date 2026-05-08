@@ -145,6 +145,7 @@ export class SessionRuntime {
       hasEverAttached: false,
       pendingWrites: 0,
       paused: false,
+      pendingInput: [],
     };
     this.entries.set(sid, entry);
     this.openWs(entry, token);
@@ -177,9 +178,31 @@ export class SessionRuntime {
     this.entries.delete(sid);
   }
 
-  /** Send INPUT to the session's ws (no-op if not attached / not OPEN). */
+  /**
+   * Send INPUT to the session's ws.
+   *
+   * Task #61 (R-21) — buffer-until-open: keystrokes that arrive while the
+   * ws is `connecting` (or its `client` slot is briefly null between
+   * close and reconnect) are queued on `entry.pendingInput`, in arrival
+   * order, and flushed verbatim on the `attached` status edge. Without
+   * this buffer, the ~340ms createSession→ws-OPEN window in cloud-mode
+   * smoke silently drops every keystroke the user typed before xterm's
+   * onData saw an open socket — research-60 confirmed 22 dropped chars on
+   * a single happy-path run.
+   *
+   * If `sid` is unknown (no runtime entry) we drop on the floor — there's
+   * nothing to attach the queue to and the caller (xterm onData) already
+   * gates on `activeSidRef`. The OPEN-but-no-entry case is impossible.
+   */
   sendInput(sid: string, data: string): void {
-    this.entries.get(sid)?.client?.sendInput(data);
+    const entry = this.entries.get(sid);
+    if (!entry) return;
+    const client = entry.client;
+    if (client && client.getStatus() === 'attached') {
+      client.sendInput(data);
+      return;
+    }
+    entry.pendingInput.push(data);
   }
 
   /** Send RESIZE to the session's ws. */
@@ -294,6 +317,16 @@ export class SessionRuntime {
       entry.reconnectAttempts = 0;
       // #673 invariant: once true, never reset. See types.ts JSDoc.
       entry.hasEverAttached = true;
+      // Task #61 (R-21): flush keystrokes that arrived while the ws was
+      // still `connecting`. Order-preserving, no coalescing — each entry
+      // is one user-visible INPUT frame.
+      if (entry.pendingInput.length > 0 && entry.client) {
+        const queued = entry.pendingInput;
+        entry.pendingInput = [];
+        for (const data of queued) {
+          entry.client.sendInput(data);
+        }
+      }
     }
     this.publishStatus(entry);
   }

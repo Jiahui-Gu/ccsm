@@ -89,6 +89,19 @@ export interface SessionRuntimeEntry {
    * frame when this changes; otherwise a chatty PTY would spam frames.
    */
   paused: boolean;
+  /**
+   * Task #61 (R-21) — INPUT frames received via `sendInput` before the ws
+   * has reached OPEN. Without this queue, keystrokes typed during the
+   * createSession→ws-attached window (~340ms in cloud-mode smoke) hit
+   * `WsClient.sendInput`, see `readyState !== OPEN`, and are silently
+   * dropped. We push them here in arrival order and flush them on the
+   * `attached` status edge in `session-runtime.ts`.
+   *
+   * No coalescing — each user keystroke is a distinct INPUT chunk. The
+   * queue is unbounded by design (token boot only ever buffers a handful
+   * of keystrokes; an attached ws drains it instantly).
+   */
+  pendingInput: string[];
 }
 
 /**
