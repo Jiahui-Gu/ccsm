@@ -311,4 +311,127 @@ describe('TunnelDO', () => {
     expect(browser.closeCode).toBe(1011);
     expect(browser.closeReason).toBe('daemon error');
   });
+
+  // ---- HTTP-over-tunnel (Task #787, S3-C) -------------------------------
+
+  function makeHttpReq(path: string, method = 'GET', body?: string): Request {
+    return new Request(`https://example.test${path}`, {
+      method,
+      body,
+    });
+  }
+
+  it('proxyHttp returns 503 when no daemon paired', async () => {
+    const TunnelDO = await loadDO();
+    const inst = new TunnelDO(fakeState, fakeEnv);
+    const res = await inst.fetch(makeHttpReq('/api/sessions'));
+    expect(res.status).toBe(503);
+  });
+
+  it('proxyHttp serializes http_req frame to daemon and resolves on http_res', async () => {
+    const TunnelDO = await loadDO();
+    const inst = new TunnelDO(fakeState, fakeEnv);
+    await inst.fetch(makeReq('/tunnel/default'));
+    const daemon = created[0].server;
+
+    const respPromise = inst.fetch(makeHttpReq('/api/sessions'));
+    // Yield so the await req.arrayBuffer() and ws.send complete.
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(daemon.sent).toHaveLength(1);
+    const frame = JSON.parse(daemon.sent[0] as string);
+    expect(frame.type).toBe('http_req');
+    expect(frame.method).toBe('GET');
+    expect(frame.path).toBe('/api/sessions');
+    expect(typeof frame.id).toBe('string');
+    expect(frame.id.length).toBeGreaterThan(0);
+    expect(inst.getPendingHttpCountForTest()).toBe(1);
+
+    // Daemon sends back a control http_res frame.
+    const bodyText = JSON.stringify({ ok: true });
+    const body_b64 = btoa(bodyText);
+    daemon.emitMessage(JSON.stringify({
+      type: 'http_res',
+      id: frame.id,
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+      body_b64,
+    }));
+
+    const res = await respPromise;
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('application/json');
+    expect(await res.text()).toBe(bodyText);
+    expect(inst.getPendingHttpCountForTest()).toBe(0);
+  });
+
+  it('proxyHttp routes /token via the same path', async () => {
+    const TunnelDO = await loadDO();
+    const inst = new TunnelDO(fakeState, fakeEnv);
+    await inst.fetch(makeReq('/tunnel/default'));
+    const daemon = created[0].server;
+
+    const respPromise = inst.fetch(makeHttpReq('/token'));
+    await new Promise((r) => setTimeout(r, 0));
+
+    const frame = JSON.parse(daemon.sent[0] as string);
+    expect(frame.path).toBe('/token');
+
+    daemon.emitMessage(JSON.stringify({
+      type: 'http_res',
+      id: frame.id,
+      status: 200,
+      headers: {},
+      body_b64: btoa('tok'),
+    }));
+    const res = await respPromise;
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('tok');
+  });
+
+  it('http_res control frame is NOT forwarded as raw output to browser', async () => {
+    const TunnelDO = await loadDO();
+    const inst = new TunnelDO(fakeState, fakeEnv);
+    await inst.fetch(makeReq('/tunnel/default'));
+    await inst.fetch(makeReq('/ws/default', BROWSER_PROTO));
+    const daemon = created[0].server;
+    const browser = created[1].server;
+
+    // Start an http req so there's a pending entry for the http_res to land on.
+    const respPromise = inst.fetch(makeHttpReq('/api/sessions'));
+    await new Promise((r) => setTimeout(r, 0));
+    const reqFrame = JSON.parse(daemon.sent.at(-1) as string);
+
+    daemon.emitMessage(JSON.stringify({
+      type: 'http_res',
+      id: reqFrame.id,
+      status: 200,
+      headers: {},
+      body_b64: btoa('ok'),
+    }));
+    await respPromise;
+
+    // Browser should never have received the http_res control frame.
+    for (const sent of browser.sent) {
+      if (typeof sent === 'string') {
+        expect(sent.includes('"type":"http_res"')).toBe(false);
+      }
+    }
+  });
+
+  it('daemon close while http req pending rejects with 502', async () => {
+    const TunnelDO = await loadDO();
+    const inst = new TunnelDO(fakeState, fakeEnv);
+    await inst.fetch(makeReq('/tunnel/default'));
+    const daemon = created[0].server;
+
+    const respPromise = inst.fetch(makeHttpReq('/api/sessions'));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(inst.getPendingHttpCountForTest()).toBe(1);
+
+    daemon.emitClose();
+    const res = await respPromise;
+    expect(res.status).toBe(502);
+    expect(inst.getPendingHttpCountForTest()).toBe(0);
+  });
 });

@@ -330,4 +330,162 @@ describe('TunnelClient', () => {
     vi.spyOn(Math, 'random').mockReturnValue(0.9999);
     expect(client.computeBackoffMs(5)).toBeLessThanOrEqual(30_000);
   });
+
+  // ---- HTTP-over-tunnel (Task #787, S3-C) -------------------------------
+
+  it('handles inbound http_req: fetches loopback and replies http_res', async () => {
+    const fetchImpl = vi.fn(async (_url: string | URL, _init?: RequestInit) => {
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    const client = new TunnelClient({
+      url: 'wss://x',
+      token: 'tok',
+      onFrame: () => {},
+      wsFactory: factory,
+      daemonLoopbackPort: 12345,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    client.start();
+    sockets[0].open();
+    // Hello first.
+    sockets[0].pushText(JSON.stringify({ type: 'hello', token: 'tok' }));
+
+    sockets[0].pushText(JSON.stringify({
+      type: 'http_req',
+      id: 'req-1',
+      method: 'GET',
+      path: '/api/sessions',
+      headers: { authorization: 'Bearer tok' },
+      body_b64: '',
+    }));
+
+    // Wait for fetch + send.
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [calledUrl, calledInit] = fetchImpl.mock.calls[0];
+    expect(calledUrl).toBe('http://127.0.0.1:12345/api/sessions');
+    expect((calledInit as RequestInit).method).toBe('GET');
+    expect(((calledInit as RequestInit).headers as Record<string, string>).authorization)
+      .toBe('Bearer tok');
+
+    // Should have replied with an http_res text frame.
+    const sent = sockets[0].sent.find((s) =>
+      typeof s === 'string' && s.includes('"type":"http_res"'),
+    ) as string | undefined;
+    expect(sent).toBeDefined();
+    const resFrame = JSON.parse(sent as string);
+    expect(resFrame.id).toBe('req-1');
+    expect(resFrame.status).toBe(200);
+    expect(resFrame.headers['content-type']).toBe('application/json');
+    expect(Buffer.from(resFrame.body_b64, 'base64').toString('utf8'))
+      .toBe(JSON.stringify({ ok: true }));
+  });
+
+  it('http_req with body_b64 forwards decoded bytes to loopback fetch', async () => {
+    const fetchImpl = vi.fn(async (_url: string | URL, _init?: RequestInit) => {
+      return new Response('', { status: 204 });
+    });
+    const client = new TunnelClient({
+      url: 'wss://x',
+      token: 'tok',
+      onFrame: () => {},
+      wsFactory: factory,
+      daemonLoopbackPort: 4242,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    client.start();
+    sockets[0].open();
+    sockets[0].pushText(JSON.stringify({ type: 'hello', token: 'tok' }));
+
+    const payload = JSON.stringify({ foo: 'bar' });
+    sockets[0].pushText(JSON.stringify({
+      type: 'http_req',
+      id: 'req-2',
+      method: 'POST',
+      path: '/api/sessions',
+      headers: { 'content-type': 'application/json' },
+      body_b64: Buffer.from(payload, 'utf8').toString('base64'),
+    }));
+
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+
+    const init = fetchImpl.mock.calls[0][1] as RequestInit;
+    expect(init.method).toBe('POST');
+    expect(Buffer.isBuffer(init.body)).toBe(true);
+    expect((init.body as Buffer).toString('utf8')).toBe(payload);
+  });
+
+  it('http_req fetch failure → http_res status 502', async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new Error('ECONNREFUSED');
+    });
+    const client = new TunnelClient({
+      url: 'wss://x',
+      token: 'tok',
+      onFrame: () => {},
+      wsFactory: factory,
+      daemonLoopbackPort: 1,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    client.start();
+    sockets[0].open();
+    sockets[0].pushText(JSON.stringify({ type: 'hello', token: 'tok' }));
+
+    sockets[0].pushText(JSON.stringify({
+      type: 'http_req',
+      id: 'req-3',
+      method: 'GET',
+      path: '/api/sessions',
+      headers: {},
+      body_b64: '',
+    }));
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+
+    const sent = sockets[0].sent.find((s) =>
+      typeof s === 'string' && s.includes('"type":"http_res"'),
+    ) as string | undefined;
+    expect(sent).toBeDefined();
+    const resFrame = JSON.parse(sent as string);
+    expect(resFrame.id).toBe('req-3');
+    expect(resFrame.status).toBe(502);
+  });
+
+  it('http_req control frames are NOT forwarded to onFrame', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 204 }));
+    const onFrame = vi.fn();
+    const client = new TunnelClient({
+      url: 'wss://x',
+      token: 'tok',
+      onFrame,
+      wsFactory: factory,
+      daemonLoopbackPort: 1234,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    client.start();
+    sockets[0].open();
+    sockets[0].pushText(JSON.stringify({ type: 'hello', token: 'tok' }));
+
+    sockets[0].pushText(JSON.stringify({
+      type: 'http_req',
+      id: 'req-4',
+      method: 'GET',
+      path: '/api/sessions',
+      headers: {},
+      body_b64: '',
+    }));
+    // Plain non-control text still flows through onFrame.
+    sockets[0].pushText('not-a-control-frame');
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(onFrame).toHaveBeenCalledTimes(1);
+    expect(onFrame.mock.calls[0][0]).toBe('not-a-control-frame');
+  });
 });

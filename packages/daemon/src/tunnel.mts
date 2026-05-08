@@ -48,10 +48,24 @@ export interface TunnelClientOptions {
   /** Invoked once per inbound frame from the cloud (binary or text). */
   onFrame: (data: Buffer | string) => void;
   /**
+   * Loopback HTTP port the daemon is listening on. Used by the HTTP-over-
+   * tunnel path (Task #787, S3-C): incoming `http_req` control frames are
+   * fetched against `http://127.0.0.1:<port><path>` and the response is
+   * serialized back as an `http_res` control frame on the same ws. Pass 0
+   * to disable HTTP mux (tests / configs that only exercise raw ws).
+   */
+  daemonLoopbackPort?: number;
+  /**
    * DI seam for tests. Real code uses the default which constructs a real
    * `ws.WebSocket`. Tests inject a fake socket that implements WsLike.
    */
   wsFactory?: WsFactory;
+  /**
+   * DI seam for tests. Defaults to `globalThis.fetch` (Node 22). Tests
+   * inject a stub so we can drive http_req → http_res without binding a
+   * real loopback server.
+   */
+  fetchImpl?: typeof fetch;
 }
 
 /** Minimal subset of `ws.WebSocket` that TunnelClient relies on. */
@@ -78,6 +92,39 @@ function defaultWsFactory(url: string): WsLike {
 interface HelloFrame {
   type: 'hello';
   token: string;
+}
+
+/**
+ * HTTP-over-tunnel control frames (Task #787, S3-C). Mux the loopback REST
+ * surface over the same daemon-dialed ws so cloud browsers can hit
+ * `cc-sm.pages.dev/api/*` without a direct path to the NAT'd daemon.
+ */
+interface HttpReqFrame {
+  type: 'http_req';
+  id: string;
+  method: string;
+  path: string;
+  headers: Record<string, string>;
+  body_b64: string;
+}
+
+interface HttpResFrame {
+  type: 'http_res';
+  id: string;
+  status: number;
+  headers: Record<string, string>;
+  body_b64: string;
+}
+
+function parseHttpReq(parsed: Record<string, unknown>): HttpReqFrame | null {
+  if (parsed.type !== 'http_req') return null;
+  if (typeof parsed.id !== 'string' || parsed.id.length === 0) return null;
+  if (typeof parsed.method !== 'string') return null;
+  if (typeof parsed.path !== 'string') return null;
+  if (typeof parsed.body_b64 !== 'string') return null;
+  if (parsed.headers === null || typeof parsed.headers !== 'object') return null;
+  // Trust the DO; we already shape-checked the surface fields.
+  return parsed as unknown as HttpReqFrame;
 }
 
 function parseHello(text: string): HelloFrame | null {
@@ -111,6 +158,8 @@ export class TunnelClient {
   readonly token: string;
   private readonly onFrame: (data: Buffer | string) => void;
   private readonly wsFactory: WsFactory;
+  private readonly daemonLoopbackPort: number;
+  private readonly fetchImpl: typeof fetch;
 
   private state: TunnelState = 'idle';
   private ws: WsLike | null = null;
@@ -125,6 +174,8 @@ export class TunnelClient {
     this.token = opts.token;
     this.onFrame = opts.onFrame;
     this.wsFactory = opts.wsFactory ?? defaultWsFactory;
+    this.daemonLoopbackPort = opts.daemonLoopbackPort ?? 0;
+    this.fetchImpl = opts.fetchImpl ?? globalThis.fetch.bind(globalThis);
   }
 
   getState(): TunnelState {
@@ -249,7 +300,18 @@ export class TunnelClient {
           : Array.isArray(raw)
             ? Buffer.concat(raw)
             : Buffer.from(raw as ArrayBuffer);
-        this.onFrame(buf.toString('utf8'));
+        const text = buf.toString('utf8');
+        // Task #787: try to parse text frame as an http_req control frame
+        // before falling through to the raw S3-T6 OUTPUT/INPUT path. We only
+        // consider it a control frame if it parses as JSON with `type:
+        // "http_req"`; everything else (raw text output, frames lacking
+        // `type`) flows through onFrame untouched.
+        const ctrl = this.tryParseHttpReq(text);
+        if (ctrl !== null) {
+          void this.handleHttpReq(ctrl);
+          return;
+        }
+        this.onFrame(text);
       }
     });
 
@@ -269,6 +331,83 @@ export class TunnelClient {
       console.warn(`[ccsm/tunnel] closed code=${code}, will reconnect`);
       this.scheduleReconnect();
     });
+  }
+
+  private tryParseHttpReq(text: string): HttpReqFrame | null {
+    if (text.length === 0 || text.charCodeAt(0) !== 0x7b /* '{' */) return null;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return null;
+    }
+    if (parsed === null || typeof parsed !== 'object') return null;
+    return parseHttpReq(parsed as Record<string, unknown>);
+  }
+
+  /**
+   * Handle an inbound `http_req` frame: fetch the daemon's loopback HTTP
+   * server, serialize the response as `http_res`, send back on the same ws.
+   * Errors map to status 502 with text/plain body so the browser sees a
+   * deterministic upstream error instead of a hung request.
+   */
+  private async handleHttpReq(frame: HttpReqFrame): Promise<void> {
+    if (this.daemonLoopbackPort === 0) {
+      this.send(JSON.stringify({
+        type: 'http_res',
+        id: frame.id,
+        status: 503,
+        headers: { 'content-type': 'text/plain' },
+        body_b64: Buffer.from('http-over-tunnel disabled (no loopback port)').toString('base64'),
+      } satisfies HttpResFrame));
+      return;
+    }
+    const url = `http://127.0.0.1:${this.daemonLoopbackPort}${frame.path}`;
+    const body = frame.body_b64.length > 0
+      ? Buffer.from(frame.body_b64, 'base64')
+      : undefined;
+    // Strip hop-by-hop headers + the inbound Host so loopback fetch picks the
+    // right one. `content-length` will be recomputed by undici.
+    const headers: Record<string, string> = {};
+    for (const [k, v] of Object.entries(frame.headers)) {
+      const lk = k.toLowerCase();
+      if (lk === 'host' || lk === 'connection' || lk === 'content-length') continue;
+      headers[k] = v;
+    }
+    console.error(`[ccsm] tunnel: rx http_req ${frame.method} ${frame.path}`);
+    let response: globalThis.Response;
+    try {
+      const init: RequestInit = {
+        method: frame.method,
+        headers,
+        redirect: 'manual',
+      };
+      if (body !== undefined) {
+        init.body = body;
+      }
+      response = await this.fetchImpl(url, init);
+    } catch (err) {
+      this.send(JSON.stringify({
+        type: 'http_res',
+        id: frame.id,
+        status: 502,
+        headers: { 'content-type': 'text/plain' },
+        body_b64: Buffer.from(`upstream error: ${(err as Error).message}`).toString('base64'),
+      } satisfies HttpResFrame));
+      return;
+    }
+    const resHeaders: Record<string, string> = {};
+    response.headers.forEach((v, k) => {
+      resHeaders[k] = v;
+    });
+    const resBody = Buffer.from(await response.arrayBuffer());
+    this.send(JSON.stringify({
+      type: 'http_res',
+      id: frame.id,
+      status: response.status,
+      headers: resHeaders,
+      body_b64: resBody.toString('base64'),
+    } satisfies HttpResFrame));
   }
 
   private rejectHello(reason: string): void {
