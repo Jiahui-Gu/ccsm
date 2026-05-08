@@ -1,3 +1,4 @@
+import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './index';
 
 /** Subprotocol prefix matching frontend-web/src/hostConfig.ts (Task #782). */
@@ -169,15 +170,16 @@ function extractBrowserToken(req: Request): { token: string; protocol: string } 
  * S3-T2 (Task #774). Token plumbing S3-T6 (Task #782). HTTP mux S3-C (Task #787).
  * Hibernation S3-E (Task #790).
  */
-export class TunnelDO {
-  private state: DurableObjectState;
-  private env: Env;
+export class TunnelDO extends DurableObject<Env> {
   private pendingHttp = new Map<string, PendingHttp>();
 
   constructor(state: DurableObjectState, env: Env) {
-    this.state = state;
-    this.env = env;
-    void this.env;
+    super(state, env);
+  }
+
+  /** Convenience for state.getWebSockets — `this.ctx` is provided by the base class. */
+  private get state(): DurableObjectState {
+    return this.ctx;
   }
 
   /** Recover the daemon socket post-hibernation, or undefined if none. */
@@ -192,7 +194,7 @@ export class TunnelDO {
     return arr.length > 0 ? arr[0] : undefined;
   }
 
-  async fetch(req: Request): Promise<Response> {
+  override async fetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const upgrade = req.headers.get('Upgrade');
 
@@ -279,7 +281,7 @@ export class TunnelDO {
   // re-instantiated lazily on next event. Sockets are recovered via
   // state.getWebSockets(tag); per-socket state via ws.deserializeAttachment().
 
-  webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): void {
+  override webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): void {
     const att = ws.deserializeAttachment() as SocketAttachment | null;
     if (att === null) {
       // Should not happen — we always serialize on accept. Defensive close.
@@ -293,7 +295,7 @@ export class TunnelDO {
     }
   }
 
-  webSocketClose(ws: WebSocket, _code: number, _reason: string, _wasClean: boolean): void {
+  override webSocketClose(ws: WebSocket, _code: number, _reason: string, _wasClean: boolean): void {
     const att = ws.deserializeAttachment() as SocketAttachment | null;
     if (att === null) return;
     if (att.role === 'daemon') {
@@ -303,7 +305,7 @@ export class TunnelDO {
     }
   }
 
-  webSocketError(ws: WebSocket, _err: unknown): void {
+  override webSocketError(ws: WebSocket, _err: unknown): void {
     const att = ws.deserializeAttachment() as SocketAttachment | null;
     if (att === null) return;
     if (att.role === 'daemon') {
