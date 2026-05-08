@@ -42,8 +42,8 @@
 // fails fast at the first missing piece. Phase 2 (turning red → green) is
 // scoped as a series of followup tasks (see PR body) so the changes do not
 // land in this single TDD-spec PR.
-import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -149,29 +149,66 @@ export default async function globalSetup(): Promise<void> {
 
   // 2. frontend-web Pages dev. Reverse-proxies /api/*, /token, /ws/*, /tunnel/*
   //    via functions/[[path]].ts to the worker above. Bound on PAGES_PORT.
+  //
+  //    R-1 fix (Task #6): we serve the *built* `dist/` instead of running
+  //    `wrangler pages dev -- pnpm dev` (proxy mode). Reasons:
+  //      - `wrangler pages dev <directory> -- <cmd>` is mutually exclusive
+  //        in current wrangler (`-- <proxy-cmd>` requires NO directory arg,
+  //        and we can't pass a directory + `--port` + `-- pnpm dev` at the
+  //        same time without wrangler erroring out at startup), which is
+  //        why R-1 wedged the fixture before Task #6.
+  //      - Serving `dist/` matches prod Pages deploy semantics: same static
+  //        bundle + same `functions/[[path]].ts` reverse-proxy. No vite-dev
+  //        middleware divergence.
+  //    We build first (cheap incremental on warm tsc/vite caches) before
+  //    spawning wrangler. If build is slow on a cold machine, doc'd in
+  //    README; cache-mtime gate is intentionally not added here to avoid
+  //    drift between smoke and CI.
+  const frontendWebCwd = join(REPO_ROOT, 'packages/frontend-web');
+  process.stderr.write('[pages-dev] building frontend-web dist/ (one-shot)…\n');
+  const buildStart = Date.now();
+  const buildResult = spawnSync(
+    'pnpm',
+    ['--filter', '@ccsm/frontend-web...', 'build'],
+    {
+      cwd: REPO_ROOT,
+      stdio: 'inherit',
+      shell: process.platform === 'win32',
+    },
+  );
+  if (buildResult.status !== 0) {
+    throw new Error(
+      `[pages-dev] frontend-web build failed (exit=${buildResult.status})`,
+    );
+  }
+  const distDir = join(frontendWebCwd, 'dist');
+  try { statSync(distDir); } catch {
+    throw new Error(`[pages-dev] expected build output at ${distDir} but it does not exist`);
+  }
+  process.stderr.write(`[pages-dev] build done in ${Date.now() - buildStart}ms; serving ${distDir}\n`);
+
   const pages = spawnProc({
     name: 'pages-dev',
-    cwd: join(REPO_ROOT, 'packages/frontend-web'),
+    cwd: frontendWebCwd,
     cmd: 'pnpm',
     args: [
       'exec',
       'wrangler',
       'pages',
       'dev',
+      distDir,
       '--port',
       String(PAGES_PORT),
-      // FOLLOWUP: pages Function needs a way to be told the local worker
-      // origin. Currently wired to wss://cc-sm.pages.dev only.
-      '--',
-      'pnpm',
-      'dev',
+      '--ip',
+      '127.0.0.1',
     ],
     env: {
-      // FOLLOWUP: this env hand-off is currently a no-op — the Pages Function
-      // [[path]].ts does not read SMOKE_WORKER_ORIGIN. Smoke goes red here.
+      // FOLLOWUP (R-2): this env hand-off is currently a no-op — the Pages
+      // Function [[path]].ts hard-codes the prod worker origin. Smoke will
+      // go red on the next layer once R-1 unwedges.
       SMOKE_WORKER_ORIGIN: `http://127.0.0.1:${WORKER_PORT}`,
     },
-    readyMatch: /Compiled successfully|listening on/i,
+    readyMatch: /Ready on http|listening on http/i,
     readyTimeoutMs: 60_000,
   });
   handles.push(pages);
