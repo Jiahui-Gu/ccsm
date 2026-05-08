@@ -51,7 +51,7 @@ class FakeWs {
   onopen: (() => void) | null = null;
   onmessage: ((ev: { data: unknown }) => void) | null = null;
   onerror: (() => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((ev?: CloseEvent) => void) | null = null;
 
   constructor(public readonly url: string) {
     FakeWs.instances.push(this);
@@ -75,7 +75,7 @@ class FakeWs {
     if (this.readyState === FakeWs.CLOSED) return;
     this.closedByClient = true;
     this.readyState = FakeWs.CLOSED;
-    this.onclose?.();
+    this.onclose?.({ code: 1000, reason: '' } as CloseEvent);
   }
 
   // Test helpers
@@ -92,7 +92,9 @@ class FakeWs {
   serverClose(): void {
     if (this.readyState === FakeWs.CLOSED) return;
     this.readyState = FakeWs.CLOSED;
-    this.onclose?.();
+    // Pass a CloseEvent-shaped object so the R-17 close log (Task #45) can
+    // read `ev.code`/`ev.reason` without throwing.
+    this.onclose?.({ code: 1006, reason: '' } as CloseEvent);
   }
 }
 
