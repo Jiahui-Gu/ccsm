@@ -1,4 +1,4 @@
-// s2-spoof-origin.spec.ts — Task #753 (S2 收口 D, split from #744).
+// s2-spoof-origin.spec.ts — Task #753 (S2 closeout D, split from #744).
 //
 // Acceptance: prove the daemon's `classifyOrigin` rules hold at the HTTP
 // layer in chromium for three independent cases:

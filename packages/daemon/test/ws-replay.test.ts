@@ -363,7 +363,7 @@ describe('ws lastSeq replay (T8 #661)', () => {
 
     // No lastSeq -> server treats as 0, but spec wording allows "fresh = no
     // replay". Our impl: lastSeq=0 < outputSeq=2 -> we DO replay everything in
-    // ring. That's fine and matches DESIGN.md F4 ("从 ring buffer 取
+    // ring. That's fine and matches DESIGN.md F4 ("take from ring buffer
     // [lastSeq+1, currentSeq]"). Verify the replay arrives.
     let acc = '';
     while (acc.length < 'firstsecond'.length) {

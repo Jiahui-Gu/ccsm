@@ -1,8 +1,12 @@
 # ccsm — Design
 
-ccsm 是 Claude Code 的 web 端 session manager。一个本地 daemon 进程托管多条 `claude` PTY 会话, 浏览器 tab 通过 WebSocket 接入, 1:N fanout, 断线重连不丢输出。
+ccsm is a web-based session manager for Claude Code. A local daemon
+process hosts multiple `claude` PTY sessions; browser tabs attach over
+WebSocket with 1:N fanout, and reconnection does not lose output.
 
-> 架构灵感: Wave Terminal (sidecar + localhost ws + AuthKey)、JupyterLab Desktop (URL+token 启动)、ttyd (二进制 frame + PAUSE/RESUME backpressure)。
+> Architecture inspirations: Wave Terminal (sidecar + localhost ws + AuthKey),
+> JupyterLab Desktop (URL+token bootstrap), ttyd (binary frame +
+> PAUSE/RESUME backpressure).
 
 ---
 
@@ -10,90 +14,131 @@ ccsm 是 Claude Code 的 web 端 session manager。一个本地 daemon 进程托
 
 ### Goals
 
-- G1. 本地一条命令 `npx ccsm` 起 daemon, 终端打印 `http://127.0.0.1:<port>/?token=<t>`, 浏览器打开即用。
-- G2. 支持多条 `claude` 会话并发, 每条会话有独立 PTY、独立 ring buffer。
-- G3. 同一会话支持多个浏览器 tab 同时观看 (1:N fanout), 输入路由回唯一 PTY。前端单 tab 内只展示一个 session, 多 session 通过侧边栏切换。
-- G4. 断线重连: 客户端带 `lastSeq` 重连, daemon 从 ring buffer 补发缺失字节, 不丢输出。
-- G5. 后端零信任前端: 所有 ws/http 请求验 token + 验 origin (仅 `127.0.0.1` / `localhost`)。
+- G1. A single local command `npx ccsm` starts the daemon, the terminal
+  prints `http://127.0.0.1:<port>/?token=<t>`, and opening it in a browser
+  just works.
+- G2. Multiple `claude` sessions run concurrently; each session has its
+  own PTY and its own ring buffer.
+- G3. The same session can be watched by multiple browser tabs at once
+  (1:N fanout); input is routed to the single underlying PTY. A single
+  tab only renders one session at a time, switching sessions via the
+  sidebar.
+- G4. Reconnection: the client reconnects with `lastSeq`; the daemon
+  back-fills missing bytes from the ring buffer so output is never lost.
+- G5. The backend trusts nothing from the frontend: every ws/http request
+  is verified by token + origin (only `127.0.0.1` / `localhost`).
 
 ### Non-Goals
 
-- 不做桌面端外壳 (Electron/Tauri/PWA)。前端代码仅约束**不调用任何桌面 API**, 留出后续低成本套壳的口子。
-- 不做远程访问 (跨机访问、公网暴露、用户系统、多租户)。daemon 仅 listen 127.0.0.1。
-- 不做插件系统、theme marketplace、AI agent orchestration。
-- 不做 session 持久化到磁盘 (daemon 退出 = session 丢失, MVP 阶段可接受)。
+- No desktop shell (Electron/Tauri/PWA). The frontend code is constrained
+  to **not call any desktop API**, so a future shell is cheap to add.
+- No remote access (cross-machine access, public exposure, user system,
+  multi-tenancy). The daemon listens only on 127.0.0.1.
+- No plugin system, no theme marketplace, no AI agent orchestration.
+- No on-disk session persistence (daemon exit = sessions lost; acceptable
+  for the MVP).
 
 ---
 
 ## §2 Critical Flows
 
-### F1. 冷启动
+### F1. Cold start
 
-1. 用户跑 `npx ccsm`。
-2. daemon 进程启动, 选一个空闲端口 (默认尝试 17832, 占用则 +1 直到成功), 生成 32B 随机 token。
-3. stdout 打印一行: `ccsm ready: http://127.0.0.1:<port>/?token=<token>`。
-4. 进程前台运行, Ctrl-C 退出。
+1. The user runs `npx ccsm`.
+2. The daemon process starts, picks a free port (try 17832 first, +1 on
+   conflict until success), and generates a 32-byte random token.
+3. stdout prints one line: `ccsm ready: http://127.0.0.1:<port>/?token=<token>`.
+4. The process runs in the foreground; Ctrl-C exits.
 
-### F2. 浏览器接入
+### F2. Browser attach
 
-1. 用户点终端里的 URL, 浏览器打开。
-2. 前端 SPA 加载, 从 `window.location.search` 取 token, 存到 `sessionStorage` (不存 localStorage, 关 tab 即清)。
-3. 后续所有 http/ws 请求带 `Authorization: Bearer <token>` (http) 或 `?token=<token>` (ws 握手参数)。
+1. The user clicks the URL in the terminal; a browser opens.
+2. The frontend SPA loads, reads the token from `window.location.search`,
+   and stores it in `sessionStorage` (not localStorage; closing the tab
+   clears it).
+3. All subsequent http/ws requests carry `Authorization: Bearer <token>`
+   (http) or `?token=<token>` (ws handshake parameter).
 
-### F3. 新建 session
+### F3. Create a new session
 
-1. 前端 `POST /api/sessions { cwd?: string }` → daemon 返回 `{ sid, channelId }`。
-2. daemon spawn `node-pty` 跑 `claude` (走 `@anthropic-ai/claude-agent-sdk` 或直接 spawn cli, §6 详述), cwd 用请求里的或 daemon 启动时的。
-3. PTY 输出写入该 session 的 ring buffer + 通过 wps-style pubsub 推到所有订阅者。
+1. Frontend `POST /api/sessions { cwd?: string }` -> daemon returns
+   `{ sid, channelId }`.
+2. The daemon spawns `node-pty` running `claude` (via
+   `@anthropic-ai/claude-agent-sdk` or by spawning the CLI directly,
+   detailed in §6); cwd is taken from the request, falling back to the
+   daemon's startup cwd.
+3. PTY output is written to that session's ring buffer and pushed to all
+   subscribers via wps-style pubsub.
 
-### F4. Tab 接入 session
+### F4. Tab attaches to a session
 
-1. 前端 `WebSocket('ws://127.0.0.1:<port>/ws?token=<t>&sid=<sid>&lastSeq=<n>')`。
-2. daemon 验 token + 验 origin + 查 sid 存在 + 该 ws 加入该 session 的订阅者集合。
-3. 若 `lastSeq < currentSeq`, daemon 从 ring buffer 取 `[lastSeq+1, currentSeq]` 字节先发, 之后实时 fanout。
-4. 若 `lastSeq` 已被 ring buffer 覆盖 (太老), daemon 发 `{type: "reset"}` 控制帧, 客户端清屏重新订阅。
+1. Frontend `WebSocket('ws://127.0.0.1:<port>/ws?token=<t>&sid=<sid>&lastSeq=<n>')`.
+2. Daemon validates token + origin + that sid exists, then adds the ws to
+   that session's subscriber set.
+3. If `lastSeq < currentSeq`, the daemon reads
+   `[lastSeq+1, currentSeq]` from the ring buffer and sends those bytes
+   first, then fans out in real time.
+4. If `lastSeq` has already been overwritten (too old), the daemon sends
+   a `{type: "reset"}` control frame; the client clears the screen and
+   re-subscribes.
 
-### F5. 多 tab 同步 (跨浏览器 tab)
+### F5. Multi-tab sync (across browser tabs)
 
-1. 用户复制当前 URL 到第二个 tab, 同 sid 被两个 tab 订阅, 都收到相同输出流。
-2. 任一 tab 发 INPUT 帧 → daemon 路由到该 sid 的 PTY (PTY 只有一个)。
-3. PTY 回响 (echo) 走正常输出流, 两个 tab 都看到。
+1. The user copies the current URL to a second tab; the same sid is
+   subscribed by both tabs and both receive the same output stream.
+2. Either tab can send an INPUT frame -> the daemon routes it to that
+   sid's PTY (there is only one PTY).
+3. PTY echo flows back through the normal output stream, so both tabs
+   see it.
 
-注: 单 tab 内只渲染一个 session 的 terminal (active sid), 切 session 时 detach 旧 ws + attach 新 ws (或保留旧 ws 在后台收数据写入 ring, §7 详述)。
+Note: a single tab only renders one session's terminal (the active sid).
+Switching sessions detaches the old ws + attaches the new one (or keeps
+the old ws alive in the background to write into the ring; see §7 for
+details).
 
-### F6. 断线重连
+### F6. Reconnection
 
-1. 网络抖动 / 笔记本休眠 → ws close。
-2. 客户端记最后收到的 seq, 重新拨 ws 带 `lastSeq=<n>`。
-3. 走 F4 第 3 步补发逻辑。
+1. Network jitter / laptop sleep -> ws closes.
+2. The client remembers the last seq it received and re-dials the ws
+   with `lastSeq=<n>`.
+3. Replay logic from F4 step 3 kicks in.
 
 ---
 
 ## §3 Architecture
 
-### 进程模型
+### Process model
 
-- 单进程 daemon (Node.js)。
-- daemon 内三个组件:
-  - **HTTP server** (`fastify` 或 `node:http`): 静态资源 + REST API (`/api/sessions`, `/api/sessions/:sid` DELETE)。
-  - **WebSocket server** (`ws` 库, 挂在同一 http server 上, path `/ws`): 二进制帧 PTY 流。
-  - **Session manager**: `Map<sid, Session>`, 每个 Session 持 `node-pty.IPty` + ring buffer + 订阅者 Set。
+- Single daemon process (Node.js).
+- Three components inside the daemon:
+  - **HTTP server** (`fastify` or `node:http`): static assets + REST API
+    (`/api/sessions`, `DELETE /api/sessions/:sid`).
+  - **WebSocket server** (`ws` library, mounted on the same http server,
+    path `/ws`): binary-frame PTY stream.
+  - **Session manager**: `Map<sid, Session>`, each Session holding a
+    `node-pty.IPty` + ring buffer + subscribers set.
 
-### Sidecar 是否独立进程
+### Whether the sidecar is a separate process
 
-不独立。MVP 阶段所有逻辑在一个 Node 进程里。Wave 把 Go sidecar 独立出来是因为 Electron 主进程的 Node 不适合跑业务; 我们没有 Electron, daemon 本身就是业务进程。
+No. In the MVP all logic lives in a single Node process. Wave splits its
+Go sidecar out because the Electron main-process Node is unsuitable for
+business logic; we have no Electron, and the daemon itself is the
+business process.
 
 ### 1:N fanout
 
-- 每个 Session 有 `subscribers: Set<WebSocket>`。
-- PTY data event → 写 ring buffer → for-each subscribers 发 OUTPUT 帧。
-- subscriber close → 从 Set 移除; Set 空也不杀 PTY (用户可能只是关 tab, session 留着)。
+- Each Session has `subscribers: Set<WebSocket>`.
+- PTY data event -> write to ring buffer -> for-each subscribers send
+  OUTPUT frame.
+- subscriber close -> removed from the Set; an empty Set does not kill
+  the PTY (the user may have just closed a tab; the session stays).
 
 ### Ring buffer
 
-- 每个 Session 一个固定大小 (默认 4MB) 的环形字节缓冲。
-- 记录 `(seq, byteOffset)` 索引, 支持按 seq 查找区间。
-- 超过 buffer 大小的旧数据被覆盖, 此时重连客户端收到 `reset`。
+- Each Session has a fixed-size (default 4MB) ring byte buffer.
+- It tracks `(seq, byteOffset)` indices and supports range lookup by seq.
+- Old data beyond the buffer size is overwritten; in that case a
+  reconnecting client gets `reset`.
 
 ---
 
@@ -113,7 +158,7 @@ DELETE /api/sessions/:sid
        resp: { ok: true }
 ```
 
-所有请求要 `Authorization: Bearer <token>`, 否则 401。
+All requests require `Authorization: Bearer <token>`, otherwise 401.
 
 WebSocket:
 
@@ -121,13 +166,14 @@ WebSocket:
 GET /ws?token=<t>&sid=<sid>&lastSeq=<n>
 ```
 
-握手时验 token + origin + sid。握手成功后只走二进制帧 (§5)。
+Handshake validates token + origin + sid. After a successful handshake
+only binary frames are used (§5).
 
 ---
 
 ## §5 WebSocket Protocol
 
-二进制帧, 一个 ws message = 一个帧:
+Binary frames; one ws message = one frame:
 
 ```
 +--------+--------+--------+--------+
@@ -136,36 +182,44 @@ GET /ws?token=<t>&sid=<sid>&lastSeq=<n>
 +--------+--------+--------+--------+
 ```
 
-帧类型:
+Frame types:
 
-| type (hex) | 方向 | 含义 | payload |
-|-----------|------|------|---------|
-| 0x01 OUTPUT | s→c | PTY stdout/stderr | raw bytes |
-| 0x02 INPUT  | c→s | 用户输入 | raw bytes |
-| 0x03 RESIZE | c→s | 终端 resize | `cols (u16 BE), rows (u16 BE)` |
-| 0x04 PAUSE  | c→s | 客户端拥塞, 请暂停发 OUTPUT | empty |
-| 0x05 RESUME | c→s | 恢复发送 | empty |
-| 0x06 RESET  | s→c | ring buffer 已覆盖, 客户端清屏 | empty |
-| 0x07 EXIT   | s→c | PTY 退出 | `code (u32 BE)` |
+| type (hex) | direction | meaning | payload |
+|-----------|-----------|---------|---------|
+| 0x01 OUTPUT | s->c | PTY stdout/stderr | raw bytes |
+| 0x02 INPUT  | c->s | user input | raw bytes |
+| 0x03 RESIZE | c->s | terminal resize | `cols (u16 BE), rows (u16 BE)` |
+| 0x04 PAUSE  | c->s | client congested, please pause sending OUTPUT | empty |
+| 0x05 RESUME | c->s | resume sending | empty |
+| 0x06 RESET  | s->c | ring buffer overwritten, client should clear the screen | empty |
+| 0x07 EXIT   | s->c | PTY exited | `code (u32 BE)` |
 
-`seq` 字段:
+The `seq` field:
 
-- OUTPUT 帧: daemon 自增, 每帧 +1。客户端记 `lastSeq` 用于重连。
-- INPUT/RESIZE/PAUSE/RESUME: 由客户端写, daemon 不校验, 仅用于客户端自己排序 (一般忽略)。
+- OUTPUT frames: incremented by the daemon, +1 per frame. The client
+  records `lastSeq` for reconnection.
+- INPUT/RESIZE/PAUSE/RESUME: written by the client; the daemon does not
+  validate them and they are only used by the client itself for ordering
+  (usually ignored).
 
-PAUSE/RESUME 是显式 backpressure, 不依赖 ws 内部 buffer 水位 (那个不可靠)。
+PAUSE/RESUME is explicit backpressure; it does not rely on internal ws
+buffer water marks (those are unreliable).
 
 ---
 
 ## §6 SDK Integration
 
-`@anthropic-ai/claude-agent-sdk` 是 ESM-only。daemon 用法:
+`@anthropic-ai/claude-agent-sdk` is ESM-only. Daemon usage:
 
-- daemon 入口 `index.mjs` (ESM), 直接 `import { ... } from '@anthropic-ai/claude-agent-sdk'`。
-- 实际 spawn `claude` CLI 还是用 `node-pty`, 因为我们要 PTY 语义 (full-screen TUI、color、resize)。SDK 适合非 TUI 场景, MVP 不用。
-- 后续若要做 inline tool call 解析, 再引入 SDK 处理结构化输出 (out of MVP scope)。
+- The daemon entry point `index.mjs` (ESM) does
+  `import { ... } from '@anthropic-ai/claude-agent-sdk'` directly.
+- The actual `claude` CLI is still spawned via `node-pty`, because we
+  need PTY semantics (full-screen TUI, color, resize). The SDK is more
+  appropriate for non-TUI scenarios and is not used in the MVP.
+- If we later want inline tool-call parsing, we can pull in the SDK to
+  process structured output (out of MVP scope).
 
-`node-pty` 调用:
+`node-pty` invocation:
 
 ```js
 import { spawn } from 'node-pty';
@@ -180,47 +234,60 @@ pty.onData(data => session.broadcast(data));
 pty.onExit(({ exitCode }) => session.notifyExit(exitCode));
 ```
 
-Windows 上 `node-pty` 用 ConPTY, prebuilt binary 走 `npm install` 自带, 不需要用户装编译工具链 (验证: 起码 node-pty 1.0+ 在 Node 20 prebuilt 全)。
+On Windows `node-pty` uses ConPTY; the prebuilt binary ships via
+`npm install` so users do not need a build toolchain (verified: at least
+node-pty 1.0+ ships prebuilds for Node 20).
 
 ---
 
 ## §7 Frontend State
 
-技术栈: React + TypeScript + xterm.js + zustand。
+Stack: React + TypeScript + xterm.js + zustand.
 
-### 布局
+### Layout
 
-单页, 单浏览器 tab。沿用 v0.2 桌面端 sidebar + main 双栏结构 (可拖拽分隔条):
+Single page, single browser tab. Reuses the v0.2 desktop sidebar + main
+two-column structure (with a draggable splitter):
 
 ```
-┌─────────────────────────┬────────────────────────────────────┐
-│ [+ New Session ▾] [ 🔍 ]│                                    │
-│ ─────────────────────── │                                    │
-│ GROUPS              [+] │                                    │
-│   ▾ default             │                                    │
-│       * a1b2  10:31     │   xterm.js (active session)        │
-│         c3d4  10:42     │                                    │
-│   ▸ scratch             │                                    │
-│                         │                                    │
-│ ─────────────────────── │                                    │
-│ ▸ Archived              │                                    │
-│ ─────────────────────── │                                    │
-│ [ ⚙ Settings    ] [ ⬇ ] │                                    │
-└─────────────────────────┴────────────────────────────────────┘
++-------------------------+------------------------------------+
+| [+ New Session v] [ . ] |                                    |
+| ----------------------- |                                    |
+| GROUPS              [+] |                                    |
+|   v default             |                                    |
+|       * a1b2  10:31     |   xterm.js (active session)        |
+|         c3d4  10:42     |                                    |
+|   > scratch             |                                    |
+|                         |                                    |
+| ----------------------- |                                    |
+| > Archived              |                                    |
+| ----------------------- |                                    |
+| [ Settings    ] [ v ]   |                                    |
++-------------------------+------------------------------------+
 ```
 
-四个区:
+Four regions:
 
-- **顶**: `+ New Session` 主按钮 **(MVP 真实现, 点击直接创建)** + 搜索图标 **(占位, onClick 空)**。cwd 下拉 (`▾`) MVP 不做, 新建 session 的 cwd 固定用 daemon 启动时的 cwd (后续接 cwd picker)。
-- **中**: GROUPS 区, 用户可建多个分组, 每组下挂多个 session, session 行支持 drag-to-reorder 跨组拖动, 行右侧 hover 出操作菜单 (rename / move / close)。active session 高亮。
-- **下中**: Archived 折叠区, 默认折叠, 用来塞用户归档掉的旧 group。
-- **底**: Settings 按钮 + 导入按钮 **(均占位, 渲染按钮但 onClick 空 / 弹"未实现" toast)**。
+- **Top**: `+ New Session` primary button **(MVP, real, click creates a
+  session immediately)** + search icon **(placeholder, onClick is empty)**.
+  The cwd dropdown (`v`) is not built in MVP; new sessions use the cwd
+  the daemon was started with (a cwd picker can come later).
+- **Middle**: GROUPS region. The user can create multiple groups, each
+  containing multiple sessions; session rows support drag-to-reorder
+  across groups, with a hover action menu on the right (rename / move /
+  close). The active session is highlighted.
+- **Lower middle**: collapsed Archived region, used to hold groups the
+  user has archived. Collapsed by default.
+- **Bottom**: Settings button + Import button **(both placeholders;
+  rendered but onClick is empty / shows a "not implemented" toast)**.
 
-右侧 main 区 MVP 阶段只放 xterm.js, 不做 v0.2 的 StatusBar / FileTree / InputBar 等附属面板 (那些进 P2 之后)。
+The right main pane in MVP only hosts xterm.js; the v0.2 attached panes
+(StatusBar / FileTree / InputBar) are not included (they come post-P2).
 
-桌面端的 WindowControls (min/max/close) 不画 — 浏览器自带。
+The desktop WindowControls (min/max/close) are not drawn — the browser
+provides them.
 
-### Store 结构
+### Store layout
 
 ```ts
 type Session = {
@@ -229,7 +296,8 @@ type Session = {
   alive: boolean;
   ws: WebSocket | null;
   lastSeq: number;
-  // 每 session 持自己的 ring buffer 副本 (字节序列 + lastSeq), 切走时 ws 保活继续填
+  // each session keeps its own ring-buffer copy (byte sequence + lastSeq);
+  // when navigated away, ws stays alive and keeps filling
   scrollback: Uint8Array[];
 };
 
@@ -237,38 +305,45 @@ type Store = {
   token: string;
   sessions: Map<string, Session>;
   activeSid: string | null;
-  term: Terminal;  // 全局唯一 xterm.js 实例
+  term: Terminal;  // single global xterm.js instance
 
   createSession(cwd?: string): Promise<string>;
-  setActive(sid: string): void;          // detach 旧渲染, 用 active session 的 scrollback 重绘 + 接管输入
+  setActive(sid: string): void;          // detach old render; replay the active session's scrollback and take over input
   closeSession(sid: string): Promise<void>;
-  sendInput(data: string): void;          // 路由到 activeSid
+  sendInput(data: string): void;          // routed to activeSid
   resize(cols: number, rows: number): void;
 };
 ```
 
-### 切 session 行为
+### Session-switching behavior
 
-- 后台 session 的 ws 保持连接, 继续收 OUTPUT 写入 `scrollback`, 不渲染。
-- `setActive(sid)`: `term.reset()` → 把目标 session 的 `scrollback` 一次性 `term.write()` 回放 → 之后该 session 的 OUTPUT 直接 `term.write()`。
-- 关 session: REST DELETE + 关 ws + 从 Map 移除; 若关的是 active, 自动选 list 第一项 (或空状态)。
+- Background sessions keep their ws connected and continue receiving
+  OUTPUT into `scrollback` without rendering.
+- `setActive(sid)`: `term.reset()` -> `term.write()` the target session's
+  `scrollback` in one shot to replay -> from then on that session's
+  OUTPUT goes straight into `term.write()`.
+- Closing a session: REST DELETE + close ws + remove from the Map. If
+  the closed session was active, automatically pick the first item in
+  the list (or fall back to empty state).
 
-### 重连策略
+### Reconnection strategy
 
-- ws close → 等 1s 重试, 指数退避到 30s 上限。
-- 重连成功后带 `lastSeq` 走 §F6。
-- 收到 `RESET` 帧 → `term.reset()` + `lastSeq = 0`。
+- ws close -> wait 1s and retry, exponential backoff capped at 30s.
+- After successful reconnection, replay via `lastSeq` per §F6.
+- Receiving a `RESET` frame -> `term.reset()` + `lastSeq = 0`.
 
-### 桌面 API 禁用
+### Desktop API ban
 
-前端代码静态检查 (eslint rule) 禁止出现:
+A static check (eslint rule) on the frontend forbids:
 
 - `window.electron`
 - `window.__TAURI__`
 - `import('@tauri-apps/api/...')`
 - `import('electron')`
 
-CI 跑 `eslint --max-warnings=0`, 任何引用直接红。这是为了保证后续套壳时前端原样可用。
+CI runs `eslint --max-warnings=0`; any reference is an immediate fail.
+This guarantees the frontend stays drop-in usable when a shell is added
+later.
 
 ---
 
@@ -278,135 +353,182 @@ monorepo (pnpm workspace):
 
 ```
 ccsm/
-├── package.json              # workspace 根
-├── pnpm-workspace.yaml
-├── packages/
-│   ├── daemon/
-│   │   ├── package.json
-│   │   ├── tsconfig.json
-│   │   ├── src/
-│   │   │   ├── index.mts     # 入口, parse args, listen
-│   │   │   ├── http.mts      # fastify routes
-│   │   │   ├── ws.mts        # ws server + frame codec
-│   │   │   ├── session.mts   # Session class + ring buffer
-│   │   │   ├── manager.mts   # SessionManager
-│   │   │   └── auth.mts      # token + origin 校验
-│   │   └── bin/
-│   │       └── ccsm.mjs      # #!/usr/bin/env node 入口
-│   ├── frontend/
-│   │   ├── package.json
-│   │   ├── vite.config.ts
-│   │   ├── index.html
-│   │   └── src/
-│   │       ├── main.tsx
-│   │       ├── App.tsx
-│   │       ├── store.ts
-│   │       ├── components/
-│   │       │   ├── TopBar.tsx
-│   │       │   ├── SessionList.tsx
-│   │       │   └── TerminalView.tsx
-│   │       └── ws/
-│   │           ├── client.ts # ws 连接 + 重连 + 帧 codec
-│   │           └── frame.ts  # encode/decode 二进制帧
-│   └── shared/
-│       ├── package.json
-│       └── src/
-│           ├── frame.ts      # 帧常量 + 类型 (前后端共用)
-│           └── api.ts        # REST 类型 (前后端共用)
-└── README.md
+|-- package.json              # workspace root
+|-- pnpm-workspace.yaml
+|-- packages/
+|   |-- daemon/
+|   |   |-- package.json
+|   |   |-- tsconfig.json
+|   |   |-- src/
+|   |   |   |-- index.mts     # entry, parse args, listen
+|   |   |   |-- http.mts      # fastify routes
+|   |   |   |-- ws.mts        # ws server + frame codec
+|   |   |   |-- session.mts   # Session class + ring buffer
+|   |   |   |-- manager.mts   # SessionManager
+|   |   |   `-- auth.mts      # token + origin checks
+|   |   `-- bin/
+|   |       `-- ccsm.mjs      # #!/usr/bin/env node entry
+|   |-- frontend/
+|   |   |-- package.json
+|   |   |-- vite.config.ts
+|   |   |-- index.html
+|   |   `-- src/
+|   |       |-- main.tsx
+|   |       |-- App.tsx
+|   |       |-- store.ts
+|   |       |-- components/
+|   |       |   |-- TopBar.tsx
+|   |       |   |-- SessionList.tsx
+|   |       |   `-- TerminalView.tsx
+|   |       `-- ws/
+|   |           |-- client.ts # ws connect + reconnect + frame codec
+|   |           `-- frame.ts  # encode/decode binary frames
+|   `-- shared/
+|       |-- package.json
+|       `-- src/
+|           |-- frame.ts      # frame constants + types (shared client/server)
+|           `-- api.ts        # REST types (shared client/server)
+`-- README.md
 ```
 
-`daemon` 启动时把 `frontend` 的 `dist/` 当静态资源 serve。
+At startup the `daemon` serves the `frontend` `dist/` as static assets.
 
 ---
 
 ## §9 Phase Plan
 
-### Phase 1 — Walking skeleton (1 周)
+### Phase 1 — Walking skeleton (1 week)
 
-- daemon 起得来, 监听端口, 打 URL+token。
-- REST `POST /api/sessions` 能 spawn `claude` 并返 sid。
-- ws 接进来能看到 PTY 输出, 能打字。
-- 前端按 §7 布局画出来: sidebar (顶 New Session + Search + 中 GROUPS + 底 Settings/Import) + main (xterm.js)。其中 Search / Settings / Import / cwd `▾` 下拉**只渲染按钮, onClick 空 (或弹未实现 toast)**, 不影响布局完整度。`+ New Session` 主按钮真实现, 点击 → POST /api/sessions → setActive。
-- 单 session, 无 GROUPS 拖拽 / Archived / 多分组 (这些进 P2)。
-- **验收**: 点 `+ New Session` → 浏览器跑通 `claude --help` 等价交互, 输出对得上; Search/Settings/Import 点了不崩。
+- Daemon comes up, listens on a port, prints URL+token.
+- REST `POST /api/sessions` spawns `claude` and returns sid.
+- A ws connection can see PTY output and send keystrokes.
+- Frontend renders the §7 layout: sidebar (top New Session + Search +
+  middle GROUPS + bottom Settings/Import) + main (xterm.js). Search /
+  Settings / Import / cwd `v` dropdown **render as buttons but onClick
+  is empty (or shows a "not implemented" toast)**, which does not affect
+  layout completeness. The `+ New Session` primary button is real:
+  clicking it does POST /api/sessions -> setActive.
+- Single session, no GROUPS drag / Archived / multi-group support (those
+  go to P2).
+- **Acceptance**: clicking `+ New Session` -> the browser exchanges
+  something equivalent to `claude --help` and the output matches;
+  Search/Settings/Import do not crash when clicked.
 
-### Phase 2 — Multi-session + 重连 (1 周)
+### Phase 2 — Multi-session + reconnection (1 week)
 
-- 前端 GROUPS 区接通, `+ New Session` 创建后挂到 default group 下, 列表点击切换 active。
-- 后台 session 的 ws 保活 + scrollback 累积, setActive 时回放。
-- ring buffer + lastSeq 重连 (网络抖动场景)。
-- 跨浏览器 tab 复用 URL 看同一 sid 走通 (验 1:N fanout, 不做 UI 支持)。
-- **验收**: 创 3 个 session 来回切, scrollback 不丢; 关 tab 重开 (带原 URL+token) 输出对齐。
+- The frontend GROUPS region is wired up; `+ New Session` adds the new
+  session under the default group, and clicking a list entry switches
+  active.
+- Background sessions keep ws alive + accumulate scrollback; setActive
+  replays.
+- ring buffer + lastSeq reconnection (network jitter scenario).
+- Multiple browser tabs sharing the same URL viewing the same sid works
+  (verifies 1:N fanout; no UI support).
+- **Acceptance**: create 3 sessions and switch among them; scrollback is
+  not lost. Closing and reopening the tab (with the original URL+token)
+  shows aligned output.
 
-### Phase 3 — 健壮性 (1 周)
+### Phase 3 — Robustness (1 week)
 
-- PAUSE/RESUME backpressure (前端 xterm.js 写慢时主动 PAUSE)。
-- token 漏配 / origin 错误的 401/403 路径有测试覆盖。
-- daemon 进程退出时优雅杀所有 PTY (SIGHUP)。
-- Windows + macOS + Linux 各跑一次冷启动手测。
-- **验收**: 灌一段超大输出 (`yes` 或 1MB log), UI 不卡死, 关 tab 重开数据完整。
+- PAUSE/RESUME backpressure (the frontend xterm.js actively PAUSEs when
+  it is slow to write).
+- 401/403 paths for missing token / bad origin are covered by tests.
+- The daemon kills all PTYs gracefully on exit (SIGHUP).
+- Manual cold-start test on Windows + macOS + Linux.
+- **Acceptance**: blast a huge output (`yes` or 1MB log); the UI does
+  not freeze; closing and reopening the tab shows complete data.
 
 ---
 
 ## §10 Desktop Shell — Deferred
 
-MVP 不做。但前端约束 (§7) 保证后续三条路任选其一都成本低:
+Not in MVP. But the frontend constraints (§7) keep all three follow-on
+paths cheap:
 
-- **Electron**: 主进程 fork daemon (或 spawn 子进程), 主窗口 `loadURL('http://127.0.0.1:<port>/?token=<t>')`。前端代码零改动。
-- **Tauri**: 同上, Rust 进程 spawn daemon, webview 加载本地 URL。前端零改动 (前提是 §7 的 lint rule 一直没破)。
-- **PWA**: 加 manifest + service worker, 用户点 "安装" 装到桌面。daemon 仍要单独跑, PWA 只是浏览器壳。
+- **Electron**: the main process forks the daemon (or spawns it as a
+  child), and the main window does
+  `loadURL('http://127.0.0.1:<port>/?token=<t>')`. Zero frontend changes.
+- **Tauri**: same shape; a Rust process spawns the daemon and the
+  webview loads the local URL. Zero frontend changes (as long as the §7
+  lint rule has not been broken).
+- **PWA**: add manifest + service worker; the user clicks "Install" to
+  install to the desktop. The daemon still runs separately; the PWA is
+  just a browser shell.
 
-选哪条等真要做的时候再定, 当前不污染 daemon/frontend 设计。
+We pick which one when we actually need to; until then nothing taints
+the daemon/frontend design.
 
 ---
 
 ## §11 Deployment Topologies
 
-> 详细路线图见 `docs/ROADMAP.md`。本节只锁一条架构红线: **Tauri 壳与 Cloudflare Pages 入口完全独立, 互不依赖**。
+> See `docs/ROADMAP.md` for the detailed roadmap. This section locks
+> just one architectural red line: **the Tauri shell and the Cloudflare
+> Pages entry point are completely independent and do not depend on each
+> other.**
 
-ccsm 自 S2 起同时存在三种入口拓扑, 任一拓扑离线 / 下线均不影响其他拓扑:
+Starting from S2, ccsm has three concurrent entry-point topologies; any
+one of them being offline does not affect the others:
 
-1. **Tauri 桌面壳** — Rust 进程 spawn 本地 daemon, daemon 内嵌 (embed) 已 build 好的 `frontend-web` 静态资源, webview 加载 `http://127.0.0.1:<port>/?token=<t>`。**Tauri 壳永远不 fetch Cloudflare Pages**, 没有网络也能用, 安装包自带前端 bundle。
-2. **浏览器 → 本地 daemon** (S0/S1) — 用户在普通浏览器开 daemon 自带的 `http://127.0.0.1:<port>/`, 拿 daemon 直接 serve 的 SPA。
-3. **浏览器 → Cloudflare Pages → 本地 daemon** (S2) — 用户在浏览器开 `https://cc-sm.pages.dev`, Pages 派发同一份 SPA, SPA 在浏览器里 fetch loopback daemon (`http://127.0.0.1:<port>`); Pages 仅是静态资源 CDN, 不参与鉴权也不代理流量。
+1. **Tauri desktop shell** — a Rust process spawns the local daemon; the
+   daemon embeds the pre-built `frontend-web` static assets; the webview
+   loads `http://127.0.0.1:<port>/?token=<t>`. **The Tauri shell never
+   fetches Cloudflare Pages**, works offline, and the installer ships
+   the frontend bundle.
+2. **Browser -> local daemon** (S0/S1) — the user opens the daemon's
+   own `http://127.0.0.1:<port>/` in a regular browser and gets the SPA
+   that the daemon serves directly.
+3. **Browser -> Cloudflare Pages -> local daemon** (S2) — the user
+   opens `https://cc-sm.pages.dev` in a regular browser; Pages
+   distributes the same SPA, and the SPA fetches the loopback daemon
+   (`http://127.0.0.1:<port>`) from inside the browser. Pages is just a
+   static-asset CDN — it does not participate in auth and does not
+   proxy traffic.
 
-### 红线 (架构不变量)
+### Red lines (architectural invariants)
 
-- Tauri 壳的 webview URL **必须**是 `http://127.0.0.1:<port>/...`, **不得**指向 `https://cc-sm.pages.dev` 或任何远端 host。
-- Tauri 壳的源码 (`packages/frontend-tauri/`) 中**不得**出现 `pages.dev` / `cc-sm` / 远端 fetch 逻辑。CI grep guard 兜底, 见 `.github/workflows/ci.yml`。
-- 三种拓扑共用同一份 `frontend-web` 代码, 但分发渠道独立: Tauri 走 embed, S0/S1 走 daemon static, S2 走 Pages。任一渠道更新都不会偷偷把另一条强行切到自己上。
+- The Tauri shell's webview URL **must** be `http://127.0.0.1:<port>/...`;
+  it **must not** point to `https://cc-sm.pages.dev` or any remote host.
+- The Tauri shell source (`packages/frontend-tauri/`) **must not**
+  contain `pages.dev` / `cc-sm` / remote-fetch logic. CI grep guards
+  enforce this; see `.github/workflows/ci.yml`.
+- All three topologies share the same `frontend-web` codebase, but the
+  distribution channels are independent: Tauri uses embed, S0/S1 uses
+  daemon static, S2 uses Pages. Updating any one channel does not
+  silently switch the others.
 
 ---
 
 ## §12 Changelog
 
-- 2026-05-07 初版。web + daemon only, 桌面端 deferred。
-- 2026-05-07 §11 Deployment Topologies: Tauri shell guard — 三拓扑独立, Tauri 永不 fetch Pages (Task #711, S2-T10)。
-- 2026-05-08 §13 Deployment Modes 架构图 — 三种模式 ASCII + 安全约束 (Task #720, S2-T11)。
+- 2026-05-07 Initial version. Web + daemon only; desktop shell deferred.
+- 2026-05-07 §11 Deployment Topologies: Tauri shell guard — three topologies independent, Tauri never fetches Pages (Task #711, S2-T10).
+- 2026-05-08 §13 Deployment Modes architecture diagrams — three modes ASCII + security constraints (Task #720, S2-T11).
 
 ---
 
-## §13 Deployment Modes 架构图
+## §13 Deployment Modes architecture diagrams
 
-§11 锁了"三拓扑互不依赖"的红线, 本节给三种模式各画一张架构图 + 标
-静态资源走向 / daemon 位置 / origin / cross-vs-same-origin / 安全约束,
-对应 [README.md "Deployment modes"](./README.md#deployment-modes) 用户
-视角的 dev 视角补完。
+§11 locks the "three topologies are independent" red line; this section
+draws an architecture diagram for each of the three modes, labeling the
+static-asset path, the daemon location, the origin, the
+cross-vs-same-origin relationship, and the security constraints. It
+complements [README.md "Deployment modes"](./README.md#deployment-modes)
+from a developer's perspective.
 
-### 模式 1 — Cloudflare Pages + 本地 daemon (S2)
+### Mode 1 — Cloudflare Pages + local daemon (S2)
 
 ```
 +------------------------+        HTTPS GET (cached, 0 origin trip)
-| Browser (Chrome ≥120)  | -----------------------------+
+| Browser (Chrome >=120) | -----------------------------+
 | origin:                |                              v
 |   https://cc-sm        |                   +----------------------+
 |   .pages.dev           |                   | Cloudflare CDN edge  |
-+----+-------------------+                   | (静态 SPA bundle)    |
++----+-------------------+                   | (static SPA bundle)  |
      |                                       +----------+-----------+
      | (SPA boots in browser)                           |
      |                                                  | (build artifact)
-     | fetch + ws → loopback (cross-origin + PNA)       v
+     | fetch + ws -> loopback (cross-origin + PNA)      v
      |                                       +----------------------+
      +-------------------------------------> | local ccsm daemon    |
                                              | 127.0.0.1:9876       |
@@ -418,26 +540,29 @@ ccsm 自 S2 起同时存在三种入口拓扑, 任一拓扑离线 / 下线均不
 
 origin (browser)   : https://cc-sm.pages.dev
 origin (daemon)    : http://127.0.0.1:9876
-relation           : cross-origin (HTTPS → HTTP loopback)
+relation           : cross-origin (HTTPS -> HTTP loopback)
 static asset path  : Cloudflare CDN (`/_headers` immutable for /assets/*)
-daemon location    : 用户本机, loopback only
-token bootstrap    : URL `?token=` → sessionStorage; 或 `GET <daemonBase>/token`
+daemon location    : user's local machine, loopback only
+token bootstrap    : URL `?token=` -> sessionStorage; or `GET <daemonBase>/token`
 ```
 
-安全约束:
+Security constraints:
 
-- daemon `classifyOrigin()` allow-list 必须含 `https://cc-sm.pages.dev`
-  (S2-T1)。仿冒域 / PR-preview 子域默认拒 (除非 `CCSM_ALLOW_PAGES_PREVIEWS=1`,
-  S2-T8)。
-- Chromium ≥120 PNA: HTTPS 页 fetch loopback 时浏览器发
-  `Access-Control-Request-Private-Network: true`, daemon **必须**回
-  `Access-Control-Allow-Private-Network: true`, 否则 SPA 被拦 (S2-T1)。
-- W3C Secure Contexts §3.1 把 `127.0.0.1` 列为 Potentially Trustworthy,
-  HTTPS 页 fetch/ws loopback 不算 mixed content。
-- Cloudflare Pages 仅是 CDN, **不参与鉴权也不代理流量**, token 不离开
-  用户本机 ↔ 浏览器闭环。
+- The daemon's `classifyOrigin()` allow-list must include
+  `https://cc-sm.pages.dev` (S2-T1). Look-alike domains / PR-preview
+  subdomains are rejected by default (unless
+  `CCSM_ALLOW_PAGES_PREVIEWS=1`, S2-T8).
+- Chromium >=120 PNA: when an HTTPS page fetches loopback, the browser
+  sends `Access-Control-Request-Private-Network: true` and the daemon
+  **must** respond with `Access-Control-Allow-Private-Network: true`,
+  otherwise the SPA is blocked (S2-T1).
+- W3C Secure Contexts §3.1 lists `127.0.0.1` as Potentially Trustworthy,
+  so HTTPS pages fetching/ws-ing loopback do not count as mixed content.
+- Cloudflare Pages is just the CDN; it **does not participate in auth
+  and does not proxy traffic**. The token never leaves the
+  user-machine <-> browser loop.
 
-### 模式 2 — daemon-embedded (经典模式, S0/S1)
+### Mode 2 — daemon-embedded (classic mode, S0/S1)
 
 ```
 +------------------------+
@@ -447,38 +572,39 @@ token bootstrap    : URL `?token=` → sessionStorage; 或 `GET <daemonBase>/tok
 |   :17832               |
 +----+-------------------+
      |
-     | http GET / (静态 SPA, 同源)
-     | http /api/* + ws /ws (同源, 无 CORS / PNA)
+     | http GET / (static SPA, same-origin)
+     | http /api/* + ws /ws (same-origin, no CORS / PNA)
      v
 +------------------------+
 | local ccsm daemon      |
 | 127.0.0.1:17832        |
 |  - HTTP server:        |
-|    · static (frontend- |
-|      web bundle 内嵌)  |
-|    · /api/sessions     |
+|    * static (frontend- |
+|      web bundle embedded)|
+|    * /api/sessions     |
 |  - WS server: /ws      |
 +------------------------+
 
 origin (browser)   : http://127.0.0.1:17832
 origin (daemon)    : http://127.0.0.1:17832
-relation           : same-origin (无 CORS / 无 PNA preflight)
-static asset path  : daemon 内嵌 (frontend-web build artifact 打进 daemon dist)
-daemon location    : 用户本机, loopback only
-token bootstrap    : URL `?token=` (daemon stdout 给的那条)
+relation           : same-origin (no CORS / no PNA preflight)
+static asset path  : daemon-embedded (frontend-web build artifact bundled into daemon dist)
+daemon location    : user's local machine, loopback only
+token bootstrap    : URL `?token=` (the one printed by daemon stdout)
 ```
 
-安全约束:
+Security constraints:
 
-- 同源, 不需要 CORS / PNA。
-- token 仍走 `Authorization: Bearer` (HTTP) / `?token=` (WS)。
-- `classifyOrigin()` 允许 `null` (file://) 之外的本机 loopback origin。
+- Same-origin; no CORS / PNA needed.
+- Tokens still travel via `Authorization: Bearer` (HTTP) / `?token=` (WS).
+- `classifyOrigin()` allows local loopback origins other than `null`
+  (file://).
 
-### 模式 3 — Tauri 桌面壳
+### Mode 3 — Tauri desktop shell
 
 ```
 +-----------------------------------------------+
-| ccsm-tauri.exe (Rust 进程)                    |
+| ccsm-tauri.exe (Rust process)                 |
 |                                               |
 |   +--------------------+   stdout handshake   |
 |   | embedded webview   |   (port + token)     |
@@ -487,48 +613,52 @@ token bootstrap    : URL `?token=` (daemon stdout 给的那条)
 |   |   :<port>/?token=  |         |            |
 |   +---------+----------+         |            |
 |             |                    |            |
-|             | http + ws (同源)   |            |
+|             | http + ws (same-origin)         |
 |             v                    |            |
 |   +--------------------+         |            |
 |   | spawned daemon     |---------+            |
 |   | child process      |                      |
 |   | 127.0.0.1:<port>   |                      |
-|   |  · static SPA      |                      |
-|   |  · /api + /ws      |                      |
+|   |  * static SPA      |                      |
+|   |  * /api + /ws      |                      |
 |   +--------------------+                      |
 |                                               |
 +-----------------------------------------------+
 
-origin (webview)   : http://127.0.0.1:<port> (daemon-served, 同模式 2)
+origin (webview)   : http://127.0.0.1:<port> (daemon-served, same as mode 2)
 origin (daemon)    : http://127.0.0.1:<port>
-relation           : same-origin (webview 不指向 pages.dev)
-static asset path  : daemon 内嵌 (跟模式 2 共用 build)
-daemon location    : Tauri 进程 spawn 的 child, 随 Tauri 退出而退出
-token bootstrap    : Rust 读 daemon stdout, 拼进 webview initial URL
+relation           : same-origin (webview does not point to pages.dev)
+static asset path  : daemon-embedded (shares the build with mode 2)
+daemon location    : child spawned by the Tauri process; exits with Tauri
+token bootstrap    : Rust reads daemon stdout, splices it into the initial webview URL
 ```
 
-安全约束:
+Security constraints:
 
-- Tauri webview URL **必须**是 `http://127.0.0.1:<port>/...`, **不得**指向
-  `https://cc-sm.pages.dev` (§11 红线 + CI grep guard, S2-T10)。
-- daemon `classifyOrigin()` 同模式 2: 只放 loopback origin。Tauri 自身的
-  `tauri://localhost` (custom-protocol 资源 URL) 不会出现在 daemon 收到的
-  Origin 头里 (webview 加载的是 daemon URL, 不是 Tauri custom protocol)。
-- 离线可用: 安装包自带前端 bundle (build 时打进 daemon binary), 不依赖
-  Cloudflare Pages 在线。
-- daemon child 生命周期绑 Tauri 主进程, Tauri 退出 → daemon SIGTERM →
-  PTY SIGHUP, 不留僵尸 session。
+- The Tauri webview URL **must** be `http://127.0.0.1:<port>/...`; it
+  **must not** point to `https://cc-sm.pages.dev` (§11 red line + CI
+  grep guard, S2-T10).
+- The daemon's `classifyOrigin()` is the same as mode 2: only loopback
+  origins are allowed. Tauri's own `tauri://localhost` (custom-protocol
+  resource URLs) never appears in the daemon's Origin header (the
+  webview loads the daemon URL, not a Tauri custom protocol).
+- Offline-capable: the installer ships the frontend bundle (built into
+  the daemon binary at build time); no online dependency on Cloudflare
+  Pages.
+- The daemon child's lifecycle is bound to the Tauri main process;
+  Tauri exit -> daemon SIGTERM -> PTY SIGHUP, leaving no zombie
+  sessions.
 
-### 三模式对照表
+### Comparison of the three modes
 
-| 维度 | 模式 1 (Pages+local) | 模式 2 (embedded) | 模式 3 (Tauri) |
-|------|----------------------|-------------------|----------------|
-| 静态资源去哪 | Cloudflare CDN | daemon 内嵌 serve | daemon 内嵌 (随 app 安装) |
-| daemon 位置 | 用户本机 loopback | 用户本机 loopback | Tauri spawn 的 child |
+| dimension | mode 1 (Pages+local) | mode 2 (embedded) | mode 3 (Tauri) |
+|-----------|----------------------|-------------------|----------------|
+| static-asset location | Cloudflare CDN | daemon-embedded serve | daemon-embedded (ships with the app) |
+| daemon location | user machine loopback | user machine loopback | child spawned by Tauri |
 | browser origin | `https://cc-sm.pages.dev` | `http://127.0.0.1:<port>` | `http://127.0.0.1:<port>` |
-| daemon origin | `http://127.0.0.1:9876` | 同 browser | 同 browser |
+| daemon origin | `http://127.0.0.1:9876` | same as browser | same as browser |
 | same/cross-origin | cross | same | same |
-| CORS | 必须 (Pages allow-list) | 不需要 | 不需要 |
-| PNA preflight | 必须 (Chrome ≥120) | 不需要 | 不需要 |
-| 离线可用 | ❌ (Pages 必须可达取 SPA) | ✅ | ✅ |
-| 安装方式 | 跑 daemon + 开浏览器 | 跑 daemon + 开浏览器 | 装 ccsm-tauri 双击 |
+| CORS | required (Pages allow-list) | not needed | not needed |
+| PNA preflight | required (Chrome >=120) | not needed | not needed |
+| offline-capable | no (Pages must be reachable for SPA) | yes | yes |
+| install method | run daemon + open browser | run daemon + open browser | install ccsm-tauri, double-click |
