@@ -96,5 +96,5 @@ test('cloud-mode happy path: open SPA, create session, run echo, see output', as
   await sessionRow.hover();
   const closeBtn = page.getByTestId(/^sidebar-session-close-/).first();
   await closeBtn.click();
-  await expect(page.getByTestId('terminal-pane')).not.toBeVisible({ timeout: 10_000 });
+  await expect(page.getByTestId('terminal-pane')).toHaveAttribute('data-ws-state', 'closed', { timeout: 10_000 });
 });
