@@ -372,3 +372,28 @@ jobs:
           path: packages/frontend-tauri/src-tauri/target/release/bundle/msi/*.msi
           if-no-files-found: error
           retention-days: 30
+
+  tauri-red-line-guard:
+    # Architecture principle (docs/ROADMAP.md): Web and Tauri are parallel
+    # surfaces; Tauri is NOT on the cloud data path. This guard greps
+    # frontend-tauri sources for Cloudflare Pages/Workers references that
+    # would violate that principle (e.g. fallback to cc-sm.pages.dev,
+    # wss:// to *.pages.dev / *.workers.dev). Single-OS job is enough —
+    # this is a static text check, not a build.
+    name: Tauri red-line guard (no cloud refs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Grep frontend-tauri for cloud references
+        shell: bash
+        run: |
+          set +e
+          hits=$(grep -rE 'cc-sm\.pages\.dev|wss://[^"'\'' ]*\.pages\.dev|wss://[^"'\'' ]*\.workers\.dev' \
+            packages/frontend-tauri/src/ packages/frontend-tauri/src-tauri/src/ 2>/dev/null)
+          if [ -n "$hits" ]; then
+            echo "::error::frontend-tauri must NOT reference Cloudflare Pages/Workers (architecture principle, see docs/ROADMAP.md)"
+            echo "$hits"
+            exit 1
+          fi
+          echo "Tauri red-line guard: clean (0 hits)"
