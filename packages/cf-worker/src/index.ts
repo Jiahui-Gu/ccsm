@@ -10,6 +10,18 @@ export default {
     const isUpgrade =
       req.headers.get('Upgrade')?.toLowerCase() === 'websocket';
 
+    // R-15 (Task #37) — liveness probe for smoke orchestrator stage 1.
+    // wrangler dev's bare `GET /` is routed into TunnelDO via the catch-all
+    // below (well, used to be — now 404), and during cold-start workerd may
+    // hold the connection open without flushing headers (UND_ERR_HEADERS_TIMEOUT).
+    // `/health` is a static synchronous Response that touches no DO / KV /
+    // binding, so it returns headers as soon as the worker module is parsed.
+    // The smoke probe targets this path so a stuck DO does not masquerade as
+    // a stuck listener.
+    if (url.pathname === '/health') {
+      return new Response('ok\n', { status: 200 });
+    }
+
     if (
       (url.pathname === '/ws/default' || url.pathname === '/tunnel/default') &&
       isUpgrade

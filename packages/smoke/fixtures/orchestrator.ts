@@ -229,9 +229,12 @@ async function globalSetupInner(): Promise<void> {
   await runStage(1, 'cf-worker spawn ready', async () => {
     await worker.ready;
     // R-14 — stdout "Ready on http" only means the listener bound; wrangler
-    // may still reparse + reload. Probe `/` (workerd default returns 404 for
-    // unrouted root) until 3000ms of consecutive 200..499.
-    await waitForHttpStable(`http://127.0.0.1:${WORKER_PORT}/`, {
+    // may still reparse + reload. Probe `/health` (static 200, no DO touch —
+    // R-15 / Task #37) until 3000ms of consecutive 200..499. Targeting
+    // `/health` not `/` because dev-36 verify saw UND_ERR_HEADERS_TIMEOUT on
+    // bare GET / when workerd cold-started — TunnelDO routing held the
+    // connection without flushing headers.
+    await waitForHttpStable(`http://127.0.0.1:${WORKER_PORT}/health`, {
       stableForMs: 3000,
       timeout: 60_000,
     });
