@@ -11,4 +11,4 @@ class_name = "TunnelDO"
 
 [[migrations]]
 tag = "v1"
-new_classes = ["TunnelDO"]
+new_sqlite_classes = ["TunnelDO"]
