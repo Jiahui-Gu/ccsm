@@ -239,6 +239,8 @@ export class TunnelDO extends DurableObject<Env> {
       const attachment: DaemonAttachment = { role: 'daemon' };
       this.state.acceptWebSocket(server, [TAG_DAEMON]);
       server.serializeAttachment(attachment);
+      // R-17 log #1 (Task #45): daemon ws accepted into hibernation pool.
+      console.log('[do] daemon ws accepted');
       return new Response(null, { status: 101, webSocket: client });
     }
 
@@ -287,11 +289,17 @@ export class TunnelDO extends DurableObject<Env> {
       const attachment: BrowserAttachment = { role: 'browser', token: extracted.token };
       this.state.acceptWebSocket(server, [TAG_BROWSER]);
       server.serializeAttachment(attachment);
+      // R-17 log #2 (Task #45): browser ws accepted, about to emit hello.
+      console.log('[do] browser ws accepted sid=' + sid + ' token=' + extracted.token.slice(0, 6));
 
       // Emit hello as the first daemon-bound frame after this browser pair.
       try {
         daemon.send(buildHelloFrame(extracted.token, sid, lastSeq));
-      } catch {
+        // R-17 log #3 (Task #45): hello successfully sent to daemon.
+        console.log('[do] hello sent to daemon');
+      } catch (err) {
+        // R-17 log #3 (Task #45): hello send threw — daemon ws likely just dropped.
+        console.log('[do] hello send failed: ' + String(err));
         /* daemon may have just dropped; cleanup happens via webSocketClose */
       }
       // Echo the chosen subprotocol on the 101 response so the browser
@@ -329,6 +337,8 @@ export class TunnelDO extends DurableObject<Env> {
 
   override webSocketClose(ws: WebSocket, _code: number, _reason: string, _wasClean: boolean): void {
     const att = ws.deserializeAttachment() as SocketAttachment | null;
+    // R-17 log #4 (Task #45): record close code/reason/wasClean for both roles.
+    console.log('[do] ws close role=' + att?.role + ' code=' + _code + ' reason=' + _reason + ' wasClean=' + _wasClean);
     if (att === null) return;
     if (att.role === 'daemon') {
       this.handleDaemonClose();
@@ -339,6 +349,8 @@ export class TunnelDO extends DurableObject<Env> {
 
   override webSocketError(ws: WebSocket, _err: unknown): void {
     const att = ws.deserializeAttachment() as SocketAttachment | null;
+    // R-17 log #5 (Task #45): record ws-level error for both roles.
+    console.error('[do] ws error role=' + att?.role + ' err=' + String(_err));
     if (att === null) return;
     if (att.role === 'daemon') {
       this.handleDaemonError();
@@ -347,6 +359,9 @@ export class TunnelDO extends DurableObject<Env> {
   }
 
   private handleDaemonMessage(data: string | ArrayBuffer): void {
+    // R-17 log #6 (Task #45): direction + length for every daemon→browser frame.
+    const len = typeof data === 'string' ? data.length : data.byteLength;
+    console.log('[do] msg dir=daemon->browser len=' + len);
     if (typeof data === 'string') {
       const ctrl = tryParseControlFrame(data);
       if (ctrl !== null) {
@@ -361,6 +376,9 @@ export class TunnelDO extends DurableObject<Env> {
   }
 
   private handleBrowserMessage(data: string | ArrayBuffer): void {
+    // R-17 log #6 (Task #45): direction + length for every browser→daemon frame.
+    const len = typeof data === 'string' ? data.length : data.byteLength;
+    console.log('[do] msg dir=browser->daemon len=' + len);
     const daemon = this.getDaemonSocket();
     if (daemon !== undefined) {
       try { daemon.send(data); } catch { /* daemon may have just dropped */ }

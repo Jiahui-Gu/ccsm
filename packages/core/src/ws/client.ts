@@ -160,6 +160,8 @@ export class WsClient {
     this.setStatus('connecting');
 
     ws.onopen = () => {
+      // R-17 log #11 (Task #45): SPA-side ws open marker.
+      console.log('[ccsm spa] ws open code=- reason=-');
       this.setStatus('attached');
       if (this.pendingResize) {
         const { cols, rows } = this.pendingResize;
@@ -171,12 +173,19 @@ export class WsClient {
       this.handleMessage(ev.data);
     };
     ws.onerror = () => {
+      // R-17 log #11 (Task #45): SPA-side ws error marker. Browsers don't
+      // expose detail on ws.onerror, so the fields are placeholders to keep
+      // the grep shape stable across open/close/error.
+      console.log('[ccsm spa] ws error code=- reason=-');
       // Browser ws errors don't expose detail; surface a generic reason.
       if (!this.exitSeen) {
         this.opts.onDisconnect?.('ws error');
       }
     };
-    ws.onclose = () => {
+    ws.onclose = (ev: CloseEvent) => {
+      // R-17 log #11 (Task #45): SPA-side ws close — code + reason are the
+      // smoking gun for "Network connection lost" (research-44 candidate G).
+      console.log('[ccsm spa] ws close code=' + ev.code + ' reason=' + ev.reason);
       // EXIT path already transitioned status; don't clobber it.
       if (!this.exitSeen) {
         this.setStatus('disconnected');

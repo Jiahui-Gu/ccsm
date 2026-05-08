@@ -55,7 +55,14 @@ export const onRequest: PagesFunction<Env> = async (ctx) => {
     url.pathname === '/token' ||
     url.pathname.startsWith('/api/')
   ) {
-    return ctx.env.TUNNEL_WORKER.fetch(ctx.request);
+    // R-17 log #7 (Task #45): proxy entry — pathname + upgrade hint.
+    const upgrade = ctx.request.headers.get('Upgrade') ?? '';
+    console.log('[pages-fn] proxy ' + url.pathname + ' upgrade=' + upgrade);
+    const resp = await ctx.env.TUNNEL_WORKER.fetch(ctx.request);
+    // R-17 log #7 (Task #45): proxy response — status (and upgrade resp header
+    // if the worker promoted to ws so we can spot 101 vs 426/404 quickly).
+    console.log('[pages-fn] proxy resp status=' + resp.status + ' upgrade=' + (resp.headers.get('Upgrade') ?? ''));
+    return resp;
   }
 
   // R-14 — SPA history-mode fallback. If the request is a GET for a route

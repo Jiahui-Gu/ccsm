@@ -304,6 +304,10 @@ export class TunnelClient {
     }
     this.ws = socket;
 
+    // R-17 log #9 (Task #45): per-connection inbound frame counter. Reset on
+    // every dial() so the close log reports frames-since-open for THIS link.
+    let frameCount = 0;
+
     socket.on('open', () => {
       if (this.stopped) {
         try { socket.close(1000, 'stopped'); } catch { /* ignore */ }
@@ -314,6 +318,8 @@ export class TunnelClient {
     });
 
     socket.on('message', (raw, isBinary) => {
+      // R-17 log #9 (Task #45): tally every inbound frame for the close log.
+      frameCount += 1;
       // Hello-gate (Task #782): a browser-paired daemon expects the FIRST
       // text frame to be `{type:"hello",token}` so the daemon can authorize
       // browser-bound raw OUTPUT/INPUT passthrough. Binary or non-JSON text
@@ -354,6 +360,8 @@ export class TunnelClient {
         }
         this.helloSeen = true;
         this.browserToken = hello.token;
+        // R-17 log #8 (Task #45): hello received, record sid + lastSeq.
+        console.error('[ccsm] tunnel: hello received sid=' + (hello.sid ?? '-') + ' lastSeq=' + (hello.lastSeq ?? 0));
         // Task #793 (S3-G): if the browser supplied a sid in hello, hand the
         // pairing off to the daemon main so it can wire this tunnel into the
         // matching per-session PTY ring. The handle owns frame routing for
@@ -442,6 +450,9 @@ export class TunnelClient {
         return;
       }
       console.warn(`[ccsm/tunnel] closed code=${code}, will reconnect`);
+      // R-17 log #9 (Task #45): emit frames-since-open so we can tell whether
+      // the link drained any traffic before closing (research-44 candidate G).
+      console.error('[ccsm] tunnel: ws close frameCount=' + frameCount + ' code=' + code);
       this.scheduleReconnect();
     });
   }
