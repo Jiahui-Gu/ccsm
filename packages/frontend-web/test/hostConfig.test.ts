@@ -1,103 +1,65 @@
-// Daemon base URL resolution priority (Task #712).
+// Daemon base URL resolution priority (Task #712 → Task #780 / S3-T5).
 
 import { describe, expect, it } from 'vitest';
 
-import { DEFAULT_DAEMON_BASE, resolveDaemonBase } from '../src/hostConfig';
+import {
+  DEFAULT_DAEMON_BASE,
+  resolveDaemonBase,
+  resolveWsBase,
+} from '../src/hostConfig';
 
 describe('resolveDaemonBase', () => {
-  it('uses VITE_DAEMON_BASE when SPA is cross-origin (e.g. Pages)', () => {
-    const got = resolveDaemonBase({
-      search: '',
-      hostname: 'cc-sm.pages.dev',
-      origin: 'https://cc-sm.pages.dev',
-      envBase: 'http://127.0.0.1:9876',
-    });
-    expect(got).toBe('http://127.0.0.1:9876');
-  });
-
-  it('URL ?daemon= override beats env var', () => {
-    const got = resolveDaemonBase({
-      search: '?daemon=http://127.0.0.1:8888',
-      hostname: 'cc-sm.pages.dev',
-      origin: 'https://cc-sm.pages.dev',
-      envBase: 'http://127.0.0.1:9876',
-    });
-    expect(got).toBe('http://127.0.0.1:8888');
-  });
-
-  it('URL ?daemon= override beats loopback fallback', () => {
-    // Daemon-embedded SPA on default port, but user wants to point at a
-    // different daemon instance — override wins.
-    const got = resolveDaemonBase({
-      search: '?daemon=http://127.0.0.1:8888',
-      hostname: '127.0.0.1',
-      origin: 'http://127.0.0.1:9876',
-      envBase: undefined,
-    });
-    expect(got).toBe('http://127.0.0.1:8888');
-  });
-
-  it('falls back to origin when hostname is 127.0.0.1 (daemon-embedded default)', () => {
-    const got = resolveDaemonBase({
-      search: '',
-      hostname: '127.0.0.1',
-      origin: 'http://127.0.0.1:9876',
-      envBase: undefined,
-    });
-    expect(got).toBe('http://127.0.0.1:9876');
-  });
-
-  it('falls back to origin when hostname is localhost', () => {
-    const got = resolveDaemonBase({
-      search: '',
-      hostname: 'localhost',
-      origin: 'http://localhost:9876',
-      envBase: undefined,
-    });
-    expect(got).toBe('http://localhost:9876');
-  });
-
-  it('falls back to origin on loopback even when env var is set (don\'t cross-origin from local)', () => {
-    // Critical regress guard: existing daemon-embedded users must not
-    // suddenly start making cross-origin requests just because a build
-    // happened to inline VITE_DAEMON_BASE.
-    const got = resolveDaemonBase({
-      search: '',
-      hostname: '127.0.0.1',
-      origin: 'http://127.0.0.1:18080',
-      envBase: 'http://127.0.0.1:9876',
-    });
-    expect(got).toBe('http://127.0.0.1:18080');
-  });
-
-  it('falls back to hard default when cross-origin and env var missing', () => {
-    const got = resolveDaemonBase({
-      search: '',
-      hostname: 'cc-sm.pages.dev',
-      origin: 'https://cc-sm.pages.dev',
-      envBase: undefined,
-    });
+  it('defaults to the Cloudflare Pages tunnel URL when no ?daemon= is set', () => {
+    // Task #780 (S3-T5): production default is the CF tunnel; the SPA is
+    // always served from Pages and reaches the daemon via the Worker + DO.
+    const got = resolveDaemonBase({ search: '' });
     expect(got).toBe(DEFAULT_DAEMON_BASE);
+    expect(got).toBe('https://cc-sm.pages.dev');
+  });
+
+  it('URL ?daemon=http://127.0.0.1:9876 redirects back to local loopback', () => {
+    // Escape hatch for dev / test / Tauri shell: opt out of the tunnel.
+    const got = resolveDaemonBase({ search: '?daemon=http://127.0.0.1:9876' });
     expect(got).toBe('http://127.0.0.1:9876');
   });
 
-  it('treats empty ?daemon= as missing and falls through', () => {
-    const got = resolveDaemonBase({
-      search: '?daemon=',
-      hostname: 'cc-sm.pages.dev',
-      origin: 'https://cc-sm.pages.dev',
-      envBase: 'http://127.0.0.1:9876',
-    });
-    expect(got).toBe('http://127.0.0.1:9876');
+  it('URL ?daemon=https://example.com redirects to that host', () => {
+    const got = resolveDaemonBase({ search: '?daemon=https://example.com' });
+    expect(got).toBe('https://example.com');
+  });
+
+  it('keeps the CF default when the SPA happens to be served same-origin (e.g. Vite dev server)', () => {
+    // S2 used to fall back to window.location.origin on loopback hostnames.
+    // S3 explicitly does NOT — opening http://localhost:5173 still talks to
+    // the CF tunnel unless the user sets ?daemon=.
+    const got = resolveDaemonBase({ search: '' });
+    expect(got).toBe('https://cc-sm.pages.dev');
+  });
+
+  it('treats empty ?daemon= as missing and falls through to the default', () => {
+    const got = resolveDaemonBase({ search: '?daemon=' });
+    expect(got).toBe('https://cc-sm.pages.dev');
   });
 
   it('strips trailing slash so callers can append paths cleanly', () => {
-    const got = resolveDaemonBase({
-      search: '',
-      hostname: 'cc-sm.pages.dev',
-      origin: 'https://cc-sm.pages.dev',
-      envBase: 'http://127.0.0.1:9876/',
-    });
+    const got = resolveDaemonBase({ search: '?daemon=http://127.0.0.1:9876/' });
     expect(got).toBe('http://127.0.0.1:9876');
+  });
+});
+
+describe('resolveWsBase', () => {
+  it('defaults to wss://cc-sm.pages.dev when no ?daemon= is set', () => {
+    const got = resolveWsBase({ search: '' });
+    expect(got).toBe('wss://cc-sm.pages.dev');
+  });
+
+  it('matches https httpBase with wss:// scheme', () => {
+    const got = resolveWsBase({ search: '?daemon=https://example.com' });
+    expect(got).toBe('wss://example.com');
+  });
+
+  it('matches http httpBase with ws:// scheme (loopback override)', () => {
+    const got = resolveWsBase({ search: '?daemon=http://127.0.0.1:9876' });
+    expect(got).toBe('ws://127.0.0.1:9876');
   });
 });
