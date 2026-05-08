@@ -35,6 +35,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createSmokeJobObject, type SmokeJobObject } from './job-object.js';
+import { waitForHttpStable } from './wait-http-stable.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '../../..');
@@ -51,10 +52,13 @@ interface ProcHandle {
 
 const handles: ProcHandle[] = [];
 let tempDataDir: string | null = null;
-// R-9 v3.D: Job Object that wraps the Tauri release exe (and its descendants —
-// webview helper, daemon Node child) so that any death of the smoke process
-// kernel-reaps the whole tree. Non-Windows = no-op.
-let tauriJob: SmokeJobObject | null = null;
+// R-14 (Task #34) — Job Object semantics widened: it now wraps cf-worker
+// (wrangler dev), pages-dev (wrangler pages dev), AND the Tauri release exe
+// (plus all of their descendants — wrangler shim → node → workerd, webview
+// helper, daemon Node child). Renamed from `tauriJob` to `smokeJob` to reflect
+// "every smoke-spawned subprocess tree" rather than just Tauri. Non-Windows
+// = no-op.
+let smokeJob: SmokeJobObject | null = null;
 
 function spawnProc(opts: {
   name: string;
@@ -208,7 +212,30 @@ async function globalSetupInner(): Promise<void> {
     readyTimeoutMs: 60_000,
   });
   handles.push(worker);
-  await runStage(1, 'cf-worker spawn ready', () => worker.ready);
+  // R-14 — assign cf-worker pid to smokeJob *immediately* (before ready), so
+  // a setup failure between spawn and HTTP stable still tears down the
+  // wrangler shim → node → workerd descendants.
+  if (smokeJob === null) smokeJob = createSmokeJobObject();
+  if (worker.child.pid !== undefined) {
+    try {
+      smokeJob.assign(worker.child.pid);
+      process.stderr.write(`[smoke] assigned cf-worker pid=${worker.child.pid} to smokeJob\n`);
+    } catch (err) {
+      process.stderr.write(
+        `[smoke] WARN: failed to assign cf-worker pid=${worker.child.pid}: ${(err as Error).message}\n`,
+      );
+    }
+  }
+  await runStage(1, 'cf-worker spawn ready', async () => {
+    await worker.ready;
+    // R-14 — stdout "Ready on http" only means the listener bound; wrangler
+    // may still reparse + reload. Probe `/` (workerd default returns 404 for
+    // unrouted root) until 3000ms of consecutive 200..499.
+    await waitForHttpStable(`http://127.0.0.1:${WORKER_PORT}/`, {
+      stableForMs: 3000,
+      timeout: 60_000,
+    });
+  });
 
   // 2. frontend-web Pages dev. Reverse-proxies /api/*, /token, /ws/*, /tunnel/*
   //    via functions/[[path]].ts to the worker above. Bound on PAGES_PORT.
@@ -277,7 +304,28 @@ async function globalSetupInner(): Promise<void> {
     readyTimeoutMs: 60_000,
   });
   handles.push(pages);
-  await runStage(3, 'pages-dev spawn ready', () => pages.ready);
+  // R-14 — assign pages-dev pid to smokeJob immediately (before ready).
+  if (pages.child.pid !== undefined && smokeJob !== null) {
+    try {
+      smokeJob.assign(pages.child.pid);
+      process.stderr.write(`[smoke] assigned pages-dev pid=${pages.child.pid} to smokeJob\n`);
+    } catch (err) {
+      process.stderr.write(
+        `[smoke] WARN: failed to assign pages-dev pid=${pages.child.pid}: ${(err as Error).message}\n`,
+      );
+    }
+  }
+  await runStage(3, 'pages-dev spawn ready', async () => {
+    await pages.ready;
+    // R-14 — pages-dev serves dist/index.html at `/`, so 200 is the expected
+    // stable status. wrangler pages dev historically reparsed `_redirects`
+    // after first ready, which produced a 502 / connection-reset window
+    // (research-33 line 39-46/122-130/136); the stable window catches it.
+    await waitForHttpStable(`http://127.0.0.1:${PAGES_PORT}/`, {
+      stableForMs: 3000,
+      timeout: 60_000,
+    });
+  });
 
   // 3. Tauri release shell (R-9 v3.A, Task #15).
   //
@@ -356,18 +404,16 @@ async function globalSetupInner(): Promise<void> {
   // is the smoke-side equivalent for the case where smoke (the parent of
   // ccsm-tauri.exe) crashes.
   if (tauri.child.pid !== undefined) {
-    await runStage(5, 'tauriJob assign pid', () => {
-      tauriJob = createSmokeJobObject();
+    await runStage(5, 'smokeJob assign tauri pid', () => {
+      if (smokeJob === null) smokeJob = createSmokeJobObject();
       try {
-        tauriJob.assign(tauri.child.pid as number);
-        process.stderr.write(`[smoke] assigned tauri pid=${tauri.child.pid} to Job Object\n`);
+        smokeJob.assign(tauri.child.pid as number);
+        process.stderr.write(`[smoke] assigned tauri pid=${tauri.child.pid} to smokeJob\n`);
       } catch (err) {
         process.stderr.write(
-          `[smoke] WARN: failed to assign tauri pid=${tauri.child.pid} to Job Object: ${(err as Error).message}\n` +
+          `[smoke] WARN: failed to assign tauri pid=${tauri.child.pid} to smokeJob: ${(err as Error).message}\n` +
           `[smoke] WARN: descendants may zombie; smoke:build T4 fail-fast will catch on next run\n`,
         );
-        try { tauriJob.close(); } catch { /* ignore */ }
-        tauriJob = null;
       }
     });
   }
@@ -385,11 +431,11 @@ export async function globalTeardown(): Promise<void> {
   // .fixtures/bin/ccsm-tauri.exe so the next `pnpm smoke:build` T4 copy
   // does not hit EBUSY. Doing this before per-handle kill ensures a graceful
   // teardown path doesn't race with an exited-but-still-mapped child.
-  if (tauriJob !== null) {
-    try { tauriJob.close(); } catch (err) {
-      process.stderr.write(`[smoke teardown] tauriJob.close failed: ${(err as Error).message}\n`);
+  if (smokeJob !== null) {
+    try { smokeJob.close(); } catch (err) {
+      process.stderr.write(`[smoke teardown] smokeJob.close failed: ${(err as Error).message}\n`);
     }
-    tauriJob = null;
+    smokeJob = null;
   }
 
   // Reverse spawn order so any process not bound to the Job (cf-worker,

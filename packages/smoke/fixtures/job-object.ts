@@ -1,5 +1,21 @@
 // R-9 v3.D — Win32 Job Object wrapper for smoke fixtures.
 //
+// R-14 (Task #34) widened the scope: this Job now wraps **all three**
+// smoke-spawned process trees, not just Tauri:
+//   1. cf-worker — `pnpm exec wrangler dev` → wrangler.cmd shim → node →
+//      workerd. The shim and node are short-lived but workerd is a long-lived
+//      child; without the Job, killing the cmd shim leaves workerd as an
+//      orphan holding port 8787.
+//   2. pages-dev — `pnpm exec wrangler pages dev` → same shim → node →
+//      workerd, plus a Functions worker for `[[path]].ts`.
+//   3. tauri — ccsm-tauri.exe + webview helper + wry sandbox + the daemon
+//      Node child spawned by lib.rs setup hook.
+// Pids of all three are assigned via `smokeJob.assign()` in the orchestrator
+// immediately after `child.spawn()`, before awaiting readyMatch. This means
+// any setup-failure path (readyMatch timeout, HTTP-stable timeout, anything
+// that throws between spawn and ready) still tears the whole tree on
+// `smokeJob.close()` in globalTeardown — no leaked workerd / wrangler shim.
+//
 // Why we need this on top of `child.kill()` in orchestrator's killHandle():
 // - Tauri's release .exe spawns multiple child processes (webview helper,
 //   wry sandbox, the embedded daemon Node process) that are NOT killed when
@@ -9,6 +25,13 @@
 //   filesystem lock on `.fixtures/bin/ccsm-tauri.exe` (because the .exe text
 //   image is mapped into them via shared sections), which then makes the
 //   next `pnpm smoke:build` T4 copyfile fail with EBUSY.
+// - The same problem applies to wrangler shims (pnpm.cmd → wrangler.cmd →
+//   node.exe → workerd.exe). `child.kill()` on the cmd shim leaves workerd
+//   listening on the smoke port, which makes the next smoke run fail at
+//   `EADDRINUSE` on 8787/8788. R-14 fixes this by enrolling the cmd shim's
+//   pid in the same Job Object — KILL_ON_JOB_CLOSE then propagates to
+//   workerd because the Job association inherits to descendants (we do NOT
+//   set JOB_OBJECT_LIMIT_BREAKAWAY_OK).
 // - The Tauri Rust side has its own Job Object (T9, see
 //   packages/frontend-tauri/src-tauri/src/job_object.rs) but that one only
 //   reaps the *daemon* child of Tauri, not the Tauri exe itself or its
