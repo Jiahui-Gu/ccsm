@@ -34,6 +34,7 @@ import { mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createSmokeJobObject, type SmokeJobObject } from './job-object.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '../../..');
@@ -50,6 +51,10 @@ interface ProcHandle {
 
 const handles: ProcHandle[] = [];
 let tempDataDir: string | null = null;
+// R-9 v3.D: Job Object that wraps the Tauri release exe (and its descendants —
+// webview helper, daemon Node child) so that any death of the smoke process
+// kernel-reaps the whole tree. Non-Windows = no-op.
+let tauriJob: SmokeJobObject | null = null;
 
 function spawnProc(opts: {
   name: string;
@@ -120,6 +125,23 @@ async function killHandle(h: ProcHandle): Promise<void> {
 }
 
 export default async function globalSetup(): Promise<void> {
+  try {
+    await globalSetupInner();
+  } catch (err) {
+    // R-9 v3.D — if setup fails midway (e.g. tauri readyMatch timeout),
+    // run teardown to release the Job Object + kill any spawned processes,
+    // otherwise we leak zombies that lock .fixtures/bin/ccsm-tauri.exe.
+    process.stderr.write(`[smoke setup] failed: ${(err as Error).message} — running teardown\n`);
+    try { await globalTeardown(); } catch (teardownErr) {
+      process.stderr.write(
+        `[smoke setup] teardown after failure also failed: ${(teardownErr as Error).message}\n`,
+      );
+    }
+    throw err;
+  }
+}
+
+async function globalSetupInner(): Promise<void> {
   tempDataDir = mkdtempSync(join(tmpdir(), 'ccsm-smoke-'));
 
   // 1. cf-worker (wrangler dev). Listens on WORKER_PORT.
@@ -253,14 +275,61 @@ export default async function globalSetup(): Promise<void> {
     readyTimeoutMs: 90_000,
   });
   handles.push(tauri);
+
+  // R-9 v3.D — bind the Tauri process tree to a Job Object with
+  // KILL_ON_JOB_CLOSE *immediately after spawn, before awaiting ready*. This
+  // way:
+  //   - any descendant the Tauri exe spawns later (webview helper, wry
+  //     sandbox, the daemon Node child) inherits the Job association
+  //     automatically (we do NOT set JOB_OBJECT_LIMIT_BREAKAWAY_OK), so the
+  //     whole tree dies when our Job handle closes;
+  //   - if globalSetup throws between spawn and `await tauri.ready` (e.g.
+  //     readyMatch timeout), globalTeardown's `tauriJob.close()` still
+  //     reaps everything, instead of leaving zombies that lock
+  //     .fixtures/bin/ccsm-tauri.exe and wedge the next smoke:build T4.
+  //
+  // The Tauri Rust side has its own Job Object for the daemon (T9, see
+  // packages/frontend-tauri/src-tauri/src/job_object.rs); that handles the
+  // case where a *user* hard-kills ccsm-tauri.exe in production. This Job
+  // is the smoke-side equivalent for the case where smoke (the parent of
+  // ccsm-tauri.exe) crashes.
+  if (tauri.child.pid !== undefined) {
+    tauriJob = createSmokeJobObject();
+    try {
+      tauriJob.assign(tauri.child.pid);
+      process.stderr.write(`[smoke] assigned tauri pid=${tauri.child.pid} to Job Object\n`);
+    } catch (err) {
+      process.stderr.write(
+        `[smoke] WARN: failed to assign tauri pid=${tauri.child.pid} to Job Object: ${(err as Error).message}\n` +
+        `[smoke] WARN: descendants may zombie; smoke:build T4 fail-fast will catch on next run\n`,
+      );
+      try { tauriJob.close(); } catch { /* ignore */ }
+      tauriJob = null;
+    }
+  }
+
   await tauri.ready;
 
   process.env.SMOKE_BASE_URL = `http://127.0.0.1:${PAGES_PORT}`;
 }
 
 export async function globalTeardown(): Promise<void> {
-  // Reverse spawn order so the Tauri Job Object reaps daemon first, then
-  // pages dev (which owns its workerd), then cf-worker.
+  // R-9 v3.D — close the Job Object FIRST. Under
+  // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE this kernel-terminates ccsm-tauri.exe
+  // and every descendant it spawned (webview helper, wry sandbox, daemon
+  // Node child) atomically — releasing the file lock on
+  // .fixtures/bin/ccsm-tauri.exe so the next `pnpm smoke:build` T4 copy
+  // does not hit EBUSY. Doing this before per-handle kill ensures a graceful
+  // teardown path doesn't race with an exited-but-still-mapped child.
+  if (tauriJob !== null) {
+    try { tauriJob.close(); } catch (err) {
+      process.stderr.write(`[smoke teardown] tauriJob.close failed: ${(err as Error).message}\n`);
+    }
+    tauriJob = null;
+  }
+
+  // Reverse spawn order so any process not bound to the Job (cf-worker,
+  // pages-dev) still gets a chance at clean SIGTERM.
   for (const h of [...handles].reverse()) {
     try {
       await killHandle(h);

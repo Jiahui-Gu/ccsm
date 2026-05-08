@@ -32,7 +32,7 @@
 // That's the whole point of this split.
 
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, existsSync, statSync } from 'node:fs';
+import { copyFileSync, mkdirSync, existsSync, statSync, openSync, closeSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -104,6 +104,57 @@ if (!existsSync(builtExe)) {
   process.stderr.write(`[smoke:build] cargo did not produce ${builtExe}\n`);
   process.exit(1);
 }
+
+// R-9 v3.D — fail-fast lock detection BEFORE copyFileSync.
+//
+// If a previous smoke run left a zombie ccsm-tauri.exe (or a webview/wry
+// helper that mapped the .exe image) holding a file lock on destExe,
+// copyFileSync will fail with EBUSY mid-copy. We detect this up-front by
+// trying to open the file for read+write; on Windows that returns EBUSY /
+// EPERM if any process holds an exclusive map / write share.
+//
+// We deliberately do NOT retry-with-sleep here (that's glue, masks the
+// real bug) and do NOT spawn taskkill (also glue + can wedge in kernel
+// syscalls when there are many zombies). The orchestrator's R-9 v3.D Job
+// Object change ensures *new* runs reap their tree on exit; this fail-fast
+// is the safety net for any pre-existing zombies (e.g. from before this
+// fix landed, or from a TerminateProcess of the smoke runner) so the user
+// gets a clear actionable error instead of a confusing copyfile failure
+// in the middle of T4.
+if (existsSync(destExe)) {
+  let fd = -1;
+  try {
+    fd = openSync(destExe, 'r+');
+  } catch (err) {
+    const code = (err && typeof err === 'object' && 'code' in err) ? err.code : 'UNKNOWN';
+    process.stderr.write(
+      `\n[smoke:build] T4 ABORT — destination .exe is locked\n` +
+      `  path:  ${destExe}\n` +
+      `  errno: ${code} (${err && err.message ? err.message : err})\n` +
+      `\n` +
+      `Likely cause: a zombie ccsm-tauri.exe / webview helper / wry sandbox\n` +
+      `from a previous smoke run is still mapping this .exe image, holding\n` +
+      `a Windows file lock. We refuse to retry-with-sleep (it would mask\n` +
+      `the real bug) or to taskkill (it deadlocks under high zombie counts).\n` +
+      `\n` +
+      `What to do:\n` +
+      `  1. Identify the locker:\n` +
+      `       Get-Process ccsm-tauri | Format-List Id,Path,StartTime\n` +
+      `       handle.exe "${destExe}"   # SysInternals handle.exe if installed\n` +
+      `  2. Kill it gracefully (close the app), or as a last resort reboot —\n` +
+      `     under heavy zombie load 'taskkill /F' itself can wedge.\n` +
+      `  3. Re-run \`pnpm smoke:build\`. Subsequent runs will not zombie\n` +
+      `     because the orchestrator now binds the Tauri tree to a Win32\n` +
+      `     Job Object with KILL_ON_JOB_CLOSE (R-9 v3.D, Task #19).\n`,
+    );
+    process.exit(2);
+  } finally {
+    if (fd !== -1) {
+      try { closeSync(fd); } catch { /* ignore */ }
+    }
+  }
+}
+
 copyFileSync(builtExe, destExe);
 const sz = statSync(destExe).size;
 process.stderr.write(`\n[smoke:build] OK\n  -> ${destExe}\n  size=${sz} bytes\n`);
