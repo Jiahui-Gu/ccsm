@@ -14,6 +14,10 @@ import '@ccsm/ui/styles.css';
 // so it works in cross-origin mode (Pages → loopback daemon). Same-origin
 // loopback continues to hit `<origin>/token` because resolveDaemonBase
 // returns window.location.origin in that case.
+//
+// Task #780 (S3-T5): the default daemon base flipped to the CF Pages
+// tunnel, so `/token` now goes to `https://cc-sm.pages.dev/token` unless
+// the user passes `?daemon=` to redirect at a local loopback daemon.
 async function bootstrap(): Promise<void> {
   const rootEl = document.getElementById('root');
   if (!rootEl) {
@@ -22,9 +26,6 @@ async function bootstrap(): Promise<void> {
 
   const daemonBase = resolveDaemonBase({
     search: window.location.search,
-    hostname: window.location.hostname,
-    origin: window.location.origin,
-    envBase: import.meta.env.VITE_DAEMON_BASE,
   });
 
   const token = await resolveToken({

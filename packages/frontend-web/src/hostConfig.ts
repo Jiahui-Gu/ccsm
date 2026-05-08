@@ -7,26 +7,26 @@
 // fetch /token → fail). The pure resolver lives here so it can be
 // unit-tested without booting the full SPA.
 //
-// Task #712 (S2-T3): daemon base URL resolution supports 3 modes so the SPA
-// can be served from Cloudflare Pages (cross-origin) while still talking to
-// a local loopback daemon, without breaking the existing daemon-embedded
-// case (browser opens http://127.0.0.1:9876/, SPA same-origin).
+// Task #712 (S2-T3): daemon base URL resolution supported 3 modes so the
+// SPA could be served from Cloudflare Pages (cross-origin) while still
+// talking to a local loopback daemon, without breaking the existing
+// daemon-embedded case (browser opens http://127.0.0.1:9876/, SPA
+// same-origin).
 //
-//   1. URL `?daemon=` override — runtime escape hatch (e.g. user wants to
-//      point a Pages-hosted SPA at a non-default port).
-//   2. Build-time `VITE_DAEMON_BASE` — Pages build injects the canonical
-//      loopback URL.
-//   3. Fallback — if hostname is loopback (127.0.0.1 / localhost / ::1),
-//      use `window.location.origin` (preserves the daemon-embedded default,
-//      same-origin requests, no CORS); otherwise use VITE_DAEMON_BASE or
-//      the hard default `http://127.0.0.1:9876`.
+// Task #780 (S3-T5): default base flips to the Cloudflare tunnel URL
+// (`https://cc-sm.pages.dev` / `wss://cc-sm.pages.dev`). The SPA is now
+// always served from Pages; in production it talks to the daemon through
+// the CF Worker + Durable Object tunnel (S3 architecture). The previous
+// loopback / envBase / origin fallbacks are gone — the only escape hatch
+// is the URL `?daemon=<url>` query parameter, which dev/test/Tauri shells
+// use to point at a local daemon.
 
 import type { HostConfig } from '@ccsm/ui';
 
 export const TOKEN_STORAGE_KEY = 'ccsm.token';
 
-/** Hard default daemon base, used when env var is missing in cross-origin mode. */
-export const DEFAULT_DAEMON_BASE = 'http://127.0.0.1:9876';
+/** Hard default daemon base for production (Cloudflare Pages + Worker tunnel, Task #780). */
+export const DEFAULT_DAEMON_BASE = 'https://cc-sm.pages.dev';
 
 export interface ResolveTokenDeps {
   /** Search portion of the current URL, e.g. `?token=abc`. */
@@ -80,16 +80,7 @@ export async function resolveToken(deps: ResolveTokenDeps): Promise<string | nul
 export interface ResolveDaemonBaseDeps {
   /** Search portion of the current URL, e.g. `?daemon=http://127.0.0.1:8888`. */
   search: string;
-  /** Current page hostname, e.g. `127.0.0.1`, `localhost`, `cc-sm.pages.dev`. */
-  hostname: string;
-  /** Current page origin, used as same-origin fallback for the daemon-embedded case. */
-  origin: string;
-  /** Build-time injected default. Pass `import.meta.env.VITE_DAEMON_BASE` from the runtime. */
-  envBase: string | undefined;
 }
-
-/** Loopback hostnames that mean "the SPA is served by a local daemon". */
-const LOOPBACK_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
 
 function normalizeBase(raw: string): string {
   // Drop trailing slash so callers can append `/api/...` without doubling up.
@@ -99,39 +90,49 @@ function normalizeBase(raw: string): string {
 /**
  * Resolve the HTTP base URL the SPA should use to talk to the daemon.
  *
- * Priority (Task #712):
- *   1. URL `?daemon=<url>` — runtime override (debugging / non-default port).
- *   2. Loopback hostname (127.0.0.1 / localhost) → `origin`. This preserves
- *      the daemon-embedded default: same-origin, no CORS, no env needed.
- *   3. `VITE_DAEMON_BASE` — build-time injected (e.g. for Pages).
- *   4. Hard default `http://127.0.0.1:9876`.
+ * Priority (Task #780 / S3-T5):
+ *   1. URL `?daemon=<url>` — runtime escape hatch (dev / test / Tauri
+ *      shell pointing at local loopback daemon).
+ *   2. Hard default `https://cc-sm.pages.dev` — production tunnel via
+ *      Cloudflare Worker + Durable Object.
  *
- * Order rationale: rule 2 sits above rule 3 so that running a daemon-served
- * SPA on a custom port (`http://127.0.0.1:18080/`) keeps working even when
- * a stale `VITE_DAEMON_BASE` was baked into the bundle.
+ * History: S2 (Task #712) preferred `window.location.origin` on loopback
+ * hostnames and `VITE_DAEMON_BASE` for the Pages build. S3 collapses all
+ * of that into a single default because the SPA is now always served from
+ * Pages and always talks to the daemon through the tunnel unless `?daemon=`
+ * explicitly redirects it.
  */
 export function resolveDaemonBase(deps: ResolveDaemonBaseDeps): string {
   const fromUrl = new URLSearchParams(deps.search).get('daemon');
   if (fromUrl && fromUrl.length > 0) return normalizeBase(fromUrl);
 
-  if (LOOPBACK_HOSTNAMES.has(deps.hostname)) {
-    return normalizeBase(deps.origin);
-  }
-
-  if (deps.envBase && deps.envBase.length > 0) {
-    return normalizeBase(deps.envBase);
-  }
-
   return DEFAULT_DAEMON_BASE;
+}
+
+/**
+ * Derive the matching ws/wss base URL from an http/https base.
+ *
+ * Used by the SPA to pick between `wss://cc-sm.pages.dev` (production
+ * tunnel) and `ws://127.0.0.1:9876` (loopback dev) without forcing the
+ * caller to plumb a separate `wsBase` field. The path (`/ws/<sid>?...`)
+ * is appended downstream by core's WsClient — this only sets the origin.
+ */
+export function resolveWsBase(deps: ResolveDaemonBaseDeps): string {
+  const httpBase = resolveDaemonBase(deps);
+  if (httpBase.startsWith('https://')) {
+    return `wss://${httpBase.slice('https://'.length)}`;
+  }
+  if (httpBase.startsWith('http://')) {
+    return `ws://${httpBase.slice('http://'.length)}`;
+  }
+  // Defensive: caller passed something exotic; hand it back unchanged.
+  return httpBase;
 }
 
 function currentDaemonBase(): string {
   if (typeof window === 'undefined') return '';
   return resolveDaemonBase({
     search: window.location.search,
-    hostname: window.location.hostname,
-    origin: window.location.origin,
-    envBase: import.meta.env.VITE_DAEMON_BASE,
   });
 }
 
