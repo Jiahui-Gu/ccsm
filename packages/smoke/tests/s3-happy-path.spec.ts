@@ -42,6 +42,18 @@ test('cloud-mode happy path: open SPA, create session, run echo, see output', as
   // Send one command and assert PTY echo. The terminal is xterm.js; we read
   // its rendered DOM rather than poking the terminal API directly.
   await page.getByTestId('terminal-pane').click();
+  // Task #61 (R-21) — wait until the ws actually reaches OPEN before
+  // typing. Without this gate, keystrokes raced the createSession→ws-open
+  // window (~340ms) and were silently dropped (research-60 confirmed 22
+  // chars lost on a single happy-path run). The Layer 1 production fix is
+  // the buffer-until-open queue in @ccsm/core SessionRuntime.sendInput;
+  // this assertion is the Layer 4 test contract that locks the contract
+  // visible to the smoke without depending on the buffer's timing.
+  await expect(page.getByTestId('terminal-pane')).toHaveAttribute(
+    'data-ws-state',
+    'open',
+    { timeout: 10_000 },
+  );
   await page.keyboard.type('echo hello-from-smoke');
   await page.keyboard.press('Enter');
 

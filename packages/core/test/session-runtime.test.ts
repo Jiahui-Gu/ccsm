@@ -450,4 +450,63 @@ describe('SessionRuntime — per-session scrollback + reconnect (T10/#662, T5/#6
     ).not.toThrow();
     expect(runtime.get('s1')!.scrollbackBytes).toBe(2);
   });
+
+  // ---- Task #61 (R-21): sendInput buffer-until-open ---------------------
+  it('sendInput buffers keystrokes typed before ws OPEN, flushes in order on attached', () => {
+    const { runtime } = makeRuntime();
+    runtime.attach('s1', 'tok');
+    const ws = FakeWs.instances[0]!;
+    // ws is `connecting` — no OPEN yet. INPUT must NOT hit the wire.
+    runtime.sendInput('s1', 'a');
+    runtime.sendInput('s1', 'b');
+    runtime.sendInput('s1', 'cd');
+    expect(ws.sent).toHaveLength(0);
+    expect(runtime.get('s1')!.pendingInput).toEqual(['a', 'b', 'cd']);
+
+    // Transition to attached → queue flushes verbatim, in order, one
+    // INPUT frame per queued chunk (no coalescing).
+    ws.open();
+    expect(runtime.get('s1')!.pendingInput).toEqual([]);
+    expect(ws.sent).toHaveLength(3);
+    const decoded = ws.sent.map((b) => decodeFrame(b));
+    for (const f of decoded) expect(f.type).toBe(FrameType.INPUT);
+    expect(new TextDecoder().decode(decoded[0]!.payload)).toBe('a');
+    expect(new TextDecoder().decode(decoded[1]!.payload)).toBe('b');
+    expect(new TextDecoder().decode(decoded[2]!.payload)).toBe('cd');
+
+    // Subsequent sendInput while attached goes straight through.
+    runtime.sendInput('s1', 'e');
+    expect(ws.sent).toHaveLength(4);
+    expect(new TextDecoder().decode(decodeFrame(ws.sent[3]!).payload)).toBe(
+      'e',
+    );
+    expect(runtime.get('s1')!.pendingInput).toEqual([]);
+  });
+
+  it('sendInput preserves order across pre-open + post-open mix', () => {
+    const { runtime } = makeRuntime();
+    runtime.attach('s1', 'tok');
+    const ws = FakeWs.instances[0]!;
+
+    // N=3 pre-open
+    runtime.sendInput('s1', '1');
+    runtime.sendInput('s1', '2');
+    runtime.sendInput('s1', '3');
+    ws.open();
+    // M=2 post-open
+    runtime.sendInput('s1', '4');
+    runtime.sendInput('s1', '5');
+
+    expect(ws.sent).toHaveLength(5);
+    const payloads = ws.sent.map((b) =>
+      new TextDecoder().decode(decodeFrame(b).payload),
+    );
+    expect(payloads).toEqual(['1', '2', '3', '4', '5']);
+  });
+
+  it('sendInput on unknown sid is a no-op (no entry, no throw)', () => {
+    const { runtime } = makeRuntime();
+    expect(() => runtime.sendInput('ghost', 'x')).not.toThrow();
+    expect(FakeWs.instances).toHaveLength(0);
+  });
 });

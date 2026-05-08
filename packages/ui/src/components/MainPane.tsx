@@ -53,6 +53,9 @@ export function MainPane() {
 
   const token = useStore((s) => s.token);
   const activeSid = useStore((s) => s.activeSid);
+  const activeStatus = useStore((s) =>
+    s.activeSid ? (s.sessionStatuses[s.activeSid] ?? 'idle') : 'idle',
+  );
 
   const runtime = useRuntime();
   const hostGetToken = useGetToken();
@@ -240,7 +243,11 @@ export function MainPane() {
   }, [activeSid, token]);
 
   return (
-    <div className="main-pane" data-testid="terminal-pane">
+    <div
+      className="main-pane"
+      data-testid="terminal-pane"
+      data-ws-state={wsStateAttr(activeSid, activeStatus)}
+    >
       <div
         id="terminal"
         ref={containerRef}
@@ -249,6 +256,23 @@ export function MainPane() {
       />
     </div>
   );
+}
+
+// Task #61 (R-21) — smoke test contract: terminal-pane carries
+// `data-ws-state` so a Playwright test can deterministically wait for the
+// ws to be live before typing. Mapping collapses the 5 WsStatus variants
+// to the 3 states the test needs:
+//   - 'open'       : ws established at least once (`attached`).
+//   - 'connecting' : entry exists, ws still negotiating (idle/connecting).
+//   - 'closed'     : no active session, OR ws closed/exited.
+function wsStateAttr(
+  activeSid: string | null,
+  status: string,
+): 'connecting' | 'open' | 'closed' {
+  if (!activeSid) return 'closed';
+  if (status === 'attached') return 'open';
+  if (status === 'disconnected' || status === 'exited') return 'closed';
+  return 'connecting';
 }
 
 // Module-scope helper so the closures above don't each capture a fresh copy.

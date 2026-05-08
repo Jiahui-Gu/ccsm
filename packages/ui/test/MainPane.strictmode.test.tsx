@@ -290,4 +290,86 @@ describe('MainPane under React.StrictMode (T10 reshape of P1-3 regression)', () 
     // A foreign sid is silently dropped.
     expect(() => outputListenerHolder.current!('other-sid', payload)).not.toThrow();
   });
+
+  // ---- Task #61 (R-21): data-ws-state attribute -----------------------
+  it('renders data-ws-state="closed" when no active session', async () => {
+    useStore.setState({
+      token: 'test-token',
+      sessions: [],
+      activeSid: null,
+      status: 'idle',
+      sessionStatuses: {},
+    });
+    const { container } = render(
+      <StrictMode>
+        <MainPane />
+      </StrictMode>,
+    );
+    await flushMicrotasks();
+    const pane = container.querySelector(
+      '[data-testid="terminal-pane"]',
+    ) as HTMLElement | null;
+    expect(pane).not.toBeNull();
+    expect(pane!.getAttribute('data-ws-state')).toBe('closed');
+  });
+
+  it('renders data-ws-state="connecting" when active sid status is connecting', async () => {
+    useStore.setState({
+      token: 'test-token',
+      sessions: [{ sid: 'sid-A', createdAt: 0, alive: true }],
+      activeSid: 'sid-A',
+      status: 'connecting',
+      sessionStatuses: { 'sid-A': 'connecting' },
+    });
+    const { container } = render(
+      <StrictMode>
+        <MainPane />
+      </StrictMode>,
+    );
+    await flushMicrotasks();
+    const pane = container.querySelector(
+      '[data-testid="terminal-pane"]',
+    ) as HTMLElement | null;
+    expect(pane!.getAttribute('data-ws-state')).toBe('connecting');
+  });
+
+  it('renders data-ws-state="open" when active sid status is attached', async () => {
+    useStore.setState({
+      token: 'test-token',
+      sessions: [{ sid: 'sid-A', createdAt: 0, alive: true }],
+      activeSid: 'sid-A',
+      status: 'attached',
+      sessionStatuses: { 'sid-A': 'attached' },
+    });
+    const { container } = render(
+      <StrictMode>
+        <MainPane />
+      </StrictMode>,
+    );
+    await flushMicrotasks();
+    const pane = container.querySelector(
+      '[data-testid="terminal-pane"]',
+    ) as HTMLElement | null;
+    expect(pane!.getAttribute('data-ws-state')).toBe('open');
+  });
+
+  it('renders data-ws-state="closed" when active sid status is disconnected/exited', async () => {
+    useStore.setState({
+      token: 'test-token',
+      sessions: [{ sid: 'sid-A', createdAt: 0, alive: true }],
+      activeSid: 'sid-A',
+      status: 'exited',
+      sessionStatuses: { 'sid-A': 'exited' },
+    });
+    const { container } = render(
+      <StrictMode>
+        <MainPane />
+      </StrictMode>,
+    );
+    await flushMicrotasks();
+    const pane = container.querySelector(
+      '[data-testid="terminal-pane"]',
+    ) as HTMLElement | null;
+    expect(pane!.getAttribute('data-ws-state')).toBe('closed');
+  });
 });
