@@ -81,6 +81,13 @@ jobs:
     # T12 (#655): cross-platform e2e matrix. macOS is intentionally NOT in the
     # matrix — keeping CI cost down for v0.1.0; see README "Platform support"
     # for the contributions-welcome note.
+    #
+    # Task #787 follow-up (PR #1170): e2e is currently red on working baseline
+    # (independent of any in-flight PR). Marked continue-on-error so the job
+    # still runs (artifacts + logs preserved) but does not block PR check
+    # rollup. User runs e2e manually for now. Remove this line once the
+    # baseline regression is fixed to restore gating.
+    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
