@@ -202,6 +202,7 @@ export function MainPane() {
 
     // ---- xterm input/resize wiring ----
     const inputDisp = term.onData((data) => {
+      console.log('[ccsm spa] xterm onData len=' + data.length);
       const sid = activeSidRef.current;
       if (sid) runtime.sendInput(sid, data);
     });

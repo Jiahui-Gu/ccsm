@@ -235,6 +235,7 @@ export class WsClient {
 
   /** Send raw user input as one INPUT frame. No-op if not yet attached. */
   sendInput(data: string): void {
+    console.log('[ccsm spa] sendInput len=' + data.length);
     const ws = this.ws;
     if (!ws || ws.readyState !== ws.OPEN) return;
     const payload = new TextEncoder().encode(data);
