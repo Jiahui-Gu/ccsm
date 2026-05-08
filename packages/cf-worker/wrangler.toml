@@ -1,0 +1,14 @@
+name = "ccsm-worker"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+
+# Durable Object binding for the tunnel pairing logic. The class itself is
+# implemented as a stub in T1 so wrangler can resolve the binding; T2 (#774)
+# replaces the stub with the real TunnelDO that pairs browser ws ↔ daemon ws.
+[[durable_objects.bindings]]
+name = "TUNNEL"
+class_name = "TunnelDO"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["TunnelDO"]
