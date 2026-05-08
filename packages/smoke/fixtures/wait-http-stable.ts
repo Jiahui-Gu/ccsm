@@ -19,6 +19,16 @@
 // poll cadence is a tradeoff: short enough that a 3000ms stable window means
 // at least 15 consecutive successful probes (a 1-2 reload bounce is not
 // silently absorbed); long enough that wrangler does not get hammered.
+//
+// R-15 (Task #37) — observability layer. dev-36 verify exposed a stage 1
+// 60s timeout with `lastStatus=null lastErrno=UND_ERR_HEADERS_TIMEOUT`: TCP
+// accept passed, but GET / never returned headers. The previous helper only
+// logged on timeout, so we could not tell whether (a) wrangler cold-started
+// and the first probe never got headers, (b) every probe stuck the same
+// way, or (c) headers arrived and stalled mid-body. We now emit a one-shot
+// `start` line and a per-attempt line **only when (status, errno) changes**
+// — naive per-poll logging would emit ~300 lines per 60s stage and bury
+// signal. Timeout summary still prints the final state for grep-ability.
 
 export interface WaitForHttpStableOptions {
   /** Total budget before the helper rejects, ms. */
@@ -38,6 +48,13 @@ export interface WaitForHttpStableOptions {
    */
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * R-15 (Task #37) — sink for per-attempt observability. Defaults to
+   * process.stderr.write so smoke logs fingerprint a stuck wrangler probe
+   * (UND_ERR_HEADERS_TIMEOUT, ECONNREFUSED, …) without flipping behavior.
+   * Tests inject a spy to assert the change-only log cadence.
+   */
+  log?: (line: string) => void;
 }
 
 const DEFAULT_POLL_MS = 200;
@@ -79,6 +96,7 @@ export async function waitForHttpStable(
   const now = opts.now ?? Date.now;
   const sleep = opts.sleep ?? ((ms) => new Promise<void>((r) => setTimeout(r, ms)));
   const pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_POLL_MS;
+  const log = opts.log ?? ((line) => process.stderr.write(line));
 
   if (typeof fetchImpl !== 'function') {
     throw new Error('waitForHttpStable: no fetch implementation available');
@@ -89,11 +107,29 @@ export async function waitForHttpStable(
   let stableSince: number | null = null;
   let lastStatus: number | null = null;
   let lastErrno: string | null = null;
+  // R-15 (Task #37) — change-only attempt logging. With pollIntervalMs=200
+  // and timeout=60_000, naive per-attempt logging would emit 300 lines per
+  // stage; we only emit when (status, errno) transitions, plus the first
+  // attempt and the timeout summary. This is enough to fingerprint
+  // UND_ERR_HEADERS_TIMEOUT vs ECONNREFUSED vs partial-headers-then-stuck
+  // without burying real signal under poll noise.
+  let attempt = 0;
+  let prevKey: string | null = null;
+  log(`[wait-http-stable ${url}] start poll=${pollIntervalMs}ms stableForMs=${opts.stableForMs} timeout=${opts.timeout}\n`);
 
   while (now() < deadline) {
     const outcome = await probeOnce(url, fetchImpl);
     lastStatus = outcome.status;
     lastErrno = outcome.errno;
+    attempt += 1;
+    const key = `${outcome.status ?? 'null'}|${outcome.errno ?? 'null'}`;
+    if (prevKey === null || prevKey !== key) {
+      log(
+        `[wait-http-stable ${url}] attempt=${attempt} elapsed=${now() - start}ms ` +
+        `status=${outcome.status ?? 'null'} errno=${outcome.errno ?? 'null'}\n`,
+      );
+      prevKey = key;
+    }
 
     if (outcome.ok) {
       const t = now();
@@ -106,8 +142,9 @@ export async function waitForHttpStable(
     await sleep(pollIntervalMs);
   }
 
-  throw new Error(
+  const summary =
     `waitForHttpStable(${url}) timed out after ${opts.timeout}ms ` +
-    `(stableForMs=${opts.stableForMs}, lastStatus=${lastStatus ?? 'null'}, lastErrno=${lastErrno ?? 'null'})`,
-  );
+    `(stableForMs=${opts.stableForMs}, lastStatus=${lastStatus ?? 'null'}, lastErrno=${lastErrno ?? 'null'})`;
+  log(`[wait-http-stable ${url}] timeout attempts=${attempt} ${summary}\n`);
+  throw new Error(summary);
 }

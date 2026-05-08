@@ -193,4 +193,66 @@ describe('waitForHttpStable', () => {
     await tickUntilSettled(promise, clock);
     // Resolves after the run of 200s past the 502 reset.
   });
+
+  // R-15 (Task #37) — change-only attempt logging. dev-36 verify exposed a
+  // 60s stage 1 timeout with `lastErrno=UND_ERR_HEADERS_TIMEOUT`; the only
+  // way to tell whether all 300 probes stuck the same way vs intermittent
+  // recovery is per-attempt observability. But naive per-poll logging would
+  // bury signal under 300 noise lines per stage. Verify the helper logs
+  // start + first attempt + each (status, errno) transition only.
+  it('logs start + only on (status, errno) transition', async () => {
+    // 7 fake outcomes: null, null, 200, 200, 200, 500, 500.
+    // Expect log calls: start + null(first) + 200(transition) + 500(transition) = 4.
+    const clock = makeClock();
+    const seq: ProbeResult[] = [
+      { kind: 'reset' },             // null/ECONNRESET, attempt=1 (first → log)
+      { kind: 'reset' },             // null/ECONNRESET, attempt=2 (no change)
+      { kind: 'ok', status: 200 },   // 200/null,        attempt=3 (transition → log)
+      { kind: 'ok', status: 200 },   // attempt=4
+      { kind: 'ok', status: 200 },   // attempt=5
+      { kind: 'ok', status: 500 },   // 500/null,        attempt=6 (transition → log)
+      { kind: 'ok', status: 500 },   // attempt=7
+    ];
+    const { fetchImpl } = makeFetch(seq);
+    const lines: string[] = [];
+    const log = (line: string): void => { lines.push(line); };
+
+    const promise = waitForHttpStable('http://127.0.0.1:1/health', {
+      timeout: 2_000,
+      stableForMs: 5_000, // never resolves; we want the timeout summary path
+      pollIntervalMs: 200,
+      fetchImpl,
+      now: clock.now,
+      sleep: clock.sleep,
+      log,
+    });
+
+    let err: unknown;
+    promise.catch((e) => { err = e; });
+    // Drive 7 probes (t=0..1400ms) — well under the 2000ms timeout.
+    for (let i = 0; i < 7; i++) {
+      await Promise.resolve(); await Promise.resolve();
+      clock.advance(200);
+    }
+    // Then drive past timeout to flush summary.
+    for (let i = 0; i < 10 && err === undefined; i++) {
+      await Promise.resolve(); await Promise.resolve();
+      clock.advance(200);
+    }
+    expect(err).toBeDefined();
+
+    // Filter out the timeout summary so we can count the body lines exactly.
+    const startLines = lines.filter((l) => l.includes('start poll='));
+    const attemptLines = lines.filter((l) => l.includes('] attempt='));
+    const timeoutLines = lines.filter((l) => l.includes('] timeout '));
+
+    expect(startLines).toHaveLength(1);
+    // 3 attempt transitions: null(first), 200(transition), 500(transition).
+    // NOT 7 — the 4 repeats of identical (status,errno) must not log.
+    expect(attemptLines).toHaveLength(3);
+    expect(attemptLines[0]).toMatch(/attempt=1 .*status=null errno=ECONNRESET/);
+    expect(attemptLines[1]).toMatch(/attempt=3 .*status=200 errno=null/);
+    expect(attemptLines[2]).toMatch(/attempt=6 .*status=500 errno=null/);
+    expect(timeoutLines).toHaveLength(1);
+  });
 });
