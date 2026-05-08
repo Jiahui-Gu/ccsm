@@ -372,6 +372,17 @@ async function globalSetupInner(): Promise<void> {
       // follow-up that switches daemon_mgr to honor an override gets the
       // smoke-private path automatically.
       CCSM_DB_PATH: join(tempDataDir ?? tmpdir(), 'ccsm.db'),
+      // R-19 (Task #53) — route the daemon-spawned PTY through a bare shell
+      // instead of the `claude` REPL. The REPL eats stdin into its prompt
+      // buffer, so smoke spec :48's `echo hello-from-smoke\r` write never
+      // round-trips through the PTY's stdout tail. cmd.exe / /bin/sh echo
+      // the input back (cmd.exe ECHO ON by default; /bin/sh prints the line
+      // it just executed when run interactively-ish through node-pty), which
+      // makes the assertion satisfiable without the smoke harness having to
+      // know anything about `claude` internals. Only set here in the smoke
+      // tauri-release spawn — does not pollute prod or the cf-worker / pages
+      // children. Daemon prod default (env unset) is unchanged.
+      CCSM_PTY_ENTRY: process.platform === 'win32' ? 'cmd.exe' : '/bin/sh',
     },
     // The lib.rs setup hook calls spawn_daemon_inner, which logs
     // "[daemon-mgr] resolved daemon script: …" before spawning, then the
