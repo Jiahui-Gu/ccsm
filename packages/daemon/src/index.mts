@@ -164,6 +164,10 @@ async function main(): Promise<void> {
       // + INPUT/RESIZE forwarding for the rest of this connection; we tear
       // it down via the returned handle when the tunnel ws drops.
       onBrowserAttach: ({ sid, lastSeq, send }) => {
+        // R-17 log #10 (Task #45): record browser-attach entry pre-routing so
+        // we can diff against tunnel.mts log #8 (hello received) and the DO
+        // log #2 (browser ws accepted) on the cloud side.
+        console.error('[ccsm] tunnel: browser attach sid=' + sid + ' lastSeq=' + lastSeq);
         const router = attachFrameRouter({
           sid,
           lastSeq,

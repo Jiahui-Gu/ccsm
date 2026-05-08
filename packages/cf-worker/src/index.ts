@@ -31,6 +31,8 @@ export default {
       // Multi-tunnel routing (per-user / per-pairing-id) is future work.
       const id = env.TUNNEL.idFromName('default');
       const stub = env.TUNNEL.get(id);
+      // R-17 log #12 (Task #45): record ws-route entry into the DO stub.
+      console.log('[worker] route ' + url.pathname + ' upgrade=' + isUpgrade);
       // Task #782 (S3-T6): forward the full request (incl.
       // `Sec-WebSocket-Protocol` if the browser sent one) to the DO. The DO
       // is responsible for echoing the protocol back on the 101 response so
@@ -45,6 +47,8 @@ export default {
     if (url.pathname.startsWith('/api/') || url.pathname === '/token') {
       const id = env.TUNNEL.idFromName('default');
       const stub = env.TUNNEL.get(id);
+      // R-17 log #12 (Task #45): record HTTP-mux route entry into the DO stub.
+      console.log('[worker] route ' + url.pathname + ' upgrade=' + isUpgrade);
       return stub.fetch(req);
     }
 
