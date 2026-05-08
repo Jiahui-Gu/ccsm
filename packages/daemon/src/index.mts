@@ -25,11 +25,14 @@ import type { AddressInfo } from 'node:net';
 import { openDb } from './db.mjs';
 import { createDaemonHttp } from './http.mjs';
 import { createRuntimeRegistry } from './runtime.mjs';
+import { TunnelClient } from './tunnel.mjs';
 import { attachWebSocket } from './ws.mjs';
 
 const DEFAULT_PORT = 17832;
 const PORT_RETRY_MAX = 20;
 const SHUTDOWN_TIMEOUT_MS = 2000;
+const DEFAULT_TUNNEL_URL = 'wss://cc-sm.pages.dev/tunnel/default';
+const TUNNEL_CONNECT_POLL_MS = 100;
 
 const HANDSHAKE_FLAG = '--handshake-stdout';
 
@@ -118,6 +121,53 @@ async function main(): Promise<void> {
   http.setRegistry(registry);
   attachWebSocket(http.server, { token, sessions: http.sessions, registry });
 
+  // Dual-listen (Task #777, S3-T4): in addition to loopback HTTP, kick off an
+  // outbound WS tunnel to the Cloudflare Worker so cloud browsers can reach
+  // this daemon. Tunnel init is fire-and-forget — its failure must NEVER
+  // abort the loopback path. Set CCSM_TUNNEL_DISABLE=1 to skip entirely
+  // (tests + offline dev). T4 only verifies link-up; real frame routing into
+  // sessions lands in T6.
+  const tunnelDisabled = process.env.CCSM_TUNNEL_DISABLE === '1';
+  const tunnelUrl = process.env.CCSM_TUNNEL_URL || DEFAULT_TUNNEL_URL;
+  let tunnel: TunnelClient | null = null;
+  let tunnelStatePoll: ReturnType<typeof setInterval> | null = null;
+  if (tunnelDisabled) {
+    console.error('[ccsm] tunnel: disabled (CCSM_TUNNEL_DISABLE)');
+  } else {
+    console.error(`[ccsm] tunnel: connecting ${tunnelUrl}`);
+    tunnel = new TunnelClient({
+      url: tunnelUrl,
+      token,
+      onFrame: (data) => {
+        const len = typeof data === 'string'
+          ? Buffer.byteLength(data, 'utf8')
+          : data.length;
+        // T4 simplification: just observe link-up; T6 will route into sessions.
+        console.error(`[ccsm] tunnel: rx frame len=${len}`);
+      },
+    });
+    tunnel.start();
+    // TunnelClient does not emit a 'connected' event; poll state until we
+    // observe the first transition (or the client is stopped). Cheap timer,
+    // unref'd so it never holds the loop open. Logged once per connect.
+    let lastState = tunnel.getState();
+    tunnelStatePoll = setInterval(() => {
+      if (tunnel === null) return;
+      const s = tunnel.getState();
+      if (s !== lastState) {
+        if (s === 'connected') console.error('[ccsm] tunnel: connected');
+        lastState = s;
+      }
+      if (s === 'stopped') {
+        if (tunnelStatePoll !== null) {
+          clearInterval(tunnelStatePoll);
+          tunnelStatePoll = null;
+        }
+      }
+    }, TUNNEL_CONNECT_POLL_MS);
+    tunnelStatePoll.unref?.();
+  }
+
   // Handshake mode: bind port 0 (ephemeral) once, no retry — caller already
   // scopes the port via OS allocation, EADDRINUSE on port 0 is "out of ports"
   // and not recoverable by ++port.
@@ -145,6 +195,19 @@ async function main(): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     console.error(`[ccsm] received ${signal}, shutting down`);
+    // Stop the outbound tunnel first so we don't reconnect while the HTTP
+    // server is closing. tunnel.stop() is synchronous + idempotent.
+    if (tunnel !== null) {
+      try {
+        tunnel.stop();
+      } catch (err) {
+        console.error('[ccsm] tunnel.stop error:', err);
+      }
+    }
+    if (tunnelStatePoll !== null) {
+      clearInterval(tunnelStatePoll);
+      tunnelStatePoll = null;
+    }
     // Synchronously flush any pending sessions write BEFORE we close the
     // db handle. flushNow() also clears the debounce timer so the event
     // loop has nothing left holding it open.
