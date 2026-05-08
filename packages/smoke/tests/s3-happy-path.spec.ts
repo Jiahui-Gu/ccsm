@@ -84,10 +84,17 @@ test('cloud-mode happy path: open SPA, create session, run echo, see output', as
   });
 
   // Close the session (UI close button — daemon will tear down the PTY).
-  // The close button uses CSS hover-only visibility (sidebar__session-close),
-  // so the a11y tree hides it until hover. Target by testid + hover first.
+  // The close button is hidden until the parent <li>.sidebar__session is
+  // hovered (CSS rule `.sidebar__session:hover .sidebar__session-close`).
+  // Hovering the close button directly is a catch-22 — Playwright requires
+  // the target to be visible before hover, but hover is what makes it
+  // visible. Hover the parent row first to reveal the close button, then
+  // click it. We avoid `{ force: true }` because force bypasses
+  // actionability checks and would not exercise the real CSS reveal users
+  // experience.
+  const sessionRow = page.getByTestId(/^sidebar-session-[0-9a-f]/).first();
+  await sessionRow.hover();
   const closeBtn = page.getByTestId(/^sidebar-session-close-/).first();
-  await closeBtn.hover();
   await closeBtn.click();
   await expect(page.getByTestId('terminal-pane')).not.toBeVisible({ timeout: 10_000 });
 });
