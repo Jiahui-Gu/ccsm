@@ -11,15 +11,15 @@
 // research note afea153b6a17c9838 and the Pages Functions wrangler docs:
 // https://developers.cloudflare.com/pages/functions/wrangler-configuration/).
 //
-// Scope (intentionally narrow for this task):
+// Scope:
 //   - WebSocket paths (`/ws/default`, `/tunnel/default`) are proxied to the
 //     Worker so the daemon can dial wss://cc-sm.pages.dev/tunnel/default and
 //     the browser can dial wss://cc-sm.pages.dev/ws/default, both terminating
 //     in the same TunnelDO instance.
-//   - REST `/api/*` is NOT proxied here yet. The daemon sits behind NAT and
-//     the Worker cannot dial back into it, so REST has to flow over the same
-//     ws tunnel (HTTP-over-tunnel framing). That is a separate followup task.
-//     For now REST stays on the loopback `?daemon=` escape hatch used in dev.
+//   - Task #787 (S3-C): REST `/api/*` and `/token` are also proxied to the
+//     Worker, which forwards them into the same TunnelDO. The DO mux's them
+//     onto the daemon-dialed ws as `http_req` control frames so the NAT'd
+//     daemon can serve them. Browser only ever talks to cc-sm.pages.dev.
 //   - Everything else falls through to `ctx.next()` so Pages serves the
 //     static SPA assets (`/index.html`, `/assets/*`, etc.) as before.
 
@@ -27,14 +27,19 @@ interface Env {
   // Service binding to the standalone ccsm-worker Worker (configured in
   // wrangler.toml as `[[services]] binding = "TUNNEL_WORKER"`). Pages
   // Functions invoke it as a Fetcher; the Worker's own fetch handler routes
-  // /ws/default and /tunnel/default into the TunnelDO.
+  // /ws/default, /tunnel/default, /api/*, and /token into the TunnelDO.
   TUNNEL_WORKER: Fetcher;
 }
 
 export const onRequest: PagesFunction<Env> = async (ctx) => {
   const url = new URL(ctx.request.url);
 
-  if (url.pathname === '/ws/default' || url.pathname === '/tunnel/default') {
+  if (
+    url.pathname === '/ws/default' ||
+    url.pathname === '/tunnel/default' ||
+    url.pathname === '/token' ||
+    url.pathname.startsWith('/api/')
+  ) {
     return ctx.env.TUNNEL_WORKER.fetch(ctx.request);
   }
 

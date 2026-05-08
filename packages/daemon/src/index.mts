@@ -126,9 +126,20 @@ async function main(): Promise<void> {
   // this daemon. Tunnel init is fire-and-forget — its failure must NEVER
   // abort the loopback path. Set CCSM_TUNNEL_DISABLE=1 to skip entirely
   // (tests + offline dev). T4 only verifies link-up; real frame routing into
-  // sessions lands in T6.
+  // sessions lands in T6. Task #787 (S3-C) adds HTTP-over-tunnel mux: the
+  // tunnel client now owns a daemonLoopbackPort so it can fetch
+  // http://127.0.0.1:<port><path> on receipt of http_req control frames —
+  // hence we construct it AFTER listen so we have the bound port.
   const tunnelDisabled = process.env.CCSM_TUNNEL_DISABLE === '1';
   const tunnelUrl = process.env.CCSM_TUNNEL_URL || DEFAULT_TUNNEL_URL;
+
+  // Handshake mode: bind port 0 (ephemeral) once, no retry — caller already
+  // scopes the port via OS allocation, EADDRINUSE on port 0 is "out of ports"
+  // and not recoverable by ++port.
+  const { port } = handshakeMode
+    ? await listenOnce(http, 0)
+    : await listenWithRetry(http, startPort, PORT_RETRY_MAX);
+
   let tunnel: TunnelClient | null = null;
   let tunnelStatePoll: ReturnType<typeof setInterval> | null = null;
   if (tunnelDisabled) {
@@ -138,6 +149,7 @@ async function main(): Promise<void> {
     tunnel = new TunnelClient({
       url: tunnelUrl,
       token,
+      daemonLoopbackPort: port,
       onFrame: (data) => {
         const len = typeof data === 'string'
           ? Buffer.byteLength(data, 'utf8')
@@ -167,13 +179,6 @@ async function main(): Promise<void> {
     }, TUNNEL_CONNECT_POLL_MS);
     tunnelStatePoll.unref?.();
   }
-
-  // Handshake mode: bind port 0 (ephemeral) once, no retry — caller already
-  // scopes the port via OS allocation, EADDRINUSE on port 0 is "out of ports"
-  // and not recoverable by ++port.
-  const { port } = handshakeMode
-    ? await listenOnce(http, 0)
-    : await listenWithRetry(http, startPort, PORT_RETRY_MAX);
 
   if (handshakeMode) {
     // Single-line JSON, no other stdout writes for the rest of the process.

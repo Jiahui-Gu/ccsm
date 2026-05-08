@@ -25,6 +25,17 @@ export default {
       // the browser doesn't reject the handshake (RFC 6455 §4.2.2 step 4).
       return stub.fetch(req);
     }
+
+    // Task #787 (S3-C): REST `/api/*` and `/token` flow through the same DO
+    // instance, which serializes them as http_req control frames over the
+    // daemon-dialed ws and awaits the matching http_res. The browser only
+    // ever talks to cc-sm.pages.dev; the DO bridges to the NAT'd daemon.
+    if (url.pathname.startsWith('/api/') || url.pathname === '/token') {
+      const id = env.TUNNEL.idFromName('default');
+      const stub = env.TUNNEL.get(id);
+      return stub.fetch(req);
+    }
+
     return new Response('Not Found', { status: 404 });
   },
 };
