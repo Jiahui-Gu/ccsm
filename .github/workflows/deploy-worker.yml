@@ -1,0 +1,66 @@
+name: deploy-worker
+
+# Task #776 [S3-T7]: Cloudflare Worker deploy pipeline for cf-worker
+# (TunnelDO browser <-> daemon pairing + frame forward).
+#
+# Triggers:
+#   - push to main or working: ship cf-worker on every merge that touches
+#     packages/cf-worker (or pnpm workspace metadata that changes its
+#     resolved deps). Mirrors deploy-pages.yml branch policy: `working`
+#     is the post-v0.1.0 release main-line, `main` is the periodic roll-up.
+#   - workflow_dispatch: manual redeploy from the Actions tab (e.g. after
+#     rotating wrangler secrets or rolling back).
+#
+# NOTE: this workflow file itself is intentionally NOT in `paths` — editing
+# the yml should not retrigger a worker deploy.
+#
+# Secrets (already configured on the repo for deploy-pages.yml; reused here
+# — no new secrets required per Task #776 spec):
+#   - CLOUDFLARE_API_TOKEN: scoped token with Workers:Edit on account.
+#   - CLOUDFLARE_ACCOUNT_ID: account containing the cf-worker.
+
+on:
+  push:
+    branches: [main, working]
+    paths:
+      - 'packages/cf-worker/**'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+  workflow_dispatch:
+
+# Concurrency: only one Worker deploy at a time per ref; cancel stale runs.
+concurrency:
+  group: deploy-worker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck cf-worker
+        run: pnpm -F @ccsm/cf-worker typecheck
+
+      - name: Deploy to Cloudflare Workers
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: packages/cf-worker
+          command: deploy
