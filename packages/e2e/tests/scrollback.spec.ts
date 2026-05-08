@@ -1,6 +1,6 @@
 // scrollback.spec.ts — Task #662 / T10 dev verification.
 //
-// WHAT THIS PROVES (DESIGN.md §7 切 session 行为):
+// WHAT THIS PROVES (DESIGN.md §7 session switch behavior):
 //   - Each session keeps its OWN scrollback buffer in the runtime, even when
 //     it is not the actively-rendered session.
 //   - Switching active session via the sidebar replays that session's

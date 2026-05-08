@@ -1,55 +1,68 @@
 # ccsm Roadmap
 
-本文档记录 ccsm 当前的鉴权 / 部署演进路线图 (S0 → S5), 描述前端、Tauri 壳、Cloudflare 中间层、本地 daemon 与鉴权方式在每个阶段的形态。
+This document records ccsm's current auth / deployment evolution roadmap
+(S0 -> S5), describing the shape of the frontend, the Tauri shell, the
+Cloudflare middle layer, the local daemon, and the auth model at each
+stage.
 
-## 架构准则 (跨阶段不变)
+## Architecture principles (invariant across stages)
 
-**Web 和 Tauri 是平行的前端, 都直连后端 daemon。** Tauri 唯一的额外职责是起 daemon (spawn + Job Object 绑生命周期); 数据流量上 Tauri 不在路径上, 跟 web 浏览器是两个对等的 client。后续阶段 (含 S3 云端代理) 必须保留这个对等关系——不允许出现"web 流量经 Tauri 转发"这种把 Tauri 推上数据路径的设计。
+**Web and Tauri are parallel frontends, both directly connected to the
+backend daemon.** Tauri's only extra responsibility is starting the
+daemon (spawn + Job Object lifecycle binding); on the data path Tauri is
+not involved — it is a peer client to the web browser. Subsequent stages
+(including S3 cloud proxy) must preserve this peer relationship: a design
+that puts Tauri on the data path (e.g. "web traffic forwarded through
+Tauri") is not allowed.
 
 ---
 
-**当前位置**: S0 完工 (wave-1 + wave-2 主线 14/14)。S1 进行中 2/4: PR #36 wave-2.5 已落 Tauri 注入 `CCSM_TOKEN` env + 端口固定 9876; 还差 (a) token 移到 `~/.ccsm/token` (现硬编码), (b) web 前端不再依赖 URL `?token=`。
+**Current position**: S0 done (wave-1 + wave-2 main line 14/14). S1 in
+progress 2/4: PR #36 wave-2.5 has landed Tauri-injected `CCSM_TOKEN` env
++ port pinned to 9876; remaining (a) move the token to `~/.ccsm/token`
+(currently hard-coded), (b) the web frontend should no longer rely on
+URL `?token=`.
 
 ---
 
-## 阶段 S0 起点 (现状)
-- Web 前端: 同源连本地 daemon, token 从 URL 写入 sessionStorage
-- Tauri 壳: 同壳 spawn daemon, 端口 0 + 一次性随机 token, stdout 握手
-- Cloudflare 中间层: — 不存在
-- Daemon (本地): 每次启动随机 mint token, 仅信本地 127.0.0.1
-- 鉴权方式: 每实例独立随机 token, 用户手动 / Tauri stdout 传递
+## Stage S0 starting point (current state)
+- Web frontend: same-origin to local daemon, token written from URL into sessionStorage
+- Tauri shell: same shell spawns daemon, port 0 + one-shot random token, stdout handshake
+- Cloudflare middle layer: — does not exist
+- Daemon (local): mints a random token on every startup, trusts only local 127.0.0.1
+- Auth: per-instance independent random token, transferred manually by the user / via Tauri stdout
 
-## 阶段 S1 本地固定 token
-- Web 前端: 读固定 token (打包注入 / 本地配置), 直连 daemon
-- Tauri 壳: spawn daemon 时塞 CCSM_TOKEN=<固定值> 环境变量, 端口固定 9876
-- Cloudflare 中间层: —
-- Daemon (本地): 优先用 CCSM_TOKEN env (代码已支持), 端口固定
-- 鉴权方式: 固定共享 token, 写在本地 ~/.ccsm/token (chmod 600)
+## Stage S1 fixed local token
+- Web frontend: read a fixed token (bundled at build time / local config), connect to daemon directly
+- Tauri shell: when spawning daemon, inject CCSM_TOKEN=<fixed value> env var; port pinned to 9876
+- Cloudflare middle layer: —
+- Daemon (local): prefers CCSM_TOKEN env (already supported in code), port pinned
+- Auth: fixed shared token stored in local ~/.ccsm/token (chmod 600)
 
-## 阶段 S2 引入云壳 (但不鉴权云)
-- Web 前端: 改部署到 Cloudflare Pages (https://ccsm.pages.dev), 仍直连本地 daemon (http://127.0.0.1:17832)
-- Tauri 壳: 同 S1
-- Cloudflare 中间层: 仅托管静态资源 (Pages), 不参与鉴权也不代理
-- Daemon (本地): 同 S1, 但需放开 CORS / WS Origin 白名单接受 https://ccsm.pages.dev
-- 鉴权方式: 仍是固定本地 token
+## Stage S2 introduce cloud shell (but no cloud auth)
+- Web frontend: deployed to Cloudflare Pages (https://ccsm.pages.dev), still connects directly to local daemon (http://127.0.0.1:17832)
+- Tauri shell: same as S1
+- Cloudflare middle layer: hosts static assets only (Pages); does not participate in auth nor proxy traffic
+- Daemon (local): same as S1, but must open CORS / WS Origin allow-list to accept https://ccsm.pages.dev
+- Auth: still the fixed local token
 
-## 阶段 S3 云端代理流量
-- Web 前端: 改连 wss://ccsm.pages.dev/ws/<user>, 不再知道本地 daemon 地址
-- Tauri 壳: 启动时主动向云注册一条隧道 (Tunnel / Durable Object 长连接), 把本地 daemon 暴露给云
-- Cloudflare 中间层: Worker + Durable Object 做 reverse proxy, 把浏览器请求转给对应用户的隧道
-- Daemon (本地): 不再监听公网, 只接 Tauri 起的隧道; token 改成隧道层校验
-- 鉴权方式: 浏览器 → 云仍用固定 token, 云 → daemon 用隧道内部凭证
+## Stage S3 cloud proxies traffic
+- Web frontend: switches to wss://ccsm.pages.dev/ws/<user>; no longer aware of the local daemon address
+- Tauri shell: at startup actively registers a tunnel with the cloud (Tunnel / Durable Object long connection), exposing the local daemon to the cloud
+- Cloudflare middle layer: Worker + Durable Object as reverse proxy, forwarding browser requests to that user's tunnel
+- Daemon (local): no longer listens on the public network; only accepts the tunnel started by Tauri. Token validation moves to the tunnel layer
+- Auth: browser -> cloud still uses the fixed token; cloud -> daemon uses internal tunnel credentials
 
-## 阶段 S4 云端接 GitHub OAuth
-- Web 前端: 跳 Sign in with GitHub → 拿到云端签发的 session cookie / JWT
-- Tauri 壳: 启动时也走 GitHub OAuth (device flow), 拿到云端签发的隧道凭证, 用它注册隧道
-- Cloudflare 中间层: 新增 GitHub OAuth + 用户 → 隧道映射表; 校验 web 来的 JWT 后路由到该用户的隧道
-- Daemon (本地): 不再认 token, 只认隧道层 mTLS / 一次性凭证
-- 鉴权方式: GitHub 身份: web 走浏览器 OAuth, Tauri 走 device flow; 云端是唯一信任锚
+## Stage S4 cloud integrates GitHub OAuth
+- Web frontend: redirects to Sign in with GitHub -> obtains a cloud-issued session cookie / JWT
+- Tauri shell: at startup also runs GitHub OAuth (device flow), obtains a cloud-issued tunnel credential, and uses it to register the tunnel
+- Cloudflare middle layer: adds GitHub OAuth + a user -> tunnel mapping table; validates JWTs from web requests and routes to that user's tunnel
+- Daemon (local): no longer authenticates the token; trusts only the tunnel layer (mTLS / one-shot credential)
+- Auth: GitHub identity. Web uses browser OAuth, Tauri uses device flow. The cloud is the sole trust anchor.
 
-## 阶段 S5 终态
-- Web 前端: 纯 SPA, 只懂 JWT + WS, 不知道 daemon 在哪
-- Tauri 壳: 后台守护进程 + 隧道客户端, 启动即注册, 断线重连
-- Cloudflare 中间层: 全权: OAuth, 用户↔隧道路由, 速率限制, 审计
-- Daemon (本地): 纯本地执行体, 只信任来自隧道的请求, 无独立鉴权
-- 鉴权方式: 单一身份源 = GitHub; 凭证生命周期 = OAuth refresh token
+## Stage S5 end state
+- Web frontend: pure SPA that only understands JWT + WS; does not know where the daemon is
+- Tauri shell: background daemon process + tunnel client; registers on startup, reconnects on disconnect
+- Cloudflare middle layer: full responsibility — OAuth, user <-> tunnel routing, rate limiting, audit
+- Daemon (local): pure local execution body, trusts only requests from the tunnel; no independent auth
+- Auth: single identity source = GitHub; credential lifecycle = OAuth refresh token

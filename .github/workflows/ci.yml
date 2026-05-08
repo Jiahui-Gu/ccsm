@@ -174,7 +174,7 @@ jobs:
           if-no-files-found: ignore
 
   s2-acceptance:
-    # Task #763 (S2-收口-E): dedicated job for s2-pages-loopback +
+    # Task #763 (S2-closeout-E): dedicated job for s2-pages-loopback +
     # s2-spoof-origin specs, which the main `e2e` job excludes via
     # `--grep-invert s2-pages-loopback` (because pre-#763 the spec needed
     # an authed `claude` CLI with no CI credentials path, and was only run

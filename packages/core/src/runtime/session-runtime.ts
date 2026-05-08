@@ -1,7 +1,7 @@
 // Per-session runtime: WebSocket lifecycle + scrollback + auto-reconnect.
 //
-// History: Task #662 / T10 (DESIGN.md §3 ring buffer mirror, §7 切 session
-// 行为, §F6 重连). #673 added the `hasEverAttached` invariant for sidebar
+// History: Task #662 / T10 (DESIGN.md §3 ring buffer mirror, §7 session
+// switch behavior, §F6 reconnect). #673 added the `hasEverAttached` invariant for sidebar
 // fast-path. Wave-2 T5 (#688) lifts this module out of `packages/frontend`
 // into `@ccsm/core` and decouples it from zustand: the runtime now takes
 // `statusSink` (and optional `outputSink`) at construction; React-specific
