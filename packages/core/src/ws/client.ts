@@ -19,6 +19,16 @@
 //   - PAUSE / RESUME backpressure (T11).
 //
 // We intentionally use the browser-native WebSocket; no third-party ws lib.
+//
+// Task #48 (R-18): browsers cannot set custom headers on `new WebSocket(...)`.
+// The cf-worker TunnelDO authenticates the upgrade by reading the bearer token
+// out of the `Sec-WebSocket-Protocol` request header (RFC 6455 §1.9). Without
+// it the DO closes the socket with code=1008 reason="missing token subprotocol"
+// — exactly the symptom observed across all 16 reconnect attempts in the R-17
+// /tmp/smoke-r17-verify.log capture. The contract (encoding `ccsm.<token>` in
+// the subprotocol list, server taking the first `ccsm.*` entry and echoing it
+// on the 101) is mirrored in `packages/cf-worker/src/tunnel-do.ts` and
+// `packages/frontend-web/src/hostConfig.ts` (WS_SUBPROTOCOL_PREFIX).
 
 import {
   FrameType,
@@ -28,6 +38,26 @@ import {
   encodeResize,
 } from '@ccsm/shared';
 import { API_PATHS } from '@ccsm/shared';
+
+/**
+ * Subprotocol prefix used to smuggle the daemon bearer token through the
+ * browser ws upgrade. Must stay in sync with cf-worker tunnel-do.ts and
+ * frontend-web hostConfig.ts (Task #782 / Task #48).
+ */
+export const WS_SUBPROTOCOL_PREFIX = 'ccsm.';
+
+/**
+ * Build the subprotocol array passed to `new WebSocket(url, protocols)`.
+ *
+ * Encoding: `['ccsm.<token>']`. Token charset is the daemon's hex/base64
+ * randombytes which is already RFC 6455 subprotocol-token safe (RFC 7230
+ * `tchar`), so no encoding step is needed. Returns `[]` for an empty token
+ * — the upstream DO will then close 1008 and the caller can surface that.
+ */
+export function buildWsSubprotocols(token: string): string[] {
+  if (token.length === 0) return [];
+  return [`${WS_SUBPROTOCOL_PREFIX}${token}`];
+}
 
 export type WsStatus =
   | 'idle'
@@ -154,7 +184,15 @@ export class WsClient {
       this.opts.lastSeq ?? 0,
       this.opts.hostBase,
     );
-    const ws = new Ctor(url);
+    // Task #48 (R-18): pass token in BOTH the URL query AND the
+    // Sec-WebSocket-Protocol subprotocol list. The loopback daemon
+    // (`packages/daemon/src/ws.mts`) reads the query param; the cf-worker
+    // TunnelDO reads the subprotocol header (browsers can't set arbitrary
+    // headers on `new WebSocket(...)`). Without the subprotocol the DO
+    // closes 1008 reason="missing token subprotocol" — see R-17 verify log
+    // /tmp/smoke-r17-verify.log (16x identical close).
+    const protocols = buildWsSubprotocols(this.opts.token);
+    const ws = protocols.length > 0 ? new Ctor(url, protocols) : new Ctor(url);
     ws.binaryType = 'arraybuffer';
     this.ws = ws;
     this.setStatus('connecting');

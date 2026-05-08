@@ -6,7 +6,7 @@ import {
   encodeExit,
   encodeFrame,
 } from '@ccsm/shared';
-import { WsClient, buildWsUrl, type HostBase } from '../src/ws/client.js';
+import { WsClient, buildWsUrl, buildWsSubprotocols, WS_SUBPROTOCOL_PREFIX, type HostBase } from '../src/ws/client.js';
 
 const HOST: HostBase = { httpBase: 'http://127.0.0.1:17832' };
 
@@ -24,9 +24,9 @@ class MockWs {
   onopen: (() => void) | null = null;
   onmessage: ((ev: { data: unknown }) => void) | null = null;
   onerror: (() => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((ev?: CloseEvent) => void) | null = null;
 
-  constructor(public readonly url: string) {
+  constructor(public readonly url: string, public readonly protocols?: string | string[]) {
     MockWs.lastInstance = this;
   }
   static lastInstance: MockWs | null = null;
@@ -49,7 +49,7 @@ class MockWs {
   close(): void {
     this.closed = true;
     this.readyState = MockWs.CLOSED;
-    this.onclose?.();
+    this.onclose?.({ code: 1000, reason: '' } as CloseEvent);
   }
 
   // Test helpers
@@ -215,7 +215,7 @@ describe('WsClient', () => {
     client.connect();
     const ws = MockWs.lastInstance!;
     ws.open();
-    ws.onclose?.();
+    ws.onclose?.({ code: 1006, reason: '' } as CloseEvent);
     expect(onDisconnect).toHaveBeenCalledWith('ws closed');
     expect(client.getStatus()).toBe('disconnected');
   });
@@ -333,5 +333,74 @@ describe('WsClient', () => {
     const [data, seq] = onOutput.mock.calls[0]!;
     expect(new TextDecoder().decode(data as Uint8Array)).toBe('chunk');
     expect(seq).toBe(99);
+  });
+});
+
+// Task #48 (R-18): protocol contract — SPA must encode the bearer token in
+// the Sec-WebSocket-Protocol subprotocol list so the cf-worker TunnelDO can
+// authenticate the upgrade. Browsers can't set arbitrary headers on
+// `new WebSocket(...)`, so the second-argument `protocols` array is the only
+// transport. Server-side parser lives in
+// `packages/cf-worker/src/tunnel-do.ts` (extractBrowserToken). R-17 verify
+// log /tmp/smoke-r17-verify.log captured 16x close 1008 "missing token
+// subprotocol" because this contract was unimplemented on the SPA side.
+describe('buildWsSubprotocols (Task #48 protocol contract)', () => {
+  it('encodes the token as `ccsm.<token>` matching cf-worker tunnel-do', () => {
+    expect(buildWsSubprotocols('abc123')).toEqual(['ccsm.abc123']);
+  });
+
+  it('exports the prefix constant in sync with cf-worker / hostConfig', () => {
+    expect(WS_SUBPROTOCOL_PREFIX).toBe('ccsm.');
+  });
+
+  it('returns [] for an empty token (DO will close 1008 — caller surfaces it)', () => {
+    expect(buildWsSubprotocols('')).toEqual([]);
+  });
+});
+
+describe('WsClient subprotocol passthrough (Task #48)', () => {
+  beforeEach(() => {
+    MockWs.lastInstance = null;
+  });
+
+  it('passes [`ccsm.<token>`] as the second arg to `new WebSocket(url, protocols)`', () => {
+    const client = new WsClient({
+      sid: 'sid-x',
+      token: 'tok-xyz',
+      hostBase: HOST,
+      WebSocketImpl: MockWs as unknown as typeof WebSocket,
+    });
+    client.connect();
+    const ws = MockWs.lastInstance!;
+    expect(ws.protocols).toEqual(['ccsm.tok-xyz']);
+  });
+
+  it('still puts the token in the URL query (loopback daemon reads ?token=)', () => {
+    // Reverse-verify: dropping the URL token would break the loopback /
+    // Tauri shell daemon (packages/daemon/src/ws.mts:380), which authenticates
+    // off the query. Both transports must work; subprotocol is additive.
+    const client = new WsClient({
+      sid: 'sid-x',
+      token: 'tok-xyz',
+      hostBase: HOST,
+      WebSocketImpl: MockWs as unknown as typeof WebSocket,
+    });
+    client.connect();
+    const ws = MockWs.lastInstance!;
+    expect(ws.url).toContain('token=tok-xyz');
+  });
+
+  it('omits the protocols arg entirely when token is empty (avoids passing [])', () => {
+    // `new WebSocket(url, [])` is legal but some implementations behave
+    // oddly; pass the single-arg form to keep the existing contract.
+    const client = new WsClient({
+      sid: 'sid-x',
+      token: '',
+      hostBase: HOST,
+      WebSocketImpl: MockWs as unknown as typeof WebSocket,
+    });
+    client.connect();
+    const ws = MockWs.lastInstance!;
+    expect(ws.protocols).toBeUndefined();
   });
 });
