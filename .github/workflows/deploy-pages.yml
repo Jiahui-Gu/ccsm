@@ -25,6 +25,7 @@ on:
     paths:
       - 'packages/frontend-web/**'
       - 'packages/ui/**'
+      - 'packages/core/**'
       - 'packages/shared/**'
       - 'pnpm-lock.yaml'
       - 'pnpm-workspace.yaml'
@@ -57,8 +58,8 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
-      - name: Build workspace deps (shared + ui required by frontend-web)
-        run: pnpm -F @ccsm/shared build && pnpm -F @ccsm/ui build
+      - name: Build workspace deps (shared + core + ui required by frontend-web)
+        run: pnpm -F @ccsm/shared build && pnpm -F @ccsm/core build && pnpm -F @ccsm/ui build
 
       - name: Build frontend-web (pages mode)
         run: pnpm -F @ccsm/frontend-web build:pages
