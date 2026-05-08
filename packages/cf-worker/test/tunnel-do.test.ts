@@ -24,6 +24,7 @@ interface FakeServerSocket {
   closeCode?: number;
   closeReason?: string;
   sent: Array<unknown>;
+  readyState: number;
   accept(): void;
   send(data: unknown): void;
   close(code?: number, reason?: string): void;
@@ -44,6 +45,7 @@ function makeServerSocket(): FakeServerSocket {
     attachment: null,
     closed: false,
     sent: [],
+    readyState: 1, // WebSocket.OPEN
     accept() {
       this.accepted = true;
     },
@@ -56,6 +58,7 @@ function makeServerSocket(): FakeServerSocket {
       this.closed = true;
       this.closeCode = code;
       this.closeReason = reason;
+      this.readyState = 3; // CLOSED
     },
     serializeAttachment(value: unknown) {
       this.attachment = value;
@@ -177,6 +180,7 @@ function emitClose(
   inst: { webSocketClose(ws: WebSocket, code: number, reason: string, wasClean: boolean): void },
   ws: FakeServerSocket,
 ): void {
+  ws.readyState = 3; // CLOSED — getDaemonSocket / getBrowserSocket filter on this
   inst.webSocketClose(ws as unknown as WebSocket, 1006, '', false);
   ws.closed = true;
 }

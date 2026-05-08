@@ -182,16 +182,23 @@ export class TunnelDO extends DurableObject<Env> {
     return this.ctx;
   }
 
-  /** Recover the daemon socket post-hibernation, or undefined if none. */
+  /** Recover the daemon socket post-hibernation, or undefined if none.
+   * Filters by readyState so stale/closing sockets aren't selected. */
   private getDaemonSocket(): WebSocket | undefined {
     const arr = this.state.getWebSockets(TAG_DAEMON);
-    return arr.length > 0 ? arr[0] : undefined;
+    for (const ws of arr) {
+      if (ws.readyState === WebSocket.OPEN) return ws;
+    }
+    return undefined;
   }
 
   /** Recover the browser socket post-hibernation, or undefined if none. */
   private getBrowserSocket(): WebSocket | undefined {
     const arr = this.state.getWebSockets(TAG_BROWSER);
-    return arr.length > 0 ? arr[0] : undefined;
+    for (const ws of arr) {
+      if (ws.readyState === WebSocket.OPEN) return ws;
+    }
+    return undefined;
   }
 
   override async fetch(req: Request): Promise<Response> {
@@ -215,18 +222,15 @@ export class TunnelDO extends DurableObject<Env> {
     const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
 
     if (url.pathname.endsWith('/tunnel/default')) {
-      // If a stale daemon ws is still tracked, close it so getWebSockets(daemon)
-      // returns just the new one. CF closes the old socket on the wire when we
-      // call .close(); the daemon side will just reconnect.
-      const stale = this.getDaemonSocket();
-      console.log(`[TunnelDO] /tunnel/default: stale=${stale !== undefined}, allWs=${this.state.getWebSockets().length}`);
-      if (stale !== undefined) {
-        try { stale.close(1011, 'replaced by new daemon'); } catch { /* ignore */ }
-      }
+      // Don't proactively close any "stale" daemon ws here. CF's hibernation
+      // runtime fires webSocketClose on dead sockets and removes them from
+      // state on its own; readyState filtering in getDaemonSocket() handles
+      // the transient case. Closing here triggered a reconnect loop in prod
+      // because the still-open prior daemon ws (from a fast reconnect) got
+      // 1011'd by the next handshake, which the daemon then retried.
       const attachment: DaemonAttachment = { role: 'daemon' };
       this.state.acceptWebSocket(server, [TAG_DAEMON]);
       server.serializeAttachment(attachment);
-      console.log(`[TunnelDO] /tunnel/default: accepted, daemon count now=${this.state.getWebSockets(TAG_DAEMON).length}`);
       return new Response(null, { status: 101, webSocket: client });
     }
 
@@ -248,12 +252,8 @@ export class TunnelDO extends DurableObject<Env> {
         return new Response(null, { status: 101, webSocket: client });
       }
 
-      // Replace any stale browser ws so getWebSockets(browser) is unique.
-      const stale = this.getBrowserSocket();
-      if (stale !== undefined) {
-        try { stale.close(1000, 'replaced'); } catch { /* ignore */ }
-      }
-
+      // Don't proactively close any prior browser ws — same reasoning as the
+      // daemon path above. readyState filtering picks the live one.
       const attachment: BrowserAttachment = { role: 'browser', token: extracted.token };
       this.state.acceptWebSocket(server, [TAG_BROWSER]);
       server.serializeAttachment(attachment);
@@ -297,9 +297,8 @@ export class TunnelDO extends DurableObject<Env> {
     }
   }
 
-  override webSocketClose(ws: WebSocket, code: number, reason: string, wasClean: boolean): void {
+  override webSocketClose(ws: WebSocket, _code: number, _reason: string, _wasClean: boolean): void {
     const att = ws.deserializeAttachment() as SocketAttachment | null;
-    console.log(`[TunnelDO] webSocketClose role=${att?.role} code=${code} reason=${reason} wasClean=${wasClean}`);
     if (att === null) return;
     if (att.role === 'daemon') {
       this.handleDaemonClose();
