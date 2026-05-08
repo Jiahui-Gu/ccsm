@@ -88,7 +88,26 @@ pub async fn start_daemon(app: AppHandle, state: State<'_, DaemonState>) -> Resu
     {
         let guard = state.killer.lock().unwrap();
         if guard.is_some() {
-            return Err("daemon already started".into());
+            // Idempotent: if setup hook already started the daemon, the webview
+            // re-invoking start_daemon is a no-op rather than an error. Lets
+            // option-(b) lib.rs setup hook coexist with any existing webview
+            // gesture path without breaking either.
+            return Ok(());
+        }
+    }
+    spawn_daemon_inner(app).await
+}
+
+/// Internal spawn fn shared by the `start_daemon` command (webview gesture)
+/// and the lib.rs `setup` hook (Tauri-level auto-start). Caller is responsible
+/// for the "already running" idempotency check; this fn assumes the slot is
+/// empty and will overwrite the killer if invoked twice concurrently.
+pub async fn spawn_daemon_inner(app: AppHandle) -> Result<(), String> {
+    let state: State<DaemonState> = app.state();
+    {
+        let guard = state.killer.lock().unwrap();
+        if guard.is_some() {
+            return Ok(());
         }
     }
 

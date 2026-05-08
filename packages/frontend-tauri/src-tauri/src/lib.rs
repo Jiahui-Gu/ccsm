@@ -9,7 +9,7 @@
 mod daemon_mgr;
 mod job_object;
 
-use daemon_mgr::{start_daemon, DaemonState};
+use daemon_mgr::{spawn_daemon_inner, start_daemon, DaemonState};
 use job_object::JobObject;
 use tauri::Manager;
 
@@ -25,6 +25,21 @@ pub fn run() {
             // child — including via TerminateProcess paths that bypass Drop.
             let job = JobObject::new().map_err(|e| format!("JobObject::new: {e}"))?;
             app.manage(job);
+
+            // R-4 (Task #11): auto-start the daemon from the Tauri setup hook
+            // rather than relying on a webview gesture. Tauri spawning the
+            // daemon is the product design (see project memory
+            // `project_tauri_spawns_daemon.md`); webview-invoke would couple
+            // daemon liveness to React render which the architecture rejects.
+            // The `start_daemon` command is kept as an idempotent no-op for
+            // any callers that still invoke it.
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = spawn_daemon_inner(app_handle).await {
+                    eprintln!("[lib.rs setup] spawn_daemon_inner failed: {e}");
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![start_daemon])
