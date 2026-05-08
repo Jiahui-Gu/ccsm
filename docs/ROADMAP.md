@@ -2,6 +2,12 @@
 
 本文档记录 ccsm 当前的鉴权 / 部署演进路线图 (S0 → S5), 描述前端、Tauri 壳、Cloudflare 中间层、本地 daemon 与鉴权方式在每个阶段的形态。
 
+## 架构准则 (跨阶段不变)
+
+**Web 和 Tauri 是平行的前端, 都直连后端 daemon。** Tauri 唯一的额外职责是起 daemon (spawn + Job Object 绑生命周期); 数据流量上 Tauri 不在路径上, 跟 web 浏览器是两个对等的 client。后续阶段 (含 S3 云端代理) 必须保留这个对等关系——不允许出现"web 流量经 Tauri 转发"这种把 Tauri 推上数据路径的设计。
+
+---
+
 **当前位置**: S0 完工 (wave-1 + wave-2 主线 14/14)。S1 进行中 2/4: PR #36 wave-2.5 已落 Tauri 注入 `CCSM_TOKEN` env + 端口固定 9876; 还差 (a) token 移到 `~/.ccsm/token` (现硬编码), (b) web 前端不再依赖 URL `?token=`。
 
 ---
