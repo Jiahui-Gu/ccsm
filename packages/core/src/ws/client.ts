@@ -52,6 +52,14 @@ export type WsStatus =
 export interface HostBase {
   httpBase: string;
   wsBase?: string;
+  /**
+   * Optional path override for the ws upgrade URL (Task #793, S3-G). Defaults
+   * to `API_PATHS.ws` (`/ws`) — used when the daemon is reachable directly
+   * (loopback / Tauri shell). The cloud-tunnel deployment must point at
+   * `/ws/default` so the Cloudflare Pages Function + Worker route the
+   * request into the TunnelDO instead of falling through to the SPA.
+   */
+  wsPath?: string;
 }
 
 export interface WsClientOptions {
@@ -110,7 +118,8 @@ export function buildWsUrl(
   if (lastSeq > 0) params.set('lastSeq', String(lastSeq));
   // Trim trailing slash to avoid `//ws` when caller passes `http://h/`.
   const origin = wsOrigin.replace(/\/+$/, '');
-  return `${origin}${API_PATHS.ws}?${params.toString()}`;
+  const path = hostBase.wsPath ?? API_PATHS.ws;
+  return `${origin}${path}?${params.toString()}`;
 }
 
 function deriveWsOrigin(httpBase: string): string {

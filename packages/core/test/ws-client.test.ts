@@ -92,6 +92,22 @@ describe('buildWsUrl (hostBase injection)', () => {
     const url = buildWsUrl('s', 't', 0, { httpBase: 'http://127.0.0.1:17832/' });
     expect(url).toBe('ws://127.0.0.1:17832/ws?sid=s&token=t');
   });
+
+  // Task #793 (S3-G): cloud-tunnel deployment must hit `/ws/default` so the
+  // Pages Function + Worker route into the TunnelDO; literal `/ws` falls
+  // through to the SPA index.html.
+  it('honours an explicit wsPath override', () => {
+    const url = buildWsUrl('s', 't', 0, {
+      httpBase: 'https://cc-sm.pages.dev',
+      wsPath: '/ws/default',
+    });
+    expect(url).toBe('wss://cc-sm.pages.dev/ws/default?sid=s&token=t');
+  });
+
+  it('falls back to API_PATHS.ws when wsPath is omitted', () => {
+    const url = buildWsUrl('s', 't', 0, { httpBase: 'http://127.0.0.1:9876' });
+    expect(url).toBe('ws://127.0.0.1:9876/ws?sid=s&token=t');
+  });
 });
 
 describe('WsClient', () => {

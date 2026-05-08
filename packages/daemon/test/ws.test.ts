@@ -33,7 +33,7 @@ import {
   type PtyLike,
   type RuntimeRegistry,
 } from '../src/runtime.mjs';
-import { attachWebSocket, type AttachedWs } from '../src/ws.mjs';
+import { attachWebSocket, attachFrameRouter, type AttachedWs } from '../src/ws.mjs';
 
 const TOKEN = 'test-token-do-not-use-in-prod-0123456789abcdef';
 const GOOD_ORIGIN = 'http://localhost:1234';
@@ -462,5 +462,146 @@ describe('ws T#668: subscribe-only (no spawn on connect)', () => {
 
     d.ws.close();
     await d.closed;
+  });
+});
+
+// ---- attachFrameRouter (Task #793, S3-G) -------------------------------
+//
+// The cloud-tunnel path bypasses the loopback WebSocketServer and wires a
+// "browser-paired" subscriber straight into the runtime registry via the
+// shared helper. These tests exercise the helper in isolation so we don't
+// have to boot a tunnel + DO to verify routing semantics.
+
+describe('attachFrameRouter (cloud-tunnel browser attach)', () => {
+  let attachedFr: AttachedWs;
+  let httpFr: DaemonHttp;
+  let registryFr: RuntimeRegistry;
+  let ptyState: { factory: PtyFactory; instances: FakePty[] };
+
+  beforeAll(async () => {
+    ptyState = makeFakePtyFactory();
+    httpFr = createDaemonHttp({ token: TOKEN });
+    registryFr = createRuntimeRegistry({
+      sessions: httpFr.sessions,
+      ptyFactory: ptyState.factory,
+    });
+    httpFr.setRegistry(registryFr);
+    attachedFr = attachWebSocket(httpFr.server, {
+      token: TOKEN,
+      sessions: httpFr.sessions,
+      registry: registryFr,
+    });
+    await new Promise<void>((resolve, reject) => {
+      httpFr.server.once('error', reject);
+      httpFr.server.listen(0, '127.0.0.1', () => {
+        httpFr.server.removeListener('error', reject);
+        resolve();
+      });
+    });
+  });
+
+  afterAll(async () => {
+    await attachedFr.shutdown();
+    await new Promise<void>((resolve) => httpFr.server.close(() => resolve()));
+  });
+
+  beforeEach(() => {
+    ptyState.instances.length = 0;
+  });
+
+  afterEach(() => {
+    for (const sid of Array.from(httpFr.sessions.keys())) {
+      void registryFr.kill(sid);
+      httpFr.sessions.delete(sid);
+    }
+  });
+
+  async function createSidFr(): Promise<string> {
+    const baseUrl = `http://127.0.0.1:${(httpFr.server.address() as AddressInfo).port}`;
+    const r = await fetch(`${baseUrl}/api/sessions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${TOKEN}`,
+        Origin: GOOD_ORIGIN,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({}),
+    });
+    const j = (await r.json()) as { sid: string };
+    return j.sid;
+  }
+
+  it('routes PTY OUTPUT into the supplied send() and forwards INPUT into the PTY', async () => {
+    const sid = await createSidFr();
+    expect(ptyState.instances.length).toBe(1);
+    const fpty = ptyState.instances[0]!;
+
+    const sent: Uint8Array[] = [];
+    const router = attachFrameRouter({
+      sid,
+      lastSeq: 0,
+      registry: registryFr,
+      send: (data) => sent.push(new Uint8Array(data)),
+    });
+    expect(router.attached).toBe(true);
+
+    // Live PTY output → registry fan-out → router send.
+    fpty.emitData('hello-from-pty');
+    expect(sent.length).toBe(1);
+    const dec = decodeFrame(sent[0]!);
+    expect(dec.type).toBe(FrameType.OUTPUT);
+    expect(Buffer.from(dec.payload).toString('utf8')).toBe('hello-from-pty');
+
+    // Browser-bound INPUT frame → router.onFrame → PTY.write.
+    const inputPayload = new TextEncoder().encode('typed input\n');
+    const inputFrame = encodeFrame({
+      type: FrameType.INPUT,
+      seq: 1,
+      payload: inputPayload,
+    });
+    router.onFrame(inputFrame);
+    expect(fpty.written).toEqual(['typed input\n']);
+
+    // Browser-bound RESIZE → PTY.resize.
+    const resizeFrame = encodeFrame({
+      type: FrameType.RESIZE,
+      seq: 2,
+      payload: encodeResize(132, 50),
+    });
+    router.onFrame(resizeFrame);
+    expect(fpty.lastResize).toEqual({ cols: 132, rows: 50 });
+
+    router.close();
+  });
+
+  it('returns attached=false when sid is unknown', () => {
+    const sent: Uint8Array[] = [];
+    const router = attachFrameRouter({
+      sid: 'no-such-sid',
+      lastSeq: 0,
+      registry: registryFr,
+      send: (data) => sent.push(new Uint8Array(data)),
+    });
+    expect(router.attached).toBe(false);
+    // Sending frames to a not-attached router is a noop.
+    router.onFrame(new Uint8Array([1, 2, 3]));
+    expect(sent.length).toBe(0);
+  });
+
+  it('close() on the last subscriber kills the PTY (matches loopback ws semantics)', async () => {
+    const sid = await createSidFr();
+    const fpty = ptyState.instances[0]!;
+    const router = attachFrameRouter({
+      sid,
+      lastSeq: 0,
+      registry: registryFr,
+      send: () => {},
+    });
+    expect(router.attached).toBe(true);
+    expect(fpty.killed.length).toBe(0);
+    router.close();
+    // kill is async via registry.kill; give it a tick.
+    await new Promise((r) => setTimeout(r, 10));
+    expect(fpty.killed.length).toBeGreaterThan(0);
   });
 });

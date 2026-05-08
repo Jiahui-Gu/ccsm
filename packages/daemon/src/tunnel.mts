@@ -69,6 +69,45 @@ export interface TunnelClientOptions {
    * real loopback server.
    */
   fetchImpl?: typeof fetch;
+  /**
+   * Task #793 (S3-G): invoked when a paired browser ws sends its hello
+   * frame containing a session id. The caller (daemon main / ws.mts) wires
+   * the supplied `send` channel into the runtime registry's per-session PTY
+   * fan-out so OUTPUT frames flow browser-ward and INPUT/RESIZE frames flow
+   * PTY-ward. Receives the parsed sid + replay cursor.
+   *
+   * If absent, hello frames are still token-checked and forwarded raw via
+   * onFrame (legacy passthrough behaviour).
+   */
+  onBrowserAttach?: (info: BrowserAttachInfo) => BrowserAttachHandle | null;
+}
+
+/**
+ * Information passed to `onBrowserAttach` so the daemon main can resolve the
+ * sid → runtime + start fan-out.
+ *
+ * `send` is a thin wrapper around the underlying ws.send so the caller
+ * doesn't have to know whether the bytes are travelling over a real loopback
+ * ws or a tunnel (Task #793, S3-G). It is only valid for the duration of
+ * the current connection — once `webSocketClose` fires, the handle's
+ * `onClose` is invoked so the caller can drop the runtime subscription.
+ */
+export interface BrowserAttachInfo {
+  sid: string;
+  lastSeq: number;
+  /** Send a binary frame back to the browser via the tunnel. */
+  send: (data: Uint8Array | Buffer) => void;
+}
+
+/**
+ * Caller-returned hooks the tunnel uses to feed browser-bound frames into
+ * the daemon's per-session router (Task #793, S3-G).
+ */
+export interface BrowserAttachHandle {
+  /** Daemon-bound binary frame from the browser (INPUT / RESIZE / PAUSE / RESUME). */
+  onFrame: (data: Buffer) => void;
+  /** Tunnel ws closed — caller must drop subscription, kill if last subscriber. */
+  onClose: () => void;
 }
 
 /** Minimal subset of `ws.WebSocket` that TunnelClient relies on. */
@@ -95,6 +134,10 @@ function defaultWsFactory(url: string): WsLike {
 interface HelloFrame {
   type: 'hello';
   token: string;
+  /** Task #793 (S3-G): session id from the browser ws `?sid=` query. */
+  sid?: string;
+  /** Task #793 (S3-G): replay cursor from the browser ws `?lastSeq=` query. */
+  lastSeq?: number;
 }
 
 /**
@@ -141,7 +184,14 @@ function parseHello(text: string): HelloFrame | null {
   const obj = parsed as Record<string, unknown>;
   if (obj.type !== 'hello') return null;
   if (typeof obj.token !== 'string' || obj.token.length === 0) return null;
-  return { type: 'hello', token: obj.token };
+  const out: HelloFrame = { type: 'hello', token: obj.token };
+  if (typeof obj.sid === 'string' && obj.sid.length > 0) {
+    out.sid = obj.sid;
+  }
+  if (typeof obj.lastSeq === 'number' && Number.isFinite(obj.lastSeq) && obj.lastSeq >= 0) {
+    out.lastSeq = obj.lastSeq;
+  }
+  return out;
 }
 
 function constantTimeTokenEquals(presented: string, expected: string): boolean {
@@ -171,6 +221,9 @@ export class TunnelClient {
   private stopped = false;
   private helloSeen = false;
   private browserToken: string | null = null;
+  // Task #793 (S3-G): per-connection browser session attachment.
+  private readonly onBrowserAttach: ((info: BrowserAttachInfo) => BrowserAttachHandle | null) | null;
+  private browserAttachHandle: BrowserAttachHandle | null = null;
 
   constructor(opts: TunnelClientOptions) {
     this.url = opts.url;
@@ -179,6 +232,7 @@ export class TunnelClient {
     this.wsFactory = opts.wsFactory ?? defaultWsFactory;
     this.daemonLoopbackPort = opts.daemonLoopbackPort ?? 0;
     this.fetchImpl = opts.fetchImpl ?? globalThis.fetch.bind(globalThis);
+    this.onBrowserAttach = opts.onBrowserAttach ?? null;
   }
 
   getState(): TunnelState {
@@ -239,6 +293,7 @@ export class TunnelClient {
     this.state = 'connecting';
     this.helloSeen = false;
     this.browserToken = null;
+    this.browserAttachHandle = null;
     let socket: WsLike;
     try {
       socket = this.wsFactory(this.url);
@@ -299,6 +354,29 @@ export class TunnelClient {
         }
         this.helloSeen = true;
         this.browserToken = hello.token;
+        // Task #793 (S3-G): if the browser supplied a sid in hello, hand the
+        // pairing off to the daemon main so it can wire this tunnel into the
+        // matching per-session PTY ring. The handle owns frame routing for
+        // the rest of this connection.
+        if (this.onBrowserAttach !== null && typeof hello.sid === 'string' && hello.sid.length > 0) {
+          const send = (payload: Uint8Array | Buffer): void => {
+            // Bridge to the underlying ws. Always binary frame back to browser.
+            const buf = Buffer.isBuffer(payload)
+              ? payload
+              : Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength);
+            this.send(buf);
+          };
+          try {
+            this.browserAttachHandle = this.onBrowserAttach({
+              sid: hello.sid,
+              lastSeq: hello.lastSeq ?? 0,
+              send,
+            });
+          } catch (err) {
+            console.warn('[ccsm/tunnel] onBrowserAttach threw:', (err as Error).message);
+            this.browserAttachHandle = null;
+          }
+        }
         return;
       }
       if (isBinary) {
@@ -310,6 +388,14 @@ export class TunnelClient {
           buf = Buffer.concat(raw);
         } else {
           buf = Buffer.from(raw as ArrayBuffer);
+        }
+        // Task #793 (S3-G): when an attach handle is bound, the binary
+        // frame is a browser→daemon PTY frame (INPUT/RESIZE/PAUSE/RESUME)
+        // that belongs to the paired session. Routing into the runtime
+        // subsumes the legacy onFrame passthrough.
+        if (this.browserAttachHandle !== null) {
+          this.browserAttachHandle.onFrame(buf);
+          return;
         }
         this.onFrame(buf);
       } else {
@@ -342,6 +428,15 @@ export class TunnelClient {
       this.ws = null;
       this.helloSeen = false;
       this.browserToken = null;
+      // Task #793 (S3-G): tear down per-session attachment.
+      if (this.browserAttachHandle !== null) {
+        try {
+          this.browserAttachHandle.onClose();
+        } catch (err) {
+          console.warn('[ccsm/tunnel] attach onClose threw:', (err as Error).message);
+        }
+        this.browserAttachHandle = null;
+      }
       if (this.stopped) {
         this.state = 'stopped';
         return;

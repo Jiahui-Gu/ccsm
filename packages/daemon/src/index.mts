@@ -26,7 +26,7 @@ import { openDb } from './db.mjs';
 import { createDaemonHttp } from './http.mjs';
 import { createRuntimeRegistry } from './runtime.mjs';
 import { TunnelClient } from './tunnel.mjs';
-import { attachWebSocket } from './ws.mjs';
+import { attachFrameRouter, attachWebSocket } from './ws.mjs';
 
 const DEFAULT_PORT = 17832;
 const PORT_RETRY_MAX = 20;
@@ -154,8 +154,31 @@ async function main(): Promise<void> {
         const len = typeof data === 'string'
           ? Buffer.byteLength(data, 'utf8')
           : data.length;
-        // T4 simplification: just observe link-up; T6 will route into sessions.
+        // Frames that arrive before any browser pairing (no hello+sid yet)
+        // land here. Once the browser sends hello with sid, onBrowserAttach
+        // takes over and routes binary frames into the per-session PTY.
         console.error(`[ccsm] tunnel: rx frame len=${len}`);
+      },
+      // Task #793 (S3-G): wire the paired browser ws into the runtime
+      // registry's per-session fan-out. The router owns replay + subscribe
+      // + INPUT/RESIZE forwarding for the rest of this connection; we tear
+      // it down via the returned handle when the tunnel ws drops.
+      onBrowserAttach: ({ sid, lastSeq, send }) => {
+        const router = attachFrameRouter({
+          sid,
+          lastSeq,
+          registry,
+          send: (data) => send(data),
+        });
+        if (!router.attached) {
+          console.warn(`[ccsm] tunnel: attach failed sid=${JSON.stringify(sid)} (not_spawned or exited)`);
+          return null;
+        }
+        console.error(`[ccsm] tunnel: attached sid=${sid} lastSeq=${lastSeq}`);
+        return {
+          onFrame: (data) => router.onFrame(data),
+          onClose: () => router.close(),
+        };
       },
     });
     tunnel.start();
