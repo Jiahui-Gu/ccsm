@@ -308,12 +308,22 @@ export function Sidebar() {
 
         <div className="sidebar__group" data-testid="sidebar-group-default">
           <div className="sidebar__group-header">{'▾'} default</div>
+          {/*
+            Task #41 / R-16: data-testid="session-list" must live on a stable
+            wrapper that exists in BOTH empty and populated states. R-12
+            originally put it on the <ul>, but that <ul> is only rendered when
+            sessions.length > 0, so the smoke spec (s3-happy-path) — which
+            asserts session-list visible BEFORE creating a session — timed out
+            on a perfectly healthy SPA. Moving the testid onto this wrapper
+            <div> decouples the test contract from the empty/populated branch.
+          */}
+          <div className="sidebar__group-body" data-testid="session-list">
           {sessions.length === 0 ? (
             <div className="sidebar__groups-empty">
               No sessions yet — click + New Session above
             </div>
           ) : (
-            <ul className="sidebar__session-list" data-testid="session-list">
+            <ul className="sidebar__session-list">
               {sessions.map((s) => {
                 const isActive = s.sid === activeSid;
                 return (
@@ -364,6 +374,7 @@ export function Sidebar() {
               })}
             </ul>
           )}
+          </div>
         </div>
       </div>
 
