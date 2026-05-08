@@ -20,13 +20,21 @@ const TAG_BROWSER = 'browser';
  * the daemon can run the browser-presented token through its existing
  * classifyOrigin / token check path (Task #782, S3-T6).
  *
- * Wire format: JSON text frame `{"type":"hello","token":"<t>"}`. Subsequent
- * frames are raw passthrough. The daemon side parses ONLY the first text
- * frame as hello; if it's missing or malformed the daemon closes 1008.
+ * Wire format: JSON text frame `{"type":"hello","token":"<t>","sid":"<s>","lastSeq":<n>}`.
+ * `sid` + `lastSeq` were added in Task #793 (S3-G) so the daemon can route
+ * the paired browser ws into the right per-session PTY ring buffer; older
+ * deployments without those fields fall back to "no session attached"
+ * behaviour on the daemon side. Subsequent frames are raw passthrough. The
+ * daemon side parses ONLY the first text frame as hello; if it's missing or
+ * malformed the daemon closes 1008.
  */
 interface HelloFrame {
   type: 'hello';
   token: string;
+  /** Task #793: session id the browser is attaching to (`sid` query param). */
+  sid?: string;
+  /** Task #793: ring-buffer replay cursor (`lastSeq` query param, default 0). */
+  lastSeq?: number;
 }
 
 /**
@@ -74,8 +82,8 @@ interface DaemonAttachment {
 
 type SocketAttachment = BrowserAttachment | DaemonAttachment;
 
-function buildHelloFrame(token: string): string {
-  const frame: HelloFrame = { type: 'hello', token };
+function buildHelloFrame(token: string, sid: string, lastSeq: number): string {
+  const frame: HelloFrame = { type: 'hello', token, sid, lastSeq };
   return JSON.stringify(frame);
 }
 
@@ -252,6 +260,28 @@ export class TunnelDO extends DurableObject<Env> {
         return new Response(null, { status: 101, webSocket: client });
       }
 
+      // Task #793 (S3-G): the browser ws URL carries the session id + ring
+      // replay cursor as query params (`?sid=<s>&lastSeq=<n>`). Both are
+      // forwarded to the daemon inside the hello frame so the daemon can
+      // route the paired ws into the right per-session PTY. Missing sid →
+      // close 1008 (browser bug; falling through with no sid would dump
+      // every PTY's bytes into a wrong-tab terminal).
+      const sid = url.searchParams.get('sid') ?? '';
+      if (sid.length === 0) {
+        server.accept();
+        server.close(1008, 'missing sid');
+        return new Response(null, { status: 101, webSocket: client });
+      }
+      const lastSeqRaw = url.searchParams.get('lastSeq');
+      let lastSeq = 0;
+      if (lastSeqRaw !== null) {
+        const n = Number(lastSeqRaw);
+        if (Number.isFinite(n) && Number.isInteger(n) && n >= 0 && n <= 0xffffffff) {
+          lastSeq = n;
+        }
+        // Bad lastSeq → fall through with 0 (matches daemon "missing == 0").
+      }
+
       // Don't proactively close any prior browser ws — same reasoning as the
       // daemon path above. readyState filtering picks the live one.
       const attachment: BrowserAttachment = { role: 'browser', token: extracted.token };
@@ -260,7 +290,7 @@ export class TunnelDO extends DurableObject<Env> {
 
       // Emit hello as the first daemon-bound frame after this browser pair.
       try {
-        daemon.send(buildHelloFrame(extracted.token));
+        daemon.send(buildHelloFrame(extracted.token, sid, lastSeq));
       } catch {
         /* daemon may have just dropped; cleanup happens via webSocketClose */
       }

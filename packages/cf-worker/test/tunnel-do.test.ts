@@ -136,6 +136,15 @@ function makeReq(path: string, protocol?: string): Request {
   });
 }
 
+/** Browser /ws/default request with sid + lastSeq query params (Task #793). */
+function makeBrowserWsReq(opts: { sid?: string; lastSeq?: number; protocol?: string }): Request {
+  const params: string[] = [];
+  if (opts.sid !== undefined) params.push(`sid=${encodeURIComponent(opts.sid)}`);
+  if (opts.lastSeq !== undefined) params.push(`lastSeq=${opts.lastSeq}`);
+  const qs = params.length > 0 ? `?${params.join('&')}` : '';
+  return makeReq(`/ws/default${qs}`, opts.protocol);
+}
+
 const BROWSER_PROTO = 'ccsm.test-token-xyz';
 
 /**
@@ -211,7 +220,7 @@ describe('TunnelDO', () => {
     expect(daemon.hibernating).toBe(true);
     expect(daemon.tags).toEqual(['daemon']);
 
-    await inst.fetch(makeReq('/ws/default', BROWSER_PROTO));
+    await inst.fetch(makeReq('/ws/default?sid=s', BROWSER_PROTO));
     const browser = created[1].server;
     expect(browser.hibernating).toBe(true);
     expect(browser.tags).toEqual(['browser']);
@@ -226,16 +235,19 @@ describe('TunnelDO', () => {
     const TunnelDO = await loadDO();
     const inst = new TunnelDO(makeState(), fakeEnv);
     await inst.fetch(makeReq('/tunnel/default'));
-    await inst.fetch(makeReq('/ws/default', BROWSER_PROTO));
+    await inst.fetch(makeReq('/ws/default?sid=s', BROWSER_PROTO));
     const daemon = created[0].server;
     const browser = created[1].server;
 
     // Task #782: DO injects a hello control frame as the first daemon-bound
-    // payload before any browser->daemon raw forwarding.
+    // payload before any browser->daemon raw forwarding. Task #793 adds sid +
+    // lastSeq so the daemon can route into the right per-session PTY.
     expect(daemon.sent).toHaveLength(1);
     expect(JSON.parse(daemon.sent[0] as string)).toEqual({
       type: 'hello',
       token: 'test-token-xyz',
+      sid: 's',
+      lastSeq: 0,
     });
 
     emitMessage(inst, browser, 'ping');
@@ -247,7 +259,7 @@ describe('TunnelDO', () => {
     const TunnelDO = await loadDO();
     const inst = new TunnelDO(makeState(), fakeEnv);
     await inst.fetch(makeReq('/tunnel/default'));
-    await inst.fetch(makeReq('/ws/default', 'ccsm.abc-987'));
+    await inst.fetch(makeReq('/ws/default?sid=s', 'ccsm.abc-987'));
     expect(inst.getBrowserTokenForTest()).toBe('abc-987');
   });
 
@@ -255,7 +267,7 @@ describe('TunnelDO', () => {
     const TunnelDO = await loadDO();
     const inst = new TunnelDO(makeState(), fakeEnv);
     await inst.fetch(makeReq('/tunnel/default'));
-    const res = await inst.fetch(makeReq('/ws/default', 'ccsm.zzz'));
+    const res = await inst.fetch(makeReq('/ws/default?sid=s', 'ccsm.zzz'));
     expect(res.status).toBe(101);
     const headers = (res as unknown as { headers?: Headers | Record<string, string> }).headers;
     if (headers !== undefined) {
@@ -283,7 +295,7 @@ describe('TunnelDO', () => {
     const TunnelDO = await loadDO();
     const inst = new TunnelDO(makeState(), fakeEnv);
     await inst.fetch(makeReq('/tunnel/default'));
-    await inst.fetch(makeReq('/ws/default', 'other.subproto'));
+    await inst.fetch(makeReq('/ws/default?sid=s', 'other.subproto'));
     const browser = created[1].server;
     expect(browser.closed).toBe(true);
     expect(browser.closeCode).toBe(1008);
@@ -306,7 +318,7 @@ describe('TunnelDO', () => {
     const TunnelDO = await loadDO();
     const inst = new TunnelDO(makeState(), fakeEnv);
     await inst.fetch(makeReq('/tunnel/default'));
-    await inst.fetch(makeReq('/ws/default', BROWSER_PROTO));
+    await inst.fetch(makeReq('/ws/default?sid=s', BROWSER_PROTO));
     const daemon = created[0].server;
     const browser = created[1].server;
 
@@ -318,7 +330,7 @@ describe('TunnelDO', () => {
 
     // After daemon drop the next browser should hit "daemon offline" path
     // (slots cleared so a fresh /ws/default re-runs the no-daemon branch).
-    const res = await inst.fetch(makeReq('/ws/default', BROWSER_PROTO));
+    const res = await inst.fetch(makeReq('/ws/default?sid=s', BROWSER_PROTO));
     expect(res.status).toBe(101);
     const browser2 = created[2].server;
     expect(browser2.closeCode).toBe(1011);
@@ -328,14 +340,14 @@ describe('TunnelDO', () => {
     const TunnelDO = await loadDO();
     const inst = new TunnelDO(makeState(), fakeEnv);
     await inst.fetch(makeReq('/tunnel/default'));
-    await inst.fetch(makeReq('/ws/default', BROWSER_PROTO));
+    await inst.fetch(makeReq('/ws/default?sid=s', BROWSER_PROTO));
     const daemon = created[0].server;
     const browser = created[1].server;
 
     emitClose(inst, browser);
     expect(daemon.closed).toBe(false);
 
-    await inst.fetch(makeReq('/ws/default', BROWSER_PROTO));
+    await inst.fetch(makeReq('/ws/default?sid=s', BROWSER_PROTO));
     const browser2 = created[2].server;
     expect(browser2.hibernating).toBe(true);
     expect(browser2.closed).toBe(false);
@@ -348,7 +360,7 @@ describe('TunnelDO', () => {
     const TunnelDO = await loadDO();
     const inst = new TunnelDO(makeState(), fakeEnv);
     await inst.fetch(makeReq('/tunnel/default'));
-    await inst.fetch(makeReq('/ws/default', BROWSER_PROTO));
+    await inst.fetch(makeReq('/ws/default?sid=s', BROWSER_PROTO));
     const daemon = created[0].server;
     const browser = created[1].server;
 
@@ -359,10 +371,77 @@ describe('TunnelDO', () => {
     expect(browser.closeReason).toBe('daemon error');
   });
 
+  // ---- Task #793 (S3-G): hello frame carries sid + lastSeq --------------
+
+  it('hello frame includes sid + lastSeq from the ws upgrade query', async () => {
+    const TunnelDO = await loadDO();
+    const inst = new TunnelDO(makeState(), fakeEnv);
+    await inst.fetch(makeReq('/tunnel/default'));
+    await inst.fetch(
+      makeBrowserWsReq({ sid: 'sess-abc', lastSeq: 42, protocol: BROWSER_PROTO }),
+    );
+    const daemon = created[0].server;
+    expect(daemon.sent).toHaveLength(1);
+    expect(JSON.parse(daemon.sent[0] as string)).toEqual({
+      type: 'hello',
+      token: 'test-token-xyz',
+      sid: 'sess-abc',
+      lastSeq: 42,
+    });
+  });
+
+  it('hello defaults lastSeq=0 when query param is omitted', async () => {
+    const TunnelDO = await loadDO();
+    const inst = new TunnelDO(makeState(), fakeEnv);
+    await inst.fetch(makeReq('/tunnel/default'));
+    await inst.fetch(makeBrowserWsReq({ sid: 'sess-1', protocol: BROWSER_PROTO }));
+    const daemon = created[0].server;
+    const hello = JSON.parse(daemon.sent[0] as string);
+    expect(hello.sid).toBe('sess-1');
+    expect(hello.lastSeq).toBe(0);
+  });
+
+  it('closes browser ws with 1008 when sid query param is missing', async () => {
+    const TunnelDO = await loadDO();
+    const inst = new TunnelDO(makeState(), fakeEnv);
+    await inst.fetch(makeReq('/tunnel/default'));
+    // Has token subprotocol, has paired daemon, but no sid → 1008.
+    await inst.fetch(makeReq('/ws/default', BROWSER_PROTO));
+    const browser = created[1].server;
+    expect(browser.closed).toBe(true);
+    expect(browser.closeCode).toBe(1008);
+    expect(browser.closeReason).toBe('missing sid');
+    // Daemon must NOT have received a hello (no successful pairing).
+    const daemon = created[0].server;
+    expect(daemon.sent).toHaveLength(0);
+  });
+
+  it('closes browser ws with 1008 when sid query param is empty string', async () => {
+    const TunnelDO = await loadDO();
+    const inst = new TunnelDO(makeState(), fakeEnv);
+    await inst.fetch(makeReq('/tunnel/default'));
+    await inst.fetch(makeReq('/ws/default?sid=', BROWSER_PROTO));
+    const browser = created[1].server;
+    expect(browser.closed).toBe(true);
+    expect(browser.closeCode).toBe(1008);
+  });
+
+  it('ignores invalid lastSeq and falls back to 0', async () => {
+    const TunnelDO = await loadDO();
+    const inst = new TunnelDO(makeState(), fakeEnv);
+    await inst.fetch(makeReq('/tunnel/default'));
+    await inst.fetch(makeReq('/ws/default?sid=s&lastSeq=NaN', BROWSER_PROTO));
+    const daemon = created[0].server;
+    const hello = JSON.parse(daemon.sent[0] as string);
+    expect(hello.lastSeq).toBe(0);
+    // Browser pairing succeeded.
+    const browser = created[1].server;
+    expect(browser.closed).toBe(false);
+  });
+
   // ---- HTTP-over-tunnel (Task #787, S3-C) -------------------------------
 
-  function makeHttpReq(path: string, method = 'GET', body?: string): Request {
-    return new Request(`https://example.test${path}`, {
+  function makeHttpReq(path: string, method = 'GET', body?: string): Request {    return new Request(`https://example.test${path}`, {
       method,
       body,
     });
@@ -440,7 +519,7 @@ describe('TunnelDO', () => {
     const TunnelDO = await loadDO();
     const inst = new TunnelDO(makeState(), fakeEnv);
     await inst.fetch(makeReq('/tunnel/default'));
-    await inst.fetch(makeReq('/ws/default', BROWSER_PROTO));
+    await inst.fetch(makeReq('/ws/default?sid=s', BROWSER_PROTO));
     const daemon = created[0].server;
     const browser = created[1].server;
 
@@ -564,7 +643,7 @@ describe('TunnelDO', () => {
 
     const inst1 = new TunnelDO(state, fakeEnv);
     await inst1.fetch(makeReq('/tunnel/default'));
-    await inst1.fetch(makeReq('/ws/default', 'ccsm.persisted-tok'));
+    await inst1.fetch(makeReq('/ws/default?sid=s', 'ccsm.persisted-tok'));
     expect(inst1.getBrowserTokenForTest()).toBe('persisted-tok');
 
     // Fresh instance after hibernation — token must come from the socket's

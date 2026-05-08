@@ -7,6 +7,7 @@ import {
   getWsProtocol,
   resolveDaemonBase,
   resolveWsBase,
+  resolveWsPath,
   WS_SUBPROTOCOL_PREFIX,
 } from '../src/hostConfig';
 
@@ -63,6 +64,25 @@ describe('resolveWsBase', () => {
   it('matches http httpBase with ws:// scheme (loopback override)', () => {
     const got = resolveWsBase({ search: '?daemon=http://127.0.0.1:9876' });
     expect(got).toBe('ws://127.0.0.1:9876');
+  });
+});
+
+describe('resolveWsPath (Task #793, S3-G)', () => {
+  it('defaults to /ws/default for cloud-tunnel deployment', () => {
+    // Pages Function only routes literal `/ws/default` into the Worker + DO;
+    // anything else (e.g. `/ws`) falls through to the SPA index.html and the
+    // browser sees a hung handshake.
+    expect(resolveWsPath({ search: '' })).toBe('/ws/default');
+  });
+
+  it('returns undefined when ?daemon= override is set (loopback / Tauri)', () => {
+    // With a direct daemon base, the loopback daemon serves `/ws` (literal).
+    // Returning undefined lets core's WsClient fall back to API_PATHS.ws.
+    expect(resolveWsPath({ search: '?daemon=http://127.0.0.1:9876' })).toBeUndefined();
+  });
+
+  it('treats empty ?daemon= as missing and keeps the cloud default', () => {
+    expect(resolveWsPath({ search: '?daemon=' })).toBe('/ws/default');
   });
 });
 

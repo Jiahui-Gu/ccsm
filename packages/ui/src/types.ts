@@ -24,4 +24,10 @@ export interface HostConfig {
    * has to make the next call return the new value.
    */
   getToken: () => string | null;
+  /**
+   * Optional override for the ws upgrade path (Task #793, S3-G). Defaults to
+   * `/ws`. Cloud-tunnel deployment uses `/ws/default` so the request reaches
+   * the Worker + DO instead of falling through to the SPA.
+   */
+  wsPath?: string;
 }

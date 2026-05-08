@@ -137,6 +137,26 @@ function currentDaemonBase(): string {
 }
 
 /**
+ * Decide which ws path the SPA should hit (Task #793, S3-G).
+ *
+ * - Cloud / Pages default (no `?daemon=` override): `/ws/default`. The
+ *   Pages Function + Worker only route literal `/ws/default` into the
+ *   TunnelDO; anything else falls through to the SPA index.html.
+ * - `?daemon=` override: leave undefined so core's WsClient falls back to
+ *   `API_PATHS.ws` (`/ws`), which is what the loopback daemon serves.
+ */
+export function resolveWsPath(deps: ResolveDaemonBaseDeps): string | undefined {
+  const fromUrl = new URLSearchParams(deps.search).get('daemon');
+  if (fromUrl && fromUrl.length > 0) return undefined;
+  return '/ws/default';
+}
+
+function currentWsPath(): string | undefined {
+  if (typeof window === 'undefined') return undefined;
+  return resolveWsPath({ search: window.location.search });
+}
+
+/**
  * WebSocket subprotocol prefix (Task #782, S3-T6).
  *
  * Browsers do not allow custom headers on `new WebSocket(url)`, so we smuggle
@@ -175,4 +195,5 @@ export const webHostConfig: HostConfig = {
     if (typeof window === 'undefined') return null;
     return sessionStorage.getItem(TOKEN_STORAGE_KEY);
   },
+  ...(currentWsPath() !== undefined ? { wsPath: currentWsPath() as string } : {}),
 };

@@ -605,4 +605,128 @@ describe('TunnelClient', () => {
     expect(sockets[0].closedCalls).toHaveLength(1);
     expect(sockets[0].closedCalls[0].code).toBe(1008);
   });
+
+  // ---- Task #793 (S3-G): hello-with-sid → onBrowserAttach --------------
+
+  it('hello with sid+lastSeq invokes onBrowserAttach with parsed values', () => {
+    const attachCalls: Array<{ sid: string; lastSeq: number }> = [];
+    const client = new TunnelClient({
+      url: 'wss://x',
+      token: 'tok',
+      onFrame: () => {},
+      wsFactory: factory,
+      onBrowserAttach: ({ sid, lastSeq }) => {
+        attachCalls.push({ sid, lastSeq });
+        return { onFrame: () => {}, onClose: () => {} };
+      },
+    });
+    client.start();
+    sockets[0].open();
+
+    sockets[0].pushText(JSON.stringify({
+      type: 'hello',
+      token: 'tok',
+      sid: 'sess-abc',
+      lastSeq: 17,
+    }));
+
+    expect(attachCalls).toEqual([{ sid: 'sess-abc', lastSeq: 17 }]);
+    expect(client.getBrowserToken()).toBe('tok');
+  });
+
+  it('hello without sid does NOT invoke onBrowserAttach (legacy passthrough)', () => {
+    const onBrowserAttach = vi.fn();
+    const client = new TunnelClient({
+      url: 'wss://x',
+      token: 'tok',
+      onFrame: () => {},
+      wsFactory: factory,
+      onBrowserAttach: onBrowserAttach as unknown as Parameters<typeof TunnelClient>[0]['onBrowserAttach'],
+    });
+    client.start();
+    sockets[0].open();
+    sockets[0].pushText(JSON.stringify({ type: 'hello', token: 'tok' }));
+    expect(onBrowserAttach).not.toHaveBeenCalled();
+  });
+
+  it('post-hello binary frames route to attach handle, not onFrame', () => {
+    const onFrame = vi.fn();
+    const handleFrames: Buffer[] = [];
+    const client = new TunnelClient({
+      url: 'wss://x',
+      token: 'tok',
+      onFrame,
+      wsFactory: factory,
+      onBrowserAttach: () => ({
+        onFrame: (data) => handleFrames.push(data),
+        onClose: () => {},
+      }),
+    });
+    client.start();
+    sockets[0].open();
+    sockets[0].pushText(JSON.stringify({
+      type: 'hello',
+      token: 'tok',
+      sid: 'sess',
+      lastSeq: 0,
+    }));
+
+    sockets[0].pushBinary(Buffer.from([1, 2, 3]));
+    expect(handleFrames).toHaveLength(1);
+    expect(handleFrames[0].equals(Buffer.from([1, 2, 3]))).toBe(true);
+    // onFrame NOT called when attach handle owns binary routing.
+    expect(onFrame).not.toHaveBeenCalled();
+  });
+
+  it('attach handle.send() pushes a binary frame back through the tunnel ws', () => {
+    let sendBack: ((data: Uint8Array | Buffer) => void) | null = null;
+    const client = new TunnelClient({
+      url: 'wss://x',
+      token: 'tok',
+      onFrame: () => {},
+      wsFactory: factory,
+      onBrowserAttach: ({ send }) => {
+        sendBack = send;
+        return { onFrame: () => {}, onClose: () => {} };
+      },
+    });
+    client.start();
+    sockets[0].open();
+    sockets[0].pushText(JSON.stringify({
+      type: 'hello',
+      token: 'tok',
+      sid: 'sess',
+      lastSeq: 0,
+    }));
+
+    expect(sendBack).not.toBeNull();
+    (sendBack as unknown as (data: Uint8Array) => void)(new Uint8Array([7, 8, 9]));
+    // Tunnel ws.send should have received the bridged buffer.
+    expect(sockets[0].sent).toHaveLength(1);
+    const sent = sockets[0].sent[0] as Buffer;
+    expect(Buffer.isBuffer(sent)).toBe(true);
+    expect(sent.equals(Buffer.from([7, 8, 9]))).toBe(true);
+  });
+
+  it('socket close after attach fires handle.onClose exactly once', () => {
+    const onClose = vi.fn();
+    const client = new TunnelClient({
+      url: 'wss://x',
+      token: 'tok',
+      onFrame: () => {},
+      wsFactory: factory,
+      onBrowserAttach: () => ({ onFrame: () => {}, onClose }),
+    });
+    client.start();
+    sockets[0].open();
+    sockets[0].pushText(JSON.stringify({
+      type: 'hello',
+      token: 'tok',
+      sid: 'sess',
+      lastSeq: 0,
+    }));
+
+    sockets[0].closeFromServer(1006);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
 });

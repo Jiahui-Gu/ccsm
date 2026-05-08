@@ -76,7 +76,10 @@ export function RuntimeProvider({
   // NOT throw their references away on every render.
   const value = useMemo<RuntimeContextValue>(() => {
     const runtime = new SessionRuntime({
-      hostBase: { httpBase: hostConfig.httpBase },
+      hostBase: {
+        httpBase: hostConfig.httpBase,
+        ...(hostConfig.wsPath !== undefined ? { wsPath: hostConfig.wsPath } : {}),
+      },
       statusSink: (sid, status) => {
         useStore.getState().setSessionStatus(sid, status);
       },

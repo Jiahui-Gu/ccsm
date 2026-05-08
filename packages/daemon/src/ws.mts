@@ -54,6 +54,283 @@ export interface AttachedWs {
 // Re-export for backwards-compat with tests/imports.
 export type { PtyFactory, PtyLike, SessionLike } from './runtime.mjs';
 
+// ---- attachFrameRouter -------------------------------------------------
+//
+// Task #793 (S3-G): the per-session frame routing that used to live inline in
+// attachWebSocket's onConnection is now an exported helper so the cloud-tunnel
+// path (TunnelClient.onBrowserAttach in tunnel.mts) can reuse the EXACT same
+// fan-out logic — replay → subscribe → forward client frames into the PTY —
+// without the loopback ws server. The only differences vs the loopback path:
+//
+//   - the wire is a `send(Uint8Array)` callback supplied by the caller
+//     (tunnel.mts wraps its own `tunnel.send`; ws.mts wraps `ws.send`);
+//   - cleanup is not driven by ws lifecycle events — the caller invokes
+//     `close()` when its own connection drops.
+//
+// Both paths land on the same RuntimeRegistry (so a tunnel-attached browser
+// and a same-origin loopback browser see identical subscriber-list semantics:
+// same ring replay, same OUTPUT fan-out, same kill-on-last-subscriber).
+
+/** Bytes-out channel the router uses to push frames to the client. */
+export type FrameSendFn = (data: Uint8Array) => void;
+
+export interface AttachFrameRouterOptions {
+  sid: string;
+  lastSeq: number;
+  registry: RuntimeRegistry;
+  /** Send a single (already-encoded) frame back to the client. */
+  send: FrameSendFn;
+  /**
+   * Close the underlying transport with a code + reason. Invoked by the
+   * registry on PTY exit (`1000 'exited'`) or pause-queue overflow
+   * (`1009 'pause_queue_overflow'`). For the loopback ws path this maps to
+   * `ws.close(code, reason)`; for the cloud-tunnel path the daemon main
+   * does NOT close the tunnel ws (it stays up for the next browser pairing)
+   * — the tunnel adapter passes a no-op so subscriber-level closes don't
+   * tear the entire tunnel down.
+   */
+  closeTransport?: (code?: number, reason?: string) => void;
+}
+
+export interface FrameRouter {
+  /** Feed an inbound binary frame from the client (INPUT/RESIZE/PAUSE/RESUME). */
+  onFrame: (data: Uint8Array | Buffer) => void;
+  /**
+   * Drop this attachment from the runtime's subscriber set. If we were the
+   * last subscriber, kicks off PTY kill (matches the loopback ws behaviour).
+   * Idempotent.
+   */
+  close: () => void;
+  /**
+   * True iff the runtime accepted the attachment (i.e. sid was found and the
+   * session was not already exited). When false the caller should close the
+   * underlying transport with a reasonable code (1008 / 1000 'exited').
+   */
+  attached: boolean;
+}
+
+/**
+ * Wire a single subscriber (loopback ws OR cloud-tunnel browser) into the
+ * runtime registry's per-session fan-out.
+ *
+ * Returns a `FrameRouter` whose `onFrame` should be called for every inbound
+ * binary frame on the underlying transport, and whose `close` should be
+ * called when that transport drops. `attached` reports whether the
+ * registry accepted the subscription so the caller can short-circuit on
+ * not-found / already-exited.
+ */
+export function attachFrameRouter(opts: AttachFrameRouterOptions): FrameRouter {
+  const { sid, lastSeq, registry, send } = opts;
+  const closeTransport = opts.closeTransport;
+
+  const rt = registry.get(sid);
+  if (!rt) {
+    return {
+      onFrame: () => {
+        /* noop — caller should have closed already */
+      },
+      close: () => {
+        /* noop */
+      },
+      attached: false,
+    };
+  }
+
+  if (rt.exited) {
+    try {
+      send(
+        encodeFrame({ type: FrameType.EXIT, seq: rt.outputSeq, payload: encodeExit(rt.exitCode) }),
+      );
+    } catch {
+      // ignore — caller is about to close the transport
+    }
+    return {
+      onFrame: () => {
+        /* noop */
+      },
+      close: () => {
+        /* noop */
+      },
+      attached: false,
+    };
+  }
+
+  // Replay BEFORE adding to subscribers so we don't interleave replayed
+  // bytes with a fresh live OUTPUT (Task #661 invariant).
+  if (lastSeq < rt.outputSeq) {
+    const replay = rt.ring.range(lastSeq + 1, rt.outputSeq);
+    if (replay === null) {
+      try {
+        send(
+          encodeFrame({
+            type: FrameType.RESET,
+            seq: rt.outputSeq,
+            payload: new Uint8Array(0),
+          }),
+        );
+      } catch (err) {
+        console.warn('[ccsm/ws] RESET send failed:', (err as Error).message);
+      }
+    } else if (replay.byteLength > 0) {
+      const total = replay.byteLength;
+      for (let off = 0; off < total; off += REPLAY_CHUNK_BYTES) {
+        const end = Math.min(off + REPLAY_CHUNK_BYTES, total);
+        const chunk = replay.subarray(off, end);
+        try {
+          send(
+            encodeFrame({
+              type: FrameType.OUTPUT,
+              seq: rt.outputSeq,
+              payload: chunk,
+            }),
+          );
+        } catch (err) {
+          console.warn('[ccsm/ws] replay send failed:', (err as Error).message);
+          break;
+        }
+      }
+    }
+  }
+
+  // Synthesize a SubscriberSocket-shaped object so the registry's fan-out
+  // loop can call `.send()` / `.close()` / read `.readyState` against it
+  // exactly the way it does for a real `ws.WebSocket`. We keep readyState
+  // wired to OPEN until close() flips it; the registry checks
+  // `sock.readyState === sock.OPEN` before each frame.
+  let readyState = 1; // OPEN
+  const sock: SubscriberSocket = {
+    get readyState() {
+      return readyState;
+    },
+    OPEN: 1,
+    send: (data: Uint8Array) => {
+      try {
+        send(data);
+      } catch (err) {
+        console.warn('[ccsm/ws] router send failed:', (err as Error).message);
+      }
+    },
+    close: (code?: number, reason?: string) => {
+      readyState = 3; // CLOSED
+      if (closeTransport !== undefined) {
+        try {
+          closeTransport(code, reason);
+        } catch {
+          // ignore — best-effort
+        }
+      }
+    },
+  };
+
+  rt.subscribers.set(sock, {
+    paused: false,
+    pausedQueue: [],
+    pausedBytes: 0,
+  });
+
+  // Capture the narrowed runtime ref so the closures below don't re-fetch
+  // (also satisfies TS, which loses the narrow across closure boundaries).
+  const runtimeRef: RuntimeSession = rt;
+
+  let closed = false;
+  function close(): void {
+    if (closed) return;
+    closed = true;
+    readyState = 3;
+    runtimeRef.subscribers.delete(sock);
+    if (runtimeRef.subscribers.size === 0 && !runtimeRef.exited) {
+      void registry.kill(sid);
+    }
+  }
+
+  function onFrame(raw: Uint8Array | Buffer): void {
+    if (closed) return;
+    let buf: Uint8Array;
+    if (raw instanceof Buffer) {
+      buf = new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
+    } else {
+      buf = raw;
+    }
+    let frame;
+    try {
+      frame = decodeFrame(buf);
+    } catch (err) {
+      console.warn('[ccsm/ws] bad frame from client:', (err as Error).message);
+      return;
+    }
+    handleClientFrame(runtimeRef, sock, frame.type, frame.payload);
+  }
+
+  return { onFrame, close, attached: true };
+}
+
+/**
+ * Per-frame dispatch shared by both the loopback ws server and the cloud-
+ * tunnel attachment (Task #793). Pulled out so we don't duplicate the
+ * INPUT/RESIZE/PAUSE/RESUME handling — both transports drive the same PTY
+ * via the same code path.
+ */
+function handleClientFrame(
+  rt: RuntimeSession,
+  sock: SubscriberSocket,
+  type: FrameType,
+  payload: Uint8Array,
+): void {
+  switch (type) {
+    case FrameType.INPUT: {
+      const s = Buffer.from(payload).toString('utf8');
+      try {
+        rt.pty.write(s);
+      } catch (err) {
+        console.warn('[ccsm/ws] pty.write error:', (err as Error).message);
+      }
+      break;
+    }
+    case FrameType.RESIZE: {
+      let dims;
+      try {
+        dims = decodeResize(payload);
+      } catch (err) {
+        console.warn('[ccsm/ws] bad resize payload:', (err as Error).message);
+        return;
+      }
+      try {
+        rt.pty.resize(dims.cols, dims.rows);
+      } catch (err) {
+        console.warn('[ccsm/ws] pty.resize error:', (err as Error).message);
+      }
+      break;
+    }
+    case FrameType.PAUSE: {
+      const state = rt.subscribers.get(sock);
+      if (state) state.paused = true;
+      break;
+    }
+    case FrameType.RESUME: {
+      const state = rt.subscribers.get(sock);
+      if (!state) break;
+      state.paused = false;
+      if (state.pausedQueue.length > 0) {
+        const queued = state.pausedQueue;
+        state.pausedQueue = [];
+        state.pausedBytes = 0;
+        for (const frame of queued) {
+          if (sock.readyState !== sock.OPEN) break;
+          try {
+            sock.send(frame);
+          } catch (err) {
+            console.warn('[ccsm/ws] resume flush send failed:', (err as Error).message);
+            break;
+          }
+        }
+      }
+      break;
+    }
+    default:
+      console.warn(`[ccsm/ws] ignoring c->s frame type=0x${type.toString(16)}`);
+  }
+}
+
 // ---- Auth helpers (mirrors auth.mts logic for ws upgrade) ---------------
 // Origin policy is shared with HTTP via `classifyOrigin` (auth.mts):
 //   - 'absent'   -> same-origin per #672, allow.
@@ -133,69 +410,39 @@ export function attachWebSocket(server: HttpServer, opts: AttachWsOptions): Atta
   server.on('upgrade', onUpgrade);
 
   function onConnection(ws: WSWebSocket, sid: string, lastSeq: number): void {
-    // T#668: ws no longer spawns PTYs. The runtime must already exist (created
-    // via POST /api/sessions or POST /api/sessions/:sid/resume). If it doesn't
-    // we close with 1008 ("policy violation") and a machine-readable reason
-    // the frontend can branch on to issue a /resume call.
-    const rt: RuntimeSession | undefined = registry.get(sid);
-    if (!rt) {
-      ws.close(1008, 'session_not_spawned');
-      return;
-    }
-
-    if (rt.exited) {
-      try {
-        ws.send(encodeFrame({ type: FrameType.EXIT, seq: rt.outputSeq, payload: encodeExit(rt.exitCode) }));
-      } catch {
-        // ignore
-      }
-      ws.close(1000, 'exited');
-      return;
-    }
-
-    // T8 #661: lastSeq replay BEFORE adding ws to subscribers, so we don't
-    // interleave replayed bytes with a freshly-arriving live OUTPUT.
-    if (lastSeq < rt.outputSeq) {
-      const replay = rt.ring.range(lastSeq + 1, rt.outputSeq);
-      if (replay === null) {
+    // Delegate the per-session frame routing to the shared helper so the
+    // loopback ws path and the cloud-tunnel path (Task #793, S3-G) share the
+    // same replay → subscribe → forward semantics. ws.send accepts the
+    // encoded frame directly; on attach failure we close with a machine-
+    // readable reason the frontend branches on.
+    const router = attachFrameRouter({
+      sid,
+      lastSeq,
+      registry,
+      send: (data) => {
+        ws.send(data);
+      },
+      closeTransport: (code, reason) => {
         try {
-          ws.send(
-            encodeFrame({
-              type: FrameType.RESET,
-              seq: rt.outputSeq,
-              payload: new Uint8Array(0),
-            }),
-          );
-        } catch (err) {
-          console.warn('[ccsm/ws] RESET send failed:', (err as Error).message);
+          ws.close(code, reason);
+        } catch {
+          // already closing — ignore
         }
-      } else if (replay.byteLength > 0) {
-        const total = replay.byteLength;
-        for (let off = 0; off < total; off += REPLAY_CHUNK_BYTES) {
-          const end = Math.min(off + REPLAY_CHUNK_BYTES, total);
-          const chunk = replay.subarray(off, end);
-          try {
-            ws.send(
-              encodeFrame({
-                type: FrameType.OUTPUT,
-                seq: rt.outputSeq,
-                payload: chunk,
-              }),
-            );
-          } catch (err) {
-            console.warn('[ccsm/ws] replay send failed:', (err as Error).message);
-            break;
-          }
-        }
-      }
-    }
-
-    // Add to subscribers (registry's fan-out loop sees us via the shared Map).
-    rt.subscribers.set(ws as unknown as SubscriberSocket, {
-      paused: false,
-      pausedQueue: [],
-      pausedBytes: 0,
+      },
     });
+    if (!router.attached) {
+      // Either sid not registered or runtime already exited. The helper has
+      // already emitted EXIT for the exited case; for not-found we close
+      // 1008 with the machine-readable reason the frontend uses to issue
+      // /resume.
+      const rt = registry.get(sid);
+      if (!rt) {
+        ws.close(1008, 'session_not_spawned');
+      } else {
+        ws.close(1000, 'exited');
+      }
+      return;
+    }
 
     ws.on('message', (raw, isBinary) => {
       if (!isBinary) return;
@@ -207,89 +454,15 @@ export function attachWebSocket(server: HttpServer, opts: AttachWsOptions): Atta
       } else {
         buf = new Uint8Array(raw as ArrayBuffer);
       }
-      let frame;
-      try {
-        frame = decodeFrame(buf);
-      } catch (err) {
-        console.warn('[ccsm/ws] bad frame from client:', (err as Error).message);
-        return;
-      }
-      handleClientFrame(rt, ws, frame.type, frame.payload);
+      router.onFrame(buf);
     });
 
-    const cleanup = (): void => {
-      rt.subscribers.delete(ws as unknown as SubscriberSocket);
-      // T#668 spec: ws on close should kill its OWN PTY if subscribers empty
-      // (matches T4 behaviour — keeps daemon footprint tied to the active tab).
-      if (rt.subscribers.size === 0 && !rt.exited) {
-        void registry.kill(sid);
-      }
-    };
-    ws.on('close', cleanup);
+    ws.on('close', () => {
+      router.close();
+    });
     ws.on('error', (err) => {
       console.warn(`[ccsm/ws] socket error sid=${sid}:`, err.message);
     });
-  }
-
-  function handleClientFrame(
-    rt: RuntimeSession,
-    ws: WSWebSocket,
-    type: FrameType,
-    payload: Uint8Array,
-  ): void {
-    switch (type) {
-      case FrameType.INPUT: {
-        const s = Buffer.from(payload).toString('utf8');
-        try {
-          rt.pty.write(s);
-        } catch (err) {
-          console.warn('[ccsm/ws] pty.write error:', (err as Error).message);
-        }
-        break;
-      }
-      case FrameType.RESIZE: {
-        let dims;
-        try {
-          dims = decodeResize(payload);
-        } catch (err) {
-          console.warn('[ccsm/ws] bad resize payload:', (err as Error).message);
-          return;
-        }
-        try {
-          rt.pty.resize(dims.cols, dims.rows);
-        } catch (err) {
-          console.warn('[ccsm/ws] pty.resize error:', (err as Error).message);
-        }
-        break;
-      }
-      case FrameType.PAUSE: {
-        const state = rt.subscribers.get(ws as unknown as SubscriberSocket);
-        if (state) state.paused = true;
-        break;
-      }
-      case FrameType.RESUME: {
-        const state = rt.subscribers.get(ws as unknown as SubscriberSocket);
-        if (!state) break;
-        state.paused = false;
-        if (state.pausedQueue.length > 0) {
-          const queued = state.pausedQueue;
-          state.pausedQueue = [];
-          state.pausedBytes = 0;
-          for (const frame of queued) {
-            if (ws.readyState !== ws.OPEN) break;
-            try {
-              ws.send(frame);
-            } catch (err) {
-              console.warn('[ccsm/ws] resume flush send failed:', (err as Error).message);
-              break;
-            }
-          }
-        }
-        break;
-      }
-      default:
-        console.warn(`[ccsm/ws] ignoring c->s frame type=0x${type.toString(16)}`);
-    }
   }
 
   async function shutdown(): Promise<void> {
