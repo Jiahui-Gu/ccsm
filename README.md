@@ -131,13 +131,14 @@ Detailed architecture diagrams: see [DESIGN.md §13 Deployment Modes](./DESIGN.m
   backpressure, negative paths, and lifecycle (47 + 1 skipped on win32).
 - **Frontend** (`packages/frontend-web`): `pnpm -F @ccsm/frontend-web test` —
   component + session-runtime unit tests.
-- **End-to-end** (`packages/e2e`): `pnpm -F @ccsm/e2e-web test` — Playwright
-  specs that spin up the real daemon + Vite + browser. `p1-smoke` and
-  `p3-stress` need an authed `claude` on the dev's machine (CI skips them).
+
+(Legacy `packages/e2e` Playwright suite and `packages/e2e-tauri` WDIO smoke
+were removed in the S3 cleanup; a new smoke harness will land in a follow-up
+task.)
 
 ## Platform support
 
-CI runs the build + daemon/frontend tests + e2e on **ubuntu-latest** and
+CI runs the build + daemon/frontend tests on **ubuntu-latest** and
 **windows-latest** in matrix. macOS is **unverified** — the codebase is
 written to be cross-platform (process group handling, `claude.cmd` vs
 `claude`, ConPTY on win32) but no CI runner exercises macOS today.
