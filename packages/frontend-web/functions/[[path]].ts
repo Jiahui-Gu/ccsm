@@ -22,6 +22,13 @@
 //     daemon can serve them. Browser only ever talks to cc-sm.pages.dev.
 //   - Everything else falls through to `ctx.next()` so Pages serves the
 //     static SPA assets (`/index.html`, `/assets/*`, etc.) as before.
+//   - R-14 (Task #34): SPA history-mode fallback now lives here instead of
+//     in `public/_redirects`. The `_redirects` rule `/*  /index.html  200`
+//     was removed because under `wrangler pages dev` it triggers a reparser
+//     loop on every request (research-33 line 39-46/122-130/136), which
+//     opens an ECONNRESET window during smoke. We replicate the rule by
+//     rewriting non-asset, non-API GETs to `/index.html` before delegating
+//     to Pages static asset serving via `ctx.next()`.
 
 interface Env {
   // Service binding to the standalone ccsm-worker Worker (configured in
@@ -29,6 +36,14 @@ interface Env {
   // Functions invoke it as a Fetcher; the Worker's own fetch handler routes
   // /ws/default, /tunnel/default, /api/*, and /token into the TunnelDO.
   TUNNEL_WORKER: Fetcher;
+}
+
+// Heuristic: a request is for a static asset if its pathname has a file
+// extension (e.g. `/assets/index-abc.js`, `/favicon.ico`). SPA history routes
+// look like `/sessions/123` — no dot in the last segment.
+function looksLikeStaticAsset(pathname: string): boolean {
+  const last = pathname.slice(pathname.lastIndexOf('/') + 1);
+  return last.includes('.');
 }
 
 export const onRequest: PagesFunction<Env> = async (ctx) => {
@@ -43,6 +58,19 @@ export const onRequest: PagesFunction<Env> = async (ctx) => {
     return ctx.env.TUNNEL_WORKER.fetch(ctx.request);
   }
 
-  // Static SPA assets and SPA fallback are handled by Pages itself.
+  // R-14 — SPA history-mode fallback. If the request is a GET for a route
+  // (no file extension) and not the root, rewrite to `/index.html` so Pages
+  // serves the SPA shell. Static assets (anything with a dot in the last
+  // segment) and non-GET methods fall through unchanged.
+  if (
+    ctx.request.method === 'GET' &&
+    url.pathname !== '/' &&
+    !looksLikeStaticAsset(url.pathname)
+  ) {
+    const rewritten = new Request(new URL('/index.html', url), ctx.request);
+    return ctx.next(rewritten);
+  }
+
+  // Static SPA assets and the root index handled by Pages itself.
   return ctx.next();
 };

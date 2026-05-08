@@ -12,5 +12,5 @@
     "lib": ["ES2022", "DOM"],
     "resolveJsonModule": true
   },
-  "include": ["tests/**/*.ts", "fixtures/**/*.ts", "playwright.config.ts"]
+  "include": ["tests/**/*.ts", "fixtures/**/*.ts", "test/**/*.ts", "playwright.config.ts", "vitest.config.ts"]
 }
