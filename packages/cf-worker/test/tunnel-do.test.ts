@@ -434,4 +434,38 @@ describe('TunnelDO', () => {
     expect(res.status).toBe(502);
     expect(inst.getPendingHttpCountForTest()).toBe(0);
   });
+
+  // Task #789, S3-D regression: the DO MUST be able to forward /api/* to a
+  // daemon that has never seen a browser pairing (i.e. no /ws/default open
+  // and therefore no hello frame emitted to the daemon yet). The pre-fix
+  // bug closed the daemon ws on the first http_req (daemon hello-gate
+  // rejected http_req as malformed hello), causing 502 reconnect-loops.
+  it('proxyHttp succeeds without any browser /ws/default pairing', async () => {
+    const TunnelDO = await loadDO();
+    const inst = new TunnelDO(fakeState, fakeEnv);
+    await inst.fetch(makeReq('/tunnel/default'));
+    const daemon = created[0].server;
+    // Sanity: no browser ever connected, so DO emitted NO hello frame.
+    expect(daemon.sent).toHaveLength(0);
+
+    const respPromise = inst.fetch(makeHttpReq('/api/sessions'));
+    await new Promise((r) => setTimeout(r, 0));
+
+    // First daemon-bound payload is the http_req itself, not a hello.
+    expect(daemon.sent).toHaveLength(1);
+    const frame = JSON.parse(daemon.sent[0] as string);
+    expect(frame.type).toBe('http_req');
+    expect(frame.path).toBe('/api/sessions');
+
+    daemon.emitMessage(JSON.stringify({
+      type: 'http_res',
+      id: frame.id,
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+      body_b64: btoa('[]'),
+    }));
+    const res = await respPromise;
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('[]');
+  });
 });
