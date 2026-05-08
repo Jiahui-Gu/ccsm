@@ -3,8 +3,12 @@ name: deploy-pages
 # Task #724 [S2-T6]: Cloudflare Pages deploy pipeline for the web frontend.
 #
 # Triggers:
-#   - push to main: every merge that touches frontend-web (or its workspace
-#     deps) ships to https://cc-sm.pages.dev.
+#   - push to main or working: every merge that touches frontend-web (or its
+#     workspace deps) ships to https://cc-sm.pages.dev. `working` is the
+#     post-v0.1.0 release main-line (PRs land on `working`, periodically
+#     rolled to `main`); without it here, `working` merges would not
+#     auto-deploy and would require a manual `gh workflow run --ref working`
+#     dispatch (see Task #767 follow-up).
 #   - workflow_dispatch: manual redeploy from the Actions tab (e.g. after
 #     rotating env vars in the Cloudflare dashboard, or rolling back).
 #
@@ -21,7 +25,7 @@ name: deploy-pages
 
 on:
   push:
-    branches: [main]
+    branches: [main, working]
     paths:
       - 'packages/frontend-web/**'
       - 'packages/ui/**'
