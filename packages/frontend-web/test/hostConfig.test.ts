@@ -1,6 +1,6 @@
-// Daemon base URL resolution priority (Task #712 → Task #780 / S3-T5).
+// Daemon base URL resolution priority (Task #712 → #780 → #25 / smoke R-5).
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   DEFAULT_DAEMON_BASE,
@@ -12,16 +12,18 @@ import {
 } from '../src/hostConfig';
 
 describe('resolveDaemonBase', () => {
-  it('defaults to the Cloudflare Pages tunnel URL when no ?daemon= is set', () => {
-    // Task #780 (S3-T5): production default is the CF tunnel; the SPA is
-    // always served from Pages and reaches the daemon via the Worker + DO.
+  it('defaults to the empty string (same-origin relative) when no ?daemon= is set', () => {
+    // Task #25 (smoke R-5): production default went back to same-origin
+    // relative. The Pages Function proxies `/token`, `/api/...`, and
+    // `/ws/default` into the CF Worker tunnel from the SAME origin the SPA
+    // is served from. Hard-coding `https://cc-sm.pages.dev` broke smoke
+    // (SPA at 127.0.0.1:8788 → ERR_FAILED) and was redundant in cloud.
     const got = resolveDaemonBase({ search: '' });
     expect(got).toBe(DEFAULT_DAEMON_BASE);
-    expect(got).toBe('https://cc-sm.pages.dev');
+    expect(got).toBe('');
   });
 
-  it('URL ?daemon=http://127.0.0.1:9876 redirects back to local loopback', () => {
-    // Escape hatch for dev / test / Tauri shell: opt out of the tunnel.
+  it('URL ?daemon=http://127.0.0.1:9876 redirects to local loopback (Tauri / smoke probe escape hatch)', () => {
     const got = resolveDaemonBase({ search: '?daemon=http://127.0.0.1:9876' });
     expect(got).toBe('http://127.0.0.1:9876');
   });
@@ -31,17 +33,9 @@ describe('resolveDaemonBase', () => {
     expect(got).toBe('https://example.com');
   });
 
-  it('keeps the CF default when the SPA happens to be served same-origin (e.g. Vite dev server)', () => {
-    // S2 used to fall back to window.location.origin on loopback hostnames.
-    // S3 explicitly does NOT — opening http://localhost:5173 still talks to
-    // the CF tunnel unless the user sets ?daemon=.
-    const got = resolveDaemonBase({ search: '' });
-    expect(got).toBe('https://cc-sm.pages.dev');
-  });
-
-  it('treats empty ?daemon= as missing and falls through to the default', () => {
+  it('treats empty ?daemon= as missing and falls through to the same-origin default', () => {
     const got = resolveDaemonBase({ search: '?daemon=' });
-    expect(got).toBe('https://cc-sm.pages.dev');
+    expect(got).toBe('');
   });
 
   it('strips trailing slash so callers can append paths cleanly', () => {
@@ -51,12 +45,35 @@ describe('resolveDaemonBase', () => {
 });
 
 describe('resolveWsBase', () => {
-  it('defaults to wss://cc-sm.pages.dev when no ?daemon= is set', () => {
+  // window.location is jsdom-provided; tests that exercise the same-origin
+  // synthesis path stub it for determinism.
+  const originalWindow = (globalThis as { window?: unknown }).window;
+
+  afterEach(() => {
+    if (originalWindow === undefined) {
+      delete (globalThis as { window?: unknown }).window;
+    } else {
+      (globalThis as { window?: unknown }).window = originalWindow;
+    }
+  });
+
+  it('synthesizes wss:// from window.location for the same-origin default', () => {
+    (globalThis as { window?: unknown }).window = {
+      location: { protocol: 'https:', host: 'cc-sm.pages.dev', search: '' },
+    };
     const got = resolveWsBase({ search: '' });
     expect(got).toBe('wss://cc-sm.pages.dev');
   });
 
-  it('matches https httpBase with wss:// scheme', () => {
+  it('synthesizes ws:// when the SPA is served over plain http (smoke / Vite dev)', () => {
+    (globalThis as { window?: unknown }).window = {
+      location: { protocol: 'http:', host: '127.0.0.1:8788', search: '' },
+    };
+    const got = resolveWsBase({ search: '' });
+    expect(got).toBe('ws://127.0.0.1:8788');
+  });
+
+  it('matches https httpBase with wss:// scheme when ?daemon= overrides', () => {
     const got = resolveWsBase({ search: '?daemon=https://example.com' });
     expect(got).toBe('wss://example.com');
   });
@@ -64,6 +81,12 @@ describe('resolveWsBase', () => {
   it('matches http httpBase with ws:// scheme (loopback override)', () => {
     const got = resolveWsBase({ search: '?daemon=http://127.0.0.1:9876' });
     expect(got).toBe('ws://127.0.0.1:9876');
+  });
+
+  it('returns the empty string when no window is available (SSR / Node)', () => {
+    delete (globalThis as { window?: unknown }).window;
+    const got = resolveWsBase({ search: '' });
+    expect(got).toBe('');
   });
 });
 
