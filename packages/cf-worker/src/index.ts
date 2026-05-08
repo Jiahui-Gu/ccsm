@@ -19,6 +19,10 @@ export default {
       // Multi-tunnel routing (per-user / per-pairing-id) is future work.
       const id = env.TUNNEL.idFromName('default');
       const stub = env.TUNNEL.get(id);
+      // Task #782 (S3-T6): forward the full request (incl.
+      // `Sec-WebSocket-Protocol` if the browser sent one) to the DO. The DO
+      // is responsible for echoing the protocol back on the 101 response so
+      // the browser doesn't reject the handshake (RFC 6455 §4.2.2 step 4).
       return stub.fetch(req);
     }
     return new Response('Not Found', { status: 404 });

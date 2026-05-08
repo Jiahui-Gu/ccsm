@@ -136,6 +136,39 @@ function currentDaemonBase(): string {
   });
 }
 
+/**
+ * WebSocket subprotocol prefix (Task #782, S3-T6).
+ *
+ * Browsers do not allow custom headers on `new WebSocket(url)`, so we smuggle
+ * the daemon bearer token over the only browser-pickable header: the
+ * `Sec-WebSocket-Protocol` request header (RFC 6455 §1.9). The CF Worker
+ * extracts the token from this header, the DO forwards it to the daemon as
+ * the first frame (`{type:"hello",token}`), and the daemon runs it through
+ * the SAME `classifyOrigin` / token check path used by the loopback HTTP /
+ * ws auth (no new auth path).
+ */
+export const WS_SUBPROTOCOL_PREFIX = 'ccsm.';
+
+export interface GetWsProtocolDeps {
+  /** Token reader (sessionStorage in the browser; injectable for tests). */
+  getToken: () => string | null;
+}
+
+/**
+ * Returns the subprotocol array to pass to `new WebSocket(url, protocols)`.
+ *
+ * Encoding: `['ccsm.<token>']`. We do not URL-encode — the token charset is
+ * a daemon-minted UUID-shape (alnum + dashes), which is already a valid
+ * RFC 6455 subprotocol token (RFC 7230 `tchar`). If the token is missing or
+ * empty, returns `[]` (no subprotocol). Caller (ws client) is responsible
+ * for failing fast in that case — the worker rejects unauth'd ws upgrades.
+ */
+export function getWsProtocol(deps: GetWsProtocolDeps): string[] {
+  const token = deps.getToken();
+  if (token === null || token.length === 0) return [];
+  return [`${WS_SUBPROTOCOL_PREFIX}${token}`];
+}
+
 export const webHostConfig: HostConfig = {
   httpBase: currentDaemonBase(),
   getToken: () => {

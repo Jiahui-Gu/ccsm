@@ -101,7 +101,7 @@ describe('TunnelClient', () => {
     vi.restoreAllMocks();
   });
 
-  it('connects, receives binary + text frames via onFrame', () => {
+  it('connects, receives binary + text frames via onFrame (after hello)', () => {
     const frames: Array<Buffer | string> = [];
     const client = new TunnelClient({
       url: 'wss://example/tunnel/x',
@@ -118,6 +118,12 @@ describe('TunnelClient', () => {
     sockets[0].open();
     expect(client.getState()).toBe('connected');
 
+    // Hello gate (Task #782): first text frame must be the hello envelope.
+    sockets[0].pushText(JSON.stringify({ type: 'hello', token: 'tok' }));
+    expect(client.getBrowserToken()).toBe('tok');
+    // Hello itself is NOT forwarded to onFrame.
+    expect(frames).toHaveLength(0);
+
     sockets[0].pushBinary(Buffer.from([1, 2, 3]));
     sockets[0].pushText('hello');
 
@@ -125,6 +131,78 @@ describe('TunnelClient', () => {
     expect(Buffer.isBuffer(frames[0])).toBe(true);
     expect((frames[0] as Buffer).equals(Buffer.from([1, 2, 3]))).toBe(true);
     expect(frames[1]).toBe('hello');
+  });
+
+  it('hello with bad token closes 1008 and drops frames', () => {
+    const frames: Array<Buffer | string> = [];
+    const client = new TunnelClient({
+      url: 'wss://x',
+      token: 'expected-token',
+      onFrame: (d) => frames.push(d),
+      wsFactory: factory,
+    });
+    client.start();
+    sockets[0].open();
+
+    sockets[0].pushText(JSON.stringify({ type: 'hello', token: 'WRONG' }));
+
+    expect(sockets[0].closedCalls).toHaveLength(1);
+    expect(sockets[0].closedCalls[0].code).toBe(1008);
+    expect(client.getBrowserToken()).toBeNull();
+    expect(frames).toHaveLength(0);
+  });
+
+  it('binary frame before hello closes 1008', () => {
+    const frames: Array<Buffer | string> = [];
+    const client = new TunnelClient({
+      url: 'wss://x',
+      token: 't',
+      onFrame: (d) => frames.push(d),
+      wsFactory: factory,
+    });
+    client.start();
+    sockets[0].open();
+
+    sockets[0].pushBinary(Buffer.from([1, 2, 3]));
+
+    expect(sockets[0].closedCalls).toHaveLength(1);
+    expect(sockets[0].closedCalls[0].code).toBe(1008);
+    expect(frames).toHaveLength(0);
+  });
+
+  it('malformed hello (non-JSON / wrong shape) closes 1008', () => {
+    const client = new TunnelClient({
+      url: 'wss://x',
+      token: 't',
+      onFrame: () => {},
+      wsFactory: factory,
+    });
+    client.start();
+    sockets[0].open();
+
+    sockets[0].pushText('not-json');
+    expect(sockets[0].closedCalls).toHaveLength(1);
+    expect(sockets[0].closedCalls[0].code).toBe(1008);
+  });
+
+  it('hello with correct token sets browserToken and unblocks frames', () => {
+    const frames: Array<Buffer | string> = [];
+    const client = new TunnelClient({
+      url: 'wss://x',
+      token: 'good',
+      onFrame: (d) => frames.push(d),
+      wsFactory: factory,
+    });
+    client.start();
+    sockets[0].open();
+    expect(client.getBrowserToken()).toBeNull();
+
+    sockets[0].pushText(JSON.stringify({ type: 'hello', token: 'good' }));
+    expect(client.getBrowserToken()).toBe('good');
+    expect(sockets[0].closedCalls).toHaveLength(0);
+
+    sockets[0].pushText('subsequent');
+    expect(frames).toEqual(['subsequent']);
   });
 
   it('send() forwards to the socket when connected; drops when not', () => {

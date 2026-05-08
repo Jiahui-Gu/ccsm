@@ -4,8 +4,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   DEFAULT_DAEMON_BASE,
+  getWsProtocol,
   resolveDaemonBase,
   resolveWsBase,
+  WS_SUBPROTOCOL_PREFIX,
 } from '../src/hostConfig';
 
 describe('resolveDaemonBase', () => {
@@ -61,5 +63,62 @@ describe('resolveWsBase', () => {
   it('matches http httpBase with ws:// scheme (loopback override)', () => {
     const got = resolveWsBase({ search: '?daemon=http://127.0.0.1:9876' });
     expect(got).toBe('ws://127.0.0.1:9876');
+  });
+});
+
+describe('getWsProtocol (Task #782, S3-T6)', () => {
+  it('returns ["ccsm.<token>"] when token reader yields a non-empty token', () => {
+    const got = getWsProtocol({ getToken: () => 'abc-123' });
+    expect(got).toEqual(['ccsm.abc-123']);
+    expect(got[0].startsWith(WS_SUBPROTOCOL_PREFIX)).toBe(true);
+  });
+
+  it('returns [] when token reader yields null', () => {
+    const got = getWsProtocol({ getToken: () => null });
+    expect(got).toEqual([]);
+  });
+
+  it('returns [] when token reader yields empty string', () => {
+    const got = getWsProtocol({ getToken: () => '' });
+    expect(got).toEqual([]);
+  });
+
+  it('does not URL-encode the token (daemon UUID-shape charset is RFC 6455 safe)', () => {
+    const got = getWsProtocol({ getToken: () => 'A1B2-c3d4-EF56' });
+    expect(got).toEqual(['ccsm.A1B2-c3d4-EF56']);
+  });
+
+  it('integrates with sessionStorage-backed token reader (webHostConfig.getToken)', async () => {
+    // Validates the sessionStorage path the SPA actually uses.
+    const { TOKEN_STORAGE_KEY, webHostConfig } = await import('../src/hostConfig');
+    const store = new Map<string, string>();
+    const fakeSessionStorage = {
+      getItem: (k: string) => (store.has(k) ? (store.get(k) as string) : null),
+      setItem: (k: string, v: string) => { store.set(k, v); },
+      removeItem: (k: string) => { store.delete(k); },
+      clear: () => { store.clear(); },
+      key: () => null,
+      length: 0,
+    };
+    const originalSessionStorage = (globalThis as { sessionStorage?: Storage }).sessionStorage;
+    const originalWindow = (globalThis as { window?: unknown }).window;
+    (globalThis as { window?: unknown }).window = {};
+    (globalThis as { sessionStorage?: unknown }).sessionStorage = fakeSessionStorage;
+    try {
+      store.set(TOKEN_STORAGE_KEY, 'sess-tok-1');
+      const got = getWsProtocol({ getToken: webHostConfig.getToken });
+      expect(got).toEqual(['ccsm.sess-tok-1']);
+    } finally {
+      if (originalSessionStorage === undefined) {
+        delete (globalThis as { sessionStorage?: unknown }).sessionStorage;
+      } else {
+        (globalThis as { sessionStorage?: unknown }).sessionStorage = originalSessionStorage;
+      }
+      if (originalWindow === undefined) {
+        delete (globalThis as { window?: unknown }).window;
+      } else {
+        (globalThis as { window?: unknown }).window = originalWindow;
+      }
+    }
   });
 });
