@@ -173,6 +173,23 @@ describe('Sidebar', () => {
     }
   });
 
+  // Task #28 / R-12: smoke spec (s3-happy-path) probes data-testid="session-list"
+  // on the sessions <ul>. Missing this testid is what made dev-27's smoke run
+  // time out at getByTestId('session-list') even though the sidebar rendered
+  // correctly. Lock the contract so this can't regress silently.
+  it('exposes data-testid="session-list" on the sessions <ul> (smoke contract)', () => {
+    useStore.setState({
+      sessions: [
+        { sid: 'aaaa1111', createdAt: 0, alive: true },
+      ],
+      activeSid: 'aaaa1111',
+    });
+    render(<Sidebar />);
+    const list = screen.getByTestId('session-list');
+    expect(list).toBeDefined();
+    expect(list.tagName).toBe('UL');
+  });
+
   it('shows the empty-state hint inside the GROUPS zone when sessions is empty', () => {
     render(<Sidebar />);
     expect(
