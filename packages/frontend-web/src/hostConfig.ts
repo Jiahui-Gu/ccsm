@@ -13,20 +13,33 @@
 // daemon-embedded case (browser opens http://127.0.0.1:9876/, SPA
 // same-origin).
 //
-// Task #780 (S3-T5): default base flips to the Cloudflare tunnel URL
-// (`https://cc-sm.pages.dev` / `wss://cc-sm.pages.dev`). The SPA is now
-// always served from Pages; in production it talks to the daemon through
-// the CF Worker + Durable Object tunnel (S3 architecture). The previous
-// loopback / envBase / origin fallbacks are gone — the only escape hatch
-// is the URL `?daemon=<url>` query parameter, which dev/test/Tauri shells
-// use to point at a local daemon.
+// Task #780 (S3-T5): default base flipped to a hard-coded
+// `https://cc-sm.pages.dev` URL so Pages-hosted SPA could reach the daemon
+// through the CF Worker tunnel.
+//
+// Task #25 (smoke R-5): the hard-coded prod URL is wrong — the SPA should
+// always reach `/token` and `/ws/default` via the SAME origin it was served
+// from. The Pages Function (`[[path]].ts`) already proxies these paths into
+// the Worker tunnel at the same origin, so a relative path Just Works in
+// production AND in dev (Vite proxy / Pages preview) AND when the SPA is
+// served from `127.0.0.1:<port>` by a smoke fixture. Default base is now
+// the empty string (same-origin relative); `?daemon=<absolute>` remains the
+// only escape hatch (loopback daemon / Tauri).
 
 import type { HostConfig } from '@ccsm/ui';
 
 export const TOKEN_STORAGE_KEY = 'ccsm.token';
 
-/** Hard default daemon base for production (Cloudflare Pages + Worker tunnel, Task #780). */
-export const DEFAULT_DAEMON_BASE = 'https://cc-sm.pages.dev';
+/**
+ * Default daemon base for production (same-origin relative).
+ *
+ * Task #25: empty string means "use the SPA's own origin" — `fetch('/token')`
+ * and `new WebSocket('/ws/default')` resolve relative to `document.baseURI`,
+ * which is the right answer whether the SPA is served from
+ * `https://cc-sm.pages.dev`, a Pages preview deployment, the Vite dev
+ * server, or the smoke fixture's static SPA host.
+ */
+export const DEFAULT_DAEMON_BASE = '';
 
 export interface ResolveTokenDeps {
   /** Search portion of the current URL, e.g. `?token=abc`. */
@@ -35,11 +48,11 @@ export interface ResolveTokenDeps {
   fetch: typeof globalThis.fetch;
   /**
    * Daemon base URL (Task #719 / S2-T4). When the SPA is served from a
-   * different origin than the daemon (e.g. Cloudflare Pages → loopback
-   * daemon), `/token` must be requested as an absolute URL or the browser
-   * will hit the SPA host instead. Pass the result of `resolveDaemonBase()`
-   * here. When omitted or empty, falls back to the relative `/token` path
-   * (same-origin / daemon-embedded SPA).
+   * different origin than the daemon (e.g. Tauri shell → loopback daemon),
+   * `/token` must be requested as an absolute URL or the browser will hit
+   * the SPA host instead. Pass the result of `resolveDaemonBase()` here.
+   * When omitted or empty, falls back to the relative `/token` path
+   * (same-origin, the default for cloud + dev).
    */
   daemonBase?: string;
 }
@@ -50,8 +63,10 @@ export interface ResolveTokenDeps {
  *
  * Priority (Task #696, cross-origin extension Task #719):
  *   1. URL `?token=` — back-compat with legacy `ccsm ready: ...?token=` URL.
- *   2. GET <daemonBase>/token — same-origin in the daemon-embedded case;
- *      cross-origin (with CORS, see daemon http.mts) when SPA is on Pages.
+ *   2. GET <daemonBase>/token — same-origin in the cloud + dev case (the
+ *      Pages Function proxies into the CF Worker tunnel); cross-origin
+ *      (with CORS, see daemon http.mts) when a Tauri/loopback daemon shell
+ *      sets `?daemon=`.
  *   3. null — caller surfaces a friendly "daemon offline / no token" UI.
  *
  * The function is pure w.r.t. its `deps` argument (no window / sessionStorage
@@ -90,17 +105,19 @@ function normalizeBase(raw: string): string {
 /**
  * Resolve the HTTP base URL the SPA should use to talk to the daemon.
  *
- * Priority (Task #780 / S3-T5):
- *   1. URL `?daemon=<url>` — runtime escape hatch (dev / test / Tauri
- *      shell pointing at local loopback daemon).
- *   2. Hard default `https://cc-sm.pages.dev` — production tunnel via
- *      Cloudflare Worker + Durable Object.
+ * Priority (Task #25 / smoke R-5):
+ *   1. URL `?daemon=<url>` — runtime escape hatch (Tauri shell / loopback
+ *      daemon / smoke probe pointing at a foreign daemon).
+ *   2. Empty string — same-origin relative. The SPA's host (Pages, Vite
+ *      dev, smoke fixture) proxies `/token`, `/api/...`, and `/ws/default`
+ *      into the daemon (CF Worker tunnel in cloud, Vite proxy in dev).
  *
  * History: S2 (Task #712) preferred `window.location.origin` on loopback
- * hostnames and `VITE_DAEMON_BASE` for the Pages build. S3 collapses all
- * of that into a single default because the SPA is now always served from
- * Pages and always talks to the daemon through the tunnel unless `?daemon=`
- * explicitly redirects it.
+ * hostnames; S3 (Task #780) replaced everything with a hard-coded
+ * `https://cc-sm.pages.dev`. Task #25 went back to same-origin because the
+ * hard-coded URL broke smoke (SPA at `127.0.0.1:8788` cannot fetch a Pages
+ * URL — `ERR_FAILED` / CORS) AND was redundant in cloud (Pages serves the
+ * SPA AND proxies the tunnel from the same origin).
  */
 export function resolveDaemonBase(deps: ResolveDaemonBaseDeps): string {
   const fromUrl = new URLSearchParams(deps.search).get('daemon');
@@ -112,10 +129,11 @@ export function resolveDaemonBase(deps: ResolveDaemonBaseDeps): string {
 /**
  * Derive the matching ws/wss base URL from an http/https base.
  *
- * Used by the SPA to pick between `wss://cc-sm.pages.dev` (production
- * tunnel) and `ws://127.0.0.1:9876` (loopback dev) without forcing the
- * caller to plumb a separate `wsBase` field. The path (`/ws/<sid>?...`)
- * is appended downstream by core's WsClient — this only sets the origin.
+ * Used by the SPA to pick between an explicit `?daemon=` host and the
+ * default same-origin ws/wss. With the Task #25 default (empty `httpBase`),
+ * we synthesize the ws origin from `window.location` so callers that need
+ * an absolute URL (e.g. WsClient) get `wss://<spa-host>` / `ws://<spa-host>`.
+ * The path (`/ws/default`) is appended downstream.
  */
 export function resolveWsBase(deps: ResolveDaemonBaseDeps): string {
   const httpBase = resolveDaemonBase(deps);
@@ -125,7 +143,13 @@ export function resolveWsBase(deps: ResolveDaemonBaseDeps): string {
   if (httpBase.startsWith('http://')) {
     return `ws://${httpBase.slice('http://'.length)}`;
   }
-  // Defensive: caller passed something exotic; hand it back unchanged.
+  // Empty / same-origin: derive from window.location when available.
+  if (typeof window !== 'undefined' && window.location) {
+    const { protocol, host } = window.location;
+    const wsScheme = protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${wsScheme}//${host}`;
+  }
+  // SSR / no window — hand back as-is; caller falls back to relative URL.
   return httpBase;
 }
 
