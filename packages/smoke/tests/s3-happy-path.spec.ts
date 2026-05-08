@@ -65,7 +65,18 @@ test('cloud-mode happy path: open SPA, create session, run echo, see output', as
     'open',
     { timeout: 10_000 },
   );
-  await page.keyboard.type('echo hello-from-smoke');
+  // Task #67 (R-23) — use locator.pressSequentially with delay 30ms instead
+  // of page.keyboard.type. dev-66 verify on R-22 locked the remaining drop
+  // cause: Playwright's default keyboard.type fires keystrokes with delay=0,
+  // which xterm's onData handler batches into a single len=3 emission for a
+  // 21-char input. pressSequentially with a 30ms inter-key delay paces input
+  // closer to a real user, so xterm emits each keystroke as its own onData
+  // and the daemon receives the full string. Not a production fix — R-21's
+  // buffer-until-open already addressed the production race; this only tunes
+  // the Playwright simulation cadence.
+  await page
+    .getByLabel('Terminal input')
+    .pressSequentially('echo hello-from-smoke', { delay: 30 });
   await page.keyboard.press('Enter');
 
   await expect(page.getByTestId('terminal-pane')).toContainText('hello-from-smoke', {
