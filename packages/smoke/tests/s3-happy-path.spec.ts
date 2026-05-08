@@ -41,7 +41,18 @@ test('cloud-mode happy path: open SPA, create session, run echo, see output', as
 
   // Send one command and assert PTY echo. The terminal is xterm.js; we read
   // its rendered DOM rather than poking the terminal API directly.
-  await page.getByTestId('terminal-pane').click();
+  //
+  // Task #64 (R-22) — click the inner xterm hidden `<textarea
+  // aria-label="Terminal input">` rather than the outer `terminal-pane` div.
+  // dev-63 verify (R-21) locked the cause: clicking the outer div did not
+  // forward focus to xterm's hidden textarea, so `keyboard.type(...)` keystrokes
+  // landed on `document.body` and most chars were dropped before reaching
+  // xterm's onData (the R-19 verify error-context.md showed only 1 onData
+  // event with len=3 for a 21-char type, and the active element was body).
+  // R-21's buffer-until-open queue already fixed the WS race; this is a
+  // Layer 4 test-contract fix only — production focus behavior is unchanged
+  // (a real user clicking the terminal naturally focuses the textarea).
+  await page.getByLabel('Terminal input').click();
   // Task #61 (R-21) — wait until the ws actually reaches OPEN before
   // typing. Without this gate, keystrokes raced the createSession→ws-open
   // window (~340ms) and were silently dropped (research-60 confirmed 22
