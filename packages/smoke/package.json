@@ -1,0 +1,19 @@
+{
+  "name": "@ccsm/smoke",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local-only S3 full-stack happy-path smoke (Tauri shell -> daemon -> wrangler dev cf-worker tunnel -> Pages functions -> Playwright chromium). Not run in CI.",
+  "scripts": {
+    "smoke": "playwright test",
+    "smoke:headed": "playwright test --headed",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint tests fixtures --max-warnings=0",
+    "test": "echo 'smoke is run via `pnpm smoke`, skipped under `pnpm -r test` because it requires Tauri + wrangler dev + a real chromium' && exit 0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.2",
+    "@types/node": "^22.9.0",
+    "typescript": "^5.6.3"
+  }
+}
