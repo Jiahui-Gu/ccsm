@@ -126,16 +126,51 @@ const PAUSE_QUEUE_CAP_BYTES = 1 * 1024 * 1024;
 
 // ---- Default PTY factory (real node-pty spawn of `claude`) --------------
 
+/**
+ * Task #53 (R-19) — pure resolver for PTY entry program + argv. Extracted from
+ * `defaultPtyFactory` so tests can lock both branches without spawning a real
+ * subprocess.
+ *
+ * Prod path: `CCSM_PTY_ENTRY` unset/empty → `claude.cmd` (Windows) or `claude`
+ * (POSIX), with `--session-id <sid>` / `--resume <sid>` synthesized from the
+ * spawn mode (Spike #665: `--resume` must pair with original cwd).
+ *
+ * Override path: `CCSM_PTY_ENTRY` set → use that program with empty argv.
+ * `--session-id` / `--resume` are claude-CLI specific and would be nonsense
+ * for a bare shell. research-52 lock-in: smoke spec :48 fails because the
+ * `claude` REPL eats stdin into its prompt buffer so `echo hello-from-smoke\r`
+ * never round-trips through the PTY's stdout tail; routing smoke through a
+ * bare shell makes the shell's own echo satisfy the assertion without coupling
+ * the smoke harness to claude internals. Defaulted off so prod behavior is
+ * byte-identical to pre-R-19.
+ */
+export function resolvePtyEntry(
+  ptyEntryEnv: string | undefined,
+  mode: PtySpawnMode,
+  sid: string,
+  isWindows: boolean,
+): { cmd: string; args: string[] } {
+  const useOverride = typeof ptyEntryEnv === 'string' && ptyEntryEnv.length > 0;
+  if (useOverride) {
+    return { cmd: ptyEntryEnv, args: [] };
+  }
+  const cmd = isWindows ? 'claude.cmd' : 'claude';
+  const args = mode === 'resume'
+    ? ['--resume', sid]
+    : ['--session-id', sid];
+  return { cmd, args };
+}
+
 const defaultPtyFactory: PtyFactory = (opts) => {
   const requireCjs = createRequire(import.meta.url);
   const nodePty = requireCjs('node-pty') as typeof import('node-pty');
   const isWindows = process.platform === 'win32';
-  const cmd = isWindows ? 'claude.cmd' : 'claude';
-  // Spike #665: --resume must be paired with the same cwd that was used at
-  // create time, otherwise `claude` exits 1 immediately.
-  const args = opts.mode === 'resume'
-    ? ['--resume', opts.sid]
-    : ['--session-id', opts.sid];
+  const { cmd, args } = resolvePtyEntry(
+    process.env.CCSM_PTY_ENTRY,
+    opts.mode,
+    opts.sid,
+    isWindows,
+  );
   const pty = nodePty.spawn(cmd, args, {
     name: 'xterm-256color',
     cols: opts.cols,
