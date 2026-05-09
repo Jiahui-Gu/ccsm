@@ -143,9 +143,41 @@ impl DaemonStateStore {
     }
 }
 
+/// Compute the next supervisor backoff delay (ms) given the current one.
+///
+/// T2 (#119): exponential backoff for the daemon supervisor loop. Doubles
+/// the previous delay, clamps to [1000ms, 10_000ms]. The supervisor resets
+/// `cur` back to 1000ms after a healthy run (≥10s up) — this fn just owns
+/// the doubling step.
+///
+/// Sequence from 1000ms: 1000 → 2000 → 4000 → 8000 → 10000 → 10000 (clamped).
+pub fn next_backoff(cur_ms: u64) -> u64 {
+    const MIN_MS: u64 = 1_000;
+    const MAX_MS: u64 = 10_000;
+    if cur_ms < MIN_MS {
+        return MIN_MS;
+    }
+    cur_ms.saturating_mul(2).min(MAX_MS)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn next_backoff_doubles_and_caps() {
+        // T2 spec: 1000 → 2000 → 4000 → 8000 → 10000 → 10000.
+        assert_eq!(next_backoff(1_000), 2_000);
+        assert_eq!(next_backoff(2_000), 4_000);
+        assert_eq!(next_backoff(4_000), 8_000);
+        assert_eq!(next_backoff(8_000), 10_000);
+        assert_eq!(next_backoff(10_000), 10_000);
+        // Below floor (e.g. caller passed 0 first time) snaps to MIN.
+        assert_eq!(next_backoff(0), 1_000);
+        assert_eq!(next_backoff(500), 1_000);
+        // Saturation guard against overflow.
+        assert_eq!(next_backoff(u64::MAX), 10_000);
+    }
 
     #[test]
     fn state_store_emits_one_event_per_set() {

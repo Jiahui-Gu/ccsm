@@ -10,7 +10,7 @@ mod daemon_mgr;
 mod daemon_state;
 mod job_object;
 
-use daemon_mgr::{spawn_daemon_inner, start_daemon, DaemonState};
+use daemon_mgr::{start_daemon, supervise, DaemonState};
 use daemon_state::DaemonStateStore;
 use job_object::JobObject;
 use tauri::Manager;
@@ -34,12 +34,16 @@ pub fn run() {
             // daemon is the product design (see project memory
             // `project_tauri_spawns_daemon.md`); webview-invoke would couple
             // daemon liveness to React render which the architecture rejects.
+            // T2 (#119): `supervise` replaces the fire-and-forget
+            // `spawn_daemon_inner` — same setup-hook contract, but now the
+            // returned future installs a long-lived supervisor task that
+            // respawns the daemon on any failure with exponential backoff.
             // The `start_daemon` command is kept as an idempotent no-op for
             // any callers that still invoke it.
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(e) = spawn_daemon_inner(app_handle).await {
-                    eprintln!("[lib.rs setup] spawn_daemon_inner failed: {e}");
+                if let Err(e) = supervise(app_handle).await {
+                    eprintln!("[lib.rs setup] supervise failed: {e}");
                 }
             });
 
