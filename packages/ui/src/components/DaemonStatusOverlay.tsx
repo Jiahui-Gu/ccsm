@@ -29,8 +29,14 @@ export type DaemonStatusVariant = 'info' | 'error' | 'auth';
 export interface DaemonStatusPhase {
   phase: string;
   reason?: string;
-  code?: number;
-  retryInMs?: number;
+  // Mirrors `exited.code: Option<i32>` Rust wire shape (null = absent).
+  code?: number | null;
+  // Mirrors the Rust `Option<u64>` wire shape on `spawnFailed.retryInMs`,
+  // which serializes to JSON `null` when absent. Frontend-tauri's
+  // DaemonPhase['spawnFailed'] declares `retryInMs: number | null`, so this
+  // prop type accepts both `null` (wire absent) and `undefined` (other phases
+  // that omit the field entirely).
+  retryInMs?: number | null;
   verificationUri?: string;
   userCode?: string;
   expiresAt?: number;
