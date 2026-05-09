@@ -18,6 +18,7 @@ export { TunnelDO } from './tunnel-do';
 export { UserDO } from './auth/userDO';
 
 import { dispatchAuth } from './auth/webOauth';
+import { dispatchDevice } from './auth/deviceFlow';
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
@@ -42,6 +43,9 @@ export default {
     // directly and read/write UserDO. Routing them before the TunnelDO
     // /api/* branch ensures /api/auth/* never reaches the daemon path.
     if (url.pathname.startsWith('/api/auth/')) {
+      // S4-T4 (Task #142): device flow + tunnel refresh land here first.
+      const devRes = await dispatchDevice(req, env);
+      if (devRes !== null) return devRes;
       const authRes = await dispatchAuth(req, env);
       if (authRes !== null) return authRes;
       // Path under /api/auth/ but not ours (e.g. wrong method) → 404.

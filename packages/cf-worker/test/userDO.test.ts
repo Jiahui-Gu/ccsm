@@ -190,4 +190,41 @@ describe('UserDO', () => {
     const r = await inst.fetch(new Request('https://do/nope'));
     expect(r.status).toBe(404);
   });
+
+  it('tunnel refresh hash is independent of web refresh hash', async () => {
+    const UserDO = await loadDO();
+    const inst = new UserDO(makeState(makeStorage()), fakeEnv);
+    await inst.setRefreshTokenHash('web-hash');
+    await inst.setTunnelRefreshTokenHash('tunnel-hash');
+    expect(await inst.verifyRefreshTokenHash('web-hash')).toBe(true);
+    expect(await inst.verifyRefreshTokenHash('tunnel-hash')).toBe(false);
+    expect(await inst.verifyTunnelRefreshTokenHash('tunnel-hash')).toBe(true);
+    expect(await inst.verifyTunnelRefreshTokenHash('web-hash')).toBe(false);
+  });
+
+  it('fetch /setTunnelRefreshTokenHash + /verifyTunnelRefreshTokenHash round-trip', async () => {
+    const UserDO = await loadDO();
+    const inst = new UserDO(makeState(makeStorage()), fakeEnv);
+    const set = await inst.fetch(
+      new Request('https://do/setTunnelRefreshTokenHash', {
+        method: 'POST',
+        body: JSON.stringify({ hash: 't-hash' }),
+      }),
+    );
+    expect(set.status).toBe(204);
+    const ok = await inst.fetch(
+      new Request('https://do/verifyTunnelRefreshTokenHash', {
+        method: 'POST',
+        body: JSON.stringify({ hash: 't-hash' }),
+      }),
+    );
+    expect(await ok.json()).toEqual({ ok: true });
+    const bad = await inst.fetch(
+      new Request('https://do/verifyTunnelRefreshTokenHash', {
+        method: 'POST',
+        body: JSON.stringify({ hash: 'nope' }),
+      }),
+    );
+    expect(await bad.json()).toEqual({ ok: false });
+  });
 });
