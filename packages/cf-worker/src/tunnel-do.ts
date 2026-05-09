@@ -424,8 +424,22 @@ export class TunnelDO extends DurableObject<Env> {
    * Daemon offline → 503 immediately. Daemon drop while pending → 502.
    */
   private async proxyHttp(req: Request): Promise<Response> {
+    const r28Url = new URL(req.url);
+    const r28Path = r28Url.pathname;
+    const r28DaemonAll = this.state.getWebSockets(TAG_DAEMON);
+    const r28DaemonStates = r28DaemonAll.map((ws) => ws.readyState).join(',');
+    const r28BrowserAll = this.state.getWebSockets(TAG_BROWSER);
+    console.log(
+      '[r28][do] proxyHttp enter path=' + r28Path +
+      ' method=' + req.method +
+      ' daemon_count=' + r28DaemonAll.length +
+      ' daemon_states=[' + r28DaemonStates + ']' +
+      ' browser_count=' + r28BrowserAll.length +
+      ' pending_http=' + this.pendingHttp.size,
+    );
     const daemon = this.getDaemonSocket();
     if (daemon === undefined) {
+      console.log('[r28][do] proxyHttp path=' + r28Path + ' decision=503-no-daemon');
       return new Response('daemon offline', { status: 503 });
     }
     const id = crypto.randomUUID();
@@ -444,18 +458,21 @@ export class TunnelDO extends DurableObject<Env> {
       headers,
       body_b64,
     };
+    console.log('[r28][do] proxyHttp send-frame path=' + r28Path + ' id=' + id + ' body_len=' + body.byteLength);
     return new Promise<Response>((resolve) => {
       const timer = setTimeout(() => {
         if (this.pendingHttp.delete(id)) {
+          console.log('[r28][do] proxyHttp path=' + r28Path + ' id=' + id + ' decision=504-timeout');
           resolve(new Response('upstream timeout', { status: 504 }));
         }
       }, HTTP_OVER_TUNNEL_TIMEOUT_MS);
       this.pendingHttp.set(id, { resolve, timer });
       try {
         daemon.send(JSON.stringify(frame));
-      } catch {
+      } catch (err) {
         clearTimeout(timer);
         this.pendingHttp.delete(id);
+        console.log('[r28][do] proxyHttp path=' + r28Path + ' id=' + id + ' decision=502-send-failed err=' + String(err));
         resolve(new Response('upstream send failed', { status: 502 }));
       }
     });
@@ -463,6 +480,7 @@ export class TunnelDO extends DurableObject<Env> {
 
   /** Reject every in-flight HTTP request when the daemon ws drops. */
   private failAllPendingHttp(status: number, body: string): void {
+    console.log('[r28][do] failAllPendingHttp status=' + status + ' body=' + body + ' count=' + this.pendingHttp.size);
     for (const [, pending] of this.pendingHttp) {
       clearTimeout(pending.timer);
       pending.resolve(new Response(body, { status }));
@@ -473,7 +491,11 @@ export class TunnelDO extends DurableObject<Env> {
   /** Resolve a pending HTTP request from a parsed http_res control frame. */
   private completeHttpRes(frame: HttpResFrame): void {
     const pending = this.pendingHttp.get(frame.id);
-    if (pending === undefined) return;
+    if (pending === undefined) {
+      console.log('[r28][do] completeHttpRes id=' + frame.id + ' status=' + frame.status + ' decision=no-pending (maybe timed-out)');
+      return;
+    }
+    console.log('[r28][do] completeHttpRes id=' + frame.id + ' status=' + frame.status + ' body_len=' + frame.body_b64.length);
     this.pendingHttp.delete(frame.id);
     clearTimeout(pending.timer);
     const bytes = frame.body_b64.length === 0

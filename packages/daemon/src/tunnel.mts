@@ -516,6 +516,7 @@ export class TunnelClient {
    */
   private async handleHttpReq(frame: HttpReqFrame): Promise<void> {
     if (this.daemonLoopbackPort === 0) {
+      console.error('[r28][daemon] http_req id=' + frame.id + ' ' + frame.method + ' ' + frame.path + ' decision=503-no-loopback-port');
       this.send(JSON.stringify({
         type: 'http_res',
         id: frame.id,
@@ -538,6 +539,8 @@ export class TunnelClient {
       headers[k] = v;
     }
     console.error(`[ccsm] tunnel: rx http_req ${frame.method} ${frame.path}`);
+    console.error('[r28][daemon] http_req enter id=' + frame.id + ' ' + frame.method + ' ' + frame.path + ' loopback_port=' + this.daemonLoopbackPort + ' body_len=' + (body?.length ?? 0));
+    const r28Started = Date.now();
     let response: globalThis.Response;
     try {
       const init: RequestInit = {
@@ -550,6 +553,7 @@ export class TunnelClient {
       }
       response = await this.fetchImpl(url, init);
     } catch (err) {
+      console.error('[r28][daemon] http_req id=' + frame.id + ' fetch-threw err=' + (err as Error).message + ' dur_ms=' + (Date.now() - r28Started));
       this.send(JSON.stringify({
         type: 'http_res',
         id: frame.id,
@@ -564,6 +568,7 @@ export class TunnelClient {
       resHeaders[k] = v;
     });
     const resBody = Buffer.from(await response.arrayBuffer());
+    console.error('[r28][daemon] http_req exit id=' + frame.id + ' status=' + response.status + ' body_len=' + resBody.length + ' dur_ms=' + (Date.now() - r28Started));
     this.send(JSON.stringify({
       type: 'http_res',
       id: frame.id,
