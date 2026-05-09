@@ -37,7 +37,10 @@ function buildHostConfig(port: number, token: string): HostConfig {
   };
 }
 
-function PhaseSwitch() {
+// Exported for Task #138 e2e-equivalent vitest coverage (PhaseSwitch.test.tsx).
+// Tests inject a DaemonStateContext value and assert routing without spinning
+// up the real Tauri event channel. No production caller imports it.
+export function PhaseSwitch() {
   const phase = useDaemonPhase();
   switch (phase.phase) {
     case 'ready': {
