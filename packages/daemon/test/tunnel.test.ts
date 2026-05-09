@@ -729,4 +729,157 @@ describe('TunnelClient', () => {
     sockets[0].closeFromServer(1006);
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+
+  // ---- Task #81 (R-27): multi-sid re-pair on a single tunnel ws --------
+
+  it('second hello with new sid tears down old handle and re-attaches', () => {
+    // Reproduces the Task #81 bug: SPA reuses one cf-worker tunnel ws across
+    // sessions. New Session sends `{type:"hello",token,sid:<new>}` on the
+    // SAME ws; the daemon must tear down the prior attach handle and bind a
+    // fresh one so the new sid's PTY gets a subscriber.
+    const attachCalls: Array<{ sid: string; lastSeq: number }> = [];
+    const closeCalls: string[] = [];
+    let nextHandleId = 0;
+    const client = new TunnelClient({
+      url: 'wss://x',
+      token: 'tok',
+      onFrame: () => {},
+      wsFactory: factory,
+      onBrowserAttach: ({ sid, lastSeq }) => {
+        attachCalls.push({ sid, lastSeq });
+        const id = `handle-${nextHandleId++}-for-${sid}`;
+        return {
+          onFrame: () => {},
+          onClose: () => {
+            closeCalls.push(id);
+          },
+        };
+      },
+    });
+    client.start();
+    sockets[0].open();
+
+    // First hello: sid=A.
+    sockets[0].pushText(JSON.stringify({
+      type: 'hello',
+      token: 'tok',
+      sid: 'sess-A',
+      lastSeq: 0,
+    }));
+    expect(attachCalls).toEqual([{ sid: 'sess-A', lastSeq: 0 }]);
+    expect(closeCalls).toEqual([]);
+    // No 1008 close.
+    expect(sockets[0].closedCalls).toHaveLength(0);
+
+    // Second hello: sid=B on the SAME ws → re-pair.
+    sockets[0].pushText(JSON.stringify({
+      type: 'hello',
+      token: 'tok',
+      sid: 'sess-B',
+      lastSeq: 5,
+    }));
+    expect(attachCalls).toEqual([
+      { sid: 'sess-A', lastSeq: 0 },
+      { sid: 'sess-B', lastSeq: 5 },
+    ]);
+    // Old handle's onClose was invoked exactly once before the new attach.
+    expect(closeCalls).toEqual(['handle-0-for-sess-A']);
+    // Still no 1008 close — re-pair is in-band, not a protocol violation.
+    expect(sockets[0].closedCalls).toHaveLength(0);
+
+    // Third hello: same sid=B → idempotent. Neither onClose nor a fresh
+    // onBrowserAttach should fire.
+    sockets[0].pushText(JSON.stringify({
+      type: 'hello',
+      token: 'tok',
+      sid: 'sess-B',
+      lastSeq: 9,
+    }));
+    expect(attachCalls).toEqual([
+      { sid: 'sess-A', lastSeq: 0 },
+      { sid: 'sess-B', lastSeq: 5 },
+    ]);
+    expect(closeCalls).toEqual(['handle-0-for-sess-A']);
+  });
+
+  it('post-hello re-pair: binary frames after re-pair route to NEW handle', () => {
+    // Guard: after re-pair, binary frames must land on the new attach
+    // handle, not the old one (the original bug — frames were silently
+    // dropped because the gate locked on the first hello).
+    const handleAFrames: Buffer[] = [];
+    const handleBFrames: Buffer[] = [];
+    let nextSid: 'A' | 'B' = 'A';
+    const client = new TunnelClient({
+      url: 'wss://x',
+      token: 'tok',
+      onFrame: () => {},
+      wsFactory: factory,
+      onBrowserAttach: () => {
+        const target = nextSid === 'A' ? handleAFrames : handleBFrames;
+        nextSid = nextSid === 'A' ? 'B' : 'A';
+        return {
+          onFrame: (data) => target.push(data),
+          onClose: () => {},
+        };
+      },
+    });
+    client.start();
+    sockets[0].open();
+
+    sockets[0].pushText(JSON.stringify({
+      type: 'hello',
+      token: 'tok',
+      sid: 'sess-A',
+      lastSeq: 0,
+    }));
+    sockets[0].pushBinary(Buffer.from([0xa1]));
+    expect(handleAFrames).toHaveLength(1);
+    expect(handleBFrames).toHaveLength(0);
+
+    // Re-pair to sid=B.
+    sockets[0].pushText(JSON.stringify({
+      type: 'hello',
+      token: 'tok',
+      sid: 'sess-B',
+      lastSeq: 0,
+    }));
+    sockets[0].pushBinary(Buffer.from([0xb1]));
+    // The new frame went to handle B, NOT to handle A (which would've been
+    // the old buggy behaviour — a stale subscriber on a torn-down session).
+    expect(handleAFrames).toHaveLength(1);
+    expect(handleBFrames).toHaveLength(1);
+    expect(handleBFrames[0].equals(Buffer.from([0xb1]))).toBe(true);
+  });
+
+  it('re-pair hello with bad token closes 1008', () => {
+    // Token is re-checked on EVERY hello. A spoofed re-pair must still hit
+    // the 1008 path. (Once the ws is closed, the close handler tears the
+    // old attach down via onClose — that's covered by the close-fires-once
+    // test above.)
+    const client = new TunnelClient({
+      url: 'wss://x',
+      token: 'good',
+      onFrame: () => {},
+      wsFactory: factory,
+      onBrowserAttach: () => ({ onFrame: () => {}, onClose: () => {} }),
+    });
+    client.start();
+    sockets[0].open();
+    sockets[0].pushText(JSON.stringify({
+      type: 'hello',
+      token: 'good',
+      sid: 'sess-A',
+      lastSeq: 0,
+    }));
+    expect(sockets[0].closedCalls).toHaveLength(0);
+
+    sockets[0].pushText(JSON.stringify({
+      type: 'hello',
+      token: 'WRONG',
+      sid: 'sess-B',
+      lastSeq: 0,
+    }));
+    expect(sockets[0].closedCalls).toHaveLength(1);
+    expect(sockets[0].closedCalls[0].code).toBe(1008);
+  });
 });
