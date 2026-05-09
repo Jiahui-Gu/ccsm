@@ -46,6 +46,20 @@ import { timingSafeEqual } from 'node:crypto';
 
 import WebSocket, { type RawData } from 'ws';
 
+// R-48 (Task #160): sid envelope codec + tunnel control-frame types are SoT
+// in @ccsm/shared. Both daemon and cf-worker DO import the same module so
+// wire-format drift is impossible (R-41 envelope regression history).
+import {
+  decodeSidEnvelope as decodeSidEnvelopeShared,
+  encodeSidEnvelope as encodeSidEnvelopeShared,
+  type BrowserIdentity,
+  type HelloFrame,
+  type HttpReqFrame,
+  type HttpResFrame,
+} from '@ccsm/shared';
+
+export type { BrowserIdentity };
+
 export type TunnelState =
   | 'idle'
   | 'connecting'
@@ -163,21 +177,12 @@ function defaultWsFactory(url: string, protocols?: string[]): WsLike {
 }
 
 /**
- * Per-browser identity that the cloud has already authenticated on our
- * behalf (Task #133, S4-T6). Present only when the daemon is running in
- * trust-tunnel mode (env `CCSM_TRUST_TUNNEL=1`); legacy / smoke / dogfood
- * paths still ride the per-browser bearer token in `HelloFrame.token` and
- * leave `identity` undefined.
- *
- * `login` is the GitHub login (handle) and `github_id` is the numeric
- * GitHub user id rendered as a string so we don't lose precision on the
- * wire. Both are minted by the cloud token mint endpoint (T3/T4) once OAuth
- * lands; T6 only carries the field through.
+ * `BrowserIdentity`, `HelloFrame`, `HttpReqFrame`, `HttpResFrame` are
+ * imported from `@ccsm/shared` (R-48, Task #160). The daemon-side runtime
+ * parsers (`parseIdentity`, `parseHello`, `parseHttpReq`,
+ * `tryParseControlFrame`) live below — type SoT is shared, validation is
+ * local because daemon and DO have asymmetric strictness.
  */
-export interface BrowserIdentity {
-  login: string;
-  github_id: string;
-}
 
 function parseIdentity(value: unknown): BrowserIdentity | null {
   if (value === null || typeof value !== 'object') return null;
@@ -185,20 +190,6 @@ function parseIdentity(value: unknown): BrowserIdentity | null {
   if (typeof obj.login !== 'string' || obj.login.length === 0) return null;
   if (typeof obj.github_id !== 'string' || obj.github_id.length === 0) return null;
   return { login: obj.login, github_id: obj.github_id };
-}
-
-interface HelloFrame {
-  type: 'hello';
-  /** Legacy per-browser bearer token (constant-time-checked vs daemon token).
-   * Optional when the daemon is in trust-tunnel mode AND the hello carries an
-   * `identity` instead. */
-  token?: string;
-  /** Task #793 (S3-G): session id from the browser ws `?sid=` query. */
-  sid?: string;
-  /** Task #793 (S3-G): replay cursor from the browser ws `?lastSeq=` query. */
-  lastSeq?: number;
-  /** Task #133 (S4-T6): cloud-authenticated browser identity (trust-tunnel). */
-  identity?: BrowserIdentity;
 }
 
 /**
@@ -236,34 +227,10 @@ export function getExpectedOwnerId(): string | null {
 }
 
 /**
- * HTTP-over-tunnel control frames (Task #787, S3-C). Mux the loopback REST
- * surface over the same daemon-dialed ws so cloud browsers can hit
- * `cc-sm.pages.dev/api/*` without a direct path to the NAT'd daemon.
+ * HTTP-over-tunnel control frames (Task #787, S3-C) — `HttpReqFrame` and
+ * `HttpResFrame` types are imported from `@ccsm/shared` (R-48, Task #160).
+ * `parseHttpReq` below is the daemon-side runtime validator.
  */
-interface HttpReqFrame {
-  type: 'http_req';
-  id: string;
-  method: string;
-  path: string;
-  headers: Record<string, string>;
-  body_b64: string;
-  /**
-   * R-46 audit-P0 (Task #158, F-T-2): worker-derived request_id propagated
-   * end-to-end so daemon log records can be correlated with worker + DO
-   * records. Optional for wire-format backward compat: a daemon talking to
-   * an older cf-worker (no field) falls back to a `"no-req-id"` placeholder
-   * in log records.
-   */
-  request_id?: string;
-}
-
-interface HttpResFrame {
-  type: 'http_res';
-  id: string;
-  status: number;
-  headers: Record<string, string>;
-  body_b64: string;
-}
 
 function parseHttpReq(parsed: Record<string, unknown>): HttpReqFrame | null {
   if (parsed.type !== 'http_req') return null;
@@ -340,35 +307,33 @@ function parseHello(text: string): HelloFrame | null {
 // strings (~32 chars). A malformed envelope (sidLen=0, sidLen>buf-1, or
 // sidLen exceeding the cap) is dropped with a warn log on either side.
 
-const ENVELOPE_MAX_SID_LEN = 64;
+// R-48 (Task #160): wire-format helpers live in @ccsm/shared. The two
+// wrappers below preserve the legacy daemon-side return type (Node Buffer)
+// without touching call sites; the encoded BYTES are produced by the
+// shared codec and proven byte-aligned with the cf-worker side via
+// shared/test/envelope.test.ts.
 
-export function encodeSidEnvelope(sid: string, payload: Uint8Array | Buffer): Buffer {
-  const sidBuf = Buffer.from(sid, 'utf8');
-  if (sidBuf.length === 0 || sidBuf.length > ENVELOPE_MAX_SID_LEN) {
-    throw new Error(
-      `[ccsm/tunnel] encodeSidEnvelope: bad sid length ${sidBuf.length}`,
-    );
-  }
-  const payloadBuf = Buffer.isBuffer(payload)
-    ? payload
-    : Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength);
-  const out = Buffer.allocUnsafe(1 + sidBuf.length + payloadBuf.length);
-  out.writeUInt8(sidBuf.length, 0);
-  sidBuf.copy(out, 1);
-  payloadBuf.copy(out, 1 + sidBuf.length);
-  return out;
+function encodeSidEnvelope(
+  sid: string,
+  payload: Uint8Array | Buffer,
+): Buffer {
+  const out = encodeSidEnvelopeShared(sid, payload);
+  return Buffer.from(out.buffer, out.byteOffset, out.byteLength);
 }
 
-export function decodeSidEnvelope(
+function decodeSidEnvelope(
   buf: Buffer,
 ): { sid: string; payload: Buffer } | null {
-  if (buf.length < 2) return null;
-  const sidLen = buf.readUInt8(0);
-  if (sidLen === 0 || sidLen > ENVELOPE_MAX_SID_LEN) return null;
-  if (buf.length < 1 + sidLen) return null;
-  const sid = buf.subarray(1, 1 + sidLen).toString('utf8');
-  const payload = buf.subarray(1 + sidLen);
-  return { sid, payload };
+  const out = decodeSidEnvelopeShared(buf);
+  if (out === null) return null;
+  return {
+    sid: out.sid,
+    payload: Buffer.from(
+      out.payload.buffer,
+      out.payload.byteOffset,
+      out.payload.byteLength,
+    ),
+  };
 }
 
 function constantTimeTokenEquals(presented: string, expected: string): boolean {

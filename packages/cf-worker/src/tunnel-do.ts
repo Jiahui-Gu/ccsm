@@ -1,8 +1,30 @@
 import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './index';
 
-/** Subprotocol prefix matching frontend-web/src/hostConfig.ts (Task #782). */
-const WS_SUBPROTOCOL_PREFIX = 'ccsm.';
+// R-48 (Task #160): sid envelope codec + tunnel control-frame types are SoT
+// in @ccsm/shared. The daemon-side codec (packages/daemon/src/tunnel.mts)
+// imports the same module; envelope.test.ts proves the two ends agree
+// byte-for-byte (R-41 envelope regression history).
+import {
+  WS_SUBPROTOCOL_PREFIX,
+  decodeSidEnvelope as decodeSidEnvelopeShared,
+  encodeSidEnvelope,
+  type BrowserIdentity,
+  type HelloFrame,
+  type HttpReqFrame,
+  type HttpResFrame,
+} from '@ccsm/shared';
+
+/**
+ * DO-side decode adapter: the WebSocket Hibernation API delivers binary
+ * frames as `ArrayBuffer`; the shared codec works on `Uint8Array`. Wrap
+ * once at the call boundary so the rest of the file stays unchanged.
+ */
+function decodeSidEnvelope(
+  buf: ArrayBuffer,
+): { sid: string; payload: Uint8Array } | null {
+  return decodeSidEnvelopeShared(new Uint8Array(buf));
+}
 
 /**
  * HTTP-over-tunnel timeout. Cloudflare Worker subrequest cap is 30s; we
@@ -24,106 +46,11 @@ const TAG_BROWSER = 'browser';
  */
 const TAG_BROWSER_SID_PREFIX = 'browser-sid:';
 
-/** Bound on inbound sid-envelope sidLen — must match daemon-side helper. */
-const ENVELOPE_MAX_SID_LEN = 64;
-
-function encodeSidEnvelope(sid: string, payload: ArrayBuffer | Uint8Array): Uint8Array {
-  const sidBytes = new TextEncoder().encode(sid);
-  if (sidBytes.length === 0 || sidBytes.length > ENVELOPE_MAX_SID_LEN) {
-    throw new Error('encodeSidEnvelope: bad sid length ' + sidBytes.length);
-  }
-  const payloadView = payload instanceof Uint8Array
-    ? payload
-    : new Uint8Array(payload);
-  const out = new Uint8Array(1 + sidBytes.length + payloadView.byteLength);
-  out[0] = sidBytes.length;
-  out.set(sidBytes, 1);
-  out.set(payloadView, 1 + sidBytes.length);
-  return out;
-}
-
-function decodeSidEnvelope(buf: ArrayBuffer): { sid: string; payload: Uint8Array } | null {
-  const view = new Uint8Array(buf);
-  if (view.byteLength < 2) return null;
-  const sidLen = view[0] ?? 0;
-  if (sidLen === 0 || sidLen > ENVELOPE_MAX_SID_LEN) return null;
-  if (view.byteLength < 1 + sidLen) return null;
-  const sid = new TextDecoder().decode(view.subarray(1, 1 + sidLen));
-  const payload = view.subarray(1 + sidLen);
-  return { sid, payload };
-}
-
-/**
- * Hello control frame the DO injects ahead of any browser→daemon traffic so
- * the daemon can run the browser-presented token through its existing
- * classifyOrigin / token check path (Task #782, S3-T6).
- *
- * Wire format: JSON text frame `{"type":"hello","token":"<t>","sid":"<s>","lastSeq":<n>}`.
- * `sid` + `lastSeq` were added in Task #793 (S3-G) so the daemon can route
- * the paired browser ws into the right per-session PTY ring buffer; older
- * deployments without those fields fall back to "no session attached"
- * behaviour on the daemon side. Subsequent frames are raw passthrough. The
- * daemon side parses ONLY the first text frame as hello; if it's missing or
- * malformed the daemon closes 1008.
- */
-interface HelloFrame {
-  type: 'hello';
-  token: string;
-  /** Task #793: session id the browser is attaching to (`sid` query param). */
-  sid?: string;
-  /** Task #793: ring-buffer replay cursor (`lastSeq` query param, default 0). */
-  lastSeq?: number;
-  /**
-   * Task #133 (S4-T6): cloud-authenticated browser identity. When present,
-   * a daemon running with `CCSM_TRUST_TUNNEL=1` accepts the hello on the
-   * strength of this field alone (cloud has already verified the OAuth
-   * session via the worker's JWT mint endpoint). Older daemons ignore the
-   * field. Optional during S4 rollout — the OAuth flow that populates it
-   * lands in T3/T4; T6 only carries the wire field.
-   */
-  identity?: BrowserIdentity;
-}
-
-/**
- * Browser identity emitted to the daemon in trust-tunnel mode (Task #133,
- * S4-T6). Mirrors the `BrowserIdentity` shape on the daemon side.
- */
-interface BrowserIdentity {
-  login: string;
-  github_id: string;
-}
-
-/**
- * HTTP-over-tunnel frames (Task #787, S3-C). Mux REST `/api/*` + `/token`
- * over the same daemon-dialed ws so the browser only ever talks to
- * cc-sm.pages.dev. Distinguished from S3-T6 raw OUTPUT/INPUT frames by the
- * `type` field — raw frames are binary OR text without a JSON `type`.
- */
-interface HttpReqFrame {
-  type: 'http_req';
-  id: string;
-  method: string;
-  path: string;
-  headers: Record<string, string>;
-  body_b64: string;
-  /**
-   * R-46 audit-P0 (Task #158, F-T-2): worker-derived request_id propagated
-   * to the daemon so daemon-side log records can be correlated with the
-   * Worker + DO records for the same request. Optional for wire-format
-   * backward compat — daemons running an older build will simply ignore
-   * the field, and the DO accepts a frame without `request_id` (legacy
-   * Worker callsite).
-   */
-  request_id?: string;
-}
-
-interface HttpResFrame {
-  type: 'http_res';
-  id: string;
-  status: number;
-  headers: Record<string, string>;
-  body_b64: string;
-}
+// R-48 (Task #160): `ENVELOPE_MAX_SID_LEN`, `encodeSidEnvelope`,
+// `HelloFrame`, `BrowserIdentity`, `HttpReqFrame`, `HttpResFrame` all live
+// in @ccsm/shared. Imports at the top of this file. The daemon-side
+// equivalent (packages/daemon/src/tunnel.mts) imports the same module so
+// wire format cannot drift.
 
 interface PendingHttp {
   resolve: (res: Response) => void;
@@ -554,7 +481,7 @@ export class TunnelDO extends DurableObject<Env> {
     // PTY when multiple browser tabs share one tunnel ws.
     let envelope: Uint8Array;
     try {
-      envelope = encodeSidEnvelope(sid, data);
+      envelope = encodeSidEnvelope(sid, new Uint8Array(data));
     } catch (err) {
       console.log('[do] drop browser->daemon binary: envelope encode failed sid=' + sid + ' err=' + String(err));
       return;
