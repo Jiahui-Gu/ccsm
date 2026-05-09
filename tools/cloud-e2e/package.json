@@ -1,0 +1,17 @@
+{
+  "name": "ccsm-cloud-e2e",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Standalone Playwright harness that exercises the deployed cc-sm.pages.dev cloud SPA end-to-end (Task #82). Lives outside the pnpm workspace on purpose so installing browsers / @playwright/test does not perturb the monorepo lockfile.",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "install:browsers": "playwright install chromium"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.2",
+    "@types/node": "^22.9.0",
+    "typescript": "^5.6.3"
+  }
+}
