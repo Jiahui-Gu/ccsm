@@ -7,9 +7,11 @@
 //     is the soft baseline; see job_object.rs).
 
 mod daemon_mgr;
+mod daemon_state;
 mod job_object;
 
 use daemon_mgr::{spawn_daemon_inner, start_daemon, DaemonState};
+use daemon_state::DaemonStateStore;
 use job_object::JobObject;
 use tauri::Manager;
 
@@ -18,6 +20,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(DaemonState::default())
+        .manage(DaemonStateStore::default())
         .setup(|app| {
             // Create the Job once at app startup. Held in State so daemon_mgr
             // can call .assign(pid) after spawn. Dropped on app exit, which
