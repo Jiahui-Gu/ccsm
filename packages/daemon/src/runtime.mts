@@ -237,6 +237,12 @@ const defaultPtyFactory: PtyFactory = (opts) => {
     cwd: opts.cwd,
     env: process.env as Record<string, string>,
     useConpty: true,
+    // R-32 (Task #93) — node-pty 1.1.0 useConptyDll: true skips the
+    // per-spawn helper-fork (conpty_console_list_agent.js) which was
+    // crashing in AttachConsole because it inherits the daemon's empty
+    // console (see Task #91 evidence on PR #1204). Loads conpty.dll
+    // in-process instead, so kill/status paths bypass the helper entirely.
+    useConptyDll: true,
   });
   /* eslint-disable no-console */
   if (isWindows) {
