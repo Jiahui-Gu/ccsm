@@ -1,0 +1,386 @@
+/**
+ * S4-T3 (Task #140): cf-worker web OAuth flow handlers.
+ *
+ * Implements the four browser-side endpoints that turn a GitHub OAuth App
+ * round-trip into a short-lived web JWT + a long-lived rotating refresh token:
+ *
+ *   GET  /api/auth/github/login    → 302 to github.com/login/oauth/authorize
+ *                                    sets `csrf` cookie (HttpOnly, Path scoped
+ *                                    to the callback) so the callback can
+ *                                    cross-check `state`.
+ *   GET  /api/auth/github/callback → exchange `code` → access_token, fetch
+ *                                    GitHub user, persist into UserDO, mint
+ *                                    web JWT (kind='web', 1h) + refresh token
+ *                                    (32-byte opaque hex). Refresh hash stored
+ *                                    in UserDO. 302 to `/?session=ok` with
+ *                                    refresh in HttpOnly cookie + web_jwt in
+ *                                    URL fragment (#jwt=...) for SignInGate to
+ *                                    pick up once.
+ *   POST /api/auth/refresh         → re-mint web JWT from refresh cookie.
+ *                                    Returns `{ web_jwt }` JSON.
+ *   POST /api/auth/logout          → clear refresh cookie + UserDO.revoke().
+ *                                    Returns 204.
+ *
+ * Refresh-token rotation strategy: the random opaque token is sent to the
+ * browser only once (in HttpOnly cookie); we only persist its SHA-256 hex
+ * hash in UserDO. Rotation on each refresh would be ideal but is out-of-scope
+ * for T3 (T4 device flow can fold that in alongside the daemon path).
+ *
+ * CSRF: state is 32-byte hex generated with crypto.getRandomValues. Cookie is
+ * HttpOnly, SameSite=Lax, Secure, Path=/api/auth/github/callback so it is
+ * only attached to the callback request and never to other API paths.
+ *
+ * NOT in scope (T5): /ws, /tunnel, /api/sessions, /token continue to flow
+ * through TunnelDO. Only the /api/auth/* prefix routes here.
+ */
+import type { AuthEnv } from './bindings';
+import { signJwt, type WebJwtClaims } from './jwt';
+
+const GH_AUTHORIZE_URL = 'https://github.com/login/oauth/authorize';
+const GH_TOKEN_URL = 'https://github.com/login/oauth/access_token';
+const GH_USER_URL = 'https://api.github.com/user';
+
+const WEB_JWT_TTL_SEC = 60 * 60; // 1h
+const CSRF_COOKIE = 'csrf';
+const REFRESH_COOKIE = 'refresh';
+const CALLBACK_PATH = '/api/auth/github/callback';
+const REFRESH_PATH = '/api/auth/refresh';
+
+/** Hex-encode a Uint8Array. */
+function bytesToHex(bytes: Uint8Array): string {
+  let s = '';
+  for (let i = 0; i < bytes.length; i++) {
+    s += bytes[i]!.toString(16).padStart(2, '0');
+  }
+  return s;
+}
+
+/** Cryptographically random hex string of `byteLen` bytes. */
+function randomHex(byteLen: number): string {
+  const buf = new Uint8Array(byteLen);
+  crypto.getRandomValues(buf);
+  return bytesToHex(buf);
+}
+
+/** SHA-256 of the input string, returned as hex. */
+async function sha256Hex(input: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input));
+  return bytesToHex(new Uint8Array(digest));
+}
+
+/** Parse a `Cookie:` header into a Map. Returns empty map if absent / blank. */
+function parseCookies(header: string | null): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!header) return out;
+  for (const pair of header.split(';')) {
+    const eq = pair.indexOf('=');
+    if (eq <= 0) continue;
+    const k = pair.slice(0, eq).trim();
+    const v = pair.slice(eq + 1).trim();
+    if (k.length > 0) out.set(k, v);
+  }
+  return out;
+}
+
+/** Build a Set-Cookie header value. */
+function buildCookie(
+  name: string,
+  value: string,
+  opts: { path: string; maxAge?: number; httpOnly?: boolean; secure?: boolean; sameSite?: 'Lax' | 'Strict' | 'None' },
+): string {
+  let s = `${name}=${value}; Path=${opts.path}`;
+  if (opts.maxAge !== undefined) s += `; Max-Age=${opts.maxAge}`;
+  if (opts.httpOnly !== false) s += '; HttpOnly';
+  if (opts.secure !== false) s += '; Secure';
+  s += `; SameSite=${opts.sameSite ?? 'Lax'}`;
+  return s;
+}
+
+/** Build a Set-Cookie that clears `name` on `path`. */
+function clearCookie(name: string, path: string): string {
+  return `${name}=; Path=${path}; Max-Age=0; HttpOnly; Secure; SameSite=Lax`;
+}
+
+/**
+ * GET /api/auth/github/login — 302 redirect into GitHub authorize, with a
+ * fresh csrf state baked into the URL and into a path-scoped cookie.
+ */
+export function handleGithubLogin(req: Request, env: AuthEnv): Response {
+  void req;
+  const state = randomHex(32);
+  const params = new URLSearchParams({
+    client_id: env.GITHUB_OAUTH_CLIENT_ID,
+    state,
+    scope: 'read:user',
+  });
+  const headers = new Headers({
+    Location: `${GH_AUTHORIZE_URL}?${params.toString()}`,
+    'Set-Cookie': buildCookie(CSRF_COOKIE, state, {
+      path: CALLBACK_PATH,
+      maxAge: 600, // 10 min — the user has to bounce through GitHub and back
+      httpOnly: true,
+      secure: true,
+      sameSite: 'Lax',
+    }),
+  });
+  return new Response(null, { status: 302, headers });
+}
+
+interface GithubTokenResponse {
+  access_token?: string;
+  error?: string;
+  error_description?: string;
+}
+
+interface GithubUserResponse {
+  id?: number;
+  login?: string;
+}
+
+/**
+ * GET /api/auth/github/callback — verify state, exchange code, persist user,
+ * mint web JWT + refresh token, redirect home with both surfaced.
+ */
+export async function handleGithubCallback(
+  req: Request,
+  env: AuthEnv,
+): Promise<Response> {
+  const url = new URL(req.url);
+  const code = url.searchParams.get('code');
+  const state = url.searchParams.get('state');
+  if (!code || !state) {
+    return new Response('missing code or state', { status: 400 });
+  }
+
+  const cookies = parseCookies(req.headers.get('Cookie'));
+  const cookieState = cookies.get(CSRF_COOKIE);
+  if (!cookieState || cookieState !== state) {
+    return new Response('csrf state mismatch', { status: 400 });
+  }
+
+  // Exchange code → access_token. GitHub honours `Accept: application/json`.
+  const tokenRes = await fetch(GH_TOKEN_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Accept: 'application/json',
+    },
+    body: new URLSearchParams({
+      client_id: env.GITHUB_OAUTH_CLIENT_ID,
+      client_secret: env.GITHUB_OAUTH_CLIENT_SECRET,
+      code,
+    }).toString(),
+  });
+  if (!tokenRes.ok) {
+    return new Response('github token exchange failed', { status: 502 });
+  }
+  const tokenJson = (await tokenRes.json()) as GithubTokenResponse;
+  if (!tokenJson.access_token) {
+    return new Response(
+      'github token exchange rejected: ' + (tokenJson.error ?? 'unknown'),
+      { status: 502 },
+    );
+  }
+  const accessToken = tokenJson.access_token;
+
+  // Fetch the user identity.
+  const userRes = await fetch(GH_USER_URL, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: 'application/vnd.github+json',
+      // GitHub REST recommends a UA; workerd sends one but be explicit.
+      'User-Agent': 'ccsm-cf-worker',
+    },
+  });
+  if (!userRes.ok) {
+    return new Response('github user fetch failed', { status: 502 });
+  }
+  const userJson = (await userRes.json()) as GithubUserResponse;
+  if (typeof userJson.id !== 'number' || typeof userJson.login !== 'string') {
+    return new Response('github user response malformed', { status: 502 });
+  }
+  const githubId = String(userJson.id);
+  const login = userJson.login;
+
+  // Persist into UserDO (idFromName(login)).
+  const userDoId = env.USER_DO.idFromName(login);
+  const userDoStub = env.USER_DO.get(userDoId);
+
+  const setLoginRes = await userDoStub.fetch(
+    new Request('https://do/setLogin', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ github_id: githubId, login }),
+    }),
+  );
+  if (!setLoginRes.ok) {
+    return new Response('userDO setLogin failed', { status: 500 });
+  }
+
+  // Mint the refresh token (opaque hex) + persist its SHA-256 hash in UserDO.
+  const refreshToken = randomHex(32);
+  const refreshHash = await sha256Hex(refreshToken);
+  const setHashRes = await userDoStub.fetch(
+    new Request('https://do/setRefreshTokenHash', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ hash: refreshHash }),
+    }),
+  );
+  if (!setHashRes.ok) {
+    return new Response('userDO setRefreshTokenHash failed', { status: 500 });
+  }
+
+  // Mint the web JWT.
+  const iat = Math.floor(Date.now() / 1000);
+  const claims: WebJwtClaims = {
+    sub: githubId,
+    login,
+    iat,
+    exp: iat + WEB_JWT_TTL_SEC,
+    kind: 'web',
+  };
+  const webJwt = await signJwt(claims, env.JWT_SIGNING_KEY);
+
+  // Compose the redirect: SignInGate reads `#jwt=...` once and clears the
+  // fragment; the refresh cookie persists across visits.
+  const headers = new Headers();
+  headers.append('Location', `/?session=ok#jwt=${encodeURIComponent(webJwt)}`);
+  // Clear the csrf cookie now that we've consumed it.
+  headers.append('Set-Cookie', clearCookie(CSRF_COOKIE, CALLBACK_PATH));
+  // Persist the refresh token in an HttpOnly cookie scoped to the refresh path.
+  headers.append(
+    'Set-Cookie',
+    buildCookie(REFRESH_COOKIE, refreshToken, {
+      path: REFRESH_PATH,
+      maxAge: 60 * 60 * 24 * 30, // 30 days
+      httpOnly: true,
+      secure: true,
+      sameSite: 'Lax',
+    }),
+  );
+  // `login` hint cookie — not a secret, only the UserDO key. Scoped to
+  // /api/auth so it accompanies refresh + logout requests.
+  headers.append(
+    'Set-Cookie',
+    buildCookie('login', login, {
+      path: '/api/auth',
+      maxAge: 60 * 60 * 24 * 30,
+      httpOnly: true,
+      secure: true,
+      sameSite: 'Lax',
+    }),
+  );
+  return new Response(null, { status: 302, headers });
+}
+
+/**
+ * POST /api/auth/refresh — verify the refresh cookie against the UserDO hash
+ * and re-mint a fresh web JWT. The refresh token itself is NOT rotated in T3.
+ *
+ * The browser has no other way to identify the user (web JWT may already be
+ * gone), so we recover the login by stuffing the SHA-256 lookup into a
+ * UserDO instance keyed by login... except we don't know the login yet. To
+ * keep T3 simple, the refresh cookie is paired with a small hint cookie that
+ * carries `login` (HttpOnly is fine, this isn't a secret). T4 / T5 may move
+ * to a signed pointer instead; for now we trust the hint and validate the
+ * hash before re-issuing anything.
+ */
+export async function handleRefresh(
+  req: Request,
+  env: AuthEnv,
+): Promise<Response> {
+  const cookies = parseCookies(req.headers.get('Cookie'));
+  const refreshToken = cookies.get(REFRESH_COOKIE);
+  const loginHint = cookies.get('login');
+  if (!refreshToken || !loginHint) {
+    return new Response('missing refresh cookie', { status: 401 });
+  }
+  const userDoId = env.USER_DO.idFromName(loginHint);
+  const userDoStub = env.USER_DO.get(userDoId);
+
+  const refreshHash = await sha256Hex(refreshToken);
+  const verifyRes = await userDoStub.fetch(
+    new Request('https://do/verifyRefreshTokenHash', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ hash: refreshHash }),
+    }),
+  );
+  if (!verifyRes.ok) {
+    return new Response('refresh verify failed', { status: 500 });
+  }
+  const verifyJson = (await verifyRes.json()) as { ok?: boolean };
+  if (verifyJson.ok !== true) {
+    return new Response('invalid refresh token', { status: 401 });
+  }
+
+  // Look up the persisted login record so we mint claims with the canonical
+  // (server-side) github_id, not just the cookie hint.
+  const getLoginRes = await userDoStub.fetch(new Request('https://do/getLogin'));
+  if (getLoginRes.status === 404) {
+    return new Response('user not found', { status: 401 });
+  }
+  if (!getLoginRes.ok) {
+    return new Response('userDO getLogin failed', { status: 500 });
+  }
+  const rec = (await getLoginRes.json()) as { github_id: string; login: string };
+
+  const iat = Math.floor(Date.now() / 1000);
+  const claims: WebJwtClaims = {
+    sub: rec.github_id,
+    login: rec.login,
+    iat,
+    exp: iat + WEB_JWT_TTL_SEC,
+    kind: 'web',
+  };
+  const webJwt = await signJwt(claims, env.JWT_SIGNING_KEY);
+  return Response.json({ web_jwt: webJwt });
+}
+
+/**
+ * POST /api/auth/logout — clear the refresh cookie + revoke UserDO state.
+ */
+export async function handleLogout(
+  req: Request,
+  env: AuthEnv,
+): Promise<Response> {
+  const cookies = parseCookies(req.headers.get('Cookie'));
+  const loginHint = cookies.get('login');
+  // Best-effort revoke: if we don't have a hint, we still clear the cookie.
+  if (loginHint) {
+    const userDoId = env.USER_DO.idFromName(loginHint);
+    const userDoStub = env.USER_DO.get(userDoId);
+    await userDoStub.fetch(new Request('https://do/revoke', { method: 'POST' }));
+  }
+  const headers = new Headers();
+  headers.append('Set-Cookie', clearCookie(REFRESH_COOKIE, REFRESH_PATH));
+  headers.append('Set-Cookie', clearCookie('login', '/api/auth'));
+  return new Response(null, { status: 204, headers });
+}
+
+/**
+ * Top-level dispatch for the /api/auth/* prefix. Returns null when the path
+ * is not ours (caller continues to TunnelDO routing).
+ */
+export async function dispatchAuth(
+  req: Request,
+  env: AuthEnv,
+): Promise<Response | null> {
+  const url = new URL(req.url);
+  const path = url.pathname;
+
+  if (req.method === 'GET' && path === '/api/auth/github/login') {
+    return handleGithubLogin(req, env);
+  }
+  if (req.method === 'GET' && path === CALLBACK_PATH) {
+    return handleGithubCallback(req, env);
+  }
+  if (req.method === 'POST' && path === REFRESH_PATH) {
+    return handleRefresh(req, env);
+  }
+  if (req.method === 'POST' && path === '/api/auth/logout') {
+    return handleLogout(req, env);
+  }
+  return null;
+}
