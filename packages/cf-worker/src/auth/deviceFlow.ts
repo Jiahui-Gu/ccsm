@@ -36,6 +36,14 @@
  */
 import type { AuthEnv } from './bindings';
 import { signJwt, type TunnelJwtClaims } from './jwt';
+import { Logger, shortSub } from '../logger';
+
+/** R-46 audit-P0 (Task #158): logger child bound to the request_id header
+ *  the Worker entry stamped on. */
+function loggerFor(req: Request): Logger {
+  const requestId = req.headers.get('X-CCSM-Request-Id') ?? 'no-req-id';
+  return new Logger().child(requestId);
+}
 
 const GH_DEVICE_CODE_URL = 'https://github.com/login/device/code';
 const GH_TOKEN_URL = 'https://github.com/login/oauth/access_token';
@@ -90,6 +98,7 @@ interface GithubUserResponse {
  */
 export async function handleDeviceStart(req: Request, env: AuthEnv): Promise<Response> {
   void req;
+  const log = loggerFor(req);
   const ghRes = await fetch(GH_DEVICE_CODE_URL, {
     method: 'POST',
     headers: {
@@ -102,6 +111,7 @@ export async function handleDeviceStart(req: Request, env: AuthEnv): Promise<Res
     }).toString(),
   });
   if (!ghRes.ok) {
+    log.error('device.start_fail', { reason: 'github_http_error', status: ghRes.status });
     return new Response('github device/code failed', { status: 502 });
   }
   const json = (await ghRes.json()) as GithubDeviceCodeResponse;
@@ -112,8 +122,10 @@ export async function handleDeviceStart(req: Request, env: AuthEnv): Promise<Res
     typeof json.expires_in !== 'number' ||
     typeof json.interval !== 'number'
   ) {
+    log.error('device.start_fail', { reason: 'malformed_response' });
     return new Response('github device/code malformed', { status: 502 });
   }
+  log.info('device.start_ok', { interval: json.interval, expires_in: json.expires_in });
   return Response.json({
     device_code: json.device_code,
     user_code: json.user_code,
@@ -128,13 +140,16 @@ export async function handleDeviceStart(req: Request, env: AuthEnv): Promise<Res
  * (Tauri-side); we just translate the GitHub response into a stable shape.
  */
 export async function handleDevicePoll(req: Request, env: AuthEnv): Promise<Response> {
+  const log = loggerFor(req);
   let body: { device_code?: unknown };
   try {
     body = (await req.json()) as { device_code?: unknown };
   } catch {
+    log.warn('device.poll', { result: 'fail', reason: 'bad_json' });
     return new Response('bad json', { status: 400 });
   }
   if (typeof body.device_code !== 'string' || body.device_code.length === 0) {
+    log.warn('device.poll', { result: 'fail', reason: 'missing_device_code' });
     return new Response('missing device_code', { status: 400 });
   }
   const deviceCode = body.device_code;
@@ -153,6 +168,7 @@ export async function handleDevicePoll(req: Request, env: AuthEnv): Promise<Resp
     }).toString(),
   });
   if (!tokenRes.ok) {
+    log.warn('device.poll', { result: 'fail', reason: 'github_http_error', status: tokenRes.status });
     return new Response('github device token poll failed', { status: 502 });
   }
   const tokenJson = (await tokenRes.json()) as GithubTokenPollResponse;
@@ -161,21 +177,26 @@ export async function handleDevicePoll(req: Request, env: AuthEnv): Promise<Resp
   if (tokenJson.error) {
     switch (tokenJson.error) {
       case 'authorization_pending':
+        log.debug('device.poll', { result: 'pending' });
         return Response.json({ status: 'pending', interval: tokenJson.interval });
       case 'slow_down':
+        log.debug('device.poll', { result: 'slow_down', interval: tokenJson.interval });
         // Honor the new interval GitHub gave us.
         return Response.json({ status: 'slow_down', interval: tokenJson.interval });
       case 'expired_token':
+        log.warn('device.poll', { result: 'expired' });
         return new Response(JSON.stringify({ status: 'expired' }), {
           status: 410,
           headers: { 'content-type': 'application/json' },
         });
       case 'access_denied':
+        log.warn('device.poll', { result: 'denied' });
         return new Response(JSON.stringify({ status: 'denied' }), {
           status: 403,
           headers: { 'content-type': 'application/json' },
         });
       default:
+        log.error('device.poll', { result: 'error', gh_error: tokenJson.error });
         return new Response(
           JSON.stringify({ status: 'error', error: tokenJson.error }),
           { status: 502, headers: { 'content-type': 'application/json' } },
@@ -184,6 +205,7 @@ export async function handleDevicePoll(req: Request, env: AuthEnv): Promise<Resp
   }
 
   if (typeof tokenJson.access_token !== 'string' || tokenJson.access_token.length === 0) {
+    log.error('device.poll', { result: 'fail', reason: 'malformed_token_response' });
     return new Response('github device token response malformed', { status: 502 });
   }
   const accessToken = tokenJson.access_token;
@@ -245,6 +267,8 @@ export async function handleDevicePoll(req: Request, env: AuthEnv): Promise<Resp
   };
   const tunnelJwt = await signJwt(claims, env.JWT_REFRESH_SIGNING_KEY);
 
+  log.info('device.poll', { result: 'ok', login, sub_prefix: shortSub(githubId) });
+
   return Response.json({
     tunnel_jwt: tunnelJwt,
     tunnel_refresh_token: tunnelRefreshToken,
@@ -261,10 +285,12 @@ export async function handleDevicePoll(req: Request, env: AuthEnv): Promise<Resp
  * daemon persists `login` alongside the refresh token at device-poll success.
  */
 export async function handleTunnelRefresh(req: Request, env: AuthEnv): Promise<Response> {
+  const log = loggerFor(req);
   let body: { tunnel_refresh_token?: unknown; login?: unknown };
   try {
     body = (await req.json()) as { tunnel_refresh_token?: unknown; login?: unknown };
   } catch {
+    log.warn('tunnel.refresh_fail', { reason: 'bad_json' });
     return new Response('bad json', { status: 400 });
   }
   if (
@@ -273,6 +299,7 @@ export async function handleTunnelRefresh(req: Request, env: AuthEnv): Promise<R
     typeof body.login !== 'string' ||
     body.login.length === 0
   ) {
+    log.warn('tunnel.refresh_fail', { reason: 'missing_fields' });
     return new Response('missing tunnel_refresh_token or login', { status: 400 });
   }
   const oldToken = body.tunnel_refresh_token;
@@ -289,19 +316,23 @@ export async function handleTunnelRefresh(req: Request, env: AuthEnv): Promise<R
     }),
   );
   if (!verifyRes.ok) {
+    log.error('tunnel.refresh_fail', { reason: 'userdo_verify_http_error', status: verifyRes.status, login });
     return new Response('tunnel refresh verify failed', { status: 500 });
   }
   const verifyJson = (await verifyRes.json()) as { ok?: boolean };
   if (verifyJson.ok !== true) {
+    log.warn('tunnel.refresh_fail', { reason: 'invalid_token', login });
     return new Response('invalid tunnel refresh token', { status: 401 });
   }
 
   // Look up the canonical github_id.
   const getLoginRes = await userDoStub.fetch(new Request('https://do/getLogin'));
   if (getLoginRes.status === 404) {
+    log.warn('tunnel.refresh_fail', { reason: 'user_not_found', login });
     return new Response('user not found', { status: 401 });
   }
   if (!getLoginRes.ok) {
+    log.error('tunnel.refresh_fail', { reason: 'userdo_getlogin_failed', status: getLoginRes.status, login });
     return new Response('userDO getLogin failed', { status: 500 });
   }
   const rec = (await getLoginRes.json()) as { github_id: string; login: string };
@@ -318,6 +349,7 @@ export async function handleTunnelRefresh(req: Request, env: AuthEnv): Promise<R
     }),
   );
   if (!setHashRes.ok) {
+    log.error('tunnel.refresh_fail', { reason: 'userdo_setrefreshhash_failed', status: setHashRes.status, login });
     return new Response('userDO setTunnelRefreshTokenHash failed', { status: 500 });
   }
 
@@ -331,6 +363,12 @@ export async function handleTunnelRefresh(req: Request, env: AuthEnv): Promise<R
     jti: randomHex(16),
   };
   const tunnelJwt = await signJwt(claims, env.JWT_REFRESH_SIGNING_KEY);
+
+  log.info('tunnel.refresh_ok', {
+    login: rec.login,
+    sub_prefix: shortSub(rec.github_id),
+    jti: claims.jti,
+  });
 
   return Response.json({
     tunnel_jwt: tunnelJwt,

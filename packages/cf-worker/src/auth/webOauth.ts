@@ -35,6 +35,14 @@
  */
 import type { AuthEnv } from './bindings';
 import { signJwt, verifyJwt, type WebJwtClaims } from './jwt';
+import { Logger, shortSub } from '../logger';
+
+/** R-46 audit-P0 (Task #158, F-T-2): rebuild a child logger from the
+ *  request_id header that the Worker entry stamped on. */
+function loggerFor(req: Request): Logger {
+  const requestId = req.headers.get('X-CCSM-Request-Id') ?? 'no-req-id';
+  return new Logger().child(requestId);
+}
 
 const GH_AUTHORIZE_URL = 'https://github.com/login/oauth/authorize';
 const GH_TOKEN_URL = 'https://github.com/login/oauth/access_token';
@@ -116,6 +124,7 @@ function clearCookie(name: string, path: string): string {
  */
 export function handleGithubLogin(req: Request, env: AuthEnv): Response {
   void req;
+  const log = loggerFor(req);
   const state = randomHex(32);
   const params = new URLSearchParams({
     client_id: env.GITHUB_OAUTH_CLIENT_ID,
@@ -132,6 +141,7 @@ export function handleGithubLogin(req: Request, env: AuthEnv): Response {
       sameSite: 'Lax',
     }),
   });
+  log.info('oauth.login_redirect', {});
   return new Response(null, { status: 302, headers });
 }
 
@@ -154,16 +164,19 @@ export async function handleGithubCallback(
   req: Request,
   env: AuthEnv,
 ): Promise<Response> {
+  const log = loggerFor(req);
   const url = new URL(req.url);
   const code = url.searchParams.get('code');
   const state = url.searchParams.get('state');
   if (!code || !state) {
+    log.warn('oauth.callback_fail', { reason: 'missing_code_or_state' });
     return new Response('missing code or state', { status: 400 });
   }
 
   const cookies = parseCookies(req.headers.get('Cookie'));
   const cookieState = cookies.get(CSRF_COOKIE);
   if (!cookieState || cookieState !== state) {
+    log.warn('oauth.callback_fail', { reason: 'csrf_mismatch' });
     return new Response('csrf state mismatch', { status: 400 });
   }
 
@@ -181,10 +194,18 @@ export async function handleGithubCallback(
     }).toString(),
   });
   if (!tokenRes.ok) {
+    log.warn('oauth.callback_fail', {
+      reason: 'github_token_exchange_http_error',
+      status: tokenRes.status,
+    });
     return new Response('github token exchange failed', { status: 502 });
   }
   const tokenJson = (await tokenRes.json()) as GithubTokenResponse;
   if (!tokenJson.access_token) {
+    log.warn('oauth.callback_fail', {
+      reason: 'github_token_exchange_rejected',
+      gh_error: tokenJson.error ?? 'unknown',
+    });
     return new Response(
       'github token exchange rejected: ' + (tokenJson.error ?? 'unknown'),
       { status: 502 },
@@ -202,10 +223,15 @@ export async function handleGithubCallback(
     },
   });
   if (!userRes.ok) {
+    log.warn('oauth.callback_fail', {
+      reason: 'github_user_http_error',
+      status: userRes.status,
+    });
     return new Response('github user fetch failed', { status: 502 });
   }
   const userJson = (await userRes.json()) as GithubUserResponse;
   if (typeof userJson.id !== 'number' || typeof userJson.login !== 'string') {
+    log.warn('oauth.callback_fail', { reason: 'github_user_malformed' });
     return new Response('github user response malformed', { status: 502 });
   }
   const githubId = String(userJson.id);
@@ -223,6 +249,10 @@ export async function handleGithubCallback(
     }),
   );
   if (!setLoginRes.ok) {
+    log.error('oauth.callback_fail', {
+      reason: 'userdo_setlogin_failed',
+      status: setLoginRes.status,
+    });
     return new Response('userDO setLogin failed', { status: 500 });
   }
 
@@ -237,6 +267,10 @@ export async function handleGithubCallback(
     }),
   );
   if (!setHashRes.ok) {
+    log.error('oauth.callback_fail', {
+      reason: 'userdo_setrefreshhash_failed',
+      status: setHashRes.status,
+    });
     return new Response('userDO setRefreshTokenHash failed', { status: 500 });
   }
 
@@ -250,6 +284,11 @@ export async function handleGithubCallback(
     kind: 'web',
   };
   const webJwt = await signJwt(claims, env.JWT_SIGNING_KEY);
+
+  log.info('oauth.callback_ok', {
+    login,
+    sub_prefix: shortSub(githubId),
+  });
 
   // Compose the redirect: the web JWT now rides an HttpOnly cookie scoped to
   // `/api` (audit F-S-4, Task #152). The SPA learns it's signed-in by
@@ -318,10 +357,12 @@ export async function handleRefresh(
   req: Request,
   env: AuthEnv,
 ): Promise<Response> {
+  const log = loggerFor(req);
   const cookies = parseCookies(req.headers.get('Cookie'));
   const refreshToken = cookies.get(REFRESH_COOKIE);
   const loginHint = cookies.get('login');
   if (!refreshToken || !loginHint) {
+    log.warn('auth.refresh_fail', { reason: 'missing_cookie' });
     return new Response('missing refresh cookie', { status: 401 });
   }
   const userDoId = env.USER_DO.idFromName(loginHint);
@@ -336,10 +377,12 @@ export async function handleRefresh(
     }),
   );
   if (!verifyRes.ok) {
+    log.error('auth.refresh_fail', { reason: 'userdo_verify_http_error', status: verifyRes.status });
     return new Response('refresh verify failed', { status: 500 });
   }
   const verifyJson = (await verifyRes.json()) as { ok?: boolean };
   if (verifyJson.ok !== true) {
+    log.warn('auth.refresh_fail', { reason: 'invalid_refresh_token', login: loginHint });
     return new Response('invalid refresh token', { status: 401 });
   }
 
@@ -347,9 +390,11 @@ export async function handleRefresh(
   // (server-side) github_id, not just the cookie hint.
   const getLoginRes = await userDoStub.fetch(new Request('https://do/getLogin'));
   if (getLoginRes.status === 404) {
+    log.warn('auth.refresh_fail', { reason: 'user_not_found', login: loginHint });
     return new Response('user not found', { status: 401 });
   }
   if (!getLoginRes.ok) {
+    log.error('auth.refresh_fail', { reason: 'userdo_getlogin_failed', status: getLoginRes.status });
     return new Response('userDO getLogin failed', { status: 500 });
   }
   const rec = (await getLoginRes.json()) as { github_id: string; login: string };
@@ -367,6 +412,7 @@ export async function handleRefresh(
     }),
   );
   if (!setHashRes.ok) {
+    log.error('auth.refresh_fail', { reason: 'userdo_setrefreshhash_failed', status: setHashRes.status });
     return new Response('userDO setRefreshTokenHash failed', { status: 500 });
   }
 
@@ -379,6 +425,7 @@ export async function handleRefresh(
     kind: 'web',
   };
   const webJwt = await signJwt(claims, env.JWT_SIGNING_KEY);
+  log.info('auth.refresh_ok', { login: rec.login, sub_prefix: shortSub(rec.github_id) });
   const headers = new Headers({ 'content-type': 'application/json' });
   // Audit F-S-4: also re-set the web_jwt HttpOnly cookie so cookie-based
   // SPAs pick the new JWT up automatically without storing it in JS-reachable
@@ -416,6 +463,7 @@ export async function handleLogout(
   req: Request,
   env: AuthEnv,
 ): Promise<Response> {
+  const log = loggerFor(req);
   const cookies = parseCookies(req.headers.get('Cookie'));
   const loginHint = cookies.get('login');
   // Best-effort revoke: if we don't have a hint, we still clear the cookie.
@@ -424,6 +472,7 @@ export async function handleLogout(
     const userDoStub = env.USER_DO.get(userDoId);
     await userDoStub.fetch(new Request('https://do/revoke', { method: 'POST' }));
   }
+  log.info('auth.logout', { login: loginHint });
   const headers = new Headers();
   headers.append('Set-Cookie', clearCookie(REFRESH_COOKIE, REFRESH_PATH));
   headers.append('Set-Cookie', clearCookie('login', '/api/auth'));

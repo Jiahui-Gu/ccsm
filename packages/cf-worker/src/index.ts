@@ -45,6 +45,8 @@ import {
   getUserDoIdName,
 } from './auth/middleware';
 import type { AuthEnv } from './auth/bindings';
+// R-46 audit-P0 (Task #158): structured logger + request_id propagation.
+import { Logger, deriveRequestId, shortSub } from './logger';
 
 /**
  * S4-T5 (Task #136): clone the incoming request with cf-worker-injected
@@ -64,11 +66,30 @@ function withIdentityHeaders(
   return new Request(req, { headers });
 }
 
+/**
+ * R-46 audit-P0 (Task #158, F-T-2): inject the worker-derived request_id
+ * onto the downstream request so the DO + daemon can echo the same id into
+ * their own log records. We use `X-CCSM-Request-Id` as a custom header that
+ * survives the Worker → DO → http_req frame hop.
+ */
+function withRequestId(req: Request, requestId: string): Request {
+  const headers = new Headers(req.headers);
+  headers.set('X-CCSM-Request-Id', requestId);
+  return new Request(req, { headers });
+}
+
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
     const isUpgrade =
       req.headers.get('Upgrade')?.toLowerCase() === 'websocket';
+
+    // R-46 audit-P0 (Task #158, F-T-2): mint / extract a request_id at the
+    // Worker boundary and bind it to a child logger so every record below
+    // carries it. cf-ray when present (so we can correlate with CF
+    // analytics), uuid otherwise (local wrangler dev).
+    const requestId = deriveRequestId(req);
+    const log = new Logger().child(requestId);
 
     // R-15 (Task #37) — liveness probe for smoke orchestrator stage 1.
     // wrangler dev's bare `GET /` is routed into TunnelDO via the catch-all
@@ -82,17 +103,22 @@ export default {
       return new Response('ok\n', { status: 200 });
     }
 
+    // Stamp the request with the derived id so every downstream layer
+    // (auth dispatcher, TunnelDO, daemon http_req frame) can pick it up.
+    const stampedReq = withRequestId(req, requestId);
+
     // S4-T3 (Task #140): browser OAuth + refresh + logout. These run in the
     // Worker itself (NOT muxed through TunnelDO) because they talk to GitHub
     // directly and read/write UserDO. Routing them before the TunnelDO
     // /api/* branch ensures /api/auth/* never reaches the daemon path.
     if (url.pathname.startsWith('/api/auth/')) {
       // S4-T4 (Task #142): device flow + tunnel refresh land here first.
-      const devRes = await dispatchDevice(req, env);
+      const devRes = await dispatchDevice(stampedReq, env);
       if (devRes !== null) return devRes;
-      const authRes = await dispatchAuth(req, env);
+      const authRes = await dispatchAuth(stampedReq, env);
       if (authRes !== null) return authRes;
       // Path under /api/auth/ but not ours (e.g. wrong method) → 404.
+      log.warn('worker.api_auth_not_found', { path: url.pathname, method: req.method });
       return new Response('Not Found', { status: 404 });
     }
 
@@ -113,43 +139,71 @@ export default {
           // socket from the worker layer (TunnelDO does), so refuse the
           // upgrade with 401 here. The SPA's WebSocket onclose handler
           // will surface this as auth failure to the user.
+          log.warn('worker.ws_upgrade_unauthorized', { path: url.pathname });
           return new Response('unauthorized', { status: 401 });
         }
         const id = env.TUNNEL.idFromName(getUserDoIdName(claims.sub));
         const stub = env.TUNNEL.get(id);
-        console.log('[worker] route /ws/default upgrade=true mode=jwt user=' + claims.login);
-        return stub.fetch(withIdentityHeaders(req, claims.login, claims.sub));
+        log.info('worker.route', {
+          path: '/ws/default',
+          upgrade: true,
+          mode: 'jwt',
+          login: claims.login,
+          sub_prefix: shortSub(claims.sub),
+        });
+        return stub.fetch(
+          withIdentityHeaders(
+            withRequestId(req, requestId),
+            claims.login,
+            claims.sub,
+          ),
+        );
       }
       // legacy: single shared DO, no JWT check.
       const id = env.TUNNEL.idFromName('default');
       const stub = env.TUNNEL.get(id);
-      // R-17 log #12 (Task #45): record ws-route entry into the DO stub.
-      console.log('[worker] route ' + url.pathname + ' upgrade=' + isUpgrade);
+      log.info('worker.route', {
+        path: url.pathname,
+        upgrade: isUpgrade,
+        mode: 'legacy',
+      });
       // Task #782 (S3-T6): forward the full request (incl.
       // `Sec-WebSocket-Protocol` if the browser sent one) to the DO. The DO
       // is responsible for echoing the protocol back on the 101 response so
       // the browser doesn't reject the handshake (RFC 6455 §4.2.2 step 4).
-      return stub.fetch(req);
+      return stub.fetch(stampedReq);
     }
 
     if (url.pathname === '/tunnel/default' && isUpgrade) {
       if (mode === 'jwt') {
         const claims = await extractTunnelJwt(req, authEnv);
         if (claims === null) {
+          log.warn('worker.tunnel_upgrade_unauthorized', { path: url.pathname });
           return new Response('unauthorized', { status: 401 });
         }
         const id = env.TUNNEL.idFromName(getUserDoIdName(claims.sub));
         const stub = env.TUNNEL.get(id);
-        console.log('[worker] route /tunnel/default upgrade=true mode=jwt user=' + claims.login + ' jti=' + claims.jti);
+        log.info('worker.route', {
+          path: '/tunnel/default',
+          upgrade: true,
+          mode: 'jwt',
+          login: claims.login,
+          sub_prefix: shortSub(claims.sub),
+          jti: claims.jti,
+        });
         // Daemon side does not need X-CCSM-Identity-* headers — the daemon
         // is the trusted side; identity is injected only on the browser
         // path (so the DO can echo it into the daemon-bound hello frame).
-        return stub.fetch(req);
+        return stub.fetch(stampedReq);
       }
       const id = env.TUNNEL.idFromName('default');
       const stub = env.TUNNEL.get(id);
-      console.log('[worker] route ' + url.pathname + ' upgrade=' + isUpgrade);
-      return stub.fetch(req);
+      log.info('worker.route', {
+        path: url.pathname,
+        upgrade: isUpgrade,
+        mode: 'legacy',
+      });
+      return stub.fetch(stampedReq);
     }
 
     // Task #787 (S3-C): REST `/api/*` and `/token` flow through the same DO
@@ -158,27 +212,42 @@ export default {
     // ever talks to cc-sm.pages.dev; the DO bridges to the NAT'd daemon.
     if (url.pathname.startsWith('/api/') || url.pathname === '/token') {
       let doIdName = 'default';
+      let routedLogin: string | undefined;
+      let routedSubPrefix: string | undefined;
       if (mode === 'jwt') {
         const claims = await extractWebJwt(req, authEnv);
         if (claims === null) {
+          log.warn('worker.api_unauthorized', { path: url.pathname });
           return new Response('unauthorized', { status: 401 });
         }
         doIdName = getUserDoIdName(claims.sub);
+        routedLogin = claims.login;
+        routedSubPrefix = shortSub(claims.sub);
       }
       const id = env.TUNNEL.idFromName(doIdName);
       const stub = env.TUNNEL.get(id);
-      // R-17 log #12 (Task #45): record HTTP-mux route entry into the DO stub.
-      console.log('[worker] route ' + url.pathname + ' upgrade=' + isUpgrade + ' mode=' + mode);
-      // R-28 (Task #85): /token 502 取证 — log each /token request entry +
-      // upstream response status, including method + the cf-ray + the
-      // request id from cf headers so we can correlate with the DO log.
+      log.info('worker.route', {
+        path: url.pathname,
+        upgrade: isUpgrade,
+        mode,
+        login: routedLogin,
+        sub_prefix: routedSubPrefix,
+      });
+      // R-28 (Task #85): /token 502 取证 — keep the legacy [r28] forensics
+      // tags around for the time-boxed investigation; R-47 will decide
+      // their fate. They run alongside the structured logger.
       const r28Method = req.method;
       const r28Cf = req.headers.get('cf-ray') ?? '-';
       const r28Ua = (req.headers.get('user-agent') ?? '-').slice(0, 32);
       console.log('[r28][worker] enter path=' + url.pathname + ' method=' + r28Method + ' cf-ray=' + r28Cf + ' ua=' + r28Ua);
       const r28Started = Date.now();
-      const r28Res = await stub.fetch(req);
+      const r28Res = await stub.fetch(stampedReq);
       console.log('[r28][worker] exit path=' + url.pathname + ' status=' + r28Res.status + ' dur_ms=' + (Date.now() - r28Started) + ' cf-ray=' + r28Cf);
+      log.info('worker.proxy_done', {
+        path: url.pathname,
+        status: r28Res.status,
+        dur_ms: Date.now() - r28Started,
+      });
       return r28Res;
     }
 
