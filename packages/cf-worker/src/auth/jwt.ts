@@ -8,6 +8,17 @@
  *   - WebJwtClaims  — short-lived browser session token (kind: 'web')
  *   - TunnelJwtClaims — per-tunnel daemon-presented token (kind: 'tunnel')
  *
+ * Key separation invariant (audit F-S-1, Task #152):
+ *   - kind='web' tokens MUST be signed AND verified with `JWT_SIGNING_KEY`.
+ *   - kind='tunnel' tokens MUST be signed AND verified with
+ *     `JWT_REFRESH_SIGNING_KEY`.
+ *   The two keys live in separate `wrangler secret` slots so a leak of the
+ *   web key cannot mint daemon-class tokens (and vice versa). signJwt /
+ *   verifyJwt accept any hex key — the caller is responsible for pairing.
+ *   See deviceFlow.ts (signs tunnel) + middleware.extractTunnelJwt (verifies
+ *   tunnel) and webOauth.ts (signs web) + middleware.extractWebJwt
+ *   (verifies web).
+ *
  * Keys are passed in as hex strings (matching `wrangler secret` / `.dev.vars`
  * style); we decode to raw bytes inside `importHmacKey`. Sign + verify both
  * round-trip through base64url (RFC 7515 §2). `verifyJwt` is exp-aware (token

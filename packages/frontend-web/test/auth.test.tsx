@@ -1,88 +1,59 @@
-// AuthContext + SignInGate component tests (Task #139, S4-T7).
+// AuthContext + SignInGate component tests (audit F-S-4, Task #152).
 //
-// Coverage target (per spec):
-//   1. AuthProvider mount with no JWT → SignInScreen rendered
-//   2. Callback `?session=ok#jwt=xxx` → fragment consumed, JWT stored,
-//      URL cleaned, gate flips to children
-//   3. signOut clears sessionStorage (reload is stubbed)
-//   4. signIn redirects to /api/auth/github/login
+// Coverage target:
+//   1. AuthProvider mount: `/api/auth/me` 401 → SignInScreen rendered.
+//   2. AuthProvider mount: `/api/auth/me` 200 → children rendered, login
+//      surfaced, ws-ticket primed.
+//   3. Callback redirect (`?session=ok`): query cleaned, refresh() runs,
+//      gate flips to children when `/api/auth/me` returns 200.
+//   4. signOut hits /api/auth/logout (reload stubbed).
+//   5. signIn redirects to /api/auth/github/login.
+//   6. consumeCallbackQuery purity (no /me round-trip).
 //
-// Plus a guardrail on decodeJwtPayload (login-claim extraction) so the
-// fragment-consumer's UX hint doesn't drift.
+// All tests stub fetch; the cookie itself is opaque to the SPA so we only
+// care about request shape (path, credentials: include).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 import { AuthProvider, useAuth } from '../src/auth/AuthContext';
 import {
-  consumeCallbackFragment,
-  decodeJwtPayload,
+  consumeCallbackQuery,
   SignInGate,
 } from '../src/auth/SignInGate';
-import { WEB_JWT_STORAGE_KEY, WEB_LOGIN_STORAGE_KEY } from '../src/hostConfig';
+import { _resetWsTicketCacheForTests } from '../src/hostConfig';
 
-// A web JWT shape: header.payload.signature, base64url-encoded JSON.
-function makeJwt(payload: Record<string, unknown>): string {
-  const b64url = (s: string) =>
-    Buffer.from(s, 'utf8').toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-  const header = b64url(JSON.stringify({ alg: 'HS256', typ: 'JWT', kind: 'web' }));
-  const body = b64url(JSON.stringify(payload));
-  return `${header}.${body}.sig-not-checked-by-spa`;
-}
-
-describe('decodeJwtPayload', () => {
-  it('returns the parsed payload for a well-formed JWT', () => {
-    const jwt = makeJwt({ login: 'octocat', kind: 'web', exp: 9999999999 });
-    expect(decodeJwtPayload(jwt)).toEqual({
-      login: 'octocat',
-      kind: 'web',
-      exp: 9999999999,
-    });
-  });
-
-  it('returns null for non-three-part input', () => {
-    expect(decodeJwtPayload('not.a.jwt.extra')).toBeNull();
-    expect(decodeJwtPayload('only-one-part')).toBeNull();
-  });
-
-  it('returns null when the payload is not base64url-decodable JSON', () => {
-    expect(decodeJwtPayload('aaa.@@@.bbb')).toBeNull();
-  });
-});
-
-describe('consumeCallbackFragment', () => {
-  beforeEach(() => {
-    sessionStorage.clear();
-  });
-
-  it('persists JWT + login from `?session=ok#jwt=...` and cleans the URL', () => {
-    const jwt = makeJwt({ login: 'mona', kind: 'web' });
+describe('consumeCallbackQuery', () => {
+  it('strips ?session=ok and reports true', () => {
     const replaceState = vi.fn();
     const fakeLoc = {
       pathname: '/',
       search: '?session=ok',
-      hash: `#jwt=${jwt}`,
+      hash: '',
     } as unknown as Location;
     const fakeHist = { replaceState } as unknown as History;
-
-    const ok = consumeCallbackFragment(fakeLoc, fakeHist);
+    const ok = consumeCallbackQuery(fakeLoc, fakeHist);
     expect(ok).toBe(true);
-    expect(sessionStorage.getItem(WEB_JWT_STORAGE_KEY)).toBe(jwt);
-    expect(sessionStorage.getItem(WEB_LOGIN_STORAGE_KEY)).toBe('mona');
     expect(replaceState).toHaveBeenCalledWith(null, '', '/');
   });
 
   it('returns false when ?session=ok is missing', () => {
-    const fakeLoc = { pathname: '/', search: '', hash: '#jwt=foo' } as unknown as Location;
-    const ok = consumeCallbackFragment(fakeLoc, { replaceState: vi.fn() } as unknown as History);
+    const fakeLoc = { pathname: '/', search: '', hash: '' } as unknown as Location;
+    const ok = consumeCallbackQuery(fakeLoc, { replaceState: vi.fn() } as unknown as History);
     expect(ok).toBe(false);
-    expect(sessionStorage.getItem(WEB_JWT_STORAGE_KEY)).toBeNull();
   });
 
-  it('returns false when the fragment has no jwt= entry', () => {
-    const fakeLoc = { pathname: '/', search: '?session=ok', hash: '#other=1' } as unknown as Location;
-    const ok = consumeCallbackFragment(fakeLoc, { replaceState: vi.fn() } as unknown as History);
-    expect(ok).toBe(false);
+  it('preserves other query params when stripping session', () => {
+    const replaceState = vi.fn();
+    const fakeLoc = {
+      pathname: '/x',
+      search: '?session=ok&debug=1',
+      hash: '',
+    } as unknown as Location;
+    const fakeHist = { replaceState } as unknown as History;
+    const ok = consumeCallbackQuery(fakeLoc, fakeHist);
+    expect(ok).toBe(true);
+    expect(replaceState).toHaveBeenCalledWith(null, '', '/x?debug=1');
   });
 });
 
@@ -92,9 +63,7 @@ const ORIGINAL_HREF = 'http://127.0.0.1/';
 
 beforeEach(() => {
   sessionStorage.clear();
-  // jsdom's location is read-only for href, but we can replace it via
-  // history.replaceState. signIn assigns to window.location.href which jsdom
-  // models as a navigation; we shim to capture the assignment.
+  _resetWsTicketCacheForTests();
   window.history.replaceState(null, '', ORIGINAL_HREF);
 });
 
@@ -105,28 +74,58 @@ afterEach(() => {
 function HrefProbe({ onHref }: { onHref: (href: string) => void }) {
   const { signIn } = useAuth();
   return (
-    <button type="button" data-testid="probe-signin" onClick={() => {
-      // Stub assignment side-effect so we don't actually navigate jsdom.
-      const originalHref = window.location.href;
-      Object.defineProperty(window, 'location', {
-        configurable: true,
-        value: new Proxy(window.location, {
-          set(_t, p, v) {
-            if (p === 'href') { onHref(String(v)); return true; }
-            return Reflect.set(_t, p, v);
-          },
-        }),
-      });
-      signIn();
-      // Restore so afterEach works
-      window.history.replaceState(null, '', originalHref);
-    }}>go</button>
+    <button
+      type="button"
+      data-testid="probe-signin"
+      onClick={() => {
+        const originalHref = window.location.href;
+        Object.defineProperty(window, 'location', {
+          configurable: true,
+          value: new Proxy(window.location, {
+            set(_t, p, v) {
+              if (p === 'href') {
+                onHref(String(v));
+                return true;
+              }
+              return Reflect.set(_t, p, v);
+            },
+          }),
+        });
+        signIn();
+        window.history.replaceState(null, '', originalHref);
+      }}
+    >
+      go
+    </button>
   );
 }
 
+/**
+ * Build a fetch stub that maps url → response. Unmatched URLs throw so the
+ * test fails loudly on an unexpected call.
+ */
+function stubFetch(routes: Record<string, () => Response | Promise<Response>>): typeof fetch {
+  return vi.fn(async (input: RequestInfo | URL) => {
+    const url =
+      typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url;
+    for (const path of Object.keys(routes)) {
+      if (url === path || url.endsWith(path)) {
+        return await routes[path]!();
+      }
+    }
+    throw new Error('unexpected fetch ' + url);
+  }) as unknown as typeof fetch;
+}
+
 describe('AuthProvider + SignInGate', () => {
-  it('renders SignInScreen when no JWT in sessionStorage and refresh fails', async () => {
-    const fetchImpl = vi.fn(async () => new Response('nope', { status: 401 })) as unknown as typeof fetch;
+  it('renders SignInScreen when /api/auth/me returns 401', async () => {
+    const fetchImpl = stubFetch({
+      '/api/auth/me': () => new Response('nope', { status: 401 }),
+    });
     render(
       <AuthProvider fetchImpl={fetchImpl}>
         <SignInGate>
@@ -139,16 +138,18 @@ describe('AuthProvider + SignInGate', () => {
       expect(screen.getByText('Sign in with GitHub')).toBeTruthy();
     });
     expect(screen.queryByText('protected-ui')).toBeNull();
-    expect(fetchImpl).toHaveBeenCalledWith('/api/auth/refresh', expect.objectContaining({
-      method: 'POST',
-      credentials: 'include',
-    }));
+    expect(fetchImpl).toHaveBeenCalledWith(
+      '/api/auth/me',
+      expect.objectContaining({ credentials: 'include' }),
+    );
   });
 
-  it('renders children when sessionStorage already has a JWT (no silent refresh)', async () => {
-    sessionStorage.setItem(WEB_JWT_STORAGE_KEY, makeJwt({ login: 'octocat', kind: 'web' }));
-    sessionStorage.setItem(WEB_LOGIN_STORAGE_KEY, 'octocat');
-    const fetchImpl = vi.fn(async () => new Response('{}', { status: 200 })) as unknown as typeof fetch;
+  it('renders children when /api/auth/me returns 200, primes ws-ticket', async () => {
+    const fetchImpl = stubFetch({
+      '/api/auth/me': () => Response.json({ login: 'octocat', github_id: '7' }),
+      '/api/auth/ws-ticket': () =>
+        Response.json({ ws_ticket: 'tkt.aaa.bbb', expires_in: 60 }),
+    });
 
     render(
       <AuthProvider fetchImpl={fetchImpl}>
@@ -161,13 +162,26 @@ describe('AuthProvider + SignInGate', () => {
     await waitFor(() => {
       expect(screen.getByText('protected-ui')).toBeTruthy();
     });
-    expect(fetchImpl).not.toHaveBeenCalled();
+    // Both calls happened with credentials.
+    expect(fetchImpl).toHaveBeenCalledWith(
+      '/api/auth/me',
+      expect.objectContaining({ credentials: 'include' }),
+    );
+    await waitFor(() => {
+      expect(fetchImpl).toHaveBeenCalledWith(
+        '/api/auth/ws-ticket',
+        expect.objectContaining({ method: 'POST', credentials: 'include' }),
+      );
+    });
   });
 
-  it('consumes ?session=ok#jwt=... fragment and flips to children', async () => {
-    const jwt = makeJwt({ login: 'callback-user', kind: 'web' });
-    window.history.replaceState(null, '', `/?session=ok#jwt=${jwt}`);
-    const fetchImpl = vi.fn(async () => new Response('{}', { status: 200 })) as unknown as typeof fetch;
+  it('callback ?session=ok flips to children after refresh()', async () => {
+    window.history.replaceState(null, '', `/?session=ok`);
+    const fetchImpl = stubFetch({
+      '/api/auth/me': () => Response.json({ login: 'callback-user', github_id: '99' }),
+      '/api/auth/ws-ticket': () =>
+        Response.json({ ws_ticket: 't', expires_in: 60 }),
+    });
 
     render(
       <AuthProvider fetchImpl={fetchImpl} skipInitialRefresh>
@@ -180,25 +194,40 @@ describe('AuthProvider + SignInGate', () => {
     await waitFor(() => {
       expect(screen.getByText('protected-ui')).toBeTruthy();
     });
-    expect(sessionStorage.getItem(WEB_JWT_STORAGE_KEY)).toBe(jwt);
-    expect(sessionStorage.getItem(WEB_LOGIN_STORAGE_KEY)).toBe('callback-user');
-    // URL cleaned: ?session removed, #jwt dropped.
+    // URL cleaned: ?session removed.
     expect(window.location.search).toBe('');
   });
 
-  it('signOut clears sessionStorage (reload stubbed)', async () => {
-    sessionStorage.setItem(WEB_JWT_STORAGE_KEY, 'old-jwt');
-    sessionStorage.setItem(WEB_LOGIN_STORAGE_KEY, 'old-user');
-    const fetchImpl = vi.fn(async () => new Response('', { status: 204 })) as unknown as typeof fetch;
+  it('signOut hits /api/auth/logout (reload stubbed)', async () => {
     const reloadSpy = vi.fn();
     Object.defineProperty(window, 'location', {
       configurable: true,
-      value: { ...window.location, reload: reloadSpy, href: ORIGINAL_HREF, search: '', hash: '', pathname: '/' },
+      value: {
+        ...window.location,
+        reload: reloadSpy,
+        href: ORIGINAL_HREF,
+        search: '',
+        hash: '',
+        pathname: '/',
+      },
+    });
+    const fetchImpl = stubFetch({
+      '/api/auth/logout': () => new Response('', { status: 204 }),
     });
 
     function SignOutButton() {
       const { signOut } = useAuth();
-      return <button type="button" onClick={() => { void signOut(); }} data-testid="signout">x</button>;
+      return (
+        <button
+          type="button"
+          onClick={() => {
+            void signOut();
+          }}
+          data-testid="signout"
+        >
+          x
+        </button>
+      );
     }
 
     render(
@@ -212,19 +241,19 @@ describe('AuthProvider + SignInGate', () => {
     });
 
     await waitFor(() => {
-      expect(sessionStorage.getItem(WEB_JWT_STORAGE_KEY)).toBeNull();
-      expect(sessionStorage.getItem(WEB_LOGIN_STORAGE_KEY)).toBeNull();
+      expect(reloadSpy).toHaveBeenCalled();
     });
-    expect(fetchImpl).toHaveBeenCalledWith('/api/auth/logout', expect.objectContaining({
-      method: 'POST',
-      credentials: 'include',
-    }));
-    expect(reloadSpy).toHaveBeenCalled();
+    expect(fetchImpl).toHaveBeenCalledWith(
+      '/api/auth/logout',
+      expect.objectContaining({ method: 'POST', credentials: 'include' }),
+    );
   });
 
   it('signIn redirects to /api/auth/github/login', async () => {
     const seen: string[] = [];
-    const fetchImpl = vi.fn(async () => new Response('', { status: 401 })) as unknown as typeof fetch;
+    const fetchImpl = stubFetch({
+      '/api/auth/me': () => new Response('', { status: 401 }),
+    });
 
     render(
       <AuthProvider fetchImpl={fetchImpl} skipInitialRefresh>

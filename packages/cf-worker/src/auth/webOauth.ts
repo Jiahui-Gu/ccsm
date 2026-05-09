@@ -34,17 +34,26 @@
  * through TunnelDO. Only the /api/auth/* prefix routes here.
  */
 import type { AuthEnv } from './bindings';
-import { signJwt, type WebJwtClaims } from './jwt';
+import { signJwt, verifyJwt, type WebJwtClaims } from './jwt';
 
 const GH_AUTHORIZE_URL = 'https://github.com/login/oauth/authorize';
 const GH_TOKEN_URL = 'https://github.com/login/oauth/access_token';
 const GH_USER_URL = 'https://api.github.com/user';
 
 const WEB_JWT_TTL_SEC = 60 * 60; // 1h
+/**
+ * Audit F-S-4 (Task #152): ws subprotocol can't ride a cookie, so we mint
+ * a short-lived JWT (60s) the SPA fetches right before opening the
+ * WebSocket. Browser exposure window is one upgrade.
+ */
+const WS_TICKET_TTL_SEC = 60;
 const CSRF_COOKIE = 'csrf';
 const REFRESH_COOKIE = 'refresh';
+/** Audit F-S-4: HttpOnly session cookie carrying the web JWT, scoped to /api. */
+const WEB_JWT_COOKIE = 'web_jwt';
 const CALLBACK_PATH = '/api/auth/github/callback';
 const REFRESH_PATH = '/api/auth/refresh';
+const WEB_JWT_COOKIE_PATH = '/api';
 
 /** Hex-encode a Uint8Array. */
 function bytesToHex(bytes: Uint8Array): string {
@@ -242,12 +251,25 @@ export async function handleGithubCallback(
   };
   const webJwt = await signJwt(claims, env.JWT_SIGNING_KEY);
 
-  // Compose the redirect: SignInGate reads `#jwt=...` once and clears the
-  // fragment; the refresh cookie persists across visits.
+  // Compose the redirect: the web JWT now rides an HttpOnly cookie scoped to
+  // `/api` (audit F-S-4, Task #152). The SPA learns it's signed-in by
+  // `GET /api/auth/me`; the URL fragment used to carry the JWT (T3) is gone.
   const headers = new Headers();
-  headers.append('Location', `/?session=ok#jwt=${encodeURIComponent(webJwt)}`);
+  headers.append('Location', `/?session=ok`);
   // Clear the csrf cookie now that we've consumed it.
   headers.append('Set-Cookie', clearCookie(CSRF_COOKIE, CALLBACK_PATH));
+  // HttpOnly + Secure + SameSite=Strict so an XSS payload cannot exfiltrate
+  // the JWT and a cross-site link cannot ride the session.
+  headers.append(
+    'Set-Cookie',
+    buildCookie(WEB_JWT_COOKIE, webJwt, {
+      path: WEB_JWT_COOKIE_PATH,
+      maxAge: WEB_JWT_TTL_SEC,
+      httpOnly: true,
+      secure: true,
+      sameSite: 'Strict',
+    }),
+  );
   // Persist the refresh token in an HttpOnly cookie scoped to the refresh path.
   headers.append(
     'Set-Cookie',
@@ -275,16 +297,22 @@ export async function handleGithubCallback(
 }
 
 /**
- * POST /api/auth/refresh — verify the refresh cookie against the UserDO hash
- * and re-mint a fresh web JWT. The refresh token itself is NOT rotated in T3.
+ * POST /api/auth/refresh — verify the refresh cookie against the UserDO hash,
+ * **rotate** it (write a fresh hash + send a fresh cookie), and re-mint a web
+ * JWT.
+ *
+ * Audit F-S-5 (Task #152): web refresh now rotates on every call (parity
+ * with deviceFlow tunnel-refresh). Without rotation a leaked refresh
+ * token grants attacker indefinite access until manual revoke. The new
+ * opaque token is sent back as the same HttpOnly cookie; the old hash is
+ * overwritten so subsequent presentations of the old token 401.
  *
  * The browser has no other way to identify the user (web JWT may already be
  * gone), so we recover the login by stuffing the SHA-256 lookup into a
  * UserDO instance keyed by login... except we don't know the login yet. To
  * keep T3 simple, the refresh cookie is paired with a small hint cookie that
- * carries `login` (HttpOnly is fine, this isn't a secret). T4 / T5 may move
- * to a signed pointer instead; for now we trust the hint and validate the
- * hash before re-issuing anything.
+ * carries `login` (HttpOnly is fine, this isn't a secret). We trust the hint
+ * and validate the hash before re-issuing anything.
  */
 export async function handleRefresh(
   req: Request,
@@ -326,6 +354,22 @@ export async function handleRefresh(
   }
   const rec = (await getLoginRes.json()) as { github_id: string; login: string };
 
+  // Audit F-S-5: rotate the refresh token. Mint a new opaque hex + write
+  // its hash into UserDO (overwrites the previous slot). Old token's hash
+  // can no longer pass verifyRefreshTokenHash on a subsequent call.
+  const newRefreshToken = randomHex(32);
+  const newRefreshHash = await sha256Hex(newRefreshToken);
+  const setHashRes = await userDoStub.fetch(
+    new Request('https://do/setRefreshTokenHash', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ hash: newRefreshHash }),
+    }),
+  );
+  if (!setHashRes.ok) {
+    return new Response('userDO setRefreshTokenHash failed', { status: 500 });
+  }
+
   const iat = Math.floor(Date.now() / 1000);
   const claims: WebJwtClaims = {
     sub: rec.github_id,
@@ -335,7 +379,34 @@ export async function handleRefresh(
     kind: 'web',
   };
   const webJwt = await signJwt(claims, env.JWT_SIGNING_KEY);
-  return Response.json({ web_jwt: webJwt });
+  const headers = new Headers({ 'content-type': 'application/json' });
+  // Audit F-S-4: also re-set the web_jwt HttpOnly cookie so cookie-based
+  // SPAs pick the new JWT up automatically without storing it in JS-reachable
+  // state. body still echoes web_jwt for the legacy fragment-era callers.
+  headers.append(
+    'Set-Cookie',
+    buildCookie(WEB_JWT_COOKIE, webJwt, {
+      path: WEB_JWT_COOKIE_PATH,
+      maxAge: WEB_JWT_TTL_SEC,
+      httpOnly: true,
+      secure: true,
+      sameSite: 'Strict',
+    }),
+  );
+  headers.append(
+    'Set-Cookie',
+    buildCookie(REFRESH_COOKIE, newRefreshToken, {
+      path: REFRESH_PATH,
+      maxAge: 60 * 60 * 24 * 30, // 30 days, mirroring callback
+      httpOnly: true,
+      secure: true,
+      sameSite: 'Lax',
+    }),
+  );
+  return new Response(JSON.stringify({ web_jwt: webJwt, login: rec.login }), {
+    status: 200,
+    headers,
+  });
 }
 
 /**
@@ -356,7 +427,72 @@ export async function handleLogout(
   const headers = new Headers();
   headers.append('Set-Cookie', clearCookie(REFRESH_COOKIE, REFRESH_PATH));
   headers.append('Set-Cookie', clearCookie('login', '/api/auth'));
+  // Audit F-S-4: also nuke the web_jwt session cookie.
+  headers.append('Set-Cookie', clearCookie(WEB_JWT_COOKIE, WEB_JWT_COOKIE_PATH));
   return new Response(null, { status: 204, headers });
+}
+
+/**
+ * GET /api/auth/me — audit F-S-4 (Task #152).
+ *
+ * Reads the HttpOnly `web_jwt` cookie, verifies it, returns
+ * `{ login, github_id }`. The SPA mounts and calls this to learn whether
+ * the user is signed-in (replacing the old fragment-decode + sessionStorage
+ * read). 401 means "not signed-in" — caller renders SignInScreen.
+ *
+ * No CSRF token is required because:
+ *   (a) it's a GET / safe method,
+ *   (b) the cookie is SameSite=Strict so cross-site requests don't carry
+ *       the credential.
+ */
+export async function handleMe(req: Request, env: AuthEnv): Promise<Response> {
+  const cookies = parseCookies(req.headers.get('Cookie'));
+  const jwt = cookies.get(WEB_JWT_COOKIE);
+  if (!jwt) return new Response('unauthorized', { status: 401 });
+  const claims = await verifyJwt<WebJwtClaims>(jwt, env.JWT_SIGNING_KEY);
+  if (claims === null || claims.kind !== 'web') {
+    return new Response('unauthorized', { status: 401 });
+  }
+  return Response.json({ login: claims.login, github_id: claims.sub });
+}
+
+/**
+ * POST /api/auth/ws-ticket — audit F-S-4 (Task #152).
+ *
+ * Browsers cannot ride a cookie on `new WebSocket(url, protocols)`; the
+ * subprotocol is the only writable header. The SPA fetches a 60-second JWT
+ * (`kind='web'`, freshly minted from the same signing key) and presents it
+ * as `Sec-WebSocket-Protocol: ccsm.<ticket>`. middleware.extractWebJwt
+ * verifies the ticket on the upgrade like any other web JWT.
+ *
+ * Why a separate ticket: the long-lived (1h) `web_jwt` cookie never leaves
+ * server-managed storage. The short-lived ticket DOES briefly land in JS
+ * (we can't avoid it — `WebSocket` constructor takes the protocol from
+ * an argument), so we cap its TTL to 60s to bound the window of a leaked
+ * value.
+ *
+ * CSRF is naturally bound by SameSite=Strict on the source cookie + the
+ * fact that an attacker page cannot make a same-origin POST that reads
+ * the response body (CORS).
+ */
+export async function handleWsTicket(req: Request, env: AuthEnv): Promise<Response> {
+  const cookies = parseCookies(req.headers.get('Cookie'));
+  const jwt = cookies.get(WEB_JWT_COOKIE);
+  if (!jwt) return new Response('unauthorized', { status: 401 });
+  const claims = await verifyJwt<WebJwtClaims>(jwt, env.JWT_SIGNING_KEY);
+  if (claims === null || claims.kind !== 'web') {
+    return new Response('unauthorized', { status: 401 });
+  }
+  const iat = Math.floor(Date.now() / 1000);
+  const ticketClaims: WebJwtClaims = {
+    sub: claims.sub,
+    login: claims.login,
+    iat,
+    exp: iat + WS_TICKET_TTL_SEC,
+    kind: 'web',
+  };
+  const ticket = await signJwt(ticketClaims, env.JWT_SIGNING_KEY);
+  return Response.json({ ws_ticket: ticket, expires_in: WS_TICKET_TTL_SEC });
 }
 
 /**
@@ -381,6 +517,12 @@ export async function dispatchAuth(
   }
   if (req.method === 'POST' && path === '/api/auth/logout') {
     return handleLogout(req, env);
+  }
+  if (req.method === 'GET' && path === '/api/auth/me') {
+    return handleMe(req, env);
+  }
+  if (req.method === 'POST' && path === '/api/auth/ws-ticket') {
+    return handleWsTicket(req, env);
   }
   return null;
 }

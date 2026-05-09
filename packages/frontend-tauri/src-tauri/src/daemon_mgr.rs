@@ -327,10 +327,27 @@ async fn run_cycle(app: &AppHandle, kill_rx: &mut mpsc::Receiver<()>) -> CycleOu
         cmd.env("CCSM_TUNNEL_REFRESH_TOKEN", &creds.tunnel_refresh_token);
         cmd.env("CCSM_TUNNEL_LOGIN", &creds.login);
         cmd.env("CCSM_TRUST_TUNNEL", "1");
-        eprintln!(
-            "[daemon-mgr] injecting tunnel JWT for login={} (trust-tunnel mode)",
-            creds.login
-        );
+        // Audit F-S-2 (Task #152): bind the daemon to the GitHub user id
+        // baked into the persisted tunnel JWT. The daemon-side hello
+        // handler (tunnel.mts handleHello trust-tunnel branch) refuses
+        // any cloud-stamped identity that does not match this value, so a
+        // mis-issued JWT for some other user cannot hijack the tunnel.
+        // Absence (malformed JWT) leaves the env unset and the daemon
+        // skips the bind check — degraded but not fail-open since hello
+        // identity is still checked against trust-tunnel's existing
+        // "must carry identity" gate.
+        if let Some(owner_id) = crate::auth::parse_jwt_sub_unverified(&creds.tunnel_jwt) {
+            cmd.env("CCSM_EXPECTED_OWNER_ID", &owner_id);
+            eprintln!(
+                "[daemon-mgr] injecting tunnel JWT for login={} owner_id={} (trust-tunnel mode)",
+                creds.login, owner_id,
+            );
+        } else {
+            eprintln!(
+                "[daemon-mgr] injecting tunnel JWT for login={} (trust-tunnel mode; owner_id parse failed, identity-bind disabled)",
+                creds.login,
+            );
+        }
     }
 
     #[cfg(windows)]

@@ -77,10 +77,19 @@ describe('getAuthMode', () => {
   it('returns jwt when explicitly "jwt"', () => {
     expect(getAuthMode({ CCSM_AUTH_MODE: 'jwt' })).toBe('jwt');
   });
-  it('falls back to legacy on typo / unknown value', () => {
-    expect(getAuthMode({ CCSM_AUTH_MODE: 'JWT' })).toBe('legacy');
-    expect(getAuthMode({ CCSM_AUTH_MODE: 'enabled' })).toBe('legacy');
+  it('returns legacy on the literal value "legacy" or empty string', () => {
+    expect(getAuthMode({ CCSM_AUTH_MODE: 'legacy' })).toBe('legacy');
     expect(getAuthMode({ CCSM_AUTH_MODE: '' })).toBe('legacy');
+  });
+  it('audit F-S-3: throws on unrecognized non-empty values (no silent fallback)', () => {
+    // Pre-audit behaviour: getAuthMode silently returned 'legacy' when the
+    // env var was a typo (e.g. 'JWT' upper-case). That meant a misconfigured
+    // wrangler vars deploy quietly skipped JWT enforcement. Audit F-S-3
+    // tightens the gate: anything other than the recognized literals
+    // throws so the worker fails closed at startup.
+    expect(() => getAuthMode({ CCSM_AUTH_MODE: 'JWT' })).toThrowError(/CCSM_AUTH_MODE/);
+    expect(() => getAuthMode({ CCSM_AUTH_MODE: 'enabled' })).toThrowError(/CCSM_AUTH_MODE/);
+    expect(() => getAuthMode({ CCSM_AUTH_MODE: 'on' })).toThrowError(/CCSM_AUTH_MODE/);
   });
 });
 
@@ -186,6 +195,33 @@ describe('extractWebJwt', () => {
     const out = await extractWebJwt(req, makeEnv());
     expect(out).toBeNull();
   });
+
+  it('audit F-S-4: extracts from web_jwt HttpOnly cookie', async () => {
+    const tok = await signJwt(makeWebClaims(), KEY_WEB);
+    const req = new Request('http://x/api/sessions', {
+      headers: { Cookie: `web_jwt=${tok}; other=x` },
+    });
+    const out = await extractWebJwt(req, makeEnv());
+    expect(out).not.toBeNull();
+    expect(out!.kind).toBe('web');
+  });
+
+  it('audit F-S-4: cookie takes precedence over subprotocol + Authorization', async () => {
+    // Documents the ordering — cookie path is the new default; subprotocol
+    // remains for ws upgrades, Bearer for Tauri loopback.
+    const cookieTok = await signJwt(makeWebClaims({ login: 'fromCookie' }), KEY_WEB);
+    const wsTok = await signJwt(makeWebClaims({ login: 'fromWs' }), KEY_WEB);
+    const authTok = await signJwt(makeWebClaims({ login: 'fromAuth' }), KEY_WEB);
+    const req = new Request('http://x/api/sessions', {
+      headers: {
+        Cookie: `web_jwt=${cookieTok}`,
+        'Sec-WebSocket-Protocol': 'ccsm.' + wsTok,
+        Authorization: 'Bearer ' + authTok,
+      },
+    });
+    const out = await extractWebJwt(req, makeEnv());
+    expect(out!.login).toBe('fromCookie');
+  });
 });
 
 describe('extractTunnelJwt', () => {
@@ -229,5 +265,34 @@ describe('extractTunnelJwt', () => {
     });
     const out = await extractTunnelJwt(req, makeEnv());
     expect(out).toBeNull();
+  });
+
+  it('audit F-S-1: tunnel JWT signed with web key (JWT_SIGNING_KEY) is rejected', async () => {
+    // Pre-audit deviceFlow.ts signed tunnel JWTs with `JWT_SIGNING_KEY`
+    // while middleware verified against `JWT_REFRESH_SIGNING_KEY` — every
+    // legit daemon dial would fail in jwt mode. The fix routes the
+    // signing call through `JWT_REFRESH_SIGNING_KEY` (separate key, kept
+    // distinct so a leaked web key cannot mint daemon tokens). This
+    // guard documents that a token signed with the WRONG key
+    // (JWT_SIGNING_KEY) still cannot pass tunnel verification — the key
+    // separation invariant holds.
+    const tok = await signJwt(makeTunnelClaims(), KEY_WEB); // web key, wrong for tunnel
+    const req = new Request('http://x/tunnel/default', {
+      headers: { 'Sec-WebSocket-Protocol': 'ccsm.' + tok },
+    });
+    const out = await extractTunnelJwt(req, makeEnv());
+    expect(out).toBeNull();
+  });
+
+  it('audit F-S-1: tunnel JWT signed with refresh key (post-fix) verifies', async () => {
+    // Mirror of the above — round-trip with the correct key passes, so
+    // the deviceFlow.ts → middleware contract works end-to-end.
+    const tok = await signJwt(makeTunnelClaims(), KEY_TUNNEL);
+    const req = new Request('http://x/tunnel/default', {
+      headers: { 'Sec-WebSocket-Protocol': 'ccsm.' + tok },
+    });
+    const out = await extractTunnelJwt(req, makeEnv());
+    expect(out).not.toBeNull();
+    expect(out!.kind).toBe('tunnel');
   });
 });

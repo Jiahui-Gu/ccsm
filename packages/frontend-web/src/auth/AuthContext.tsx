@@ -1,23 +1,26 @@
 // AuthContext — owns the SPA's view of the cf-worker OAuth session.
 //
-// Task #139 (S4-T7) wires up the browser side of the OAuth flow that
-// landed in Task #140 (S4-T3). The cf-worker mints a short-lived web JWT
-// after `/api/auth/github/callback` and redirects to `/?session=ok#jwt=...`
-// with an HttpOnly refresh cookie. This context:
+// Audit F-S-4 (Task #152): the web JWT now lives in an HttpOnly cookie set
+// by the cf-worker callback. The SPA never sees the JWT directly; it learns
+// "am I signed-in" by calling `GET /api/auth/me` (returns {login, github_id}
+// or 401). The previous fragment + sessionStorage path was XSS-readable;
+// HttpOnly + SameSite=Strict closes that.
 //
-//   1. On mount: reads the persisted web JWT + login from sessionStorage.
-//      If absent, attempts a silent `POST /api/auth/refresh` so a returning
-//      visitor with a still-valid refresh cookie skips the SignInScreen.
-//   2. signIn(): hard-redirects to `/api/auth/github/login`.
-//   3. signOut(): `POST /api/auth/logout` (best-effort), clears
-//      sessionStorage, then `window.location.reload()`.
-//   4. refresh(): re-reads sessionStorage. SignInGate calls this after
-//      consuming the URL fragment so the context picks up the new JWT
-//      without forcing a full page reload.
+// Contract:
 //
-// The context never decodes the JWT to validate it — that's the cf-worker /
-// TunnelDO's job. The SPA only uses the value as an opaque bearer that's
-// presented on the WebSocket subprotocol header (see hostConfig.ts).
+//   1. On mount: `GET /api/auth/me`. 200 → signed in, surface the login
+//      hint; 401 → signed-out, render SignInScreen.
+//   2. signIn(): hard-redirect to `/api/auth/github/login`.
+//   3. signOut(): `POST /api/auth/logout` (clears the HttpOnly cookies
+//      server-side), then `window.location.reload()` so RuntimeProvider
+//      tears down cleanly.
+//   4. refresh(): re-runs `GET /api/auth/me`. Used by SignInGate after the
+//      OAuth callback redirect lands at `/?session=ok` so the freshly-set
+//      cookie is reflected without a full page reload.
+//
+// The context never decodes the JWT — there is no JWT in JS reach. The
+// `signedIn` boolean is the only auth signal the UI needs; the WebSocket /
+// API layer rides cookies (REST) and `/api/auth/ws-ticket` (ws subprotocol).
 
 import {
   createContext,
@@ -30,48 +33,33 @@ import {
   type ReactNode,
 } from 'react';
 
-import { WEB_JWT_STORAGE_KEY, WEB_LOGIN_STORAGE_KEY } from '../hostConfig';
+import { primeWsTicket } from '../hostConfig';
 
 export interface AuthState {
-  /** Web JWT (kind='web') or null when signed out. Opaque to the SPA. */
-  webJwt: string | null;
-  /** GitHub login hint for display. Sourced from sessionStorage. */
+  /** True when `/api/auth/me` returned 200 on the most recent check. */
+  signedIn: boolean;
+  /** GitHub login from `/api/auth/me`. null when signed out. */
   login: string | null;
-  /** True until the initial silent-refresh attempt has settled. */
+  /** True until the initial `/api/auth/me` probe has settled. */
   loading: boolean;
   /** Hard-redirect to `/api/auth/github/login`. */
   signIn: () => void;
-  /** POST /api/auth/logout, clear sessionStorage, reload. */
+  /** POST /api/auth/logout, reload. */
   signOut: () => Promise<void>;
-  /** Re-read sessionStorage so callers can publish a freshly-stored JWT. */
+  /** Re-run `/api/auth/me`. SignInGate calls this after a callback redirect. */
   refresh: () => Promise<void>;
 }
 
 const AuthCtx = createContext<AuthState | null>(null);
 
-function readStoredJwt(): string | null {
-  if (typeof window === 'undefined') return null;
-  const v = sessionStorage.getItem(WEB_JWT_STORAGE_KEY);
-  return v && v.length > 0 ? v : null;
-}
-
-function readStoredLogin(): string | null {
-  if (typeof window === 'undefined') return null;
-  const v = sessionStorage.getItem(WEB_LOGIN_STORAGE_KEY);
-  return v && v.length > 0 ? v : null;
-}
-
 export interface AuthProviderProps {
   children: ReactNode;
-  /**
-   * Fetch implementation used for `/api/auth/refresh` and `/api/auth/logout`.
-   * Defaults to `window.fetch`. Tests inject a stub.
-   */
+  /** Fetch impl — defaults to window.fetch. Tests inject a stub. */
   fetchImpl?: typeof globalThis.fetch;
   /**
-   * Skip the silent refresh on mount. Set when the SPA was just redirected
-   * back from `/api/auth/github/callback` (SignInGate consumes the URL
-   * fragment first, then calls refresh()).
+   * Skip the initial `/api/auth/me` probe. Set by SignInGate when the SPA
+   * just landed at `?session=ok` and we want to defer the probe to its
+   * `refresh()` call (avoids a redundant round-trip).
    */
   skipInitialRefresh?: boolean;
 }
@@ -81,54 +69,45 @@ export function AuthProvider({
   fetchImpl,
   skipInitialRefresh,
 }: AuthProviderProps) {
-  const [webJwt, setWebJwt] = useState<string | null>(() => readStoredJwt());
-  const [login, setLogin] = useState<string | null>(() => readStoredLogin());
-  const [loading, setLoading] = useState<boolean>(() => {
-    if (skipInitialRefresh) return false;
-    // If we already have a JWT in storage there's nothing to wait for.
-    return readStoredJwt() === null;
-  });
+  const [signedIn, setSignedIn] = useState<boolean>(false);
+  const [login, setLogin] = useState<string | null>(null);
+  const [loading, setLoading] = useState<boolean>(() => !skipInitialRefresh);
 
-  // Keep a stable reference to fetch so we don't refetch on every render.
   const fetchRef = useRef<typeof globalThis.fetch>(
-    fetchImpl ?? (typeof window !== 'undefined' ? window.fetch.bind(window) : (() => {
-      throw new Error('fetch unavailable in this environment');
-    }) as typeof globalThis.fetch),
+    fetchImpl ??
+      (typeof window !== 'undefined'
+        ? window.fetch.bind(window)
+        : ((() => {
+            throw new Error('fetch unavailable in this environment');
+          }) as typeof globalThis.fetch)),
   );
 
   const refresh = useCallback(async () => {
-    const stored = readStoredJwt();
-    if (stored !== null) {
-      setWebJwt(stored);
-      setLogin(readStoredLogin());
-      return;
-    }
-    // Try silent refresh against the HttpOnly cookie.
     try {
-      const res = await fetchRef.current('/api/auth/refresh', {
-        method: 'POST',
+      const res = await fetchRef.current('/api/auth/me', {
+        method: 'GET',
         credentials: 'include',
       });
       if (!res.ok) {
-        setWebJwt(null);
+        setSignedIn(false);
         setLogin(null);
         return;
       }
-      const body = (await res.json()) as { web_jwt?: unknown; login?: unknown };
-      if (typeof body.web_jwt === 'string' && body.web_jwt.length > 0) {
-        sessionStorage.setItem(WEB_JWT_STORAGE_KEY, body.web_jwt);
-        if (typeof body.login === 'string' && body.login.length > 0) {
-          sessionStorage.setItem(WEB_LOGIN_STORAGE_KEY, body.login);
-        }
-        setWebJwt(body.web_jwt);
-        setLogin(typeof body.login === 'string' ? body.login : readStoredLogin());
+      const body = (await res.json()) as { login?: unknown };
+      if (typeof body.login === 'string' && body.login.length > 0) {
+        setSignedIn(true);
+        setLogin(body.login);
+        // Audit F-S-4: prime the ws-ticket cache so the first WebSocket
+        // connect after sign-in does not have to wait on a separate round
+        // trip. Failure here doesn't sink sign-in — getCachedWsTicket
+        // falls through and a later connect will retry primeWsTicket.
+        void primeWsTicket(fetchRef.current);
         return;
       }
-      setWebJwt(null);
+      setSignedIn(false);
       setLogin(null);
     } catch {
-      // Network error / cookie missing / refresh path 401 → signed out.
-      setWebJwt(null);
+      setSignedIn(false);
       setLogin(null);
     }
   }, []);
@@ -145,27 +124,19 @@ export function AuthProvider({
         credentials: 'include',
       });
     } catch {
-      // Best-effort; cookies may already be expired. Continue clearing local state.
+      // best-effort
     }
+    setSignedIn(false);
+    setLogin(null);
     if (typeof window !== 'undefined') {
-      sessionStorage.removeItem(WEB_JWT_STORAGE_KEY);
-      sessionStorage.removeItem(WEB_LOGIN_STORAGE_KEY);
-      // Reload so RuntimeProvider tears down and the SignInGate re-renders
-      // from a clean slate (no stale ws connection).
       window.location.reload();
     }
-    setWebJwt(null);
-    setLogin(null);
   }, []);
 
-  // Initial mount: silent refresh unless caller already populated storage
-  // (SignInGate fragment-consume path) or explicitly opted out.
+  // Initial mount probe — skip when SignInGate is going to drive refresh()
+  // itself (callback landing path).
   useEffect(() => {
     if (skipInitialRefresh) return;
-    if (readStoredJwt() !== null) {
-      setLoading(false);
-      return;
-    }
     let cancelled = false;
     void (async () => {
       await refresh();
@@ -177,8 +148,8 @@ export function AuthProvider({
   }, [refresh, skipInitialRefresh]);
 
   const value = useMemo<AuthState>(
-    () => ({ webJwt, login, loading, signIn, signOut, refresh }),
-    [webJwt, login, loading, signIn, signOut, refresh],
+    () => ({ signedIn, login, loading, signIn, signOut, refresh }),
+    [signedIn, login, loading, signIn, signOut, refresh],
   );
 
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;

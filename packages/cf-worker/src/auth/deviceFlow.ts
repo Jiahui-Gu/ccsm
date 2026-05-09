@@ -27,6 +27,11 @@
  * refresh which keeps the same hash). The daemon already persists tokens
  * to disk, so rotation here is cheap and gives us replay protection.
  *
+ * Signing key: tunnel JWTs are signed with `JWT_REFRESH_SIGNING_KEY` so
+ * that a leaked `JWT_SIGNING_KEY` (web key) cannot mint daemon-class
+ * tokens. middleware.extractTunnelJwt verifies against the same refresh
+ * key — the two MUST match (audit F-S-1, Task #152).
+ *
  * NOT in scope: the actual TunnelDO routing of the resulting JWT (T5).
  */
 import type { AuthEnv } from './bindings';
@@ -238,7 +243,7 @@ export async function handleDevicePoll(req: Request, env: AuthEnv): Promise<Resp
     kind: 'tunnel',
     jti: randomHex(16),
   };
-  const tunnelJwt = await signJwt(claims, env.JWT_SIGNING_KEY);
+  const tunnelJwt = await signJwt(claims, env.JWT_REFRESH_SIGNING_KEY);
 
   return Response.json({
     tunnel_jwt: tunnelJwt,
@@ -325,7 +330,7 @@ export async function handleTunnelRefresh(req: Request, env: AuthEnv): Promise<R
     kind: 'tunnel',
     jti: randomHex(16),
   };
-  const tunnelJwt = await signJwt(claims, env.JWT_SIGNING_KEY);
+  const tunnelJwt = await signJwt(claims, env.JWT_REFRESH_SIGNING_KEY);
 
   return Response.json({
     tunnel_jwt: tunnelJwt,
