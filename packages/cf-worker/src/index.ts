@@ -18,6 +18,17 @@ export interface Env {
    * Default `legacy` so unset / misconfigured deploys never lock users out.
    */
   CCSM_AUTH_MODE?: string;
+  /**
+   * Task #154 (R-49 audit P1, F-A-2): Workers Static Assets binding for the
+   * folded `cc-sm` SPA. Configured in wrangler.toml as
+   * `[assets] directory = "../frontend-web/dist" binding = "ASSETS"`.
+   * Used as a belt-and-suspenders fallback when a request reaches the
+   * Worker's catch-all branch (e.g. an unknown `/foo` path matched by a
+   * future broader `run_worker_first` glob): we defer to the asset server
+   * which honors `not_found_handling = "single-page-application"` and
+   * returns the SPA shell for unknown routes.
+   */
+  ASSETS: Fetcher;
 }
 
 export { TunnelDO } from './tunnel-do';
@@ -171,6 +182,17 @@ export default {
       return r28Res;
     }
 
-    return new Response('Not Found', { status: 404 });
+    // Task #154 (R-49 audit P1, F-A-2): catch-all defers to the Workers
+    // Static Assets binding instead of returning a hard 404. With
+    // `not_found_handling = "single-page-application"` (wrangler.toml), the
+    // asset server returns 200 + index.html for unknown routes so SPA
+    // history-mode deep links resolve to the shell. Real static assets
+    // (`/assets/*`, `/favicon.ico`, etc.) bypass the Worker entirely on the
+    // asset-first fast path because they are not listed in
+    // `run_worker_first`; this branch only runs for paths that *did* invoke
+    // the Worker but didn't match any known dynamic handler above (e.g. a
+    // future broader `run_worker_first` glob, or a `/api/*` request that
+    // fell through the auth dispatch).
+    return env.ASSETS.fetch(req);
   },
 };

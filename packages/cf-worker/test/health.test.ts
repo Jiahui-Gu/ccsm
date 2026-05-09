@@ -26,19 +26,45 @@ describe('cf-worker /health', () => {
   it('returns 200 ok without touching any binding', async () => {
     const res = await worker.fetch(
       new Request('http://127.0.0.1:8787/health'),
-      envThatExplodesOnTunnelAccess(),
+      envThatExplodesOnTunnelAccess() as unknown as Parameters<typeof worker.fetch>[1],
     );
     expect(res.status).toBe(200);
     expect(await res.text()).toBe('ok\n');
   });
 
-  it('still 404s for unknown paths (does not become a permissive proxy)', async () => {
-    // Intentionally pass a real-ish env where TUNNEL access does NOT throw,
-    // so we hit the existing 404 branch without false positives.
+  it('catch-all defers to Workers Static Assets (SPA fallback)', async () => {
+    // Task #154 (R-49 audit P1, F-A-2): unknown paths no longer return a
+    // hard 404 from the Worker. With `[assets] not_found_handling =
+    // "single-page-application"` configured in wrangler.toml, the catch-all
+    // forwards to env.ASSETS so the asset server can serve the SPA shell
+    // (or a real static asset, if the path happens to match one).
+    //
+    // We stub ASSETS as a Fetcher that records the request and returns a
+    // sentinel response. The Worker must call ASSETS.fetch and return its
+    // response unchanged.
+    let assetsHits = 0;
+    let lastUrl = '';
+    const sentinel = new Response('SPA SHELL', {
+      status: 200,
+      headers: { 'content-type': 'text/html' },
+    });
+    const env = {
+      TUNNEL: undefined as unknown as DurableObjectNamespace,
+      ASSETS: {
+        fetch(req: Request | string | URL): Response | Promise<Response> {
+          assetsHits++;
+          lastUrl = typeof req === 'string' ? req : (req as Request).url;
+          return sentinel;
+        },
+      },
+    } as unknown as Parameters<typeof worker.fetch>[1];
     const res = await worker.fetch(
       new Request('http://127.0.0.1:8787/totally-unknown'),
-      { TUNNEL: undefined as unknown as DurableObjectNamespace },
+      env,
     );
-    expect(res.status).toBe(404);
+    expect(assetsHits).toBe(1);
+    expect(lastUrl).toContain('/totally-unknown');
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('SPA SHELL');
   });
 });

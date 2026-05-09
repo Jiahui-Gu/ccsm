@@ -1,22 +1,34 @@
 name: deploy-worker
 
-# Task #776 [S3-T7]: Cloudflare Worker deploy pipeline for cf-worker
-# (TunnelDO browser <-> daemon pairing + frame forward).
+# Task #776 [S3-T7] (initial) + Task #154 [R-49 audit P1, F-A-2] (this rev):
+# Cloudflare Worker deploy pipeline for cf-worker (TunnelDO browser <->
+# daemon pairing + frame forward + folded SPA assets).
+#
+# Background — Task #154: the standalone `cc-sm` Cloudflare Pages project,
+# its Pages Function (`packages/frontend-web/functions/[[path]].ts`), and
+# the deploy-pages.yml workflow have been removed. The `cc-sm` SPA is now
+# served as Workers Static Assets directly from the same Worker that owns
+# TunnelDO (see `packages/cf-worker/wrangler.toml` `[assets]` block).
+# This workflow therefore builds frontend-web (so `packages/frontend-web/dist`
+# exists) before invoking `wrangler deploy`, which uploads both the Worker
+# script and the static-asset bundle in a single atomic deploy.
 #
 # Triggers:
 #   - push to main or working: ship cf-worker on every merge that touches
-#     packages/cf-worker (or pnpm workspace metadata that changes its
-#     resolved deps). Mirrors deploy-pages.yml branch policy: `working`
-#     is the post-v0.1.0 release main-line, `main` is the periodic roll-up.
+#     the Worker, the SPA, or any workspace dep that feeds the SPA build
+#     (mirrors the previous deploy-pages.yml `paths` so SPA-only changes
+#     still ship). Branch policy is unchanged: `working` is the post-v0.1.0
+#     release main-line, `main` is the periodic roll-up.
 #   - workflow_dispatch: manual redeploy from the Actions tab (e.g. after
 #     rotating wrangler secrets or rolling back).
 #
 # NOTE: this workflow file itself is intentionally NOT in `paths` — editing
-# the yml should not retrigger a worker deploy.
+# the yml should not retrigger a deploy.
 #
-# Secrets (already configured on the repo for deploy-pages.yml; reused here
-# — no new secrets required per Task #776 spec):
+# Secrets (no new secrets required vs. the previous two-pipeline split):
 #   - CLOUDFLARE_API_TOKEN: scoped token with Workers:Edit on account.
+#     (The prior token was scoped Pages:Edit + Workers:Edit; reuse it or
+#     re-scope to Workers:Edit only — Pages scope is no longer needed.)
 #   - CLOUDFLARE_ACCOUNT_ID: account containing the cf-worker.
 
 on:
@@ -24,6 +36,10 @@ on:
     branches: [main, working]
     paths:
       - 'packages/cf-worker/**'
+      - 'packages/frontend-web/**'
+      - 'packages/ui/**'
+      - 'packages/core/**'
+      - 'packages/shared/**'
       - 'pnpm-lock.yaml'
       - 'pnpm-workspace.yaml'
   workflow_dispatch:
@@ -57,7 +73,16 @@ jobs:
       - name: Typecheck cf-worker
         run: pnpm -F @ccsm/cf-worker typecheck
 
-      - name: Deploy to Cloudflare Workers
+      # Task #154: build the SPA before `wrangler deploy` so the
+      # `[assets] directory = "../frontend-web/dist"` binding has content
+      # to upload alongside the Worker script.
+      - name: Build workspace deps (shared + core + ui required by frontend-web)
+        run: pnpm -F @ccsm/shared build && pnpm -F @ccsm/core build && pnpm -F @ccsm/ui build
+
+      - name: Build frontend-web (SPA assets bundled into the Worker deploy)
+        run: pnpm -F @ccsm/frontend-web build
+
+      - name: Deploy to Cloudflare Workers (script + static assets)
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
