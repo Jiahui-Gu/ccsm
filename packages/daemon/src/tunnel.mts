@@ -25,6 +25,13 @@
 //     control frames (Task #787) are accepted before hello — they're
 //     injected by the DO regardless of browser pairing and carry no browser
 //     token by design (Task #789, S3-D).
+//   - Multi-sid re-pair (Task #81, R-27): a single SPA reuses one tunnel ws
+//     across multiple sessions. Each New Session re-sends `{type:"hello",
+//     token, sid:<new>}` on the SAME ws. The daemon tracks `currentSid` per
+//     connection; when a hello with a different sid arrives, we tear down
+//     the old browserAttachHandle (so the prior PTY drops its subscriber)
+//     and call onBrowserAttach again with the new sid. Same-sid hello is
+//     idempotent. Token is re-checked on every hello.
 //
 // timingSafeEqual constant-time comparison is reused from auth.mts (NOT
 // reimplemented) to honor the §1 5-tier "use existing in-repo" rule.
@@ -222,6 +229,10 @@ export class TunnelClient {
   private helloSeen = false;
   private browserToken: string | null = null;
   // Task #793 (S3-G): per-connection browser session attachment.
+  // Task #81 (R-27): currentSid tracks the sid of the most-recent hello so
+  // we can detect re-pair (SPA reusing one tunnel ws across sessions) and
+  // tear down the old attach handle before invoking onBrowserAttach again.
+  private currentSid: string | null = null;
   private readonly onBrowserAttach: ((info: BrowserAttachInfo) => BrowserAttachHandle | null) | null;
   private browserAttachHandle: BrowserAttachHandle | null = null;
 
@@ -293,6 +304,7 @@ export class TunnelClient {
     this.state = 'connecting';
     this.helloSeen = false;
     this.browserToken = null;
+    this.currentSid = null;
     this.browserAttachHandle = null;
     let socket: WsLike;
     try {
@@ -332,62 +344,16 @@ export class TunnelClient {
       // already gates HTTP entry — so they MUST be accepted before hello.
       // We sniff text frames for `{type:"http_req"}` first; only "neither
       // hello nor http_req" lands on the rejectHello path.
-      if (!this.helloSeen) {
-        if (isBinary) {
+      //
+      // Task #81 (R-27): every text frame is sniffed for hello, even after
+      // helloSeen, so a paired SPA can re-pair the same tunnel ws to a new
+      // sid (New Session in the SPA). parseHello is cheap (single JSON.parse
+      // + shape check) and runs before the raw onFrame fall-through.
+      if (isBinary) {
+        if (!this.helloSeen) {
           this.rejectHello('binary frame before hello');
           return;
         }
-        const text = (Buffer.isBuffer(raw)
-          ? raw
-          : Array.isArray(raw)
-            ? Buffer.concat(raw)
-            : Buffer.from(raw as ArrayBuffer)).toString('utf8');
-        const ctrl = this.tryParseHttpReq(text);
-        if (ctrl !== null) {
-          // http_req is browser-pairing-independent; handle without flipping
-          // helloSeen so a subsequent browser pairing still requires hello.
-          void this.handleHttpReq(ctrl);
-          return;
-        }
-        const hello = parseHello(text);
-        if (hello === null) {
-          this.rejectHello('malformed hello frame');
-          return;
-        }
-        if (!constantTimeTokenEquals(hello.token, this.token)) {
-          this.rejectHello('bad token in hello');
-          return;
-        }
-        this.helloSeen = true;
-        this.browserToken = hello.token;
-        // R-17 log #8 (Task #45): hello received, record sid + lastSeq.
-        console.error('[ccsm] tunnel: hello received sid=' + (hello.sid ?? '-') + ' lastSeq=' + (hello.lastSeq ?? 0));
-        // Task #793 (S3-G): if the browser supplied a sid in hello, hand the
-        // pairing off to the daemon main so it can wire this tunnel into the
-        // matching per-session PTY ring. The handle owns frame routing for
-        // the rest of this connection.
-        if (this.onBrowserAttach !== null && typeof hello.sid === 'string' && hello.sid.length > 0) {
-          const send = (payload: Uint8Array | Buffer): void => {
-            // Bridge to the underlying ws. Always binary frame back to browser.
-            const buf = Buffer.isBuffer(payload)
-              ? payload
-              : Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength);
-            this.send(buf);
-          };
-          try {
-            this.browserAttachHandle = this.onBrowserAttach({
-              sid: hello.sid,
-              lastSeq: hello.lastSeq ?? 0,
-              send,
-            });
-          } catch (err) {
-            console.warn('[ccsm/tunnel] onBrowserAttach threw:', (err as Error).message);
-            this.browserAttachHandle = null;
-          }
-        }
-        return;
-      }
-      if (isBinary) {
         // RawData covers Buffer | ArrayBuffer | Buffer[]. Normalize to Buffer.
         let buf: Buffer;
         if (Buffer.isBuffer(raw)) {
@@ -406,25 +372,40 @@ export class TunnelClient {
           return;
         }
         this.onFrame(buf);
-      } else {
-        const buf = Buffer.isBuffer(raw)
-          ? raw
-          : Array.isArray(raw)
-            ? Buffer.concat(raw)
-            : Buffer.from(raw as ArrayBuffer);
-        const text = buf.toString('utf8');
-        // Task #787: try to parse text frame as an http_req control frame
-        // before falling through to the raw S3-T6 OUTPUT/INPUT path. We only
-        // consider it a control frame if it parses as JSON with `type:
-        // "http_req"`; everything else (raw text output, frames lacking
-        // `type`) flows through onFrame untouched.
-        const ctrl = this.tryParseHttpReq(text);
-        if (ctrl !== null) {
-          void this.handleHttpReq(ctrl);
+        return;
+      }
+
+      // Text frame path.
+      const text = (Buffer.isBuffer(raw)
+        ? raw
+        : Array.isArray(raw)
+          ? Buffer.concat(raw)
+          : Buffer.from(raw as ArrayBuffer)).toString('utf8');
+
+      // 1) http_req control frame — always handled (browser-pairing-independent).
+      const ctrl = this.tryParseHttpReq(text);
+      if (ctrl !== null) {
+        void this.handleHttpReq(ctrl);
+        return;
+      }
+
+      // 2) hello frame — always sniffed, so SPA re-pair (Task #81) works.
+      const hello = parseHello(text);
+      if (hello !== null) {
+        if (!constantTimeTokenEquals(hello.token, this.token)) {
+          this.rejectHello('bad token in hello');
           return;
         }
-        this.onFrame(text);
+        this.handleHello(hello);
+        return;
       }
+
+      // 3) Non-control non-hello text. Gated by helloSeen.
+      if (!this.helloSeen) {
+        this.rejectHello('malformed hello frame');
+        return;
+      }
+      this.onFrame(text);
     });
 
     socket.on('error', (err) => {
@@ -436,6 +417,7 @@ export class TunnelClient {
       this.ws = null;
       this.helloSeen = false;
       this.browserToken = null;
+      this.currentSid = null;
       // Task #793 (S3-G): tear down per-session attachment.
       if (this.browserAttachHandle !== null) {
         try {
@@ -455,6 +437,63 @@ export class TunnelClient {
       console.error('[ccsm] tunnel: ws close frameCount=' + frameCount + ' code=' + code);
       this.scheduleReconnect();
     });
+  }
+
+  /**
+   * Handle a token-validated hello frame. Idempotent for same sid; performs
+   * a re-pair (tear down old attach handle + invoke onBrowserAttach again)
+   * when sid changes. Task #81 (R-27).
+   */
+  private handleHello(hello: HelloFrame): void {
+    this.helloSeen = true;
+    this.browserToken = hello.token;
+    const newSid = typeof hello.sid === 'string' && hello.sid.length > 0
+      ? hello.sid
+      : null;
+
+    // Same sid (incl. both null / both same string) → idempotent. Don't
+    // re-attach; preserves PTY subscription and replay cursor.
+    if (newSid === this.currentSid) {
+      // R-17 log #8 (Task #45): hello received, record sid + lastSeq.
+      console.error('[ccsm] tunnel: hello received sid=' + (hello.sid ?? '-') + ' lastSeq=' + (hello.lastSeq ?? 0) + ' (idempotent)');
+      return;
+    }
+
+    // sid changed (null→sid, sid→sid', or sid→null). Tear down old handle
+    // first so the prior PTY drops its subscriber before the new one binds.
+    if (this.browserAttachHandle !== null) {
+      try {
+        this.browserAttachHandle.onClose();
+      } catch (err) {
+        console.warn('[ccsm/tunnel] attach onClose threw on re-pair:', (err as Error).message);
+      }
+      this.browserAttachHandle = null;
+    }
+
+    this.currentSid = newSid;
+    // R-17 log #8 (Task #45): hello received, record sid + lastSeq.
+    console.error('[ccsm] tunnel: hello received sid=' + (hello.sid ?? '-') + ' lastSeq=' + (hello.lastSeq ?? 0));
+
+    // Task #793 (S3-G): bind new attach handle if SPA supplied a sid.
+    if (this.onBrowserAttach !== null && newSid !== null) {
+      const send = (payload: Uint8Array | Buffer): void => {
+        // Bridge to the underlying ws. Always binary frame back to browser.
+        const buf = Buffer.isBuffer(payload)
+          ? payload
+          : Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength);
+        this.send(buf);
+      };
+      try {
+        this.browserAttachHandle = this.onBrowserAttach({
+          sid: newSid,
+          lastSeq: hello.lastSeq ?? 0,
+          send,
+        });
+      } catch (err) {
+        console.warn('[ccsm/tunnel] onBrowserAttach threw:', (err as Error).message);
+        this.browserAttachHandle = null;
+      }
+    }
   }
 
   private tryParseHttpReq(text: string): HttpReqFrame | null {
