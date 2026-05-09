@@ -73,6 +73,24 @@ interface HelloFrame {
   sid?: string;
   /** Task #793: ring-buffer replay cursor (`lastSeq` query param, default 0). */
   lastSeq?: number;
+  /**
+   * Task #133 (S4-T6): cloud-authenticated browser identity. When present,
+   * a daemon running with `CCSM_TRUST_TUNNEL=1` accepts the hello on the
+   * strength of this field alone (cloud has already verified the OAuth
+   * session via the worker's JWT mint endpoint). Older daemons ignore the
+   * field. Optional during S4 rollout — the OAuth flow that populates it
+   * lands in T3/T4; T6 only carries the wire field.
+   */
+  identity?: BrowserIdentity;
+}
+
+/**
+ * Browser identity emitted to the daemon in trust-tunnel mode (Task #133,
+ * S4-T6). Mirrors the `BrowserIdentity` shape on the daemon side.
+ */
+interface BrowserIdentity {
+  login: string;
+  github_id: string;
 }
 
 /**
@@ -116,6 +134,13 @@ interface BrowserAttachment {
    * DO can route daemon→browser binary frames by sid (envelope header) and
    * label browser→daemon binary frames before forwarding. */
   sid: string;
+  /**
+   * Task #133 (S4-T6): cloud-authenticated identity attached to this
+   * browser ws. Forwarded to the daemon inside the hello frame; the daemon
+   * accepts it (in lieu of token validation) when running with
+   * `CCSM_TRUST_TUNNEL=1`. Undefined until the OAuth wire-up (T3/T4) lands.
+   */
+  identity?: BrowserIdentity;
 }
 
 interface DaemonAttachment {
@@ -124,8 +149,16 @@ interface DaemonAttachment {
 
 type SocketAttachment = BrowserAttachment | DaemonAttachment;
 
-function buildHelloFrame(token: string, sid: string, lastSeq: number): string {
+function buildHelloFrame(
+  token: string,
+  sid: string,
+  lastSeq: number,
+  identity?: BrowserIdentity,
+): string {
   const frame: HelloFrame = { type: 'hello', token, sid, lastSeq };
+  if (identity !== undefined) {
+    frame.identity = identity;
+  }
   return JSON.stringify(frame);
 }
 
@@ -349,7 +382,16 @@ export class TunnelDO extends DurableObject<Env> {
       // daemon path above. readyState filtering picks the live one.
       // Task #105 (R-41): tag the browser ws with `browser-sid:<sid>` so
       // post-hibernation lookups can recover the right ws per sid.
-      const attachment: BrowserAttachment = { role: 'browser', token: extracted.token, sid };
+      // Task #133 (S4-T6): identity comes from the cloud OAuth session once
+      // T3/T4 lands. Until then, leave it undefined — the daemon stays on
+      // the legacy token-validation path. When an identity IS available
+      // (future cloud-issued tunnel credential) it will be plumbed through
+      // here and surfaced inside the hello frame so trust-tunnel daemons
+      // can authenticate without re-validating the per-browser token.
+      const identity: BrowserIdentity | undefined = undefined;
+      const attachment: BrowserAttachment = identity !== undefined
+        ? { role: 'browser', token: extracted.token, sid, identity }
+        : { role: 'browser', token: extracted.token, sid };
       this.state.acceptWebSocket(server, [TAG_BROWSER, TAG_BROWSER_SID_PREFIX + sid]);
       server.serializeAttachment(attachment);
       // R-17 log #2 (Task #45): browser ws accepted, about to emit hello.
@@ -357,7 +399,7 @@ export class TunnelDO extends DurableObject<Env> {
 
       // Emit hello as the first daemon-bound frame after this browser pair.
       try {
-        daemon.send(buildHelloFrame(extracted.token, sid, lastSeq));
+        daemon.send(buildHelloFrame(extracted.token, sid, lastSeq, identity));
         // R-17 log #3 (Task #45): hello successfully sent to daemon.
         console.log('[do] hello sent to daemon');
       } catch (err) {

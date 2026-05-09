@@ -905,4 +905,126 @@ describe('TunnelClient', () => {
     expect(sockets[0].closedCalls).toHaveLength(1);
     expect(sockets[0].closedCalls[0].code).toBe(1008);
   });
+
+  // ---- Task #133 (S4-T6): CCSM_TRUST_TUNNEL identity acceptance ---------
+
+  describe('trust-tunnel mode (CCSM_TRUST_TUNNEL=1)', () => {
+    const ORIGINAL_ENV = process.env.CCSM_TRUST_TUNNEL;
+
+    beforeEach(() => {
+      process.env.CCSM_TRUST_TUNNEL = '1';
+    });
+
+    afterEach(() => {
+      if (ORIGINAL_ENV === undefined) {
+        delete process.env.CCSM_TRUST_TUNNEL;
+      } else {
+        process.env.CCSM_TRUST_TUNNEL = ORIGINAL_ENV;
+      }
+    });
+
+    it('accepts hello with identity and no token', () => {
+      const attachCalls: Array<{ sid: string; identity?: { login: string; github_id: string } }> = [];
+      const client = new TunnelClient({
+        url: 'wss://x',
+        // daemon-side token kept for legacy callers but not consulted in trust mode.
+        token: 'ignored-in-trust-mode',
+        onFrame: () => {},
+        wsFactory: factory,
+        onBrowserAttach: ({ sid, identity }) => {
+          attachCalls.push({ sid, identity });
+          return { onFrame: () => {}, onClose: () => {} };
+        },
+      });
+      client.start();
+      sockets[0].open();
+
+      sockets[0].pushText(JSON.stringify({
+        type: 'hello',
+        sid: 'sess-A',
+        lastSeq: 0,
+        identity: { login: 'octocat', github_id: '583231' },
+      }));
+
+      expect(sockets[0].closedCalls).toHaveLength(0);
+      expect(attachCalls).toEqual([
+        { sid: 'sess-A', identity: { login: 'octocat', github_id: '583231' } },
+      ]);
+      expect(client.getBrowserIdentity('sess-A')).toEqual({
+        login: 'octocat',
+        github_id: '583231',
+      });
+      // Legacy browserToken stays null when no token rode along.
+      expect(client.getBrowserToken()).toBeNull();
+    });
+
+    it('rejects hello with neither token nor identity (1008)', () => {
+      const client = new TunnelClient({
+        url: 'wss://x',
+        token: 't',
+        onFrame: () => {},
+        wsFactory: factory,
+      });
+      client.start();
+      sockets[0].open();
+
+      // Note: parseHello rejects {type:'hello'} with no token+no identity
+      // outright, so the daemon falls into the "malformed hello frame"
+      // close path. Either way the contract is the same: ws is closed 1008.
+      sockets[0].pushText(JSON.stringify({ type: 'hello', sid: 'sess-A' }));
+
+      expect(sockets[0].closedCalls).toHaveLength(1);
+      expect(sockets[0].closedCalls[0].code).toBe(1008);
+    });
+  });
+
+  it('legacy mode (CCSM_TRUST_TUNNEL unset): hello with token + no identity is accepted (back-compat)', () => {
+    const prior = process.env.CCSM_TRUST_TUNNEL;
+    delete process.env.CCSM_TRUST_TUNNEL;
+    try {
+      const frames: Array<Buffer | string> = [];
+      const client = new TunnelClient({
+        url: 'wss://x',
+        token: 'good',
+        onFrame: (d) => frames.push(d),
+        wsFactory: factory,
+      });
+      client.start();
+      sockets[0].open();
+      sockets[0].pushText(JSON.stringify({ type: 'hello', token: 'good' }));
+      expect(sockets[0].closedCalls).toHaveLength(0);
+      expect(client.getBrowserToken()).toBe('good');
+
+      sockets[0].pushText('after');
+      expect(frames).toEqual(['after']);
+    } finally {
+      if (prior !== undefined) process.env.CCSM_TRUST_TUNNEL = prior;
+    }
+  });
+
+  it('legacy mode: hello with identity but no token is rejected (1008) — env opt-in required', () => {
+    const prior = process.env.CCSM_TRUST_TUNNEL;
+    delete process.env.CCSM_TRUST_TUNNEL;
+    try {
+      const client = new TunnelClient({
+        url: 'wss://x',
+        token: 'good',
+        onFrame: () => {},
+        wsFactory: factory,
+      });
+      client.start();
+      sockets[0].open();
+
+      sockets[0].pushText(JSON.stringify({
+        type: 'hello',
+        sid: 'sess-A',
+        identity: { login: 'octocat', github_id: '583231' },
+      }));
+
+      expect(sockets[0].closedCalls).toHaveLength(1);
+      expect(sockets[0].closedCalls[0].code).toBe(1008);
+    } finally {
+      if (prior !== undefined) process.env.CCSM_TRUST_TUNNEL = prior;
+    }
+  });
 });
