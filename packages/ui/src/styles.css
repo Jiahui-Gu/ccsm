@@ -259,3 +259,168 @@ button {
   height: 100%;
   width: 100%;
 }
+
+/* DaemonStatusOverlay (Task #137 / #112-T4) — full-viewport pre-Ready panel
+ * shown by the Tauri shell while the daemon is starting / tunnel is
+ * reconnecting / auth is pending / startup has failed. */
+.daemon-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: #0d0d0d;
+  color: #e5e5e5;
+  z-index: 10000;
+}
+
+.daemon-overlay--info {
+  background: #0d0d0d;
+  color: #e5e5e5;
+}
+
+.daemon-overlay--error {
+  background: #1a0d0d;
+  color: #f5d0d0;
+}
+
+.daemon-overlay--auth {
+  background: #0d141a;
+  color: #d0e0f5;
+}
+
+.daemon-overlay__inner {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 16px;
+  max-width: 480px;
+  width: 100%;
+}
+
+.daemon-overlay__brand {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  opacity: 0.7;
+  text-transform: lowercase;
+}
+
+.daemon-overlay__row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+}
+
+.daemon-overlay__message {
+  font-size: 14px;
+}
+
+.daemon-overlay__spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  opacity: 0.8;
+  animation: daemon-overlay-spin 0.9s linear infinite;
+}
+
+@keyframes daemon-overlay-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.daemon-overlay__banner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px 20px;
+  border-radius: 8px;
+  border: 1px solid currentColor;
+  width: 100%;
+}
+
+.daemon-overlay__banner--error {
+  border-color: #5a2424;
+  background: #2a1414;
+}
+
+.daemon-overlay__banner--auth {
+  border-color: #244a5a;
+  background: #14242a;
+}
+
+.daemon-overlay__title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.daemon-overlay__detail {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.daemon-overlay__hint {
+  margin: 0;
+  font-size: 12px;
+  opacity: 0.75;
+}
+
+.daemon-overlay__retry {
+  font-size: 12px;
+  opacity: 0.75;
+}
+
+.daemon-overlay__uri {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  word-break: break-all;
+}
+
+.daemon-overlay__user-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  user-select: all;
+}
+
+.daemon-overlay__actions {
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.daemon-overlay__btn {
+  appearance: none;
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.daemon-overlay__btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.daemon-overlay__btn:focus-visible {
+  outline: 2px solid #4a90e2;
+  outline-offset: 2px;
+}
