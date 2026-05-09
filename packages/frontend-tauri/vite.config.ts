@@ -17,6 +17,7 @@ export default defineConfig({
   server: {
     port: DEV_PORT,
     strictPort: true,
+    host: '127.0.0.1',
   },
   // Tauri expects the bundled frontend at `../dist` relative to src-tauri/.
   build: {
