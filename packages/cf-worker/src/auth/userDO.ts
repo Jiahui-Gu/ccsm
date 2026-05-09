@@ -26,6 +26,7 @@ import type { AuthEnv } from './bindings';
 const KEY_GITHUB_ID = 'github_id';
 const KEY_LOGIN = 'login';
 const KEY_REFRESH_HASH = 'refresh_token_hash';
+const KEY_TUNNEL_REFRESH_HASH = 'tunnel_refresh_hash';
 const KEY_CREATED_AT = 'created_at';
 
 export interface UserLoginRecord {
@@ -91,6 +92,27 @@ export class UserDO extends DurableObject<AuthEnv> {
   }
 
   /**
+   * S4-T4 (Task #142): tunnel-side refresh-token hash. Stored under a
+   * separate key from the web refresh hash so the two flows are independent
+   * (revoking web doesn't kill the daemon, and vice versa). Caller hashes.
+   */
+  async setTunnelRefreshTokenHash(hash: string): Promise<void> {
+    await this.storage.put(KEY_TUNNEL_REFRESH_HASH, hash);
+  }
+
+  /** Constant-time-ish compare against the stored tunnel-refresh hash. */
+  async verifyTunnelRefreshTokenHash(hash: string): Promise<boolean> {
+    const stored = await this.storage.get<string>(KEY_TUNNEL_REFRESH_HASH);
+    if (stored === undefined) return false;
+    if (stored.length !== hash.length) return false;
+    let mismatch = 0;
+    for (let i = 0; i < stored.length; i++) {
+      mismatch |= stored.charCodeAt(i) ^ hash.charCodeAt(i);
+    }
+    return mismatch === 0;
+  }
+
+  /**
    * Internal RPC fetch handler. Other Worker code calls
    * `env.USER_DO.get(id).fetch(new Request('https://do/<method>', ...))`.
    *
@@ -128,6 +150,22 @@ export class UserDO extends DurableObject<AuthEnv> {
           return new Response('bad request', { status: 400 });
         }
         const ok = await this.verifyRefreshTokenHash(body.hash);
+        return Response.json({ ok });
+      }
+      if (req.method === 'POST' && path === '/setTunnelRefreshTokenHash') {
+        const body = await req.json<{ hash?: unknown }>();
+        if (typeof body.hash !== 'string') {
+          return new Response('bad request', { status: 400 });
+        }
+        await this.setTunnelRefreshTokenHash(body.hash);
+        return new Response(null, { status: 204 });
+      }
+      if (req.method === 'POST' && path === '/verifyTunnelRefreshTokenHash') {
+        const body = await req.json<{ hash?: unknown }>();
+        if (typeof body.hash !== 'string') {
+          return new Response('bad request', { status: 400 });
+        }
+        const ok = await this.verifyTunnelRefreshTokenHash(body.hash);
         return Response.json({ ok });
       }
       if (req.method === 'POST' && path === '/revoke') {
