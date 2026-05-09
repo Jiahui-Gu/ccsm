@@ -382,13 +382,18 @@ export class TunnelDO extends DurableObject<Env> {
       // daemon path above. readyState filtering picks the live one.
       // Task #105 (R-41): tag the browser ws with `browser-sid:<sid>` so
       // post-hibernation lookups can recover the right ws per sid.
-      // Task #133 (S4-T6): identity comes from the cloud OAuth session once
-      // T3/T4 lands. Until then, leave it undefined — the daemon stays on
-      // the legacy token-validation path. When an identity IS available
-      // (future cloud-issued tunnel credential) it will be plumbed through
-      // here and surfaced inside the hello frame so trust-tunnel daemons
-      // can authenticate without re-validating the per-browser token.
-      const identity: BrowserIdentity | undefined = undefined;
+      // Task #133 (S4-T6) + Task #136 (S4-T5): in jwt-mode the cf-worker
+      // verifies the browser's web JWT and injects the resolved identity
+      // via `X-CCSM-Identity-Login` / `X-CCSM-Identity-Id` request headers
+      // before forwarding into this DO. In legacy mode (no JWT, S3-era
+      // smoke flow) the headers are absent and identity stays undefined —
+      // the daemon then falls back to validating the bearer token itself.
+      const idLogin = req.headers.get('X-CCSM-Identity-Login');
+      const idGithub = req.headers.get('X-CCSM-Identity-Id');
+      const identity: BrowserIdentity | undefined =
+        idLogin !== null && idGithub !== null
+          ? { login: idLogin, github_id: idGithub }
+          : undefined;
       const attachment: BrowserAttachment = identity !== undefined
         ? { role: 'browser', token: extracted.token, sid, identity }
         : { role: 'browser', token: extracted.token, sid };

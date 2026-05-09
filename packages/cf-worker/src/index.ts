@@ -10,6 +10,14 @@ export interface Env {
   JWT_SIGNING_KEY: string;
   JWT_REFRESH_SIGNING_KEY: string;
   USER_DO: DurableObjectNamespace;
+  /**
+   * S4-T5 (Task #136): auth mode toggle. `legacy` keeps the S3-era token-
+   * based flow with a single shared TunnelDO keyed by `'default'`. `jwt`
+   * enforces JWT verification on /ws/*, /tunnel/*, /api/*, /token and
+   * routes each user into a per-user TunnelDO id (`user:<github_id>`).
+   * Default `legacy` so unset / misconfigured deploys never lock users out.
+   */
+  CCSM_AUTH_MODE?: string;
 }
 
 export { TunnelDO } from './tunnel-do';
@@ -19,6 +27,31 @@ export { UserDO } from './auth/userDO';
 
 import { dispatchAuth } from './auth/webOauth';
 import { dispatchDevice } from './auth/deviceFlow';
+import {
+  extractTunnelJwt,
+  extractWebJwt,
+  getAuthMode,
+  getUserDoIdName,
+} from './auth/middleware';
+import type { AuthEnv } from './auth/bindings';
+
+/**
+ * S4-T5 (Task #136): clone the incoming request with cf-worker-injected
+ * identity headers so the TunnelDO can echo them into the daemon hello
+ * frame (Task #133 wire format). Browser ws path only — the daemon path
+ * does not need identity injection (the tunnel JWT itself carries login +
+ * github_id and the daemon already trusts the cloud-issued token).
+ */
+function withIdentityHeaders(
+  req: Request,
+  login: string,
+  github_id: string,
+): Request {
+  const headers = new Headers(req.headers);
+  headers.set('X-CCSM-Identity-Login', login);
+  headers.set('X-CCSM-Identity-Id', github_id);
+  return new Request(req, { headers });
+}
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
@@ -52,13 +85,31 @@ export default {
       return new Response('Not Found', { status: 404 });
     }
 
-    if (
-      (url.pathname === '/ws/default' || url.pathname === '/tunnel/default') &&
-      isUpgrade
-    ) {
-      // Route both directions into the same DO instance keyed by 'default'
-      // so the daemon ws and browser ws end up paired in one TunnelDO.
-      // Multi-tunnel routing (per-user / per-pairing-id) is future work.
+    // S4-T5 (Task #136): mode toggle. In `legacy` (default, current
+    // production) the routing below behaves exactly as before: single shared
+    // DO keyed by `'default'`, no JWT check. In `jwt` we extract + verify
+    // the per-user JWT, derive the per-user DO id, and inject identity
+    // headers (browser path) before forwarding into the DO.
+    const mode = getAuthMode(env);
+    const authEnv = env as AuthEnv;
+
+    if (url.pathname === '/ws/default' && isUpgrade) {
+      if (mode === 'jwt') {
+        const claims = await extractWebJwt(req, authEnv);
+        if (claims === null) {
+          // Browsers cannot read 401 bodies on a ws handshake reliably; the
+          // expected UX is a close frame after upgrade. We can't open the
+          // socket from the worker layer (TunnelDO does), so refuse the
+          // upgrade with 401 here. The SPA's WebSocket onclose handler
+          // will surface this as auth failure to the user.
+          return new Response('unauthorized', { status: 401 });
+        }
+        const id = env.TUNNEL.idFromName(getUserDoIdName(claims.sub));
+        const stub = env.TUNNEL.get(id);
+        console.log('[worker] route /ws/default upgrade=true mode=jwt user=' + claims.login);
+        return stub.fetch(withIdentityHeaders(req, claims.login, claims.sub));
+      }
+      // legacy: single shared DO, no JWT check.
       const id = env.TUNNEL.idFromName('default');
       const stub = env.TUNNEL.get(id);
       // R-17 log #12 (Task #45): record ws-route entry into the DO stub.
@@ -70,15 +121,43 @@ export default {
       return stub.fetch(req);
     }
 
+    if (url.pathname === '/tunnel/default' && isUpgrade) {
+      if (mode === 'jwt') {
+        const claims = await extractTunnelJwt(req, authEnv);
+        if (claims === null) {
+          return new Response('unauthorized', { status: 401 });
+        }
+        const id = env.TUNNEL.idFromName(getUserDoIdName(claims.sub));
+        const stub = env.TUNNEL.get(id);
+        console.log('[worker] route /tunnel/default upgrade=true mode=jwt user=' + claims.login + ' jti=' + claims.jti);
+        // Daemon side does not need X-CCSM-Identity-* headers — the daemon
+        // is the trusted side; identity is injected only on the browser
+        // path (so the DO can echo it into the daemon-bound hello frame).
+        return stub.fetch(req);
+      }
+      const id = env.TUNNEL.idFromName('default');
+      const stub = env.TUNNEL.get(id);
+      console.log('[worker] route ' + url.pathname + ' upgrade=' + isUpgrade);
+      return stub.fetch(req);
+    }
+
     // Task #787 (S3-C): REST `/api/*` and `/token` flow through the same DO
     // instance, which serializes them as http_req control frames over the
     // daemon-dialed ws and awaits the matching http_res. The browser only
     // ever talks to cc-sm.pages.dev; the DO bridges to the NAT'd daemon.
     if (url.pathname.startsWith('/api/') || url.pathname === '/token') {
-      const id = env.TUNNEL.idFromName('default');
+      let doIdName = 'default';
+      if (mode === 'jwt') {
+        const claims = await extractWebJwt(req, authEnv);
+        if (claims === null) {
+          return new Response('unauthorized', { status: 401 });
+        }
+        doIdName = getUserDoIdName(claims.sub);
+      }
+      const id = env.TUNNEL.idFromName(doIdName);
       const stub = env.TUNNEL.get(id);
       // R-17 log #12 (Task #45): record HTTP-mux route entry into the DO stub.
-      console.log('[worker] route ' + url.pathname + ' upgrade=' + isUpgrade);
+      console.log('[worker] route ' + url.pathname + ' upgrade=' + isUpgrade + ' mode=' + mode);
       // R-28 (Task #85): /token 502 取证 — log each /token request entry +
       // upstream response status, including method + the cf-ray + the
       // request id from cf headers so we can correlate with the DO log.
