@@ -16,6 +16,44 @@ const TAG_DAEMON = 'daemon';
 const TAG_BROWSER = 'browser';
 
 /**
+ * Per-browser tag prefix (Task #105, R-41). The browser ws is registered
+ * with `[TAG_BROWSER, TAG_BROWSER_SID + sid]` so the DO can recover the
+ * correct ws per sid post-hibernation via `state.getWebSockets(tag)`. We
+ * keep TAG_BROWSER on the same ws too so legacy "list every browser"
+ * lookups still work.
+ */
+const TAG_BROWSER_SID_PREFIX = 'browser-sid:';
+
+/** Bound on inbound sid-envelope sidLen — must match daemon-side helper. */
+const ENVELOPE_MAX_SID_LEN = 64;
+
+function encodeSidEnvelope(sid: string, payload: ArrayBuffer | Uint8Array): Uint8Array {
+  const sidBytes = new TextEncoder().encode(sid);
+  if (sidBytes.length === 0 || sidBytes.length > ENVELOPE_MAX_SID_LEN) {
+    throw new Error('encodeSidEnvelope: bad sid length ' + sidBytes.length);
+  }
+  const payloadView = payload instanceof Uint8Array
+    ? payload
+    : new Uint8Array(payload);
+  const out = new Uint8Array(1 + sidBytes.length + payloadView.byteLength);
+  out[0] = sidBytes.length;
+  out.set(sidBytes, 1);
+  out.set(payloadView, 1 + sidBytes.length);
+  return out;
+}
+
+function decodeSidEnvelope(buf: ArrayBuffer): { sid: string; payload: Uint8Array } | null {
+  const view = new Uint8Array(buf);
+  if (view.byteLength < 2) return null;
+  const sidLen = view[0] ?? 0;
+  if (sidLen === 0 || sidLen > ENVELOPE_MAX_SID_LEN) return null;
+  if (view.byteLength < 1 + sidLen) return null;
+  const sid = new TextDecoder().decode(view.subarray(1, 1 + sidLen));
+  const payload = view.subarray(1 + sidLen);
+  return { sid, payload };
+}
+
+/**
  * Hello control frame the DO injects ahead of any browser→daemon traffic so
  * the daemon can run the browser-presented token through its existing
  * classifyOrigin / token check path (Task #782, S3-T6).
@@ -74,6 +112,10 @@ interface PendingHttp {
 interface BrowserAttachment {
   role: 'browser';
   token: string;
+  /** Task #105 (R-41): sid this browser ws is paired with. Required so the
+   * DO can route daemon→browser binary frames by sid (envelope header) and
+   * label browser→daemon binary frames before forwarding. */
+  sid: string;
 }
 
 interface DaemonAttachment {
@@ -200,13 +242,32 @@ export class TunnelDO extends DurableObject<Env> {
     return undefined;
   }
 
-  /** Recover the browser socket post-hibernation, or undefined if none. */
-  private getBrowserSocket(): WebSocket | undefined {
+  /** Recover the browser socket post-hibernation, or undefined if none.
+   *
+   * Task #105 (R-41): wave-2 supports multiple concurrent browser ws (one
+   * per sid) attached to the same DO. Pass `sid` to look up the specific
+   * browser ws; without it we return any OPEN browser ws (legacy callers
+   * that don't yet route by sid). The sid-indexed lookup uses the per-ws
+   * tag `browser-sid:<sid>` set at acceptWebSocket time. */
+  private getBrowserSocket(sid?: string): WebSocket | undefined {
+    if (sid !== undefined) {
+      const tagged = this.state.getWebSockets(TAG_BROWSER_SID_PREFIX + sid);
+      for (const ws of tagged) {
+        if (ws.readyState === WebSocket.OPEN) return ws;
+      }
+      return undefined;
+    }
     const arr = this.state.getWebSockets(TAG_BROWSER);
     for (const ws of arr) {
       if (ws.readyState === WebSocket.OPEN) return ws;
     }
     return undefined;
+  }
+
+  /** Return all currently-OPEN browser ws (Task #105 R-41 hibernation diag). */
+  private getAllBrowserSockets(): WebSocket[] {
+    const arr = this.state.getWebSockets(TAG_BROWSER);
+    return arr.filter((ws) => ws.readyState === WebSocket.OPEN);
   }
 
   override async fetch(req: Request): Promise<Response> {
@@ -286,8 +347,10 @@ export class TunnelDO extends DurableObject<Env> {
 
       // Don't proactively close any prior browser ws — same reasoning as the
       // daemon path above. readyState filtering picks the live one.
-      const attachment: BrowserAttachment = { role: 'browser', token: extracted.token };
-      this.state.acceptWebSocket(server, [TAG_BROWSER]);
+      // Task #105 (R-41): tag the browser ws with `browser-sid:<sid>` so
+      // post-hibernation lookups can recover the right ws per sid.
+      const attachment: BrowserAttachment = { role: 'browser', token: extracted.token, sid };
+      this.state.acceptWebSocket(server, [TAG_BROWSER, TAG_BROWSER_SID_PREFIX + sid]);
       server.serializeAttachment(attachment);
       // R-17 log #2 (Task #45): browser ws accepted, about to emit hello.
       console.log('[do] browser ws accepted sid=' + sid + ' token=' + extracted.token.slice(0, 6));
@@ -331,7 +394,7 @@ export class TunnelDO extends DurableObject<Env> {
     if (att.role === 'daemon') {
       this.handleDaemonMessage(message);
     } else {
-      this.handleBrowserMessage(message);
+      this.handleBrowserMessage(message, att.sid);
     }
   }
 
@@ -368,34 +431,73 @@ export class TunnelDO extends DurableObject<Env> {
         this.completeHttpRes(ctrl);
         return;
       }
+      // Hello / other control text frames are passed to the (single, legacy)
+      // browser ws if any. With wave-2 routing the daemon doesn't send text
+      // frames browser-ward (PTY data is binary + sid-enveloped) — this
+      // branch only fires for legacy / debug text frames. Pick first OPEN.
+      const browser = this.getBrowserSocket();
+      if (browser !== undefined) {
+        try { browser.send(data); } catch { /* ignore */ }
+      }
+      return;
     }
-    const browser = this.getBrowserSocket();
-    if (browser !== undefined) {
-      try { browser.send(data); } catch { /* browser may have just dropped */ }
+    // Task #105 (R-41): binary frame from daemon → strip sid envelope →
+    // route to the browser ws that paired on that sid. Drop with a log if
+    // envelope is malformed or the sid is unknown (browser may have just
+    // closed; daemon will see ws-close back-pressure on its own).
+    const env = decodeSidEnvelope(data);
+    if (env === null) {
+      console.log('[do] drop daemon->browser binary: malformed sid envelope (len=' + len + ')');
+      return;
     }
+    const browser = this.getBrowserSocket(env.sid);
+    if (browser === undefined) {
+      const known = this.getAllBrowserSockets().length;
+      console.log('[do] drop daemon->browser binary: no browser for sid=' + env.sid + ' (open browsers=' + known + ')');
+      return;
+    }
+    try {
+      // Strip envelope before delivering to the browser — the browser ws
+      // protocol is plain encoded frames (@ccsm/shared.encodeFrame output).
+      browser.send(env.payload);
+    } catch { /* browser may have just dropped */ }
   }
 
-  private handleBrowserMessage(data: string | ArrayBuffer): void {
+  private handleBrowserMessage(data: string | ArrayBuffer, sid: string): void {
     // R-17 log #6 (Task #45): direction + length for every browser→daemon frame.
     const len = typeof data === 'string' ? data.length : data.byteLength;
-    console.log('[do] msg dir=browser->daemon len=' + len);
+    console.log('[do] msg dir=browser->daemon len=' + len + ' sid=' + sid);
     const daemon = this.getDaemonSocket();
-    if (daemon !== undefined) {
+    if (daemon === undefined) return;
+    if (typeof data === 'string') {
+      // Text frames from browser are not used in current protocol; forward
+      // raw for forward-compat (no sid header — text frames stay control).
       try { daemon.send(data); } catch { /* daemon may have just dropped */ }
+      return;
     }
+    // Task #105 (R-41): wrap browser→daemon binary frame in sid envelope so
+    // the daemon can route INPUT/RESIZE/PAUSE/RESUME into the right per-sid
+    // PTY when multiple browser tabs share one tunnel ws.
+    let envelope: Uint8Array;
+    try {
+      envelope = encodeSidEnvelope(sid, data);
+    } catch (err) {
+      console.log('[do] drop browser->daemon binary: envelope encode failed sid=' + sid + ' err=' + String(err));
+      return;
+    }
+    try { daemon.send(envelope); } catch { /* daemon may have just dropped */ }
   }
 
   private handleDaemonClose(): void {
-    const browser = this.getBrowserSocket();
-    if (browser !== undefined) {
+    // Task #105 (R-41): close every paired browser ws (wave-2 may have many).
+    for (const browser of this.getAllBrowserSockets()) {
       try { browser.close(1006, 'daemon disconnected'); } catch { /* ignore */ }
     }
     this.failAllPendingHttp(502, 'daemon disconnected');
   }
 
   private handleDaemonError(): void {
-    const browser = this.getBrowserSocket();
-    if (browser !== undefined) {
+    for (const browser of this.getAllBrowserSockets()) {
       try { browser.close(1011, 'daemon error'); } catch { /* ignore */ }
     }
   }

@@ -25,13 +25,19 @@
 //     control frames (Task #787) are accepted before hello — they're
 //     injected by the DO regardless of browser pairing and carry no browser
 //     token by design (Task #789, S3-D).
-//   - Multi-sid re-pair (Task #81, R-27): a single SPA reuses one tunnel ws
-//     across multiple sessions. Each New Session re-sends `{type:"hello",
-//     token, sid:<new>}` on the SAME ws. The daemon tracks `currentSid` per
-//     connection; when a hello with a different sid arrives, we tear down
-//     the old browserAttachHandle (so the prior PTY drops its subscriber)
-//     and call onBrowserAttach again with the new sid. Same-sid hello is
-//     idempotent. Token is re-checked on every hello.
+//   - Multi-sid keep-both (Task #105, R-41): a single SPA reuses one tunnel ws
+//     across multiple browser tabs / sessions. Each browser hello carries its
+//     own sid; the daemon keeps a Map<sid, attachHandle> and adds a NEW
+//     attach on each previously-unseen sid (no tear-down of the prior ones).
+//     Same-sid hello is idempotent (token re-checked).
+//
+//     Wave-1 design (R-27) was tear-down-on-resid: only one active sid at a
+//     time. Wave-2 needs concurrent fan-out for multiple tabs sharing one
+//     daemon, so that assumption was lifted in R-41. The daemon-bound
+//     binary frames carry a sid envelope (see envelope helpers below) so
+//     INPUT/RESIZE/PAUSE/RESUME from each tab routes into the correct PTY
+//     and OUTPUT from each PTY routes back over the single tunnel ws with
+//     a sid header that the DO uses to pick the right browser ws.
 //
 // timingSafeEqual constant-time comparison is reused from auth.mts (NOT
 // reimplemented) to honor the §1 5-tier "use existing in-repo" rule.
@@ -201,6 +207,56 @@ function parseHello(text: string): HelloFrame | null {
   return out;
 }
 
+// ---- Sid-envelope helpers (Task #105, R-41) ----------------------------
+//
+// Wave-2 multi-tab routing: the daemon and the DO share ONE tunnel ws but
+// must fan out N concurrent browser↔PTY sessions over it. Every binary
+// frame on the tunnel carries a small sid header so the receiving side can
+// route into the correct per-sid PTY (daemon side) or per-sid browser ws
+// (DO side).
+//
+// Wire format (binary frames only — control text frames like hello /
+// http_req / http_res / http_res' are unchanged):
+//   byte 0:        sidLen (uint8, MUST be > 0 and <= 64)
+//   bytes 1..N:    sid as utf8
+//   bytes N+1..:   raw payload (the encoded INPUT / OUTPUT / RESIZE / EXIT
+//                  frame produced by @ccsm/shared.encodeFrame)
+//
+// 64-byte cap on sid is a sanity bound — real sids are short hex/base64url
+// strings (~32 chars). A malformed envelope (sidLen=0, sidLen>buf-1, or
+// sidLen exceeding the cap) is dropped with a warn log on either side.
+
+const ENVELOPE_MAX_SID_LEN = 64;
+
+export function encodeSidEnvelope(sid: string, payload: Uint8Array | Buffer): Buffer {
+  const sidBuf = Buffer.from(sid, 'utf8');
+  if (sidBuf.length === 0 || sidBuf.length > ENVELOPE_MAX_SID_LEN) {
+    throw new Error(
+      `[ccsm/tunnel] encodeSidEnvelope: bad sid length ${sidBuf.length}`,
+    );
+  }
+  const payloadBuf = Buffer.isBuffer(payload)
+    ? payload
+    : Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength);
+  const out = Buffer.allocUnsafe(1 + sidBuf.length + payloadBuf.length);
+  out.writeUInt8(sidBuf.length, 0);
+  sidBuf.copy(out, 1);
+  payloadBuf.copy(out, 1 + sidBuf.length);
+  return out;
+}
+
+export function decodeSidEnvelope(
+  buf: Buffer,
+): { sid: string; payload: Buffer } | null {
+  if (buf.length < 2) return null;
+  const sidLen = buf.readUInt8(0);
+  if (sidLen === 0 || sidLen > ENVELOPE_MAX_SID_LEN) return null;
+  if (buf.length < 1 + sidLen) return null;
+  const sid = buf.subarray(1, 1 + sidLen).toString('utf8');
+  const payload = buf.subarray(1 + sidLen);
+  return { sid, payload };
+}
+
 function constantTimeTokenEquals(presented: string, expected: string): boolean {
   const a = Buffer.from(presented, 'utf8');
   const b = Buffer.from(expected, 'utf8');
@@ -229,12 +285,13 @@ export class TunnelClient {
   private helloSeen = false;
   private browserToken: string | null = null;
   // Task #793 (S3-G): per-connection browser session attachment.
-  // Task #81 (R-27): currentSid tracks the sid of the most-recent hello so
-  // we can detect re-pair (SPA reusing one tunnel ws across sessions) and
-  // tear down the old attach handle before invoking onBrowserAttach again.
-  private currentSid: string | null = null;
+  // Task #105 (R-41): wave-2 lifts the single-tab assumption. The tunnel ws
+  // is shared across N concurrent browser tabs, so we keep a Map<sid,
+  // attachHandle> and add new entries on each previously-unseen hello sid
+  // (no tear-down of prior sids — that was the wave-1 R-27 behaviour). On
+  // ws close all attach handles are dropped.
+  private readonly attachHandles = new Map<string, BrowserAttachHandle>();
   private readonly onBrowserAttach: ((info: BrowserAttachInfo) => BrowserAttachHandle | null) | null;
-  private browserAttachHandle: BrowserAttachHandle | null = null;
 
   constructor(opts: TunnelClientOptions) {
     this.url = opts.url;
@@ -306,8 +363,7 @@ export class TunnelClient {
     this.state = 'connecting';
     this.helloSeen = false;
     this.browserToken = null;
-    this.currentSid = null;
-    this.browserAttachHandle = null;
+    this.attachHandles.clear();
     let socket: WsLike;
     try {
       socket = this.wsFactory(this.url);
@@ -365,12 +421,29 @@ export class TunnelClient {
         } else {
           buf = Buffer.from(raw as ArrayBuffer);
         }
-        // Task #793 (S3-G): when an attach handle is bound, the binary
-        // frame is a browser→daemon PTY frame (INPUT/RESIZE/PAUSE/RESUME)
-        // that belongs to the paired session. Routing into the runtime
-        // subsumes the legacy onFrame passthrough.
-        if (this.browserAttachHandle !== null) {
-          this.browserAttachHandle.onFrame(buf);
+        // Task #105 (R-41): browser→daemon binary frames now carry a sid
+        // envelope so a single tunnel ws can route concurrent tabs into the
+        // right per-sid PTY. Decode header → look up handle → forward
+        // payload. Drop with a warn log if envelope is malformed or the
+        // sid was never attached (DO bug or hibernation race).
+        if (this.attachHandles.size > 0) {
+          const env = decodeSidEnvelope(buf);
+          if (env === null) {
+            console.warn(
+              '[ccsm/tunnel] drop browser->daemon binary: malformed sid envelope (len=' +
+                buf.length + ')',
+            );
+            return;
+          }
+          const handle = this.attachHandles.get(env.sid);
+          if (handle === undefined) {
+            console.warn(
+              '[ccsm/tunnel] drop browser->daemon binary: no attach for sid=' +
+                env.sid + ' (known sids=[' + Array.from(this.attachHandles.keys()).join(',') + '])',
+            );
+            return;
+          }
+          handle.onFrame(env.payload);
           return;
         }
         this.onFrame(buf);
@@ -419,15 +492,17 @@ export class TunnelClient {
       this.ws = null;
       this.helloSeen = false;
       this.browserToken = null;
-      this.currentSid = null;
-      // Task #793 (S3-G): tear down per-session attachment.
-      if (this.browserAttachHandle !== null) {
-        try {
-          this.browserAttachHandle.onClose();
-        } catch (err) {
-          console.warn('[ccsm/tunnel] attach onClose threw:', (err as Error).message);
+      // Task #793 (S3-G) + Task #105 (R-41): tear down ALL per-sid attaches
+      // on tunnel ws drop.
+      if (this.attachHandles.size > 0) {
+        for (const [sid, handle] of this.attachHandles) {
+          try {
+            handle.onClose();
+          } catch (err) {
+            console.warn('[ccsm/tunnel] attach onClose threw sid=' + sid + ':', (err as Error).message);
+          }
         }
-        this.browserAttachHandle = null;
+        this.attachHandles.clear();
       }
       if (this.stopped) {
         this.state = 'stopped';
@@ -442,9 +517,14 @@ export class TunnelClient {
   }
 
   /**
-   * Handle a token-validated hello frame. Idempotent for same sid; performs
-   * a re-pair (tear down old attach handle + invoke onBrowserAttach again)
-   * when sid changes. Task #81 (R-27).
+   * Handle a token-validated hello frame. Idempotent for a sid we've already
+   * attached on this connection; binds a NEW attach handle for any
+   * previously-unseen sid (Task #105, R-41 keep-both).
+   *
+   * Wave-1 (R-27) used to tear down the prior attach on sid change so only
+   * one tab could be active at a time. Wave-2 needs concurrent fan-out
+   * (multiple tabs over one tunnel ws), so we no longer drop prior sids on
+   * a new hello — we just add the new one to the Map.
    */
   private handleHello(hello: HelloFrame): void {
     this.helloSeen = true;
@@ -453,47 +533,47 @@ export class TunnelClient {
       ? hello.sid
       : null;
 
-    // Same sid (incl. both null / both same string) → idempotent. Don't
-    // re-attach; preserves PTY subscription and replay cursor.
-    if (newSid === this.currentSid) {
-      // R-17 log #8 (Task #45): hello received, record sid + lastSeq.
-      console.error('[ccsm] tunnel: hello received sid=' + (hello.sid ?? '-') + ' lastSeq=' + (hello.lastSeq ?? 0) + ' (idempotent)');
+    if (newSid === null) {
+      // Hello without sid (legacy / token-only re-auth). Nothing to attach.
+      console.error('[ccsm] tunnel: hello received sid=- lastSeq=' + (hello.lastSeq ?? 0) + ' (no-sid passthrough)');
       return;
     }
 
-    // sid changed (null→sid, sid→sid', or sid→null). Tear down old handle
-    // first so the prior PTY drops its subscriber before the new one binds.
-    if (this.browserAttachHandle !== null) {
-      try {
-        this.browserAttachHandle.onClose();
-      } catch (err) {
-        console.warn('[ccsm/tunnel] attach onClose threw on re-pair:', (err as Error).message);
-      }
-      this.browserAttachHandle = null;
+    // Already attached for this sid → idempotent. Preserves PTY subscription
+    // and replay cursor.
+    if (this.attachHandles.has(newSid)) {
+      console.error('[ccsm] tunnel: hello received sid=' + newSid + ' lastSeq=' + (hello.lastSeq ?? 0) + ' (idempotent, ' + this.attachHandles.size + ' active sids)');
+      return;
     }
 
-    this.currentSid = newSid;
-    // R-17 log #8 (Task #45): hello received, record sid + lastSeq.
-    console.error('[ccsm] tunnel: hello received sid=' + (hello.sid ?? '-') + ' lastSeq=' + (hello.lastSeq ?? 0));
+    console.error('[ccsm] tunnel: hello received sid=' + newSid + ' lastSeq=' + (hello.lastSeq ?? 0) + ' (' + (this.attachHandles.size + 1) + ' active sids)');
 
-    // Task #793 (S3-G): bind new attach handle if SPA supplied a sid.
-    if (this.onBrowserAttach !== null && newSid !== null) {
+    // Task #793 (S3-G) + Task #105 (R-41): bind a NEW attach handle for the
+    // newly-paired sid. send wraps the daemon→browser binary frame in a sid
+    // envelope so the DO can pick the right per-sid browser ws.
+    if (this.onBrowserAttach !== null) {
+      const attachSid = newSid;
       const send = (payload: Uint8Array | Buffer): void => {
-        // Bridge to the underlying ws. Always binary frame back to browser.
-        const buf = Buffer.isBuffer(payload)
-          ? payload
-          : Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength);
-        this.send(buf);
+        let envelope: Buffer;
+        try {
+          envelope = encodeSidEnvelope(attachSid, payload);
+        } catch (err) {
+          console.warn('[ccsm/tunnel] envelope encode failed sid=' + attachSid + ':', (err as Error).message);
+          return;
+        }
+        this.send(envelope);
       };
       try {
-        this.browserAttachHandle = this.onBrowserAttach({
-          sid: newSid,
+        const handle = this.onBrowserAttach({
+          sid: attachSid,
           lastSeq: hello.lastSeq ?? 0,
           send,
         });
+        if (handle !== null) {
+          this.attachHandles.set(attachSid, handle);
+        }
       } catch (err) {
-        console.warn('[ccsm/tunnel] onBrowserAttach threw:', (err as Error).message);
-        this.browserAttachHandle = null;
+        console.warn('[ccsm/tunnel] onBrowserAttach threw sid=' + attachSid + ':', (err as Error).message);
       }
     }
   }
