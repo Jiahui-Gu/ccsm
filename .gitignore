@@ -9,6 +9,12 @@ coverage/
 .env
 .env.local
 
+# S4 (Task #113): Cloudflare Worker local dev secrets. `.dev.vars` is read by
+# `wrangler dev`; production uses `wrangler secret put`. Never commit real
+# values — `.dev.vars.example` is the committed template.
+packages/*/.dev.vars
+.dev.vars
+
 # R-9 v3.A (Task #15): smoke build artifacts — release ccsm-tauri.exe + isolated
 # cargo target — produced by `pnpm smoke:build`, consumed by `pnpm smoke:run`.
 # Physically isolated from the developer's `packages/frontend-tauri/src-tauri/target/`
