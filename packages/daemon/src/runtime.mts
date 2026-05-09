@@ -17,7 +17,13 @@ import { createRequire } from 'node:module';
 
 import { encodeExit, encodeFrame, FrameType } from '@ccsm/shared';
 
+import { getConsoleHwnd, getConsoleProcessList } from './console-probe.mjs';
 import { RingBuffer } from './ring.mjs';
+
+// Task #89 (R-31): module-scoped counter; incremented per defaultPtyFactory
+// invocation so [r31-pre] / [r31-post] log lines can be correlated across
+// spawn 1, 2, 3 within a single daemon process lifetime.
+let r31SpawnIndex = 0;
 
 // ---- Public types -------------------------------------------------------
 
@@ -207,6 +213,23 @@ const defaultPtyFactory: PtyFactory = (opts) => {
     // call it from JS without FFI, so we proxy via TTY flags.
   }));
   /* eslint-enable no-console */
+  // Task #89 (R-31) — in-process Win32 probes around node-pty spawn to
+  // distinguish H1 (CreatePseudoConsole binds daemon to HPCON#1's console
+  // group) vs H2 (GetConsoleProcessList itself has destructive side effects
+  // on daemon console state). Pre-probe runs BEFORE spawn; post-probe runs
+  // AFTER (no try/catch). On non-Windows the probes return null/empty.
+  const r31Idx = ++r31SpawnIndex;
+  /* eslint-disable no-console */
+  if (isWindows) {
+    const preHwnd = getConsoleHwnd();
+    const preList = getConsoleProcessList();
+    console.error(
+      `[r31-pre] sid=${opts.sid} spawn_index=${r31Idx} ` +
+        `hwnd=${preHwnd === null ? 'null' : '0x' + preHwnd.toString(16)} ` +
+        `proc_count=${preList.count} proc_pids=[${preList.pids.join(',')}]`,
+    );
+  }
+  /* eslint-enable no-console */
   const pty = nodePty.spawn(cmd, args, {
     name: 'xterm-256color',
     cols: opts.cols,
@@ -215,6 +238,17 @@ const defaultPtyFactory: PtyFactory = (opts) => {
     env: process.env as Record<string, string>,
     useConpty: true,
   });
+  /* eslint-disable no-console */
+  if (isWindows) {
+    const postHwnd = getConsoleHwnd();
+    const postList = getConsoleProcessList();
+    console.error(
+      `[r31-post] sid=${opts.sid} spawn_index=${r31Idx} ` +
+        `hwnd=${postHwnd === null ? 'null' : '0x' + postHwnd.toString(16)} ` +
+        `proc_count=${postList.count} proc_pids=[${postList.pids.join(',')}]`,
+    );
+  }
+  /* eslint-enable no-console */
   return {
     write: (d) => pty.write(d),
     resize: (c, r) => pty.resize(c, r),

@@ -18,6 +18,7 @@
   "dependencies": {
     "@ccsm/shared": "workspace:*",
     "better-sqlite3": "^11.10.0",
+    "koffi": "^2.16.2",
     "node-pty": "^1.1.0",
     "ws": "^8.20.0"
   },
