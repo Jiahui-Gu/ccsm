@@ -316,6 +316,23 @@ async fn run_cycle(app: &AppHandle, kill_rx: &mut mpsc::Receiver<()>) -> CycleOu
     cmd.env("CCSM_TOKEN", &token);
     cmd.env("PORT", "9876");
 
+    // S4-T8 (#141): if the user has completed device-flow login (file
+    // ~/.ccsm/tunnel_jwt present), inject the JWT into daemon env so the
+    // tunnel client can authenticate over the cloud relay using the
+    // cloud-issued credential. Absence is fine — the daemon falls back to
+    // the legacy loopback-token-only path and the cloud tunnel runs in
+    // legacy mode (or is skipped, depending on CCSM_TUNNEL_DISABLE).
+    if let Some(creds) = crate::auth::read_persisted_creds() {
+        cmd.env("CCSM_TUNNEL_JWT", &creds.tunnel_jwt);
+        cmd.env("CCSM_TUNNEL_REFRESH_TOKEN", &creds.tunnel_refresh_token);
+        cmd.env("CCSM_TUNNEL_LOGIN", &creds.login);
+        cmd.env("CCSM_TRUST_TUNNEL", "1");
+        eprintln!(
+            "[daemon-mgr] injecting tunnel JWT for login={} (trust-tunnel mode)",
+            creds.login
+        );
+    }
+
     #[cfg(windows)]
     {
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
@@ -618,6 +635,10 @@ mod tests {
 
     #[test]
     fn load_or_create_generates_and_persists() {
+        // Serialize against auth.rs tests — both mutate HOME/USERPROFILE.
+        let _guard = crate::auth::TEST_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = std::env::temp_dir().join(format!("ccsm-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();

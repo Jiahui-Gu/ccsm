@@ -83,12 +83,12 @@ function makeFakeSocket(url: string): FakeSocket {
 // ---- Tests --------------------------------------------------------------
 
 describe('TunnelClient', () => {
-  let factory: Mock<(url: string) => WsLike>;
+  let factory: Mock<(url: string, protocols?: string[]) => WsLike>;
   let sockets: FakeSocket[];
 
   beforeEach(() => {
     sockets = [];
-    factory = vi.fn((url: string) => {
+    factory = vi.fn((url: string, _protocols?: string[]) => {
       const s = makeFakeSocket(url);
       sockets.push(s);
       return s;
@@ -1026,5 +1026,45 @@ describe('TunnelClient', () => {
     } finally {
       if (prior !== undefined) process.env.CCSM_TRUST_TUNNEL = prior;
     }
+  });
+
+  // ---- S4-T8 (Task #141) ws subprotocol negotiation -------------------
+  it('passes the configured subprotocols through to the ws factory', () => {
+    const client = new TunnelClient({
+      url: 'wss://example/tunnel/x',
+      token: 'tok',
+      onFrame: () => {},
+      wsFactory: factory,
+      subprotocols: ['ccsm.eyJhbGciOi.payload.sig'],
+    });
+    client.start();
+    expect(factory).toHaveBeenCalledTimes(1);
+    expect(factory).toHaveBeenCalledWith(
+      'wss://example/tunnel/x',
+      ['ccsm.eyJhbGciOi.payload.sig'],
+    );
+  });
+
+  it('passes undefined subprotocols (legacy) when not configured', () => {
+    const client = new TunnelClient({
+      url: 'wss://example/tunnel/x',
+      token: 'tok',
+      onFrame: () => {},
+      wsFactory: factory,
+    });
+    client.start();
+    expect(factory).toHaveBeenCalledWith('wss://example/tunnel/x', undefined);
+  });
+
+  it('treats an empty subprotocols array as legacy (passes undefined)', () => {
+    const client = new TunnelClient({
+      url: 'wss://example/tunnel/x',
+      token: 'tok',
+      onFrame: () => {},
+      wsFactory: factory,
+      subprotocols: [],
+    });
+    client.start();
+    expect(factory).toHaveBeenCalledWith('wss://example/tunnel/x', undefined);
   });
 });

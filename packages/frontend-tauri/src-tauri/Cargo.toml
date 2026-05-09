@@ -25,6 +25,12 @@ tokio = { version = "1", features = ["process", "io-util", "rt-multi-thread", "m
 getrandom = "0.2"
 hex = "0.4"
 
+# S4-T8 (#141): GitHub device-flow on demand from main UI. We POST to the
+# cf-worker (cc-sm.pages.dev/api/auth/device/{start,poll}) and persist the
+# resulting tunnel JWT. reqwest is the de-facto Rust HTTP client; rustls-tls
+# avoids dragging openssl onto Windows builders.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
 # T9: Win32 Job Object — bind the daemon child to a Job with
 # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE so that any death of ccsm-tauri.exe
 # (TerminateProcess from Task Manager, app crash, hard power loss is OS-handled)

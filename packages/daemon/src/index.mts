@@ -146,10 +146,24 @@ async function main(): Promise<void> {
     console.error('[ccsm] tunnel: disabled (CCSM_TUNNEL_DISABLE)');
   } else {
     console.error(`[ccsm] tunnel: connecting ${tunnelUrl}`);
+    // S4-T8 (Task #141): when the Tauri shell has injected CCSM_TUNNEL_JWT
+    // (after the user completes device-flow login from the main UI), encode
+    // the JWT as the `ccsm.<jwt>` ws subprotocol so the cf-worker can
+    // authenticate the daemon side of the tunnel against its JWT signing
+    // key. Absence of the env var keeps the legacy unauth dial path.
+    const tunnelJwt = process.env.CCSM_TUNNEL_JWT;
+    const subprotocols =
+      typeof tunnelJwt === 'string' && tunnelJwt.length > 0
+        ? [`ccsm.${tunnelJwt}`]
+        : undefined;
+    if (subprotocols !== undefined) {
+      console.error('[ccsm] tunnel: dialing with cloud-issued JWT subprotocol');
+    }
     tunnel = new TunnelClient({
       url: tunnelUrl,
       token,
       daemonLoopbackPort: port,
+      ...(subprotocols !== undefined ? { subprotocols } : {}),
       onFrame: (data) => {
         const len = typeof data === 'string'
           ? Buffer.byteLength(data, 'utf8')
