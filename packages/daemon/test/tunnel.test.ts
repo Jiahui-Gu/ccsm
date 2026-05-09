@@ -649,7 +649,12 @@ describe('TunnelClient', () => {
     expect(onBrowserAttach).not.toHaveBeenCalled();
   });
 
-  it('post-hello binary frames route to attach handle, not onFrame', () => {
+  it('post-hello binary frames (sid-enveloped) route to the matching attach handle, not onFrame', () => {
+    // Task #105 (R-41): browser→daemon binary on the wire now carries a
+    // sid envelope `[sidLen][sid utf8][payload]`. The daemon decodes the
+    // header, looks up the attach handle for that sid, and forwards the
+    // payload (envelope stripped). Frames whose sid never attached are
+    // dropped with a warn log.
     const onFrame = vi.fn();
     const handleFrames: Buffer[] = [];
     const client = new TunnelClient({
@@ -671,14 +676,24 @@ describe('TunnelClient', () => {
       lastSeq: 0,
     }));
 
-    sockets[0].pushBinary(Buffer.from([1, 2, 3]));
+    // Build envelope: [sidLen=4]['s','e','s','s'][1,2,3]
+    const env = Buffer.concat([
+      Buffer.from([4]),
+      Buffer.from('sess', 'utf8'),
+      Buffer.from([1, 2, 3]),
+    ]);
+    sockets[0].pushBinary(env);
     expect(handleFrames).toHaveLength(1);
     expect(handleFrames[0].equals(Buffer.from([1, 2, 3]))).toBe(true);
     // onFrame NOT called when attach handle owns binary routing.
     expect(onFrame).not.toHaveBeenCalled();
   });
 
-  it('attach handle.send() pushes a binary frame back through the tunnel ws', () => {
+  it('attach handle.send() wraps payload in sid envelope before pushing through tunnel ws', () => {
+    // Task #105 (R-41): daemon→browser binary is wrapped in a sid envelope
+    // so the DO can route to the right per-sid browser ws. The wrap
+    // happens at the BrowserAttachInfo.send seam so registry callers don't
+    // have to know envelope exists.
     let sendBack: ((data: Uint8Array | Buffer) => void) | null = null;
     const client = new TunnelClient({
       url: 'wss://x',
@@ -701,11 +716,16 @@ describe('TunnelClient', () => {
 
     expect(sendBack).not.toBeNull();
     (sendBack as unknown as (data: Uint8Array) => void)(new Uint8Array([7, 8, 9]));
-    // Tunnel ws.send should have received the bridged buffer.
+    // Tunnel ws.send should have received an envelope: [4]['s','e','s','s'][7,8,9]
     expect(sockets[0].sent).toHaveLength(1);
     const sent = sockets[0].sent[0] as Buffer;
     expect(Buffer.isBuffer(sent)).toBe(true);
-    expect(sent.equals(Buffer.from([7, 8, 9]))).toBe(true);
+    const expected = Buffer.concat([
+      Buffer.from([4]),
+      Buffer.from('sess', 'utf8'),
+      Buffer.from([7, 8, 9]),
+    ]);
+    expect(sent.equals(expected)).toBe(true);
   });
 
   it('socket close after attach fires handle.onClose exactly once', () => {
@@ -730,13 +750,13 @@ describe('TunnelClient', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  // ---- Task #81 (R-27): multi-sid re-pair on a single tunnel ws --------
+  // ---- Task #105 (R-41): wave-2 multi-sid keep-both ---------------------
 
-  it('second hello with new sid tears down old handle and re-attaches', () => {
-    // Reproduces the Task #81 bug: SPA reuses one cf-worker tunnel ws across
-    // sessions. New Session sends `{type:"hello",token,sid:<new>}` on the
-    // SAME ws; the daemon must tear down the prior attach handle and bind a
-    // fresh one so the new sid's PTY gets a subscriber.
+  it('second hello with new sid keeps the old handle attached and adds the new one', () => {
+    // Wave-2 (R-41): one tunnel ws fans out N concurrent browser tabs to
+    // the same daemon. Each unique sid hello adds a NEW attach handle; the
+    // prior sid's handle is NOT torn down (that was the wave-1 R-27
+    // behaviour). Same-sid hello stays idempotent.
     const attachCalls: Array<{ sid: string; lastSeq: number }> = [];
     const closeCalls: string[] = [];
     let nextHandleId = 0;
@@ -768,10 +788,9 @@ describe('TunnelClient', () => {
     }));
     expect(attachCalls).toEqual([{ sid: 'sess-A', lastSeq: 0 }]);
     expect(closeCalls).toEqual([]);
-    // No 1008 close.
     expect(sockets[0].closedCalls).toHaveLength(0);
 
-    // Second hello: sid=B on the SAME ws → re-pair.
+    // Second hello: sid=B on the SAME ws → keep-both, NO tear-down.
     sockets[0].pushText(JSON.stringify({
       type: 'hello',
       token: 'tok',
@@ -782,13 +801,11 @@ describe('TunnelClient', () => {
       { sid: 'sess-A', lastSeq: 0 },
       { sid: 'sess-B', lastSeq: 5 },
     ]);
-    // Old handle's onClose was invoked exactly once before the new attach.
-    expect(closeCalls).toEqual(['handle-0-for-sess-A']);
-    // Still no 1008 close — re-pair is in-band, not a protocol violation.
+    // R-41 critical: old handle MUST NOT be closed.
+    expect(closeCalls).toEqual([]);
     expect(sockets[0].closedCalls).toHaveLength(0);
 
-    // Third hello: same sid=B → idempotent. Neither onClose nor a fresh
-    // onBrowserAttach should fire.
+    // Third hello: same sid=B → idempotent; no new attach, no close.
     sockets[0].pushText(JSON.stringify({
       type: 'hello',
       token: 'tok',
@@ -799,24 +816,31 @@ describe('TunnelClient', () => {
       { sid: 'sess-A', lastSeq: 0 },
       { sid: 'sess-B', lastSeq: 5 },
     ]);
-    expect(closeCalls).toEqual(['handle-0-for-sess-A']);
+    expect(closeCalls).toEqual([]);
+
+    // Tunnel ws close fires onClose for ALL active handles.
+    sockets[0].closeFromServer(1006);
+    expect(closeCalls.sort()).toEqual([
+      'handle-0-for-sess-A',
+      'handle-1-for-sess-B',
+    ].sort());
   });
 
-  it('post-hello re-pair: binary frames after re-pair route to NEW handle', () => {
-    // Guard: after re-pair, binary frames must land on the new attach
-    // handle, not the old one (the original bug — frames were silently
-    // dropped because the gate locked on the first hello).
+  it('post-hello multi-sid: sid-enveloped binary frames route to the right handle', () => {
+    // R-41 multi-sid fan-out: with two attach handles bound, binary frames
+    // on the wire MUST be sid-enveloped and route to whichever handle owns
+    // that sid. Frames whose sid never attached are dropped (no fall-through
+    // to the default onFrame, which would short-circuit the routing layer).
     const handleAFrames: Buffer[] = [];
     const handleBFrames: Buffer[] = [];
-    let nextSid: 'A' | 'B' = 'A';
+    const onFrame = vi.fn();
     const client = new TunnelClient({
       url: 'wss://x',
       token: 'tok',
-      onFrame: () => {},
+      onFrame,
       wsFactory: factory,
-      onBrowserAttach: () => {
-        const target = nextSid === 'A' ? handleAFrames : handleBFrames;
-        nextSid = nextSid === 'A' ? 'B' : 'A';
+      onBrowserAttach: ({ sid }) => {
+        const target = sid === 'sess-A' ? handleAFrames : handleBFrames;
         return {
           onFrame: (data) => target.push(data),
           onClose: () => {},
@@ -826,29 +850,28 @@ describe('TunnelClient', () => {
     client.start();
     sockets[0].open();
 
-    sockets[0].pushText(JSON.stringify({
-      type: 'hello',
-      token: 'tok',
-      sid: 'sess-A',
-      lastSeq: 0,
-    }));
-    sockets[0].pushBinary(Buffer.from([0xa1]));
-    expect(handleAFrames).toHaveLength(1);
-    expect(handleBFrames).toHaveLength(0);
+    sockets[0].pushText(JSON.stringify({ type: 'hello', token: 'tok', sid: 'sess-A', lastSeq: 0 }));
+    sockets[0].pushText(JSON.stringify({ type: 'hello', token: 'tok', sid: 'sess-B', lastSeq: 0 }));
 
-    // Re-pair to sid=B.
-    sockets[0].pushText(JSON.stringify({
-      type: 'hello',
-      token: 'tok',
-      sid: 'sess-B',
-      lastSeq: 0,
-    }));
-    sockets[0].pushBinary(Buffer.from([0xb1]));
-    // The new frame went to handle B, NOT to handle A (which would've been
-    // the old buggy behaviour — a stale subscriber on a torn-down session).
-    expect(handleAFrames).toHaveLength(1);
-    expect(handleBFrames).toHaveLength(1);
-    expect(handleBFrames[0].equals(Buffer.from([0xb1]))).toBe(true);
+    function envelope(sid: string, payload: number[]): Buffer {
+      return Buffer.concat([
+        Buffer.from([Buffer.byteLength(sid, 'utf8')]),
+        Buffer.from(sid, 'utf8'),
+        Buffer.from(payload),
+      ]);
+    }
+    sockets[0].pushBinary(envelope('sess-A', [0xa1]));
+    sockets[0].pushBinary(envelope('sess-B', [0xb1]));
+    sockets[0].pushBinary(envelope('sess-B', [0xb2]));
+    // Unknown sid → dropped.
+    sockets[0].pushBinary(envelope('ghost', [0xff]));
+    // Malformed envelope (sidLen=0) → dropped.
+    sockets[0].pushBinary(Buffer.from([0, 1, 2]));
+
+    expect(handleAFrames.map((b) => Array.from(b))).toEqual([[0xa1]]);
+    expect(handleBFrames.map((b) => Array.from(b))).toEqual([[0xb1], [0xb2]]);
+    // onFrame is bypassed entirely once any attach handle is bound.
+    expect(onFrame).not.toHaveBeenCalled();
   });
 
   it('re-pair hello with bad token closes 1008', () => {

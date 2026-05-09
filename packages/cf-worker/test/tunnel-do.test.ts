@@ -223,11 +223,19 @@ describe('TunnelDO', () => {
     await inst.fetch(makeReq('/ws/default?sid=s', BROWSER_PROTO));
     const browser = created[1].server;
     expect(browser.hibernating).toBe(true);
-    expect(browser.tags).toEqual(['browser']);
+    // Task #105 (R-41): browser ws is now tagged with both 'browser' and
+    // 'browser-sid:<sid>' so the DO can recover per-sid.
+    expect(browser.tags).toEqual(['browser', 'browser-sid:s']);
     expect(browser.closed).toBe(false);
 
     emitMessage(inst, daemon, 'hello');
-    emitMessage(inst, daemon, new Uint8Array([1, 2, 3]) as unknown as ArrayBuffer);
+    // Task #105 (R-41): daemon→browser binary is now sid-enveloped on the
+    // wire. DO strips the envelope before delivering to the browser ws, so
+    // the browser still sees raw payload bytes.
+    const env = new Uint8Array(1 + 1 + 3);
+    env[0] = 1; env[1] = 's'.charCodeAt(0);
+    env[2] = 1; env[3] = 2; env[4] = 3;
+    emitMessage(inst, daemon, env.buffer.slice(env.byteOffset, env.byteOffset + env.byteLength) as ArrayBuffer);
     expect(browser.sent).toEqual(['hello', new Uint8Array([1, 2, 3])]);
   });
 
@@ -252,7 +260,13 @@ describe('TunnelDO', () => {
 
     emitMessage(inst, browser, 'ping');
     emitMessage(inst, browser, new Uint8Array([9, 9]) as unknown as ArrayBuffer);
-    expect(daemon.sent.slice(1)).toEqual(['ping', new Uint8Array([9, 9])]);
+    // Task #105 (R-41): browser→daemon binary is wrapped in a sid envelope
+    // by the DO so the daemon can route into the right per-sid PTY when
+    // multiple browser tabs share one tunnel ws. Envelope: [sidLen, ...sid, ...payload].
+    expect(daemon.sent.slice(1)).toEqual([
+      'ping',
+      new Uint8Array([1, 's'.charCodeAt(0), 9, 9]),
+    ]);
   });
 
   it('extracts browserToken from Sec-WebSocket-Protocol header', async () => {
@@ -650,5 +664,127 @@ describe('TunnelDO', () => {
     // serialized attachment, not from a member field.
     const inst2 = new TunnelDO(state, fakeEnv);
     expect(inst2.getBrowserTokenForTest()).toBe('persisted-tok');
+  });
+
+  // ---- Task #105 (R-41): multi-sid envelope routing ----------------------
+
+  function envelope(sid: string, payload: number[]): ArrayBuffer {
+    const sidBytes = new TextEncoder().encode(sid);
+    const out = new Uint8Array(1 + sidBytes.length + payload.length);
+    out[0] = sidBytes.length;
+    out.set(sidBytes, 1);
+    out.set(Uint8Array.from(payload), 1 + sidBytes.length);
+    return out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength) as ArrayBuffer;
+  }
+
+  it('R-41: two browsers (different sids) each receive only their own daemon binary frames', async () => {
+    const TunnelDO = await loadDO();
+    const inst = new TunnelDO(makeState(), fakeEnv);
+    await inst.fetch(makeReq('/tunnel/default'));
+    const daemon = created[0].server;
+    await inst.fetch(makeReq('/ws/default?sid=alpha', 'ccsm.tok-a'));
+    await inst.fetch(makeReq('/ws/default?sid=beta', 'ccsm.tok-b'));
+    const browserA = created[1].server;
+    const browserB = created[2].server;
+
+    expect(browserA.tags).toEqual(['browser', 'browser-sid:alpha']);
+    expect(browserB.tags).toEqual(['browser', 'browser-sid:beta']);
+
+    // Daemon emits a sid-enveloped binary for alpha then for beta.
+    emitMessage(inst, daemon, envelope('alpha', [10, 20, 30]));
+    emitMessage(inst, daemon, envelope('beta', [40, 50]));
+
+    // Each browser only sees its own payload (envelope stripped).
+    expect(browserA.sent).toEqual([new Uint8Array([10, 20, 30])]);
+    expect(browserB.sent).toEqual([new Uint8Array([40, 50])]);
+  });
+
+  it('R-41: browser->daemon binary is wrapped with sender browser sid', async () => {
+    const TunnelDO = await loadDO();
+    const inst = new TunnelDO(makeState(), fakeEnv);
+    await inst.fetch(makeReq('/tunnel/default'));
+    const daemon = created[0].server;
+    await inst.fetch(makeReq('/ws/default?sid=alpha', 'ccsm.tok-a'));
+    await inst.fetch(makeReq('/ws/default?sid=beta', 'ccsm.tok-b'));
+    const browserA = created[1].server;
+    const browserB = created[2].server;
+
+    // Skip the two hello frames (one per browser pairing).
+    const helloCount = daemon.sent.length;
+
+    emitMessage(inst, browserA, new Uint8Array([1, 2]) as unknown as ArrayBuffer);
+    emitMessage(inst, browserB, new Uint8Array([3, 4, 5]) as unknown as ArrayBuffer);
+
+    const fromA = daemon.sent[helloCount] as Uint8Array;
+    const fromB = daemon.sent[helloCount + 1] as Uint8Array;
+    // alpha = 5 utf8 bytes -> sidLen=5, sid='alpha', payload=[1,2]
+    expect(Array.from(fromA)).toEqual([5, ...new TextEncoder().encode('alpha'), 1, 2]);
+    // beta = 4 utf8 bytes
+    expect(Array.from(fromB)).toEqual([4, ...new TextEncoder().encode('beta'), 3, 4, 5]);
+  });
+
+  it('R-41: daemon binary with unknown sid is dropped (no fan-out)', async () => {
+    const TunnelDO = await loadDO();
+    const inst = new TunnelDO(makeState(), fakeEnv);
+    await inst.fetch(makeReq('/tunnel/default'));
+    const daemon = created[0].server;
+    await inst.fetch(makeReq('/ws/default?sid=alpha', 'ccsm.tok-a'));
+    const browserA = created[1].server;
+
+    // Daemon sends envelope with sid that no browser has paired with.
+    emitMessage(inst, daemon, envelope('ghost', [9, 9]));
+    expect(browserA.sent).toEqual([]);
+  });
+
+  it('R-41: malformed envelope (sidLen=0) is dropped, no crash', async () => {
+    const TunnelDO = await loadDO();
+    const inst = new TunnelDO(makeState(), fakeEnv);
+    await inst.fetch(makeReq('/tunnel/default'));
+    const daemon = created[0].server;
+    await inst.fetch(makeReq('/ws/default?sid=alpha', 'ccsm.tok-a'));
+    const browserA = created[1].server;
+
+    const bad = new Uint8Array([0, 1, 2, 3]);
+    emitMessage(inst, daemon, bad.buffer.slice(bad.byteOffset, bad.byteOffset + bad.byteLength) as ArrayBuffer);
+    expect(browserA.sent).toEqual([]);
+  });
+
+  it('R-41: daemon close fans out close to ALL paired browsers', async () => {
+    const TunnelDO = await loadDO();
+    const inst = new TunnelDO(makeState(), fakeEnv);
+    await inst.fetch(makeReq('/tunnel/default'));
+    const daemon = created[0].server;
+    await inst.fetch(makeReq('/ws/default?sid=alpha', 'ccsm.tok-a'));
+    await inst.fetch(makeReq('/ws/default?sid=beta', 'ccsm.tok-b'));
+    const browserA = created[1].server;
+    const browserB = created[2].server;
+
+    emitClose(inst, daemon);
+
+    expect(browserA.closed).toBe(true);
+    expect(browserA.closeCode).toBe(1006);
+    expect(browserB.closed).toBe(true);
+    expect(browserB.closeCode).toBe(1006);
+  });
+
+  it('R-41: hibernate -> wake recovers per-sid browser routing', async () => {
+    const TunnelDO = await loadDO();
+    const state = makeState();
+    const inst1 = new TunnelDO(state, fakeEnv);
+    await inst1.fetch(makeReq('/tunnel/default'));
+    await inst1.fetch(makeReq('/ws/default?sid=alpha', 'ccsm.tok-a'));
+    await inst1.fetch(makeReq('/ws/default?sid=beta', 'ccsm.tok-b'));
+    const daemon = created[0].server;
+    const browserA = created[1].server;
+    const browserB = created[2].server;
+
+    // Drop the first instance. New instance must re-discover via tags.
+    const inst2 = new TunnelDO(state, fakeEnv);
+
+    emitMessage(inst2, daemon, envelope('alpha', [7]));
+    emitMessage(inst2, daemon, envelope('beta', [8]));
+
+    expect(browserA.sent).toEqual([new Uint8Array([7])]);
+    expect(browserB.sent).toEqual([new Uint8Array([8])]);
   });
 });
