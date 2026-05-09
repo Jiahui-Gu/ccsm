@@ -31,6 +31,31 @@ import type { HostConfig } from '@ccsm/ui';
 export const TOKEN_STORAGE_KEY = 'ccsm.token';
 
 /**
+ * Web JWT storage key (Task #139, S4-T7).
+ *
+ * The cf-worker OAuth flow (Task #140 / S4-T3) mints a short-lived web JWT
+ * (kind='web', 1h, HS256) and delivers it in the `/?session=ok#jwt=...`
+ * redirect fragment. AuthContext decodes the fragment, persists the JWT
+ * here, and the SPA presents it on the WebSocket subprotocol header so the
+ * Worker / TunnelDO can authenticate the visitor without a daemon-minted
+ * token. The smoke / loopback path keeps writing the legacy daemon token to
+ * `ccsm.token` (`TOKEN_STORAGE_KEY`); `webHostConfig.getToken` prefers the
+ * web JWT and falls back to the daemon token, so the same `getWsProtocol`
+ * code path serves both deployment shapes.
+ */
+export const WEB_JWT_STORAGE_KEY = 'ccsm_web_jwt';
+
+/**
+ * GitHub login hint storage key (Task #139, S4-T7).
+ *
+ * Stored alongside the web JWT for display purposes only — the server is
+ * the source of truth on the JWT's `login` claim. The SPA never gates on
+ * this value; it's a UX nicety so SignInGate can show "Signed in as foo"
+ * without a round-trip.
+ */
+export const WEB_LOGIN_STORAGE_KEY = 'ccsm_login';
+
+/**
  * Default daemon base for production (same-origin relative).
  *
  * Task #25: empty string means "use the SPA's own origin" — `fetch('/token')`
@@ -213,11 +238,29 @@ export function getWsProtocol(deps: GetWsProtocolDeps): string[] {
   return [`${WS_SUBPROTOCOL_PREFIX}${token}`];
 }
 
+/**
+ * Token reader used by the SessionRuntime / WsClient (Task #139, S4-T7).
+ *
+ * Priority:
+ *   1. sessionStorage `ccsm_web_jwt` — set by AuthContext after the web
+ *      OAuth flow completes (cf-worker mints + redirects with #jwt=...).
+ *   2. sessionStorage `ccsm.token` — legacy daemon-minted token. Smoke and
+ *      Tauri shells still bootstrap from `?token=` / `/token` and write to
+ *      this key, so they keep working without an OAuth round-trip.
+ *   3. null — caller falls back to "signed out" UI (SignInScreen).
+ *
+ * Exposed as a standalone function so component tests can inject without
+ * stubbing `webHostConfig` itself.
+ */
+export function readSessionToken(): string | null {
+  if (typeof window === 'undefined') return null;
+  const webJwt = sessionStorage.getItem(WEB_JWT_STORAGE_KEY);
+  if (webJwt && webJwt.length > 0) return webJwt;
+  return sessionStorage.getItem(TOKEN_STORAGE_KEY);
+}
+
 export const webHostConfig: HostConfig = {
   httpBase: currentDaemonBase(),
-  getToken: () => {
-    if (typeof window === 'undefined') return null;
-    return sessionStorage.getItem(TOKEN_STORAGE_KEY);
-  },
+  getToken: readSessionToken,
   ...(currentWsPath() !== undefined ? { wsPath: currentWsPath() as string } : {}),
 };

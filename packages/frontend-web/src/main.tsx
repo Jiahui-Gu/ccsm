@@ -56,26 +56,21 @@ async function bootstrap(): Promise<void> {
     daemonBase,
   });
 
-  if (!token) {
-    console.error('[ccsm spa] token resolved null — rendering daemon-offline fallback');
-    rootEl.innerHTML =
-      '<div style="font-family:system-ui;padding:24px;color:#888;">' +
-      'Daemon offline or no token available. Start the daemon, then reload this page.' +
-      '</div>';
-    return;
+  // Task #139 (S4-T7): no token from the daemon path is fine in cloud /
+  // OAuth deployments — AuthContext + SignInGate handle the signed-out
+  // state. We only persist the daemon token when present so smoke / Tauri /
+  // loopback shells still get the legacy `?token=` → sessionStorage path.
+  if (token) {
+    console.log('[ccsm spa] token resolved tokenLen=', token.length);
+    sessionStorage.setItem(TOKEN_STORAGE_KEY, token);
+
+    // R-13: log the ws url the SessionRuntime / WsClient is about to dial.
+    const wsBase = resolveWsBase({ search: window.location.search });
+    const wsPath = resolveWsPath({ search: window.location.search }) ?? '/ws';
+    console.log('[ccsm spa] ws connecting', `${wsBase}${wsPath}`);
+  } else {
+    console.log('[ccsm spa] no daemon token — deferring to AuthContext / SignInGate');
   }
-
-  console.log('[ccsm spa] token resolved tokenLen=', token.length);
-
-  sessionStorage.setItem(TOKEN_STORAGE_KEY, token);
-
-  // R-13: log the ws url the SessionRuntime / WsClient is about to dial.
-  // Computed identically to webHostConfig (resolveWsBase + resolveWsPath)
-  // so a mismatch between this log and the actual ws upgrade in worker logs
-  // pinpoints a hostConfig drift.
-  const wsBase = resolveWsBase({ search: window.location.search });
-  const wsPath = resolveWsPath({ search: window.location.search }) ?? '/ws';
-  console.log('[ccsm spa] ws connecting', `${wsBase}${wsPath}`);
 
   createRoot(rootEl).render(
     <StrictMode>
