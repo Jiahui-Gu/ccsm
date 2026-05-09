@@ -26,6 +26,10 @@ import { openDb } from './db.mjs';
 import { createDaemonHttp } from './http.mjs';
 import { createRuntimeRegistry } from './runtime.mjs';
 import { TunnelClient } from './tunnel.mjs';
+import {
+  TunnelRefreshClient,
+  readCredsFile,
+} from './tunnel-refresh.mjs';
 import { attachFrameRouter, attachWebSocket } from './ws.mjs';
 
 const DEFAULT_PORT = 17832;
@@ -142,6 +146,7 @@ async function main(): Promise<void> {
 
   let tunnel: TunnelClient | null = null;
   let tunnelStatePoll: ReturnType<typeof setInterval> | null = null;
+  let tunnelRefresh: TunnelRefreshClient | null = null;
   if (tunnelDisabled) {
     console.error('[ccsm] tunnel: disabled (CCSM_TUNNEL_DISABLE)');
   } else {
@@ -151,55 +156,72 @@ async function main(): Promise<void> {
     // the JWT as the `ccsm.<jwt>` ws subprotocol so the cf-worker can
     // authenticate the daemon side of the tunnel against its JWT signing
     // key. Absence of the env var keeps the legacy unauth dial path.
-    const tunnelJwt = process.env.CCSM_TUNNEL_JWT;
-    const subprotocols =
-      typeof tunnelJwt === 'string' && tunnelJwt.length > 0
-        ? [`ccsm.${tunnelJwt}`]
+    //
+    // Task #153 (R-45 audit-P0 F-T-13): the cloud-issued tunnel JWT has a
+    // 24h TTL; without an in-process refresh loop the daemon's tunnel ws
+    // would close hard at exp+ε. We stand up a TunnelRefreshClient that
+    // schedules a refresh 1h before exp (read from the persisted creds
+    // file the Tauri shell wrote). On successful refresh we stop the
+    // current TunnelClient and dial a new one with the new
+    // `ccsm.<newJwt>` subprotocol — same identity, fresh credential.
+    let currentJwt: string | undefined =
+      typeof process.env.CCSM_TUNNEL_JWT === 'string' && process.env.CCSM_TUNNEL_JWT.length > 0
+        ? process.env.CCSM_TUNNEL_JWT
         : undefined;
-    if (subprotocols !== undefined) {
-      console.error('[ccsm] tunnel: dialing with cloud-issued JWT subprotocol');
-    }
-    tunnel = new TunnelClient({
-      url: tunnelUrl,
-      token,
-      daemonLoopbackPort: port,
-      ...(subprotocols !== undefined ? { subprotocols } : {}),
-      onFrame: (data) => {
-        const len = typeof data === 'string'
-          ? Buffer.byteLength(data, 'utf8')
-          : data.length;
-        // Frames that arrive before any browser pairing (no hello+sid yet)
-        // land here. Once the browser sends hello with sid, onBrowserAttach
-        // takes over and routes binary frames into the per-session PTY.
-        console.error(`[ccsm] tunnel: rx frame len=${len}`);
-      },
-      // Task #793 (S3-G): wire the paired browser ws into the runtime
-      // registry's per-session fan-out. The router owns replay + subscribe
-      // + INPUT/RESIZE forwarding for the rest of this connection; we tear
-      // it down via the returned handle when the tunnel ws drops.
-      onBrowserAttach: ({ sid, lastSeq, send }) => {
-        // R-17 log #10 (Task #45): record browser-attach entry pre-routing so
-        // we can diff against tunnel.mts log #8 (hello received) and the DO
-        // log #2 (browser ws accepted) on the cloud side.
-        console.error('[ccsm] tunnel: browser attach sid=' + sid + ' lastSeq=' + lastSeq);
-        const router = attachFrameRouter({
-          sid,
-          lastSeq,
-          registry,
-          send: (data) => send(data),
-        });
-        if (!router.attached) {
-          console.warn(`[ccsm] tunnel: attach failed sid=${JSON.stringify(sid)} (not_spawned or exited)`);
-          return null;
-        }
-        console.error(`[ccsm] tunnel: attached sid=${sid} lastSeq=${lastSeq}`);
-        return {
-          onFrame: (data) => router.onFrame(data),
-          onClose: () => router.close(),
-        };
-      },
-    });
-    tunnel.start();
+
+    const startTunnel = (jwtForSubprotocol: string | undefined): TunnelClient => {
+      const subprotocols =
+        typeof jwtForSubprotocol === 'string' && jwtForSubprotocol.length > 0
+          ? [`ccsm.${jwtForSubprotocol}`]
+          : undefined;
+      if (subprotocols !== undefined) {
+        console.error('[ccsm] tunnel: dialing with cloud-issued JWT subprotocol');
+      }
+      const t = new TunnelClient({
+        url: tunnelUrl,
+        token,
+        daemonLoopbackPort: port,
+        ...(subprotocols !== undefined ? { subprotocols } : {}),
+        onFrame: (data) => {
+          const len = typeof data === 'string'
+            ? Buffer.byteLength(data, 'utf8')
+            : data.length;
+          // Frames that arrive before any browser pairing (no hello+sid yet)
+          // land here. Once the browser sends hello with sid, onBrowserAttach
+          // takes over and routes binary frames into the per-session PTY.
+          console.error(`[ccsm] tunnel: rx frame len=${len}`);
+        },
+        // Task #793 (S3-G): wire the paired browser ws into the runtime
+        // registry's per-session fan-out. The router owns replay + subscribe
+        // + INPUT/RESIZE forwarding for the rest of this connection; we tear
+        // it down via the returned handle when the tunnel ws drops.
+        onBrowserAttach: ({ sid, lastSeq, send }) => {
+          // R-17 log #10 (Task #45): record browser-attach entry pre-routing so
+          // we can diff against tunnel.mts log #8 (hello received) and the DO
+          // log #2 (browser ws accepted) on the cloud side.
+          console.error('[ccsm] tunnel: browser attach sid=' + sid + ' lastSeq=' + lastSeq);
+          const router = attachFrameRouter({
+            sid,
+            lastSeq,
+            registry,
+            send: (data) => send(data),
+          });
+          if (!router.attached) {
+            console.warn(`[ccsm] tunnel: attach failed sid=${JSON.stringify(sid)} (not_spawned or exited)`);
+            return null;
+          }
+          console.error(`[ccsm] tunnel: attached sid=${sid} lastSeq=${lastSeq}`);
+          return {
+            onFrame: (data) => router.onFrame(data),
+            onClose: () => router.close(),
+          };
+        },
+      });
+      t.start();
+      return t;
+    };
+
+    tunnel = startTunnel(currentJwt);
     // TunnelClient does not emit a 'connected' event; poll state until we
     // observe the first transition (or the client is stopped). Cheap timer,
     // unref'd so it never holds the loop open. Logged once per connect.
@@ -219,6 +241,54 @@ async function main(): Promise<void> {
       }
     }, TUNNEL_CONNECT_POLL_MS);
     tunnelStatePoll.unref?.();
+
+    // Task #153: bring up the refresh loop iff CCSM_TUNNEL_JWT was injected
+    // (i.e. the Tauri shell did device-flow). In legacy / unauth deployments
+    // there's no JWT to refresh and no creds file to consult — leave
+    // tunnelRefresh null. The creds file MUST exist when the env var is set
+    // (the Tauri shell writes it before spawning daemon); a missing file is
+    // logged but not fatal — the existing tunnel keeps running until exp.
+    if (currentJwt !== undefined) {
+      void readCredsFile().then((creds) => {
+        if (creds === null) {
+          console.warn(
+            '[ccsm/tunnel-refresh] creds file missing or malformed, refresh disabled for this run',
+          );
+          return;
+        }
+        tunnelRefresh = new TunnelRefreshClient({
+          authBase: process.env.CCSM_AUTH_BASE ?? 'https://cc-sm.pages.dev',
+          creds,
+          onRefreshed: (newJwt) => {
+            currentJwt = newJwt;
+            // Stop the existing tunnel synchronously, then dial a new one
+            // with the new subprotocol. The old ws may still be mid-frame;
+            // tunnel.stop() closes 1000 cleanly, the DO will see normal
+            // close, and the new dial reuses the same loopback port +
+            // browser routing wiring.
+            console.error('[ccsm] tunnel: refreshed JWT, redialing');
+            if (tunnel !== null) {
+              try {
+                tunnel.stop();
+              } catch (err) {
+                console.warn('[ccsm] tunnel.stop on refresh:', (err as Error).message);
+              }
+            }
+            tunnel = startTunnel(newJwt);
+            // The old state-poll interval still references this binding via
+            // the outer `tunnel` variable, which we just reassigned — the
+            // poll closure reads `tunnel` afresh each tick so it picks up
+            // the new client automatically.
+          },
+        });
+        tunnelRefresh.start();
+      }).catch((err: unknown) => {
+        console.warn(
+          '[ccsm/tunnel-refresh] init failed:',
+          (err as Error).message,
+        );
+      });
+    }
   }
 
   if (handshakeMode) {
@@ -243,6 +313,13 @@ async function main(): Promise<void> {
     console.error(`[ccsm] received ${signal}, shutting down`);
     // Stop the outbound tunnel first so we don't reconnect while the HTTP
     // server is closing. tunnel.stop() is synchronous + idempotent.
+    if (tunnelRefresh !== null) {
+      try {
+        tunnelRefresh.stop();
+      } catch (err) {
+        console.error('[ccsm] tunnelRefresh.stop error:', err);
+      }
+    }
     if (tunnel !== null) {
       try {
         tunnel.stop();
