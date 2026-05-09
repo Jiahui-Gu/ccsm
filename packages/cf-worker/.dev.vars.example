@@ -1,0 +1,12 @@
+# Local dev secrets for `wrangler dev`. Copy this file to `.dev.vars` (which
+# is gitignored) and replace the placeholders with real values.
+#
+# Production: use `wrangler secret put <NAME>` (see docs/S4-SETUP.md).
+# DO NOT commit `.dev.vars`. DO NOT put real values in this `.example` file.
+#
+# How to obtain values: docs/S4-SETUP.md (Task #113 / S4-T1).
+
+GITHUB_APP_CLIENT_ID=Iv1.xxxxxxxxxxxx
+GITHUB_APP_CLIENT_SECRET=ghs_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+JWT_SIGNING_KEY=00000000000000000000000000000000000000000000000000000000000000ff
+JWT_REFRESH_SIGNING_KEY=00000000000000000000000000000000000000000000000000000000000000aa
