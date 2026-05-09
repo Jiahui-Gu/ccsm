@@ -16,6 +16,7 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 use crate::job_object::JobObject;
+use crate::daemon_state::{DaemonPhase, DaemonStateStore};
 
 #[derive(Default)]
 pub struct DaemonState {
@@ -104,6 +105,7 @@ pub async fn start_daemon(app: AppHandle, state: State<'_, DaemonState>) -> Resu
 /// empty and will overwrite the killer if invoked twice concurrently.
 pub async fn spawn_daemon_inner(app: AppHandle) -> Result<(), String> {
     let state: State<DaemonState> = app.state();
+    let store: State<DaemonStateStore> = app.state();
     {
         let guard = state.killer.lock().unwrap();
         if guard.is_some() {
@@ -111,7 +113,20 @@ pub async fn spawn_daemon_inner(app: AppHandle) -> Result<(), String> {
         }
     }
 
-    let script = resolve_daemon_script(&app)?;
+    // Announce we're about to spawn — listeners can clear any prior
+    // SpawnFailed UI before resolve_daemon_script / token I/O runs.
+    store.set_and_emit(&app, DaemonPhase::Spawning);
+
+    let script = match resolve_daemon_script(&app) {
+        Ok(p) => p,
+        Err(e) => {
+            store.set_and_emit(
+                &app,
+                DaemonPhase::SpawnFailed { reason: e.clone(), retry_in_ms: None },
+            );
+            return Err(e);
+        }
+    };
     eprintln!("[daemon-mgr] resolved daemon script: {}", script.display());
 
     // T11: pin daemon SQLite path to Tauri's app_local_data_dir so the Tauri
@@ -164,6 +179,10 @@ pub async fn spawn_daemon_inner(app: AppHandle) -> Result<(), String> {
             let reason = format!("token load/create failed: {e}");
             eprintln!("[daemon-mgr] {reason}");
             let _ = app.emit("daemon-error", DaemonErrorEvent { reason: reason.clone() });
+            store.set_and_emit(
+                &app,
+                DaemonPhase::SpawnFailed { reason: reason.clone(), retry_in_ms: None },
+            );
             return Err(reason);
         }
     };
@@ -176,9 +195,22 @@ pub async fn spawn_daemon_inner(app: AppHandle) -> Result<(), String> {
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW — avoid console flash
     }
 
-    let mut child = cmd.spawn().map_err(|e| format!("spawn failed: {e}"))?;
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            let reason = format!("spawn failed: {e}");
+            store.set_and_emit(
+                &app,
+                DaemonPhase::SpawnFailed { reason: reason.clone(), retry_in_ms: None },
+            );
+            return Err(reason);
+        }
+    };
     let pid = child.id().unwrap_or(0);
     eprintln!("[daemon-mgr] spawned daemon pid={pid}");
+
+    // Process is alive; transition to Starting until handshake confirms ready.
+    store.set_and_emit(&app, DaemonPhase::Starting);
 
     // T9: bind the child to the app-wide Job Object so it gets kernel-killed
     // if ccsm-tauri.exe dies (incl. TerminateProcess paths that skip Drop).
@@ -209,12 +241,39 @@ pub async fn spawn_daemon_inner(app: AppHandle) -> Result<(), String> {
     }
 
     // stderr forwarder — surfaces daemon log lines to webview as `daemon-stderr`
-    // and to Rust stderr for dev console.
+    // and to Rust stderr for dev console. Also sniffs for tunnel state markers
+    // (`[ccsm] tunnel: connected` / `disconnected`) to drive the unified
+    // `daemon-state` channel. The token here is the in-process token we just
+    // loaded — daemon does not echo it on stderr, so we capture it once for
+    // the closure.
     let app_for_stderr = app.clone();
+    let token_for_stderr = token.clone();
     tokio::spawn(async move {
+        let store: State<DaemonStateStore> = app_for_stderr.state();
         let mut reader = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = reader.next_line().await {
             eprintln!("[daemon stderr] {line}");
+            // Simple `contains` checks per T1 spec — full structured tunnel
+            // protocol parsing is T2 territory. Port is hard-coded to the
+            // PORT env we passed (9876) to avoid plumbing it through the
+            // closure; future work will lift the port from handshake state.
+            if line.contains("[ccsm] tunnel: connected") {
+                store.set_and_emit(
+                    &app_for_stderr,
+                    DaemonPhase::TunnelConnected {
+                        port: 9876,
+                        token: token_for_stderr.clone(),
+                    },
+                );
+            } else if line.contains("[ccsm] tunnel: disconnected") {
+                store.set_and_emit(
+                    &app_for_stderr,
+                    DaemonPhase::TunnelDisconnected {
+                        port: 9876,
+                        token: token_for_stderr.clone(),
+                    },
+                );
+            }
             let _ = app_for_stderr.emit("daemon-stderr", line);
         }
     });
@@ -222,6 +281,7 @@ pub async fn spawn_daemon_inner(app: AppHandle) -> Result<(), String> {
     // stdout reader — first line MUST be the handshake JSON (race-protected by 1.5s timeout).
     let app_for_reader = app.clone();
     tokio::spawn(async move {
+        let store: State<DaemonStateStore> = app_for_reader.state();
         let mut lines = BufReader::new(stdout).lines();
 
         // Bound waiting for the first line by 1.5s — covers slow node start
@@ -229,23 +289,38 @@ pub async fn spawn_daemon_inner(app: AppHandle) -> Result<(), String> {
         let first = match timeout(Duration::from_millis(1500), lines.next_line()).await {
             Ok(Ok(Some(line))) => line,
             Ok(Ok(None)) => {
+                let reason = "stdout closed before handshake".to_string();
                 let _ = app_for_reader.emit(
                     "daemon-error",
-                    DaemonErrorEvent { reason: "stdout closed before handshake".into() },
+                    DaemonErrorEvent { reason: reason.clone() },
+                );
+                store.set_and_emit(
+                    &app_for_reader,
+                    DaemonPhase::SpawnFailed { reason, retry_in_ms: None },
                 );
                 return;
             }
             Ok(Err(e)) => {
+                let reason = format!("stdout read error: {e}");
                 let _ = app_for_reader.emit(
                     "daemon-error",
-                    DaemonErrorEvent { reason: format!("stdout read error: {e}") },
+                    DaemonErrorEvent { reason: reason.clone() },
+                );
+                store.set_and_emit(
+                    &app_for_reader,
+                    DaemonPhase::SpawnFailed { reason, retry_in_ms: None },
                 );
                 return;
             }
             Err(_) => {
+                let reason = "handshake timeout (1.5s)".to_string();
                 let _ = app_for_reader.emit(
                     "daemon-error",
-                    DaemonErrorEvent { reason: "handshake timeout (1.5s)".into() },
+                    DaemonErrorEvent { reason: reason.clone() },
+                );
+                store.set_and_emit(
+                    &app_for_reader,
+                    DaemonPhase::SpawnFailed { reason, retry_in_ms: None },
                 );
                 return;
             }
@@ -254,18 +329,36 @@ pub async fn spawn_daemon_inner(app: AppHandle) -> Result<(), String> {
         match serde_json::from_str::<Handshake>(&first) {
             Ok(hs) if hs.ready => {
                 eprintln!("[daemon-mgr] handshake ok port={} token={}…", hs.port, &hs.token[..hs.token.len().min(6)]);
+                store.set_and_emit(
+                    &app_for_reader,
+                    DaemonPhase::Ready {
+                        port: hs.port,
+                        token: hs.token.clone(),
+                        identity: None, // S4-T8 will populate after auth.
+                    },
+                );
                 let _ = app_for_reader.emit("daemon-ready", hs);
             }
             Ok(hs) => {
+                let reason = format!("handshake ready=false: {hs:?}");
                 let _ = app_for_reader.emit(
                     "daemon-error",
-                    DaemonErrorEvent { reason: format!("handshake ready=false: {hs:?}") },
+                    DaemonErrorEvent { reason: reason.clone() },
+                );
+                store.set_and_emit(
+                    &app_for_reader,
+                    DaemonPhase::SpawnFailed { reason, retry_in_ms: None },
                 );
             }
             Err(e) => {
+                let reason = format!("handshake parse failed: {e}; line={first}");
                 let _ = app_for_reader.emit(
                     "daemon-error",
-                    DaemonErrorEvent { reason: format!("handshake parse failed: {e}; line={first}") },
+                    DaemonErrorEvent { reason: reason.clone() },
+                );
+                store.set_and_emit(
+                    &app_for_reader,
+                    DaemonPhase::SpawnFailed { reason, retry_in_ms: None },
                 );
             }
         }
@@ -280,6 +373,7 @@ pub async fn spawn_daemon_inner(app: AppHandle) -> Result<(), String> {
     // wait task — owns the Child, races child.wait() vs kill mpsc.
     let app_for_wait = app.clone();
     tokio::spawn(async move {
+        let store: State<DaemonStateStore> = app_for_wait.state();
         let exit = tokio::select! {
             res = child.wait() => match res {
                 Ok(status) => DaemonExitEvent { code: status.code(), reason: format!("exited: {status:?}") },
@@ -294,6 +388,10 @@ pub async fn spawn_daemon_inner(app: AppHandle) -> Result<(), String> {
             }
         };
         eprintln!("[daemon-mgr] daemon exited: {exit:?}");
+        store.set_and_emit(
+            &app_for_wait,
+            DaemonPhase::Exited { code: exit.code, reason: exit.reason.clone() },
+        );
         let _ = app_for_wait.emit("daemon-exit", exit);
     });
 
