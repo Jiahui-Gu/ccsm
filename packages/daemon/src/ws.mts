@@ -205,6 +205,7 @@ export function attachFrameRouter(opts: AttachFrameRouterOptions): FrameRouter {
     OPEN: 1,
     send: (data: Uint8Array) => {
       try {
+        console.error('[r38-sub-send] sid=' + sid + ' bytes=' + data.byteLength);
         send(data);
       } catch (err) {
         console.warn('[ccsm/ws] router send failed:', (err as Error).message);
@@ -227,6 +228,7 @@ export function attachFrameRouter(opts: AttachFrameRouterOptions): FrameRouter {
     pausedQueue: [],
     pausedBytes: 0,
   });
+  console.error('[r38-subscriber-added] sid=' + sid + ' subs_now=' + rt.subscribers.size + ' lastSeq=' + lastSeq + ' rt_outputSeq=' + rt.outputSeq);
 
   // Capture the narrowed runtime ref so the closures below don't re-fetch
   // (also satisfies TS, which loses the narrow across closure boundaries).

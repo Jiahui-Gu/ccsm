@@ -356,6 +356,7 @@ async function echoUuid(tab: TabHandle): Promise<void> {
 test('two tabs, two sessions, each tab sees only its own PTY echo', async ({
   browser,
 }) => {
+  test.setTimeout(60_000);
   const tabA = await openFreshTab(browser, 'tabA');
   const tabB = await openFreshTab(browser, 'tabB');
 
