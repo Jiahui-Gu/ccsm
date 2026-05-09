@@ -1,15 +1,20 @@
 // S4-T8 (Task #141): GitHub device-flow OAuth, on-demand from the main UI.
 //
 // User pressing the Login button triggers `start_oauth`, which:
-//   1. POSTs cc-sm.pages.dev/api/auth/device/start to mint device + user codes.
+//   1. POSTs <auth-base>/api/auth/device/start to mint device + user codes.
+//      The auth base URL is **mandatory env** (`CCSM_AUTH_BASE`); the Tauri
+//      shell must stay repo-agnostic (no hardcoded cloud host — see the
+//      `Tauri red-line guard (no cloud refs)` CI check + ROADMAP). dev runs
+//      pass it via `CCSM_AUTH_BASE=... pnpm tauri dev`; release builds inject
+//      it through the packaging pipeline.
 //   2. Returns the user_code + verification_uri to the SPA so the modal can
 //      display them. The SPA opens the verification URL via plugin-shell; the
 //      user finishes auth in their default browser.
-//   3. Spawns a background poll task that hits /api/auth/device/poll on the
-//      worker-supplied interval. On success it persists the returned tunnel
-//      JWT + refresh token to ~/.ccsm/tunnel_jwt (chmod 600 on Unix; on
-//      Windows the default %USERPROFILE% ACL provides equivalent protection
-//      for the threat model — see daemon_mgr::write_token_file).
+//   3. Spawns a background poll task that hits <auth-base>/api/auth/device/poll
+//      on the worker-supplied interval. On success it persists the returned
+//      tunnel JWT + refresh token to ~/.ccsm/tunnel_jwt (chmod 600 on Unix;
+//      on Windows the default %USERPROFILE% ACL provides equivalent
+//      protection for the threat model — see daemon_mgr::write_token_file).
 //   4. Emits a Tauri event for state transitions (`oauth-state-change`,
 //      `oauth-complete`, `oauth-failed`). The JWT itself is NEVER sent to the
 //      SPA — only the resolved login is, so the renderer can render "@user".
@@ -36,7 +41,6 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_shell::ShellExt;
 use tokio::time::sleep;
 
-const DEFAULT_AUTH_BASE: &str = "https://cc-sm.pages.dev";
 const MAX_POLL_INTERVAL_SEC: u64 = 60;
 
 /// Persisted credential blob — read by `daemon_mgr` at spawn time.
@@ -216,8 +220,16 @@ fn write_creds_file(path: &std::path::Path, contents: &str) -> Result<(), String
     Ok(())
 }
 
-fn auth_base() -> String {
-    std::env::var("CCSM_AUTH_BASE").unwrap_or_else(|_| DEFAULT_AUTH_BASE.to_string())
+fn auth_base() -> Result<String, String> {
+    // **Mandatory env**: the Tauri shell is repo-agnostic by ROADMAP red-line,
+    // so the cloud auth endpoint is never hardcoded — the embedder (dev shell
+    // or release packager) must inject it. Returning Err here propagates a
+    // clear, actionable failure into `oauth-failed` instead of silently
+    // dialing some default host.
+    match std::env::var("CCSM_AUTH_BASE") {
+        Ok(v) if !v.is_empty() => Ok(v),
+        _ => Err("CCSM_AUTH_BASE env not set (Tauri shell must not hardcode an auth host)".to_string()),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -234,7 +246,7 @@ pub async fn start_oauth(
         return Err("oauth already in progress".to_string());
     }
 
-    let url = format!("{}/api/auth/device/start", auth_base());
+    let url = format!("{}/api/auth/device/start", auth_base()?);
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .build()
@@ -316,7 +328,17 @@ async fn run_poll_loop(
     expires_in_sec: u64,
 ) {
     let store: State<OauthStore> = app.state();
-    let url = format!("{}/api/auth/device/poll", auth_base());
+    let url = match auth_base() {
+        Ok(base) => format!("{}/api/auth/device/poll", base),
+        Err(e) => {
+            // Should be unreachable in practice — start_oauth already failed
+            // with the same Err if env was missing, so the poll task would
+            // never have been spawned. Belt-and-suspenders: surface as a
+            // normal oauth-failed event rather than panic.
+            emit_failed(&app, &store, e);
+            return;
+        }
+    };
     let deadline = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() + expires_in_sec)
@@ -558,6 +580,43 @@ mod tests {
             let path = tunnel_jwt_path().unwrap();
             let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600, "expected 0600 on Unix, got {:o}", mode);
+        });
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_creds_file_under_userprofile() {
+        // Reviewer follow-up on PR #1225: lock in that on Windows we (a) can
+        // write + read the creds file, and (b) the resolved path lives under
+        // the per-test USERPROFILE so the default ACL inheritance argument
+        // in the file header actually applies (file inside %USERPROFILE% =
+        // owner-only by default; outside it could pick up a different ACL).
+        with_tmp_home("win-userprofile", || {
+            let creds = PersistedTunnelCreds {
+                tunnel_jwt: "winjwt".into(),
+                tunnel_refresh_token: "winrefresh".into(),
+                login: "winuser".into(),
+            };
+            write_persisted_creds(&creds).unwrap();
+
+            let path = tunnel_jwt_path().unwrap();
+            assert!(path.exists(), "creds file must exist after write");
+
+            // Path must live under the test's USERPROFILE.
+            let userprofile = std::env::var("USERPROFILE").expect("USERPROFILE set in with_tmp_home");
+            let canon_path = path.canonicalize().unwrap();
+            let canon_home = std::path::PathBuf::from(&userprofile).canonicalize().unwrap();
+            assert!(
+                canon_path.starts_with(&canon_home),
+                "creds path {} must be under USERPROFILE {}",
+                canon_path.display(),
+                canon_home.display(),
+            );
+
+            // Round-trip read.
+            let back = read_persisted_creds().expect("read back");
+            assert_eq!(back.tunnel_jwt, "winjwt");
+            assert_eq!(back.login, "winuser");
         });
     }
 }
