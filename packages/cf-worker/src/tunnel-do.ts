@@ -15,6 +15,12 @@ import {
   type HttpResFrame,
 } from '@ccsm/shared';
 
+// R-47 (Task #162): structured logger replaces the [r28] / [do] console.log
+// forensics tags. Per-request `Logger.child(reqId)` stamps the request_id
+// from `X-CCSM-Request-Id` so DO records pivot with the worker entry +
+// daemon http_req records on the same request.
+import { Logger } from './logger';
+
 /**
  * DO-side decode adapter: the WebSocket Hibernation API delivers binary
  * frames as `ArrayBuffer`; the shared codec works on `Uint8Array`. Wrap
@@ -191,9 +197,17 @@ function extractBrowserToken(req: Request): { token: string; protocol: string } 
  */
 export class TunnelDO extends DurableObject<Env> {
   private pendingHttp = new Map<string, PendingHttp>();
+  /**
+   * R-47 (Task #162): module-default logger; per-request work uses
+   * `this.logger.child(requestId)` so each line carries the cf-worker-derived
+   * request_id (X-CCSM-Request-Id header). Construction is cheap (one object,
+   * no env reads) so we do it eagerly in the constructor.
+   */
+  private readonly logger: Logger;
 
   constructor(state: DurableObjectState, env: Env) {
     super(state, env);
+    this.logger = new Logger();
   }
 
   /** Convenience for state.getWebSockets — `this.ctx` is provided by the base class. */
@@ -527,26 +541,34 @@ export class TunnelDO extends DurableObject<Env> {
    * Daemon offline → 503 immediately. Daemon drop while pending → 502.
    */
   private async proxyHttp(req: Request): Promise<Response> {
-    const r28Url = new URL(req.url);
-    const r28Path = r28Url.pathname;
-    const r28DaemonAll = this.state.getWebSockets(TAG_DAEMON);
-    const r28DaemonStates = r28DaemonAll.map((ws) => ws.readyState).join(',');
-    const r28BrowserAll = this.state.getWebSockets(TAG_BROWSER);
-    console.log(
-      '[r28][do] proxyHttp enter path=' + r28Path +
-      ' method=' + req.method +
-      ' daemon_count=' + r28DaemonAll.length +
-      ' daemon_states=[' + r28DaemonStates + ']' +
-      ' browser_count=' + r28BrowserAll.length +
-      ' pending_http=' + this.pendingHttp.size,
-    );
+    // R-47 (Task #162): bind the cf-worker-stamped request_id (set by the
+    // Worker entry, see index.ts withRequestId) to a child logger. Missing
+    // header (legacy / direct DO test) leaves the field unset; downstream
+    // log search just sees no `request_id` on those lines.
+    const reqId = req.headers.get('X-CCSM-Request-Id') ?? undefined;
+    const log: Logger =
+      reqId !== undefined && reqId.length > 0
+        ? this.logger.child(reqId)
+        : this.logger;
+    const url = new URL(req.url);
+    const path = url.pathname;
+    const daemonAll = this.state.getWebSockets(TAG_DAEMON);
+    const daemonStates = daemonAll.map((ws) => ws.readyState).join(',');
+    const browserAll = this.state.getWebSockets(TAG_BROWSER);
+    log.debug('do.proxy_http.enter', {
+      path,
+      method: req.method,
+      daemon_count: daemonAll.length,
+      daemon_states: daemonStates,
+      browser_count: browserAll.length,
+      pending_http: this.pendingHttp.size,
+    });
     const daemon = this.getDaemonSocket();
     if (daemon === undefined) {
-      console.log('[r28][do] proxyHttp path=' + r28Path + ' decision=503-no-daemon');
+      log.warn('do.proxy_http.no_daemon', { path, status: 503 });
       return new Response('daemon offline', { status: 503 });
     }
     const id = crypto.randomUUID();
-    const url = new URL(req.url);
     const headers: Record<string, string> = {};
     req.headers.forEach((v, k) => {
       headers[k] = v;
@@ -565,16 +587,19 @@ export class TunnelDO extends DurableObject<Env> {
     // daemon log records can be correlated with worker + DO records for the
     // same request. Header is set by the Worker entry (deriveRequestId);
     // missing header (legacy / direct DO test) leaves the field unset, and
-    // the daemon falls back to "no-req-id" placeholder.
-    const reqId = req.headers.get('X-CCSM-Request-Id');
-    if (reqId !== null && reqId.length > 0) {
+    // the daemon falls back to '-' placeholder.
+    if (reqId !== undefined && reqId.length > 0) {
       frame.request_id = reqId;
     }
-    console.log('[r28][do] proxyHttp send-frame path=' + r28Path + ' id=' + id + ' body_len=' + body.byteLength);
+    log.debug('do.proxy_http.send_frame', {
+      path,
+      id,
+      body_len: body.byteLength,
+    });
     return new Promise<Response>((resolve) => {
       const timer = setTimeout(() => {
         if (this.pendingHttp.delete(id)) {
-          console.log('[r28][do] proxyHttp path=' + r28Path + ' id=' + id + ' decision=504-timeout');
+          log.warn('do.proxy_http.timeout', { path, id, status: 504 });
           resolve(new Response('upstream timeout', { status: 504 }));
         }
       }, HTTP_OVER_TUNNEL_TIMEOUT_MS);
@@ -584,7 +609,12 @@ export class TunnelDO extends DurableObject<Env> {
       } catch (err) {
         clearTimeout(timer);
         this.pendingHttp.delete(id);
-        console.log('[r28][do] proxyHttp path=' + r28Path + ' id=' + id + ' decision=502-send-failed err=' + String(err));
+        log.warn('do.proxy_http.send_failed', {
+          path,
+          id,
+          status: 502,
+          err: String(err),
+        });
         resolve(new Response('upstream send failed', { status: 502 }));
       }
     });
@@ -592,7 +622,11 @@ export class TunnelDO extends DurableObject<Env> {
 
   /** Reject every in-flight HTTP request when the daemon ws drops. */
   private failAllPendingHttp(status: number, body: string): void {
-    console.log('[r28][do] failAllPendingHttp status=' + status + ' body=' + body + ' count=' + this.pendingHttp.size);
+    this.logger.warn('do.pending_http.fail_all', {
+      status,
+      body,
+      count: this.pendingHttp.size,
+    });
     for (const [, pending] of this.pendingHttp) {
       clearTimeout(pending.timer);
       pending.resolve(new Response(body, { status }));
@@ -604,10 +638,18 @@ export class TunnelDO extends DurableObject<Env> {
   private completeHttpRes(frame: HttpResFrame): void {
     const pending = this.pendingHttp.get(frame.id);
     if (pending === undefined) {
-      console.log('[r28][do] completeHttpRes id=' + frame.id + ' status=' + frame.status + ' decision=no-pending (maybe timed-out)');
+      this.logger.warn('do.proxy_http.no_pending', {
+        id: frame.id,
+        status: frame.status,
+        decision: 'maybe-timed-out',
+      });
       return;
     }
-    console.log('[r28][do] completeHttpRes id=' + frame.id + ' status=' + frame.status + ' body_len=' + frame.body_b64.length);
+    this.logger.info('do.proxy_http.complete', {
+      id: frame.id,
+      status: frame.status,
+      body_len: frame.body_b64.length,
+    });
     this.pendingHttp.delete(frame.id);
     clearTimeout(pending.timer);
     const bytes = frame.body_b64.length === 0
