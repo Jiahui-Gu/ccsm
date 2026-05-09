@@ -2,6 +2,46 @@ name = "ccsm-worker"
 main = "src/index.ts"
 compatibility_date = "2026-01-01"
 
+# Task #154 (R-49 audit P1, F-A-2): Cloudflare Workers Static Assets binding
+# folds the cc-sm Pages site into this Worker, eliminating the prior
+# Pages-Function reproxy hop (`packages/frontend-web/functions/[[path]].ts`)
+# and the `cc-sm` Pages project. The browser now talks directly to the same
+# Worker that owns TunnelDO, so /ws/default, /tunnel/default, /api/*, /token,
+# /health are served by the Worker script and every other path is served as
+# a static asset out of `packages/frontend-web/dist`.
+#
+# `directory` is resolved relative to this wrangler.toml (i.e. cf-worker/),
+# so `../frontend-web/dist` points at the SPA build output. The deploy-worker
+# workflow now builds frontend-web before invoking `wrangler deploy`.
+#
+# `not_found_handling = "single-page-application"` replaces the manual
+# history-mode rewrite that lived in `functions/[[path]].ts`: any request
+# that does not match a static asset and does not match a `run_worker_first`
+# pattern returns 200 + index.html so client-side routes (`/sessions/123`)
+# resolve to the SPA shell.
+#
+# `run_worker_first` lists every dynamic path the Worker owns. Listing them
+# explicitly (as opposed to `run_worker_first = true` for everything) keeps
+# static-asset serving on the asset-first fast path: `/index.html`,
+# `/assets/*`, `/favicon.ico`, etc. never invoke the Worker script.
+#
+# Refs (verified via Cloudflare docs 2026-05-10):
+#   - https://developers.cloudflare.com/workers/static-assets/
+#   - https://developers.cloudflare.com/workers/static-assets/binding/
+#   - https://developers.cloudflare.com/workers/static-assets/routing/
+#   - https://developers.cloudflare.com/workers/static-assets/headers/
+[assets]
+directory = "../frontend-web/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = [
+  "/health",
+  "/ws/default",
+  "/tunnel/default",
+  "/token",
+  "/api/*",
+]
+
 # S4-T5 (Task #136): auth mode toggle. `legacy` keeps the S3-era
 # token-based flow with a single shared TunnelDO keyed by `'default'` —
 # what production runs today and what `npm run smoke` exercises. `jwt`
