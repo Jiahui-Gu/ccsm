@@ -110,6 +110,12 @@ export interface BrowserAttachInfo {
   lastSeq: number;
   /** Send a binary frame back to the browser via the tunnel. */
   send: (data: Uint8Array | Buffer) => void;
+  /**
+   * Cloud-authenticated browser identity (Task #133, S4-T6). Present only
+   * when the daemon is in trust-tunnel mode AND the hello carried an
+   * `identity` block. Legacy token-only pairings leave this `undefined`.
+   */
+  identity?: BrowserIdentity;
 }
 
 /**
@@ -144,13 +150,57 @@ function defaultWsFactory(url: string): WsLike {
   return new WebSocket(url) as unknown as WsLike;
 }
 
+/**
+ * Per-browser identity that the cloud has already authenticated on our
+ * behalf (Task #133, S4-T6). Present only when the daemon is running in
+ * trust-tunnel mode (env `CCSM_TRUST_TUNNEL=1`); legacy / smoke / dogfood
+ * paths still ride the per-browser bearer token in `HelloFrame.token` and
+ * leave `identity` undefined.
+ *
+ * `login` is the GitHub login (handle) and `github_id` is the numeric
+ * GitHub user id rendered as a string so we don't lose precision on the
+ * wire. Both are minted by the cloud token mint endpoint (T3/T4) once OAuth
+ * lands; T6 only carries the field through.
+ */
+export interface BrowserIdentity {
+  login: string;
+  github_id: string;
+}
+
+function parseIdentity(value: unknown): BrowserIdentity | null {
+  if (value === null || typeof value !== 'object') return null;
+  const obj = value as Record<string, unknown>;
+  if (typeof obj.login !== 'string' || obj.login.length === 0) return null;
+  if (typeof obj.github_id !== 'string' || obj.github_id.length === 0) return null;
+  return { login: obj.login, github_id: obj.github_id };
+}
+
 interface HelloFrame {
   type: 'hello';
-  token: string;
+  /** Legacy per-browser bearer token (constant-time-checked vs daemon token).
+   * Optional when the daemon is in trust-tunnel mode AND the hello carries an
+   * `identity` instead. */
+  token?: string;
   /** Task #793 (S3-G): session id from the browser ws `?sid=` query. */
   sid?: string;
   /** Task #793 (S3-G): replay cursor from the browser ws `?lastSeq=` query. */
   lastSeq?: number;
+  /** Task #133 (S4-T6): cloud-authenticated browser identity (trust-tunnel). */
+  identity?: BrowserIdentity;
+}
+
+/**
+ * Returns true when the daemon process is configured to trust the cloud
+ * tunnel for browser identity (env `CCSM_TRUST_TUNNEL=1`). Read on every
+ * call so tests / runtime toggles take effect without re-importing.
+ *
+ * In trust-tunnel mode the daemon accepts hello frames that carry only
+ * `identity` (no `token`) — the Cloudflare Worker has already authenticated
+ * the browser via OAuth and signed the JWT. Legacy / dogfood deployments
+ * leave the env unset and continue to require the per-browser bearer token.
+ */
+export function isTrustTunnelEnabled(): boolean {
+  return process.env.CCSM_TRUST_TUNNEL === '1';
 }
 
 /**
@@ -196,8 +246,23 @@ function parseHello(text: string): HelloFrame | null {
   if (parsed === null || typeof parsed !== 'object') return null;
   const obj = parsed as Record<string, unknown>;
   if (obj.type !== 'hello') return null;
-  if (typeof obj.token !== 'string' || obj.token.length === 0) return null;
-  const out: HelloFrame = { type: 'hello', token: obj.token };
+  // Task #133 (S4-T6): token is optional in trust-tunnel mode; presence is
+  // re-validated at the call site against env + identity. We just require
+  // that IF token is present it be a non-empty string.
+  let token: string | undefined;
+  if (obj.token !== undefined) {
+    if (typeof obj.token !== 'string' || obj.token.length === 0) return null;
+    token = obj.token;
+  }
+  const identity = obj.identity !== undefined ? parseIdentity(obj.identity) : null;
+  if (obj.identity !== undefined && identity === null) return null;
+  // Reject hello with neither token nor identity outright — there's nothing
+  // to authenticate against. (The trust-mode env check still happens at the
+  // call site to also reject identity-only hellos when env is unset.)
+  if (token === undefined && identity === null) return null;
+  const out: HelloFrame = { type: 'hello' };
+  if (token !== undefined) out.token = token;
+  if (identity !== null) out.identity = identity;
   if (typeof obj.sid === 'string' && obj.sid.length > 0) {
     out.sid = obj.sid;
   }
@@ -291,6 +356,12 @@ export class TunnelClient {
   // (no tear-down of prior sids — that was the wave-1 R-27 behaviour). On
   // ws close all attach handles are dropped.
   private readonly attachHandles = new Map<string, BrowserAttachHandle>();
+  /**
+   * Task #133 (S4-T6): per-sid cloud identity map. Populated only in
+   * trust-tunnel mode when the hello frame carries an `identity` block.
+   * Cleared on dial() / ws close alongside `attachHandles`.
+   */
+  private readonly identities = new Map<string, BrowserIdentity>();
   private readonly onBrowserAttach: ((info: BrowserAttachInfo) => BrowserAttachHandle | null) | null;
 
   constructor(opts: TunnelClientOptions) {
@@ -316,6 +387,15 @@ export class TunnelClient {
    */
   getBrowserToken(): string | null {
     return this.browserToken;
+  }
+
+  /**
+   * Returns the cloud-authenticated identity for a given paired sid, or null
+   * if no hello has been received for that sid or hello carried no identity
+   * (legacy / token-only pairing). Task #133 (S4-T6).
+   */
+  getBrowserIdentity(sid: string): BrowserIdentity | null {
+    return this.identities.get(sid) ?? null;
   }
 
   start(): void {
@@ -364,6 +444,7 @@ export class TunnelClient {
     this.helloSeen = false;
     this.browserToken = null;
     this.attachHandles.clear();
+    this.identities.clear();
     let socket: WsLike;
     try {
       socket = this.wsFactory(this.url);
@@ -467,6 +548,26 @@ export class TunnelClient {
       // 2) hello frame — always sniffed, so SPA re-pair (Task #81) works.
       const hello = parseHello(text);
       if (hello !== null) {
+        // Task #133 (S4-T6): two accept paths.
+        //   - trust-tunnel mode (CCSM_TRUST_TUNNEL=1): cloud has authed the
+        //     browser; hello MUST carry identity. Token (if present) is
+        //     informational only — we don't validate it (cloud already did).
+        //   - legacy mode: hello MUST carry token, validated constant-time
+        //     against the daemon's expected token. identity is ignored if
+        //     present (forward-compat with cloud-issued frames during
+        //     rollout — server can't trust them when the env opt-in is off).
+        if (isTrustTunnelEnabled()) {
+          if (hello.identity === undefined) {
+            this.rejectHello('trust-tunnel mode but hello missing identity');
+            return;
+          }
+          this.handleHello(hello);
+          return;
+        }
+        if (hello.token === undefined) {
+          this.rejectHello('legacy mode but hello missing token');
+          return;
+        }
         if (!constantTimeTokenEquals(hello.token, this.token)) {
           this.rejectHello('bad token in hello');
           return;
@@ -504,6 +605,7 @@ export class TunnelClient {
         }
         this.attachHandles.clear();
       }
+      this.identities.clear();
       if (this.stopped) {
         this.state = 'stopped';
         return;
@@ -528,7 +630,10 @@ export class TunnelClient {
    */
   private handleHello(hello: HelloFrame): void {
     this.helloSeen = true;
-    this.browserToken = hello.token;
+    // Task #133 (S4-T6): in trust-tunnel mode hello.token is undefined; the
+    // browserToken passthrough (used by legacy auth introspection) stays
+    // null. Subsequent legacy-only code paths must tolerate that.
+    this.browserToken = hello.token ?? null;
     const newSid = typeof hello.sid === 'string' && hello.sid.length > 0
       ? hello.sid
       : null;
@@ -547,6 +652,12 @@ export class TunnelClient {
     }
 
     console.error('[ccsm] tunnel: hello received sid=' + newSid + ' lastSeq=' + (hello.lastSeq ?? 0) + ' (' + (this.attachHandles.size + 1) + ' active sids)');
+
+    // Task #133 (S4-T6): record identity if present so getBrowserIdentity()
+    // and BrowserAttachInfo.identity can surface it.
+    if (hello.identity !== undefined) {
+      this.identities.set(newSid, hello.identity);
+    }
 
     // Task #793 (S3-G) + Task #105 (R-41): bind a NEW attach handle for the
     // newly-paired sid. send wraps the daemon→browser binary frame in a sid
@@ -568,6 +679,7 @@ export class TunnelClient {
           sid: attachSid,
           lastSeq: hello.lastSeq ?? 0,
           send,
+          ...(hello.identity !== undefined ? { identity: hello.identity } : {}),
         });
         if (handle !== null) {
           this.attachHandles.set(attachSid, handle);

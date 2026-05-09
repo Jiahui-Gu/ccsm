@@ -453,6 +453,28 @@ describe('TunnelDO', () => {
     expect(browser.closed).toBe(false);
   });
 
+  // ---- Task #133 (S4-T6): hello frame identity field --------------------
+
+  it('hello frame omits identity field when cloud identity is unknown', async () => {
+    // T6 only carries the wire shape; OAuth wire-up lands in T3/T4. So the
+    // current build always emits hello WITHOUT identity (back-compat with
+    // legacy daemons + smoke). The wire shape must therefore not regress
+    // with a stray `"identity":null` or empty object.
+    const TunnelDO = await loadDO();
+    const inst = new TunnelDO(makeState(), fakeEnv);
+    await inst.fetch(makeReq('/tunnel/default'));
+    await inst.fetch(makeBrowserWsReq({ sid: 'sess-x', protocol: BROWSER_PROTO }));
+    const daemon = created[0].server;
+    const hello = JSON.parse(daemon.sent[0] as string);
+    expect(hello).toEqual({
+      type: 'hello',
+      token: 'test-token-xyz',
+      sid: 'sess-x',
+      lastSeq: 0,
+    });
+    expect('identity' in hello).toBe(false);
+  });
+
   // ---- HTTP-over-tunnel (Task #787, S3-C) -------------------------------
 
   function makeHttpReq(path: string, method = 'GET', body?: string): Request {    return new Request(`https://example.test${path}`, {
