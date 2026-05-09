@@ -3,6 +3,10 @@ export interface Env {
 }
 
 export { TunnelDO } from './tunnel-do';
+// S4-T2 (Task #121): UserDO is bound in wrangler.toml so it must be re-exported
+// from the worker entrypoint for the runtime to resolve the class. Routes that
+// dispatch into UserDO are introduced in T5 — this is a binding-only export.
+export { UserDO } from './auth/userDO';
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {

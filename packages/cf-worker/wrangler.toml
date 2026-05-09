@@ -18,6 +18,16 @@ compatibility_date = "2026-01-01"
 name = "TUNNEL"
 class_name = "TunnelDO"
 
+# S4-T2 (Task #121): per-user auth Durable Object. T2 only adds the binding +
+# class skeleton; routes that dispatch into UserDO arrive in T5.
+[[durable_objects.bindings]]
+name = "USER_DO"
+class_name = "UserDO"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["TunnelDO"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["UserDO"]
