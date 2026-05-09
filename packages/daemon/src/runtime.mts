@@ -17,13 +17,7 @@ import { createRequire } from 'node:module';
 
 import { encodeExit, encodeFrame, FrameType } from '@ccsm/shared';
 
-import { getConsoleHwnd, getConsoleProcessList } from './console-probe.mjs';
 import { RingBuffer } from './ring.mjs';
-
-// Task #89 (R-31): module-scoped counter; incremented per defaultPtyFactory
-// invocation so [r31-pre] / [r31-post] log lines can be correlated across
-// spawn 1, 2, 3 within a single daemon process lifetime.
-let r31SpawnIndex = 0;
 
 // ---- Public types -------------------------------------------------------
 
@@ -177,59 +171,15 @@ const defaultPtyFactory: PtyFactory = (opts) => {
     opts.sid,
     isWindows,
   );
-  // Task #86 (R-29) — log-only forensics for conpty `AttachConsole failed`
-  // crash observed under `tauri dev` cloud-e2e harness. node-pty 1.1.0's
-  // conpty agent (lib/conpty_console_list_agent.js) calls Win32
-  // GetConsoleProcessList, which requires AttachConsole(pid) to succeed
-  // first. If the daemon process has no inheritable console (e.g. spawned
-  // by Tauri Rust with CREATE_NO_WINDOW=0x0800_0000, see
-  // packages/frontend-tauri/src-tauri/src/daemon_mgr.rs:176), AttachConsole
-  // fails and node-pty's helper subprocess throws + exits, killing the
-  // daemon. This block dumps the daemon's own stdio/console state before
-  // each spawn so we can correlate a crash to the daemon's console
-  // ancestry. NOT a fix — see Phase 2 task proposal in the PR body.
-  /* eslint-disable no-console */
-  console.error('[ccsm-pty-forensics] spawn=' + JSON.stringify({
-    sid: opts.sid,
-    mode: opts.mode,
-    cmd,
-    args,
-    isWindows,
-    platform: process.platform,
-    nodeVersion: process.version,
-    pid: process.pid,
-    ppid: typeof process.ppid === 'number' ? process.ppid : null,
-    stdinIsTTY: Boolean((process.stdin as { isTTY?: boolean }).isTTY),
-    stdoutIsTTY: Boolean((process.stdout as { isTTY?: boolean }).isTTY),
-    stderrIsTTY: Boolean((process.stderr as { isTTY?: boolean }).isTTY),
-    connected: typeof process.connected === 'boolean' ? process.connected : null,
-    hasParentIPC: Boolean(process.send),
-    cwd: opts.cwd,
-    useConpty: true,
-    // Surrogate for "do we have a console" — on Windows the only userspace
-    // signal short of FFI is whether stdout is a TTY (false under
-    // CREATE_NO_WINDOW + Stdio::piped) and whether process.stdin was wired.
-    // The conpty agent itself is what would call GetConsoleWindow; we can't
-    // call it from JS without FFI, so we proxy via TTY flags.
-  }));
-  /* eslint-enable no-console */
-  // Task #89 (R-31) — in-process Win32 probes around node-pty spawn to
-  // distinguish H1 (CreatePseudoConsole binds daemon to HPCON#1's console
-  // group) vs H2 (GetConsoleProcessList itself has destructive side effects
-  // on daemon console state). Pre-probe runs BEFORE spawn; post-probe runs
-  // AFTER (no try/catch). On non-Windows the probes return null/empty.
-  const r31Idx = ++r31SpawnIndex;
-  /* eslint-disable no-console */
-  if (isWindows) {
-    const preHwnd = getConsoleHwnd();
-    const preList = getConsoleProcessList();
-    console.error(
-      `[r31-pre] sid=${opts.sid} spawn_index=${r31Idx} ` +
-        `hwnd=${preHwnd === null ? 'null' : '0x' + preHwnd.toString(16)} ` +
-        `proc_count=${preList.count} proc_pids=[${preList.pids.join(',')}]`,
-    );
-  }
-  /* eslint-enable no-console */
+  // R-32 (Task #93) — node-pty 1.1.0 useConptyDll: true skips the per-spawn
+  // helper-fork (conpty_console_list_agent.js) which used to crash in
+  // AttachConsole when it inherited the daemon's empty console. Loads
+  // conpty.dll in-process instead so kill/status paths bypass the helper
+  // entirely. The R-28 / R-31 / R-38 forensics that originally surrounded
+  // this spawn (process-state dump, GetConsoleWindow / GetConsoleProcessList
+  // probes, [ccsm-pty-forensics]) were retired in R-47 (Task #162) — useConptyDll
+  // is the load-bearing fix; the diagnostic surface is no longer needed and
+  // its stderr volume was hot-path noise.
   const pty = nodePty.spawn(cmd, args, {
     name: 'xterm-256color',
     cols: opts.cols,
@@ -237,24 +187,8 @@ const defaultPtyFactory: PtyFactory = (opts) => {
     cwd: opts.cwd,
     env: process.env as Record<string, string>,
     useConpty: true,
-    // R-32 (Task #93) — node-pty 1.1.0 useConptyDll: true skips the
-    // per-spawn helper-fork (conpty_console_list_agent.js) which was
-    // crashing in AttachConsole because it inherits the daemon's empty
-    // console (see Task #91 evidence on PR #1204). Loads conpty.dll
-    // in-process instead, so kill/status paths bypass the helper entirely.
     useConptyDll: true,
   });
-  /* eslint-disable no-console */
-  if (isWindows) {
-    const postHwnd = getConsoleHwnd();
-    const postList = getConsoleProcessList();
-    console.error(
-      `[r31-post] sid=${opts.sid} spawn_index=${r31Idx} ` +
-        `hwnd=${postHwnd === null ? 'null' : '0x' + postHwnd.toString(16)} ` +
-        `proc_count=${postList.count} proc_pids=[${postList.pids.join(',')}]`,
-    );
-  }
-  /* eslint-enable no-console */
   return {
     write: (d) => pty.write(d),
     resize: (c, r) => pty.resize(c, r),
@@ -323,21 +257,9 @@ export function createRuntimeRegistry(opts: RuntimeRegistryOptions): RuntimeRegi
     });
     runtime.set(sid, rt);
 
-    console.error('[r38-spawn-armed] sid=' + sid + ' armed_at=' + Date.now());
-    const r38Started = Date.now();
-    const r38NoByteTimer = setInterval(() => {
-      if (rt.outputSeq === 0) {
-        console.error('[r38-still-silent] sid=' + sid + ' elapsed_ms=' + (Date.now() - r38Started) + ' subs=' + rt.subscribers.size);
-      } else {
-        clearInterval(r38NoByteTimer);
-      }
-    }, 2000);
-    r38NoByteTimer.unref();
-
     pty.onData((data) => {
       const payload = Buffer.from(data, 'utf8');
       const payloadView = new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength);
-      console.error('[r38-pty-data] sid=' + sid + ' bytes=' + payloadView.byteLength + ' subs=' + rt.subscribers.size + ' first32hex=' + Buffer.from(payloadView.subarray(0, 32)).toString('hex'));
       rt.outputSeq = (rt.outputSeq + 1) >>> 0;
       rt.ring.append(rt.outputSeq, payloadView);
       const frame = encodeFrame({

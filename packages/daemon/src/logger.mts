@@ -1,32 +1,30 @@
 /**
- * R-46 audit-P0 (Task #158, F-T-1/2/3): structured JSON logger for the
- * cf-worker.
+ * R-47 audit-P0 (Task #162, F-Q-1 + F-T-7): structured JSON logger for the
+ * daemon. Mirrors `packages/cf-worker/src/logger.ts` (R-46) so worker + DO +
+ * daemon emit comparable line shapes — operators can pivot on the same
+ * `event` / `request_id` / `level` keys across the whole tunnel path.
  *
- * Why: production observability needs machine-parseable lines so we can
- * pivot on level / event / request_id / login in CF dashboard log search.
- * Unstructured `console.log('[worker] route ...')` strings cannot be
- * filtered or aggregated.
+ * Why a separate file (and not a shared util in @ccsm/shared):
+ *   - cf-worker logger writes to `console.*` which CF Workers route to
+ *     stdout/stderr by method; daemon must write to `process.stderr`
+ *     directly so JSON lines never collide with PTY data on stdout.
+ *   - daemon needs Node-only `process.env` gating (env-driven debug toggles
+ *     for legacy R-39 hello-trace). cf-worker has no equivalent surface.
+ *   - The worker logger is shipped as part of the worker bundle (no Node
+ *     primitives allowed); duplicating ~120 LOC is cheaper than wedging
+ *     conditional environment detection into a shared module.
  *
- * Wire format (one line per call, single-line JSON):
- *   {"ts":"2026-05-10T03:24:59.123Z","level":"info","event":"oauth.callback_ok",
- *    "request_id":"...","login":"...","sub_prefix":"abcd1234","fields":{...}}
+ * Wire format (one line per call, single-line JSON, written to stderr):
+ *   {"ts":"2026-05-10T03:24:59.123Z","level":"info","event":"daemon.http_req",
+ *    "request_id":"...","fields":{...}}
  *
- * Level → console method:
- *   debug → console.debug, info → console.log, warn → console.warn,
- *   error → console.error.
- *
- * Redaction (F-T-3): `sanitizeFields` strips known-sensitive keys before
- * serialization so callers cannot accidentally leak access_token /
- * refresh_token / cookie body / JWT body even if a future patch hands the
- * raw object to `logger.info(...)`. The denylist intentionally covers
- * substrings (e.g. any key containing `token` is dropped) — callers who
- * legitimately need a token surface must pre-truncate (e.g.
- * `token_prefix`, `jti`).
- *
- * Forensics tags (`[r28]`, `[r31]`, `[r38]`) were retired in R-47
- * (Task #162). Their structured replacements live alongside this logger
- * (e.g. `do.proxy_http.*`, `worker.proxy_done`, daemon `daemon.http_req.*`).
+ * Redaction (F-T-3 parity): `sanitizeFields` strips known-sensitive keys
+ * before serialization so callers cannot accidentally leak access_token /
+ * refresh_token / cookie / JWT body even if a future patch hands a raw
+ * object to `logger.info(...)`.
  */
+
+import process from 'node:process';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
@@ -39,8 +37,7 @@ const LEVEL_PRIORITY: Record<LogLevel, number> = {
 
 /** Substring denylist — any field key containing one of these (case-insensitive)
  * is dropped before serialization. Callers wanting to surface a token must
- * pre-truncate and use a name that does NOT match (e.g. `token_prefix`).
- */
+ * pre-truncate and use a name that does NOT match (e.g. `token_prefix`). */
 const SENSITIVE_KEY_SUBSTRINGS: readonly string[] = [
   'token',
   'secret',
@@ -95,14 +92,6 @@ export function sanitizeFields(fields: LogFields | undefined): LogFields {
   return out;
 }
 
-/** Truncate a sub (github_id) to the first 8 hex/digits for log surfacing.
- *  Pairs with logger calls that want to attribute an event to a user without
- *  printing the full id. */
-export function shortSub(sub: string | undefined | null): string {
-  if (typeof sub !== 'string' || sub.length === 0) return '-';
-  return sub.slice(0, 8);
-}
-
 export interface LogRecord {
   ts: string;
   level: LogLevel;
@@ -114,30 +103,44 @@ export interface LogRecord {
 export interface LoggerOptions {
   /** Minimum level emitted; lower-priority records are dropped. */
   minLevel?: LogLevel;
-  /** Override for the sink — defaults to console.log/warn/error/debug. */
+  /** Override sink — defaults to writing one line + '\n' to process.stderr. */
   sink?: (level: LogLevel, line: string) => void;
-  /** Override for `Date.now()` — used by tests to lock timestamps. */
+  /** Override clock — used by tests to lock timestamps. */
   clock?: () => number;
   /** Bound request_id propagated to every log record. */
   requestId?: string;
 }
 
-function defaultSink(level: LogLevel, line: string): void {
-  // CF Workers route stdout/stderr by console method, so route warn/error
-  // to the matching method to preserve severity routing.
-  switch (level) {
-    case 'debug':
-      console.debug(line);
-      return;
-    case 'warn':
-      console.warn(line);
-      return;
-    case 'error':
-      console.error(line);
-      return;
-    default:
-      console.log(line);
+function defaultSink(_level: LogLevel, line: string): void {
+  // stderr keeps log lines off PTY stdout. Using `write` (vs console.error)
+  // avoids the inspector formatting layer so the JSON line is byte-faithful.
+  process.stderr.write(line + '\n');
+}
+
+/**
+ * Resolve the minimum log level. Order of precedence:
+ *   1. explicit `opts.minLevel`
+ *   2. `process.env.CCSM_DEBUG_R39 === '1'` → `debug` (legacy R-39 hello /
+ *      tunnel-rx narrative log surface; defaulted off so production stays quiet)
+ *   3. `process.env.CCSM_LOG_LEVEL` if it names a valid level
+ *   4. fall back to `info`
+ *
+ * Read fresh on every Logger construction so tests / runtime tweaks via
+ * `process.env` take effect without re-import.
+ */
+function resolveMinLevel(opts: LoggerOptions): LogLevel {
+  if (opts.minLevel !== undefined) return opts.minLevel;
+  if (process.env.CCSM_DEBUG_R39 === '1') return 'debug';
+  const envLvl = process.env.CCSM_LOG_LEVEL;
+  if (
+    envLvl === 'debug' ||
+    envLvl === 'info' ||
+    envLvl === 'warn' ||
+    envLvl === 'error'
+  ) {
+    return envLvl;
   }
+  return 'info';
 }
 
 export class Logger {
@@ -147,7 +150,7 @@ export class Logger {
   private readonly requestId?: string;
 
   constructor(opts: LoggerOptions = {}) {
-    this.minPriority = LEVEL_PRIORITY[opts.minLevel ?? 'info'];
+    this.minPriority = LEVEL_PRIORITY[resolveMinLevel(opts)];
     this.sink = opts.sink ?? defaultSink;
     this.clock = opts.clock ?? Date.now;
     if (opts.requestId !== undefined) this.requestId = opts.requestId;
@@ -155,12 +158,13 @@ export class Logger {
 
   /** Return a new Logger with a request_id bound to every record. */
   child(requestId: string): Logger {
-    return new Logger({
+    const opts: LoggerOptions = {
       minLevel: priorityToLevel(this.minPriority),
       sink: this.sink,
       clock: this.clock,
       requestId,
-    });
+    };
+    return new Logger(opts);
   }
 
   debug(event: string, fields?: LogFields): void {
@@ -211,17 +215,7 @@ function priorityToLevel(p: number): LogLevel {
   return 'error';
 }
 
-/** Module-default logger for callers that don't need a child. Uses
- *  `info` minLevel and the default console sink. */
+/** Module-default logger for callers that don't need a child. Construction-
+ *  time env reads control the level — if a test wants a different level, build
+ *  a fresh Logger with explicit `opts.minLevel`. */
 export const rootLogger = new Logger();
-
-/**
- * Generate a request_id. Prefer cf-ray (Cloudflare's per-request edge id) so
- * we can correlate worker logs with CF analytics; fall back to a fresh
- * uuid when cf-ray is missing (e.g. local wrangler dev, vitest).
- */
-export function deriveRequestId(req: Request): string {
-  const cfRay = req.headers.get('cf-ray');
-  if (cfRay && cfRay.length > 0) return cfRay;
-  return crypto.randomUUID();
-}

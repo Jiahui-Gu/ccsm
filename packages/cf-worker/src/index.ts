@@ -233,16 +233,15 @@ export default {
         login: routedLogin,
         sub_prefix: routedSubPrefix,
       });
-      // R-28 (Task #85): /token 502 取证 — keep the legacy [r28] forensics
-      // tags around for the time-boxed investigation; R-47 will decide
-      // their fate. They run alongside the structured logger.
-      const r28Method = req.method;
-      const r28Cf = req.headers.get('cf-ray') ?? '-';
-      const r28Ua = (req.headers.get('user-agent') ?? '-').slice(0, 32);
-      console.log('[r28][worker] enter path=' + url.pathname + ' method=' + r28Method + ' cf-ray=' + r28Cf + ' ua=' + r28Ua);
+      // R-47 (Task #162): the [r28] forensics tags that surrounded this
+      // proxy hop were retired. `worker.proxy_done` already carries
+      // path / status / dur_ms / request_id (via the bound child logger),
+      // so the duplicate console.log lines were strictly worse signal-
+      // to-noise — cf-ray IS the request_id when present (deriveRequestId
+      // prefers it), and ua-prefix was only added during the time-boxed
+      // /token 502 investigation that R-32 closed out.
       const r28Started = Date.now();
       const r28Res = await stub.fetch(stampedReq);
-      console.log('[r28][worker] exit path=' + url.pathname + ' status=' + r28Res.status + ' dur_ms=' + (Date.now() - r28Started) + ' cf-ray=' + r28Cf);
       log.info('worker.proxy_done', {
         path: url.pathname,
         status: r28Res.status,

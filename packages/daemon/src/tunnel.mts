@@ -58,6 +58,13 @@ import {
   type HttpResFrame,
 } from '@ccsm/shared';
 
+// R-47 (Task #162): structured daemon logger. The legacy hello / http_req
+// narrative log lines (formerly `console.error('[ccsm] tunnel: ...')` and
+// `[r28]` / `[r38-tunnel-tx]` forensics) now route through this logger so
+// operators can pivot on `event` / `request_id` the same way they pivot on
+// the cf-worker logger lines.
+import { Logger, rootLogger } from './logger.mjs';
+
 export type { BrowserIdentity };
 
 export type TunnelState =
@@ -430,8 +437,6 @@ export class TunnelClient {
       return;
     }
     try {
-      const r38SendBytes = typeof data === 'string' ? data.length : data.byteLength;
-      console.error('[r38-tunnel-tx] state=' + this.state + ' bytes=' + r38SendBytes);
       this.ws.send(data);
     } catch (err) {
       console.warn('[ccsm/tunnel] send error:', (err as Error).message);
@@ -646,9 +651,10 @@ export class TunnelClient {
         return;
       }
       console.warn(`[ccsm/tunnel] closed code=${code}, will reconnect`);
-      // R-17 log #9 (Task #45): emit frames-since-open so we can tell whether
-      // the link drained any traffic before closing (research-44 candidate G).
-      console.error('[ccsm] tunnel: ws close frameCount=' + frameCount + ' code=' + code);
+      // R-17 log #9 (Task #45): frames-since-open helps tell whether the link
+      // drained any traffic before closing. Demoted to logger.debug in R-47
+      // (Task #162) — gated by CCSM_DEBUG_R39=1 / CCSM_LOG_LEVEL=debug.
+      rootLogger.debug('tunnel.close', { code, frame_count: frameCount });
       this.scheduleReconnect();
     });
   }
@@ -675,18 +681,32 @@ export class TunnelClient {
 
     if (newSid === null) {
       // Hello without sid (legacy / token-only re-auth). Nothing to attach.
-      console.error('[ccsm] tunnel: hello received sid=- lastSeq=' + (hello.lastSeq ?? 0) + ' (no-sid passthrough)');
+      rootLogger.debug('tunnel.hello', {
+        sid: '-',
+        last_seq: hello.lastSeq ?? 0,
+        outcome: 'no-sid-passthrough',
+      });
       return;
     }
 
     // Already attached for this sid → idempotent. Preserves PTY subscription
     // and replay cursor.
     if (this.attachHandles.has(newSid)) {
-      console.error('[ccsm] tunnel: hello received sid=' + newSid + ' lastSeq=' + (hello.lastSeq ?? 0) + ' (idempotent, ' + this.attachHandles.size + ' active sids)');
+      rootLogger.debug('tunnel.hello', {
+        sid: newSid,
+        last_seq: hello.lastSeq ?? 0,
+        outcome: 'idempotent',
+        active_sids: this.attachHandles.size,
+      });
       return;
     }
 
-    console.error('[ccsm] tunnel: hello received sid=' + newSid + ' lastSeq=' + (hello.lastSeq ?? 0) + ' (' + (this.attachHandles.size + 1) + ' active sids)');
+    rootLogger.debug('tunnel.hello', {
+      sid: newSid,
+      last_seq: hello.lastSeq ?? 0,
+      outcome: 'attach',
+      active_sids: this.attachHandles.size + 1,
+    });
 
     // Task #133 (S4-T6): record identity if present so getBrowserIdentity()
     // and BrowserAttachInfo.identity can surface it.
@@ -744,13 +764,22 @@ export class TunnelClient {
    * deterministic upstream error instead of a hung request.
    */
   private async handleHttpReq(frame: HttpReqFrame): Promise<void> {
-    // R-46 (Task #158, F-T-2): request_id propagated from cf-worker via
-    // the http_req frame; placeholder when absent (older worker / direct
-    // unit test). Surfaced into r28 forensics tags so the daemon line can
-    // be correlated with worker+DO lines for the same request.
-    const reqId = frame.request_id ?? 'no-req-id';
+    // R-46 (Task #158, F-T-2): request_id propagated from cf-worker via the
+    // http_req frame. R-47 (Task #162) routes the daemon-side log lines
+    // through the structured logger; the per-request `Logger.child(reqId)`
+    // stamps the request_id onto every record so worker + DO + daemon lines
+    // pivot together. Older worker builds may omit `request_id` — the
+    // log surfaces an explicit '-' so missing-id rows still parse cleanly.
+    const reqId = frame.request_id ?? '-';
+    const log: Logger = rootLogger.child(reqId);
     if (this.daemonLoopbackPort === 0) {
-      console.error('[r28][daemon] http_req id=' + frame.id + ' req_id=' + reqId + ' ' + frame.method + ' ' + frame.path + ' decision=503-no-loopback-port');
+      log.info('daemon.http_req', {
+        id: frame.id,
+        method: frame.method,
+        path: frame.path,
+        status: 503,
+        decision: 'no-loopback-port',
+      });
       this.send(JSON.stringify({
         type: 'http_res',
         id: frame.id,
@@ -772,9 +801,14 @@ export class TunnelClient {
       if (lk === 'host' || lk === 'connection' || lk === 'content-length') continue;
       headers[k] = v;
     }
-    console.error(`[ccsm] tunnel: rx http_req ${frame.method} ${frame.path}`);
-    console.error('[r28][daemon] http_req enter id=' + frame.id + ' req_id=' + reqId + ' ' + frame.method + ' ' + frame.path + ' loopback_port=' + this.daemonLoopbackPort + ' body_len=' + (body?.length ?? 0));
-    const r28Started = Date.now();
+    log.debug('daemon.http_req.enter', {
+      id: frame.id,
+      method: frame.method,
+      path: frame.path,
+      loopback_port: this.daemonLoopbackPort,
+      body_len: body?.length ?? 0,
+    });
+    const startedAt = Date.now();
     let response: globalThis.Response;
     try {
       const init: RequestInit = {
@@ -787,7 +821,13 @@ export class TunnelClient {
       }
       response = await this.fetchImpl(url, init);
     } catch (err) {
-      console.error('[r28][daemon] http_req id=' + frame.id + ' req_id=' + reqId + ' fetch-threw err=' + (err as Error).message + ' dur_ms=' + (Date.now() - r28Started));
+      log.warn('daemon.http_req.fetch_failed', {
+        id: frame.id,
+        method: frame.method,
+        path: frame.path,
+        err: (err as Error).message,
+        dur_ms: Date.now() - startedAt,
+      });
       this.send(JSON.stringify({
         type: 'http_res',
         id: frame.id,
@@ -802,7 +842,14 @@ export class TunnelClient {
       resHeaders[k] = v;
     });
     const resBody = Buffer.from(await response.arrayBuffer());
-    console.error('[r28][daemon] http_req exit id=' + frame.id + ' req_id=' + reqId + ' status=' + response.status + ' body_len=' + resBody.length + ' dur_ms=' + (Date.now() - r28Started));
+    log.info('daemon.http_req.exit', {
+      id: frame.id,
+      method: frame.method,
+      path: frame.path,
+      status: response.status,
+      body_len: resBody.length,
+      dur_ms: Date.now() - startedAt,
+    });
     this.send(JSON.stringify({
       type: 'http_res',
       id: frame.id,
