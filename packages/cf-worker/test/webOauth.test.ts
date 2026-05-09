@@ -1,28 +1,33 @@
 /**
- * S4-T3 (Task #140): browser OAuth flow tests.
+ * S4-T3 (Task #140) + audit F-S-1/F-S-4/F-S-5 (Task #152): browser OAuth
+ * flow tests.
  *
- * Each handler is exercised against an in-memory UserDO fake + a stubbed
- * `globalThis.fetch` that pretends to be GitHub. We verify:
- *
+ * Covers:
  *   - login: 302 to github.com/login/oauth/authorize, csrf state baked into
  *     URL + matching HttpOnly cookie scoped to the callback path.
- *   - callback (happy path): csrf round-trips, code is exchanged, user is
- *     fetched, UserDO sees setLogin + setRefreshTokenHash, response is a 302
- *     with `#jwt=...` fragment + a refresh cookie.
+ *   - callback (audit F-S-4): csrf round-trips, code is exchanged, user is
+ *     fetched, UserDO sees setLogin + setRefreshTokenHash, response is a
+ *     302 with a `web_jwt` HttpOnly + Secure + SameSite=Strict cookie
+ *     scoped to /api (NOT a URL fragment), plus a refresh cookie. The
+ *     redirect target is the bare `/?session=ok` (no #jwt=).
  *   - callback (csrf mismatch): rejected before any GitHub call.
  *   - callback (token exchange error): 502 surfaced.
- *   - refresh: hash check happens, web JWT re-issued.
+ *   - refresh (audit F-S-5): hash rotation invalidates the old refresh
+ *     token; second presentation with the same token returns 401.
  *   - refresh (bad hash): 401.
- *   - logout: clears cookies + hits UserDO /revoke.
- *   - dispatchAuth: returns null for non-auth paths.
+ *   - me + ws-ticket (audit F-S-4): cookie-based session probes.
+ *   - logout: clears cookies (incl. web_jwt) + hits UserDO /revoke.
+ *   - dispatchAuth: returns null for non-auth paths; routes /me / /ws-ticket.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   dispatchAuth,
   handleGithubLogin,
   handleGithubCallback,
+  handleMe,
   handleRefresh,
   handleLogout,
+  handleWsTicket,
 } from '../src/auth/webOauth';
 import type { AuthEnv } from '../src/auth/bindings';
 import { signJwt, verifyJwt, type WebJwtClaims } from '../src/auth/jwt';
@@ -199,7 +204,7 @@ describe('handleGithubCallback', () => {
     return fn;
   }
 
-  it('happy path: persists user, mints jwt + refresh, sets cookies, redirects', async () => {
+  it('happy path: persists user, mints jwt cookie + refresh, sets cookies, redirects', async () => {
     const userDo = makeUserDo();
     const env = makeEnv(userDo);
     const ghFetch = mockGithubFetch({ userId: 42, userLogin: 'alice' });
@@ -212,9 +217,20 @@ describe('handleGithubCallback', () => {
 
     expect(res.status).toBe(302);
     const loc = res.headers.get('Location')!;
-    expect(loc).toMatch(/^\/\?session=ok#jwt=/);
-    const jwt = decodeURIComponent(loc.split('#jwt=')[1]!);
-    const claims = await verifyJwt<WebJwtClaims>(jwt, KEY_HEX);
+    // Audit F-S-4: redirect target is bare `/?session=ok` — no #jwt fragment.
+    expect(loc).toBe('/?session=ok');
+    expect(loc).not.toMatch(/#jwt=/);
+
+    // Audit F-S-4: web_jwt rides an HttpOnly + Secure + SameSite=Strict
+    // cookie scoped to /api so an XSS payload cannot reach it.
+    const cookies = getSetCookies(res);
+    const webJwtCookie = findCookie(cookies, 'web_jwt');
+    expect(webJwtCookie).not.toBeNull();
+    expect(webJwtCookie!.attrs).toMatch(/HttpOnly/);
+    expect(webJwtCookie!.attrs).toMatch(/Secure/);
+    expect(webJwtCookie!.attrs).toMatch(/SameSite=Strict/);
+    expect(webJwtCookie!.attrs).toMatch(/Path=\/api/);
+    const claims = await verifyJwt<WebJwtClaims>(webJwtCookie!.value, KEY_HEX);
     expect(claims).not.toBeNull();
     expect(claims!.sub).toBe('42');
     expect(claims!.login).toBe('alice');
@@ -227,8 +243,6 @@ describe('handleGithubCallback', () => {
     expect(userDo.state.login).toBe('alice');
     expect(userDo.state.refresh_hash).toMatch(/^[0-9a-f]{64}$/);
 
-    // Cookies.
-    const cookies = getSetCookies(res);
     const refresh = findCookie(cookies, 'refresh');
     expect(refresh).not.toBeNull();
     expect(refresh!.value).toMatch(/^[0-9a-f]{64}$/);
@@ -315,7 +329,7 @@ describe('handleGithubCallback', () => {
 });
 
 describe('handleRefresh', () => {
-  it('mints a new web jwt when refresh hash matches', async () => {
+  it('mints a new web jwt + rotates refresh cookie when refresh hash matches', async () => {
     const userDo = makeUserDo();
     const env = makeEnv(userDo);
     // Pre-seed UserDO with a known login + refresh-hash pair.
@@ -351,6 +365,67 @@ describe('handleRefresh', () => {
     expect(claims!.sub).toBe('42');
     expect(claims!.login).toBe('alice');
     expect(claims!.kind).toBe('web');
+
+    // Audit F-S-5: a fresh refresh cookie must ship with rotated value.
+    const cookies = getSetCookies(res);
+    const newRefresh = findCookie(cookies, 'refresh');
+    expect(newRefresh).not.toBeNull();
+    expect(newRefresh!.value).toMatch(/^[0-9a-f]{64}$/);
+    expect(newRefresh!.value).not.toBe(refreshToken);
+    expect(newRefresh!.attrs).toMatch(/HttpOnly/);
+    expect(newRefresh!.attrs).toMatch(/Path=\/api\/auth\/refresh/);
+
+    // Storage rotated — old hash overwritten.
+    expect(userDo.state.refresh_hash).not.toBe(hashHex);
+
+    // Audit F-S-4: new web_jwt cookie set so SPA picks up via /api/auth/me.
+    const newWebJwt = findCookie(cookies, 'web_jwt');
+    expect(newWebJwt).not.toBeNull();
+    expect(newWebJwt!.attrs).toMatch(/HttpOnly/);
+    expect(newWebJwt!.attrs).toMatch(/SameSite=Strict/);
+  });
+
+  it('audit F-S-5: presenting the old refresh token after rotation 401s', async () => {
+    const userDo = makeUserDo();
+    const env = makeEnv(userDo);
+    await userDo.stub.fetch(
+      new Request('https://do/setLogin', {
+        method: 'POST',
+        body: JSON.stringify({ github_id: '42', login: 'alice' }),
+      }),
+    );
+    const oldToken = 'cafebabe'.repeat(8);
+    const oldHashBytes = new Uint8Array(
+      await crypto.subtle.digest('SHA-256', new TextEncoder().encode(oldToken)),
+    );
+    let oldHashHex = '';
+    for (const b of oldHashBytes) oldHashHex += b.toString(16).padStart(2, '0');
+    await userDo.stub.fetch(
+      new Request('https://do/setRefreshTokenHash', {
+        method: 'POST',
+        body: JSON.stringify({ hash: oldHashHex }),
+      }),
+    );
+
+    // First call rotates.
+    const r1 = await handleRefresh(
+      new Request('https://example/api/auth/refresh', {
+        method: 'POST',
+        headers: { Cookie: `refresh=${oldToken}; login=alice` },
+      }),
+      env,
+    );
+    expect(r1.status).toBe(200);
+
+    // Replay with the now-stale token must fail.
+    const r2 = await handleRefresh(
+      new Request('https://example/api/auth/refresh', {
+        method: 'POST',
+        headers: { Cookie: `refresh=${oldToken}; login=alice` },
+      }),
+      env,
+    );
+    expect(r2.status).toBe(401);
   });
 
   it('401s when refresh cookie is absent', async () => {
@@ -421,6 +496,11 @@ describe('handleLogout', () => {
     const loginHint = findCookie(cookies, 'login');
     expect(loginHint).not.toBeNull();
     expect(loginHint!.attrs).toMatch(/Max-Age=0/);
+    // Audit F-S-4: the web_jwt session cookie must also be cleared so a
+    // browser tab whose JS we don't control can't keep a stale signed-in UI.
+    const webJwt = findCookie(cookies, 'web_jwt');
+    expect(webJwt).not.toBeNull();
+    expect(webJwt!.attrs).toMatch(/Max-Age=0/);
   });
 
   it('still 204s when no cookies are present (best-effort)', async () => {
@@ -430,6 +510,145 @@ describe('handleLogout', () => {
       env,
     );
     expect(res.status).toBe(204);
+  });
+});
+
+describe('handleMe (audit F-S-4)', () => {
+  it('returns {login, github_id} when web_jwt cookie is valid', async () => {
+    const env = makeEnv(makeUserDo());
+    const claims: WebJwtClaims = {
+      sub: '7',
+      login: 'octocat',
+      iat: Math.floor(Date.now() / 1000) - 1,
+      exp: Math.floor(Date.now() / 1000) + 600,
+      kind: 'web',
+    };
+    const jwt = await signJwt(claims, KEY_HEX);
+    const res = await handleMe(
+      new Request('https://example/api/auth/me', {
+        headers: { Cookie: `web_jwt=${jwt}` },
+      }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { login: string; github_id: string };
+    expect(body.login).toBe('octocat');
+    expect(body.github_id).toBe('7');
+  });
+
+  it('401s when no web_jwt cookie', async () => {
+    const env = makeEnv(makeUserDo());
+    const res = await handleMe(
+      new Request('https://example/api/auth/me'),
+      env,
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it('401s when web_jwt cookie is signed with the wrong key', async () => {
+    const env = makeEnv(makeUserDo());
+    const wrongKey = 'ff'.repeat(32);
+    const jwt = await signJwt(
+      {
+        sub: '7',
+        login: 'a',
+        iat: Math.floor(Date.now() / 1000) - 1,
+        exp: Math.floor(Date.now() / 1000) + 60,
+        kind: 'web',
+      },
+      wrongKey,
+    );
+    const res = await handleMe(
+      new Request('https://example/api/auth/me', {
+        headers: { Cookie: `web_jwt=${jwt}` },
+      }),
+      env,
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it('401s when web_jwt cookie is a tunnel-kind JWT (kind mismatch)', async () => {
+    const env = makeEnv(makeUserDo());
+    const jwt = await signJwt(
+      {
+        sub: '7',
+        login: 'a',
+        iat: Math.floor(Date.now() / 1000) - 1,
+        exp: Math.floor(Date.now() / 1000) + 60,
+        kind: 'tunnel',
+        jti: 'x',
+      } as never,
+      KEY_HEX,
+    );
+    const res = await handleMe(
+      new Request('https://example/api/auth/me', {
+        headers: { Cookie: `web_jwt=${jwt}` },
+      }),
+      env,
+    );
+    expect(res.status).toBe(401);
+  });
+});
+
+describe('handleWsTicket (audit F-S-4)', () => {
+  it('mints a 60s ticket when cookie session is valid', async () => {
+    const env = makeEnv(makeUserDo());
+    const sessionClaims: WebJwtClaims = {
+      sub: '11',
+      login: 'carol',
+      iat: Math.floor(Date.now() / 1000) - 1,
+      exp: Math.floor(Date.now() / 1000) + 3600,
+      kind: 'web',
+    };
+    const sessionJwt = await signJwt(sessionClaims, KEY_HEX);
+    const res = await handleWsTicket(
+      new Request('https://example/api/auth/ws-ticket', {
+        method: 'POST',
+        headers: { Cookie: `web_jwt=${sessionJwt}` },
+      }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ws_ticket: string; expires_in: number };
+    expect(body.expires_in).toBe(60);
+    const ticketClaims = await verifyJwt<WebJwtClaims>(body.ws_ticket, KEY_HEX);
+    expect(ticketClaims).not.toBeNull();
+    expect(ticketClaims!.sub).toBe('11');
+    expect(ticketClaims!.login).toBe('carol');
+    expect(ticketClaims!.kind).toBe('web');
+    // Ticket TTL is 60s ± a couple of seconds.
+    expect(ticketClaims!.exp - ticketClaims!.iat).toBe(60);
+  });
+
+  it('401s when cookie absent', async () => {
+    const env = makeEnv(makeUserDo());
+    const res = await handleWsTicket(
+      new Request('https://example/api/auth/ws-ticket', { method: 'POST' }),
+      env,
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it('401s when cookie session is expired', async () => {
+    const env = makeEnv(makeUserDo());
+    const expired = await signJwt(
+      {
+        sub: '11',
+        login: 'carol',
+        iat: Math.floor(Date.now() / 1000) - 7200,
+        exp: Math.floor(Date.now() / 1000) - 60,
+        kind: 'web',
+      },
+      KEY_HEX,
+    );
+    const res = await handleWsTicket(
+      new Request('https://example/api/auth/ws-ticket', {
+        method: 'POST',
+        headers: { Cookie: `web_jwt=${expired}` },
+      }),
+      env,
+    );
+    expect(res.status).toBe(401);
   });
 });
 
@@ -451,6 +670,26 @@ describe('dispatchAuth', () => {
     );
     expect(res).not.toBeNull();
     expect(res!.status).toBe(302);
+  });
+
+  it('routes GET /api/auth/me to handleMe (401 without cookie)', async () => {
+    const env = makeEnv(makeUserDo());
+    const res = await dispatchAuth(
+      new Request('https://example/api/auth/me'),
+      env,
+    );
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(401);
+  });
+
+  it('routes POST /api/auth/ws-ticket to handleWsTicket (401 without cookie)', async () => {
+    const env = makeEnv(makeUserDo());
+    const res = await dispatchAuth(
+      new Request('https://example/api/auth/ws-ticket', { method: 'POST' }),
+      env,
+    );
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(401);
   });
 
   // Make sure signJwt is referenced by the type-only import path so the lint

@@ -3,66 +3,28 @@
 // Wave-2 T6 (#686): @ccsm/ui's RuntimeProvider takes a HostConfig and uses
 // it to construct the SessionRuntime + bind the REST API.
 //
-// Task #696: token bootstrap is a 3-step priority chain (URL ?token= →
-// fetch /token → fail). The pure resolver lives here so it can be
-// unit-tested without booting the full SPA.
-//
-// Task #712 (S2-T3): daemon base URL resolution supported 3 modes so the
-// SPA could be served from Cloudflare Pages (cross-origin) while still
-// talking to a local loopback daemon, without breaking the existing
-// daemon-embedded case (browser opens http://127.0.0.1:9876/, SPA
-// same-origin).
-//
-// Task #780 (S3-T5): default base flipped to a hard-coded
-// `https://cc-sm.pages.dev` URL so Pages-hosted SPA could reach the daemon
-// through the CF Worker tunnel.
-//
-// Task #25 (smoke R-5): the hard-coded prod URL is wrong — the SPA should
-// always reach `/token` and `/ws/default` via the SAME origin it was served
-// from. The Pages Function (`[[path]].ts`) already proxies these paths into
-// the Worker tunnel at the same origin, so a relative path Just Works in
-// production AND in dev (Vite proxy / Pages preview) AND when the SPA is
-// served from `127.0.0.1:<port>` by a smoke fixture. Default base is now
-// the empty string (same-origin relative); `?daemon=<absolute>` remains the
-// only escape hatch (loopback daemon / Tauri).
+// Audit F-S-4 (Task #152): the SPA no longer stores the long-lived web JWT
+// in sessionStorage. The cf-worker callback puts it in an HttpOnly
+// `web_jwt` cookie scoped to /api; REST `/api/*` requests pick it up
+// automatically (cookie). The WebSocket subprotocol channel cannot ride
+// cookies, so the SPA fetches a 60-second `ws_ticket` JWT via
+// `POST /api/auth/ws-ticket` and presents it as `ccsm.<ticket>`. This
+// module exposes:
+//   - `primeWsTicket(fetch)` — call at sign-in / before connecting ws.
+//   - `getCachedWsTicket()` — used by the (synchronous) HostConfig.getToken.
+// Smoke / Tauri loopback paths keep writing the daemon-minted token to
+// `sessionStorage[TOKEN_STORAGE_KEY]`; getToken falls back to it when no
+// ws-ticket has been primed (no OAuth in those flows).
 
 import type { HostConfig } from '@ccsm/ui';
 
 export const TOKEN_STORAGE_KEY = 'ccsm.token';
 
 /**
- * Web JWT storage key (Task #139, S4-T7).
- *
- * The cf-worker OAuth flow (Task #140 / S4-T3) mints a short-lived web JWT
- * (kind='web', 1h, HS256) and delivers it in the `/?session=ok#jwt=...`
- * redirect fragment. AuthContext decodes the fragment, persists the JWT
- * here, and the SPA presents it on the WebSocket subprotocol header so the
- * Worker / TunnelDO can authenticate the visitor without a daemon-minted
- * token. The smoke / loopback path keeps writing the legacy daemon token to
- * `ccsm.token` (`TOKEN_STORAGE_KEY`); `webHostConfig.getToken` prefers the
- * web JWT and falls back to the daemon token, so the same `getWsProtocol`
- * code path serves both deployment shapes.
- */
-export const WEB_JWT_STORAGE_KEY = 'ccsm_web_jwt';
-
-/**
- * GitHub login hint storage key (Task #139, S4-T7).
- *
- * Stored alongside the web JWT for display purposes only — the server is
- * the source of truth on the JWT's `login` claim. The SPA never gates on
- * this value; it's a UX nicety so SignInGate can show "Signed in as foo"
- * without a round-trip.
- */
-export const WEB_LOGIN_STORAGE_KEY = 'ccsm_login';
-
-/**
  * Default daemon base for production (same-origin relative).
  *
  * Task #25: empty string means "use the SPA's own origin" — `fetch('/token')`
- * and `new WebSocket('/ws/default')` resolve relative to `document.baseURI`,
- * which is the right answer whether the SPA is served from
- * `https://cc-sm.pages.dev`, a Pages preview deployment, the Vite dev
- * server, or the smoke fixture's static SPA host.
+ * and `new WebSocket('/ws/default')` resolve relative to `document.baseURI`.
  */
 export const DEFAULT_DAEMON_BASE = '';
 
@@ -239,24 +201,107 @@ export function getWsProtocol(deps: GetWsProtocolDeps): string[] {
 }
 
 /**
- * Token reader used by the SessionRuntime / WsClient (Task #139, S4-T7).
+ * Token reader used by the SessionRuntime / WsClient (audit F-S-4, Task #152).
  *
  * Priority:
- *   1. sessionStorage `ccsm_web_jwt` — set by AuthContext after the web
- *      OAuth flow completes (cf-worker mints + redirects with #jwt=...).
- *   2. sessionStorage `ccsm.token` — legacy daemon-minted token. Smoke and
- *      Tauri shells still bootstrap from `?token=` / `/token` and write to
- *      this key, so they keep working without an OAuth round-trip.
+ *   1. In-memory ws-ticket cache — populated by `primeWsTicket()` at
+ *      sign-in. The HttpOnly `web_jwt` cookie is server-side; the SPA
+ *      receives only this short-lived (60s) ticket as a token-shaped value.
+ *   2. sessionStorage `ccsm.token` — legacy daemon-minted token (smoke /
+ *      Tauri loopback). Skipped when a fresh ws-ticket exists.
  *   3. null — caller falls back to "signed out" UI (SignInScreen).
  *
  * Exposed as a standalone function so component tests can inject without
  * stubbing `webHostConfig` itself.
  */
 export function readSessionToken(): string | null {
+  const cached = getCachedWsTicket();
+  if (cached !== null) return cached;
   if (typeof window === 'undefined') return null;
-  const webJwt = sessionStorage.getItem(WEB_JWT_STORAGE_KEY);
-  if (webJwt && webJwt.length > 0) return webJwt;
   return sessionStorage.getItem(TOKEN_STORAGE_KEY);
+}
+
+// ---- ws-ticket cache (audit F-S-4) -------------------------------------
+
+interface WsTicketCacheEntry {
+  ticket: string;
+  /** epoch ms when this ticket expires; renew before this. */
+  expiresAtMs: number;
+}
+
+let wsTicketCache: WsTicketCacheEntry | null = null;
+/**
+ * Renew the ticket when within this many ms of expiry. ws-ticket TTL is
+ * 60s server-side; renewing at <= 10s ensures we never present an expired
+ * one and gives plenty of margin for a slow connect.
+ */
+const WS_TICKET_RENEW_MARGIN_MS = 10_000;
+
+function isCachedWsTicketFresh(now: number): boolean {
+  return (
+    wsTicketCache !== null &&
+    wsTicketCache.expiresAtMs - now > WS_TICKET_RENEW_MARGIN_MS
+  );
+}
+
+/** Read-only view of the cache. Used by readSessionToken (sync). */
+export function getCachedWsTicket(): string | null {
+  if (wsTicketCache === null) return null;
+  if (!isCachedWsTicketFresh(Date.now())) return null;
+  return wsTicketCache.ticket;
+}
+
+/** Test seam — clear the in-memory cache. */
+export function _resetWsTicketCacheForTests(): void {
+  wsTicketCache = null;
+}
+
+/**
+ * Fetch a fresh ws-ticket from `POST /api/auth/ws-ticket`. Caches it in
+ * module state; subsequent calls within the freshness window return the
+ * cached value without a round-trip. Throws on network / 401 so callers
+ * can surface a re-auth prompt.
+ *
+ * Used by AuthContext on sign-in (so `getCachedWsTicket()` is hot before
+ * the first ws connect) and by ws connect retry paths.
+ */
+export async function primeWsTicket(
+  fetchImpl: typeof globalThis.fetch = typeof window !== 'undefined'
+    ? window.fetch.bind(window)
+    : (() => {
+        throw new Error('fetch unavailable');
+      }) as typeof globalThis.fetch,
+): Promise<string | null> {
+  if (isCachedWsTicketFresh(Date.now())) {
+    return wsTicketCache!.ticket;
+  }
+  try {
+    const res = await fetchImpl('/api/auth/ws-ticket', {
+      method: 'POST',
+      credentials: 'include',
+    });
+    if (!res.ok) {
+      wsTicketCache = null;
+      return null;
+    }
+    const body = (await res.json()) as { ws_ticket?: unknown; expires_in?: unknown };
+    if (typeof body.ws_ticket !== 'string' || body.ws_ticket.length === 0) {
+      wsTicketCache = null;
+      return null;
+    }
+    const ttlSec =
+      typeof body.expires_in === 'number' && body.expires_in > 0
+        ? body.expires_in
+        : 60;
+    wsTicketCache = {
+      ticket: body.ws_ticket,
+      expiresAtMs: Date.now() + ttlSec * 1000,
+    };
+    return body.ws_ticket;
+  } catch {
+    wsTicketCache = null;
+    return null;
+  }
 }
 
 export const webHostConfig: HostConfig = {

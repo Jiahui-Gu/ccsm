@@ -21,6 +21,15 @@ import { verifyJwt, type TunnelJwtClaims } from '../src/auth/jwt';
 
 const KEY_HEX =
   '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff';
+/**
+ * Audit F-S-1 (Task #152): tunnel JWTs are signed with the refresh key
+ * (kept separate from the web signing key so a web-key leak cannot mint
+ * daemon-class tokens). Tests use distinct hex constants for the two keys
+ * to lock the invariant: a token signed with the refresh key MUST verify
+ * with the refresh key AND fail to verify with the web key.
+ */
+const KEY_REFRESH_HEX =
+  '99887766554433221100ffeeddccbbaa99887766554433221100ffeeddccbbaa';
 
 interface UserDoState {
   github_id?: string;
@@ -86,7 +95,7 @@ function makeEnv(userDo: UserDoFake): AuthEnv {
     GITHUB_OAUTH_CLIENT_ID: 'test-client-id',
     GITHUB_OAUTH_CLIENT_SECRET: 'test-client-secret',
     JWT_SIGNING_KEY: KEY_HEX,
-    JWT_REFRESH_SIGNING_KEY: KEY_HEX,
+    JWT_REFRESH_SIGNING_KEY: KEY_REFRESH_HEX,
     USER_DO: {
       idFromName: (_name: string) => ({ name: _name }) as unknown as DurableObjectId,
       get: (_id: DurableObjectId) => userDo.stub as unknown as DurableObjectStub,
@@ -273,7 +282,7 @@ describe('handleDevicePoll', () => {
     expect(body.login).toBe('alice');
     expect(body.tunnel_refresh_token).toMatch(/^[0-9a-f]{64}$/);
 
-    const claims = await verifyJwt<TunnelJwtClaims>(body.tunnel_jwt, KEY_HEX);
+    const claims = await verifyJwt<TunnelJwtClaims>(body.tunnel_jwt, KEY_REFRESH_HEX);
     expect(claims).not.toBeNull();
     expect(claims!.sub).toBe('99');
     expect(claims!.login).toBe('alice');
@@ -285,6 +294,38 @@ describe('handleDevicePoll', () => {
     expect(userDo.state.github_id).toBe('99');
     expect(userDo.state.login).toBe('alice');
     expect(userDo.state.tunnel_refresh_hash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('audit F-S-1: tunnel_jwt is signed with REFRESH key (cannot be verified with web key)', async () => {
+    // Lock the key-separation invariant. deviceFlow.ts MUST sign with
+    // env.JWT_REFRESH_SIGNING_KEY so middleware (which verifies with the
+    // same env.JWT_REFRESH_SIGNING_KEY) accepts the daemon dial. Pre-fix
+    // deviceFlow signed with JWT_SIGNING_KEY → every legit daemon dial
+    // was rejected.
+    makeGithubFetch({
+      'https://github.com/login/oauth/access_token': [
+        () => Response.json({ access_token: 'gh-access' }),
+      ],
+      'https://api.github.com/user': [
+        () => Response.json({ id: 99, login: 'alice' }),
+      ],
+    });
+    const env = makeEnv(makeUserDo());
+    const res = await handleDevicePoll(
+      new Request('https://example/api/auth/device/poll', {
+        method: 'POST',
+        body: JSON.stringify({ device_code: 'd' }),
+      }),
+      env,
+    );
+    const body = (await res.json()) as { tunnel_jwt: string };
+    // verifyJwt with the REFRESH key succeeds (the key middleware uses).
+    const okClaims = await verifyJwt<TunnelJwtClaims>(body.tunnel_jwt, KEY_REFRESH_HEX);
+    expect(okClaims).not.toBeNull();
+    // verifyJwt with the WEB key fails — proves the two keys are not
+    // collapsed by accident.
+    const wrongKeyClaims = await verifyJwt<TunnelJwtClaims>(body.tunnel_jwt, KEY_HEX);
+    expect(wrongKeyClaims).toBeNull();
   });
 
   it('400s when device_code is missing from body', async () => {
@@ -404,7 +445,7 @@ describe('handleTunnelRefresh', () => {
     expect(body.tunnel_refresh_token).toMatch(/^[0-9a-f]{64}$/);
     expect(body.tunnel_refresh_token).not.toBe(oldToken);
 
-    const claims = await verifyJwt<TunnelJwtClaims>(body.tunnel_jwt, KEY_HEX);
+    const claims = await verifyJwt<TunnelJwtClaims>(body.tunnel_jwt, KEY_REFRESH_HEX);
     expect(claims).not.toBeNull();
     expect(claims!.kind).toBe('tunnel');
     expect(claims!.login).toBe('carol');

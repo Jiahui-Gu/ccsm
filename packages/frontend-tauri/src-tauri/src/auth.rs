@@ -168,6 +168,76 @@ pub fn read_persisted_creds() -> Option<PersistedTunnelCreds> {
     Some(parsed)
 }
 
+/// Audit F-S-2 (Task #152): extract the `sub` (GitHub user id) claim from a
+/// JWT payload **without verifying the signature**. The caller (daemon_mgr)
+/// uses the result only as an env-var hint that gets re-checked server-side
+/// against an already-verified hello.identity, so the lack of signature
+/// check here is intentional — a forged value just makes the daemon refuse
+/// every browser, it cannot grant access.
+///
+/// Returns None on any structural error (not 3 parts / bad base64url / bad
+/// JSON / missing string `sub`).
+pub fn parse_jwt_sub_unverified(jwt: &str) -> Option<String> {
+    let mut parts = jwt.split('.');
+    let _hdr = parts.next()?;
+    let payload = parts.next()?;
+    parts.next()?; // signature segment must exist
+    if parts.next().is_some() {
+        return None;
+    }
+    let bytes = base64url_decode(payload)?;
+    let v: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let sub = v.get("sub")?.as_str()?;
+    if sub.is_empty() {
+        return None;
+    }
+    Some(sub.to_string())
+}
+
+/// Tiny RFC 4648 §5 base64url decoder. Returns None on any invalid char so
+/// callers can degrade to "skip identity-bind" rather than panic.
+fn base64url_decode(s: &str) -> Option<Vec<u8>> {
+    fn idx(c: u8) -> Option<u8> {
+        match c {
+            b'A'..=b'Z' => Some(c - b'A'),
+            b'a'..=b'z' => Some(c - b'a' + 26),
+            b'0'..=b'9' => Some(c - b'0' + 52),
+            b'-' => Some(62),
+            b'_' => Some(63),
+            _ => None,
+        }
+    }
+    // Strip optional `=` padding then drive 4-char groups by index math.
+    let bytes: Vec<u8> = s.bytes().filter(|b| *b != b'=').collect();
+    let mut out = Vec::with_capacity(bytes.len() * 3 / 4);
+    let mut chunk = [0u8; 4];
+    let mut have = 0usize;
+    for b in bytes {
+        let v = idx(b)?;
+        chunk[have] = v;
+        have += 1;
+        if have == 4 {
+            out.push((chunk[0] << 2) | (chunk[1] >> 4));
+            out.push((chunk[1] << 4) | (chunk[2] >> 2));
+            out.push((chunk[2] << 6) | chunk[3]);
+            have = 0;
+        }
+    }
+    match have {
+        0 => {}
+        1 => return None, // invalid leftover
+        2 => {
+            out.push((chunk[0] << 2) | (chunk[1] >> 4));
+        }
+        3 => {
+            out.push((chunk[0] << 2) | (chunk[1] >> 4));
+            out.push((chunk[1] << 4) | (chunk[2] >> 2));
+        }
+        _ => unreachable!(),
+    }
+    Some(out)
+}
+
 fn write_persisted_creds(creds: &PersistedTunnelCreds) -> Result<(), String> {
     let dir = ccsm_dir()?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir {}: {e}", dir.display()))?;
@@ -618,5 +688,52 @@ mod tests {
             assert_eq!(back.tunnel_jwt, "winjwt");
             assert_eq!(back.login, "winuser");
         });
+    }
+
+    /// Audit F-S-2 (Task #152): unverified JWT `sub` extraction.
+    #[test]
+    fn parse_jwt_sub_extracts_sub_from_payload() {
+        // Manual JWT: header={alg:HS256,typ:JWT}, payload={sub:"583231",login:"octocat"},
+        // signature is a non-empty placeholder (we never verify it).
+        // base64url-encoded values pre-computed.
+        let header = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9";
+        // {"sub":"583231","login":"octocat"}
+        let payload = "eyJzdWIiOiI1ODMyMzEiLCJsb2dpbiI6Im9jdG9jYXQifQ";
+        let sig = "ZmFrZS1zaWc";
+        let jwt = format!("{}.{}.{}", header, payload, sig);
+        assert_eq!(parse_jwt_sub_unverified(&jwt), Some("583231".to_string()));
+    }
+
+    #[test]
+    fn parse_jwt_sub_returns_none_on_two_part_jwt() {
+        assert_eq!(parse_jwt_sub_unverified("a.b"), None);
+    }
+
+    #[test]
+    fn parse_jwt_sub_returns_none_on_four_part_jwt() {
+        assert_eq!(parse_jwt_sub_unverified("a.b.c.d"), None);
+    }
+
+    #[test]
+    fn parse_jwt_sub_returns_none_when_payload_lacks_sub() {
+        // payload = {"login":"octocat"} (no sub)
+        let payload = "eyJsb2dpbiI6Im9jdG9jYXQifQ";
+        let jwt = format!("hdr.{}.sig", payload);
+        assert_eq!(parse_jwt_sub_unverified(&jwt), None);
+    }
+
+    #[test]
+    fn parse_jwt_sub_returns_none_on_garbage_payload() {
+        assert_eq!(parse_jwt_sub_unverified("hdr.@@@@.sig"), None);
+    }
+
+    #[test]
+    fn parse_jwt_sub_handles_padded_base64url() {
+        // Same as parse_jwt_sub_extracts_sub_from_payload but with explicit
+        // `=` padding (some encoders emit padding even for base64url).
+        let header = "eyJhbGciOiJIUzI1NiJ9";
+        let payload_padded = "eyJzdWIiOiIxIn0="; // {"sub":"1"}
+        let jwt = format!("{}.{}.s", header, payload_padded);
+        assert_eq!(parse_jwt_sub_unverified(&jwt), Some("1".to_string()));
     }
 }

@@ -216,6 +216,26 @@ export function isTrustTunnelEnabled(): boolean {
 }
 
 /**
+ * Audit F-S-2 (Task #152): in trust-tunnel mode the daemon must reject any
+ * hello whose cloud-authenticated identity does not match the GitHub user
+ * the daemon was started for. Without this check, a misconfigured cloud
+ * deploy that signs a JWT for ANY user would let that user hijack this
+ * daemon's tunnel.
+ *
+ * The expected owner is injected by the Tauri shell at spawn time
+ * (env `CCSM_EXPECTED_OWNER_ID`, parsed from the local `~/.ccsm/tunnel_jwt`
+ * `sub` claim). Empty / unset returns null and the bind check is skipped —
+ * legacy deployments without the Tauri shell stay unaffected.
+ *
+ * Read on every call so tests can toggle via process.env without re-import.
+ */
+export function getExpectedOwnerId(): string | null {
+  const raw = process.env.CCSM_EXPECTED_OWNER_ID;
+  if (typeof raw !== 'string' || raw.length === 0) return null;
+  return raw;
+}
+
+/**
  * HTTP-over-tunnel control frames (Task #787, S3-C). Mux the loopback REST
  * surface over the same daemon-dialed ws so cloud browsers can hit
  * `cc-sm.pages.dev/api/*` without a direct path to the NAT'd daemon.
@@ -576,6 +596,22 @@ export class TunnelClient {
         if (isTrustTunnelEnabled()) {
           if (hello.identity === undefined) {
             this.rejectHello('trust-tunnel mode but hello missing identity');
+            return;
+          }
+          // Audit F-S-2 (Task #152): identity-bind check. The Tauri shell
+          // baked the expected GitHub user id into the daemon's env at
+          // spawn time (parsed from the persisted tunnel JWT's `sub`).
+          // Reject any hello whose cloud-stamped identity disagrees so a
+          // mis-issued JWT cannot hijack this user's daemon.
+          const expectedOwner = getExpectedOwnerId();
+          if (expectedOwner !== null && hello.identity.github_id !== expectedOwner) {
+            this.rejectHello(
+              'identity-mismatch (expected owner=' +
+                expectedOwner +
+                ' got=' +
+                hello.identity.github_id +
+                ')',
+            );
             return;
           }
           this.handleHello(hello);

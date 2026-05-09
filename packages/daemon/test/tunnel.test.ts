@@ -1067,4 +1067,95 @@ describe('TunnelClient', () => {
     client.start();
     expect(factory).toHaveBeenCalledWith('wss://example/tunnel/x', undefined);
   });
+
+  // ---- Audit F-S-2 (Task #152): trust-tunnel identity bind ---------------
+  it('audit F-S-2: trust-tunnel rejects hello whose identity does not match CCSM_EXPECTED_OWNER_ID', () => {
+    const priorTrust = process.env.CCSM_TRUST_TUNNEL;
+    const priorOwner = process.env.CCSM_EXPECTED_OWNER_ID;
+    process.env.CCSM_TRUST_TUNNEL = '1';
+    process.env.CCSM_EXPECTED_OWNER_ID = '583231';
+    try {
+      const client = new TunnelClient({
+        url: 'wss://example/tunnel/x',
+        token: 'tok',
+        onFrame: () => {},
+        wsFactory: factory,
+      });
+      client.start();
+      sockets[0].open();
+      sockets[0].pushText(
+        JSON.stringify({
+          type: 'hello',
+          sid: 'sess-A',
+          identity: { login: 'attacker', github_id: '999999' },
+        }),
+      );
+      expect(sockets[0].closedCalls).toHaveLength(1);
+      expect(sockets[0].closedCalls[0].code).toBe(1008);
+      const reason = sockets[0].closedCalls[0].reason ?? '';
+      expect(String(reason)).toMatch(/identity-mismatch/);
+    } finally {
+      if (priorTrust === undefined) delete process.env.CCSM_TRUST_TUNNEL;
+      else process.env.CCSM_TRUST_TUNNEL = priorTrust;
+      if (priorOwner === undefined) delete process.env.CCSM_EXPECTED_OWNER_ID;
+      else process.env.CCSM_EXPECTED_OWNER_ID = priorOwner;
+    }
+  });
+
+  it('audit F-S-2: trust-tunnel accepts hello whose identity matches CCSM_EXPECTED_OWNER_ID', () => {
+    const priorTrust = process.env.CCSM_TRUST_TUNNEL;
+    const priorOwner = process.env.CCSM_EXPECTED_OWNER_ID;
+    process.env.CCSM_TRUST_TUNNEL = '1';
+    process.env.CCSM_EXPECTED_OWNER_ID = '583231';
+    try {
+      const client = new TunnelClient({
+        url: 'wss://example/tunnel/x',
+        token: 'tok',
+        onFrame: () => {},
+        wsFactory: factory,
+      });
+      client.start();
+      sockets[0].open();
+      sockets[0].pushText(
+        JSON.stringify({
+          type: 'hello',
+          identity: { login: 'octocat', github_id: '583231' },
+        }),
+      );
+      expect(sockets[0].closedCalls).toHaveLength(0);
+    } finally {
+      if (priorTrust === undefined) delete process.env.CCSM_TRUST_TUNNEL;
+      else process.env.CCSM_TRUST_TUNNEL = priorTrust;
+      if (priorOwner === undefined) delete process.env.CCSM_EXPECTED_OWNER_ID;
+      else process.env.CCSM_EXPECTED_OWNER_ID = priorOwner;
+    }
+  });
+
+  it('audit F-S-2: trust-tunnel without CCSM_EXPECTED_OWNER_ID skips the bind check (back-compat)', () => {
+    const priorTrust = process.env.CCSM_TRUST_TUNNEL;
+    const priorOwner = process.env.CCSM_EXPECTED_OWNER_ID;
+    process.env.CCSM_TRUST_TUNNEL = '1';
+    delete process.env.CCSM_EXPECTED_OWNER_ID;
+    try {
+      const client = new TunnelClient({
+        url: 'wss://example/tunnel/x',
+        token: 'tok',
+        onFrame: () => {},
+        wsFactory: factory,
+      });
+      client.start();
+      sockets[0].open();
+      sockets[0].pushText(
+        JSON.stringify({
+          type: 'hello',
+          identity: { login: 'anyone', github_id: '11' },
+        }),
+      );
+      expect(sockets[0].closedCalls).toHaveLength(0);
+    } finally {
+      if (priorTrust === undefined) delete process.env.CCSM_TRUST_TUNNEL;
+      else process.env.CCSM_TRUST_TUNNEL = priorTrust;
+      if (priorOwner !== undefined) process.env.CCSM_EXPECTED_OWNER_ID = priorOwner;
+    }
+  });
 });

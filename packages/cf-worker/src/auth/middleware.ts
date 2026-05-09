@@ -40,12 +40,25 @@ const WS_SUBPROTOCOL_PREFIX = 'ccsm.';
 export type AuthMode = 'legacy' | 'jwt';
 
 /**
- * Read the auth mode from env. Anything other than the literal string `jwt`
- * (incl. unset / empty / typo) falls back to `legacy` so a misconfigured
- * deploy can never accidentally enforce JWT and lock everyone out.
+ * Read the auth mode from env. Recognized values:
+ *   - `'jwt'` — enforce per-user JWT verification.
+ *   - `'legacy'` / unset / undefined — S3-era token-based flow.
+ *
+ * Audit F-S-3 (Task #152): any other non-empty value (typo / bad config)
+ * THROWS rather than silently falling back to `legacy`. Silent fallback
+ * was the original behavior (Task #136) but the audit found it could mask
+ * a misconfigured `wrangler vars` (e.g. `CCSM_AUTH_MODE=JWT` upper-case)
+ * by quietly downgrading to legacy and skipping all JWT checks. We still
+ * treat unset / empty / undefined as legacy so a fresh deploy that hasn't
+ * set the var yet does not 500 — the failure mode targets typos only.
  */
 export function getAuthMode(env: { CCSM_AUTH_MODE?: string }): AuthMode {
-  return env.CCSM_AUTH_MODE === 'jwt' ? 'jwt' : 'legacy';
+  const raw = env.CCSM_AUTH_MODE;
+  if (raw === undefined || raw === '' || raw === 'legacy') return 'legacy';
+  if (raw === 'jwt') return 'jwt';
+  throw new Error(
+    'CCSM_AUTH_MODE must be "jwt" / "legacy" / unset; got: ' + JSON.stringify(raw),
+  );
 }
 
 /**
@@ -92,11 +105,47 @@ function extractBearer(req: Request): string | null {
 }
 
 /**
- * Verify a browser-presented web JWT. Looks first at the WS subprotocol,
- * then at Authorization header (so the same helper covers both ws and REST).
+ * Extract the `web_jwt` value from a `Cookie:` header. Returns null when
+ * the header is absent or the cookie is missing/empty.
+ *
+ * Audit F-S-4 (Task #152): the SPA web JWT now lives in an HttpOnly cookie
+ * (Path=/api) instead of URL fragment + sessionStorage so an XSS payload
+ * cannot reach it. REST `/api/*` requests carry the cookie automatically;
+ * `/ws/default` cannot (browsers don't send cookies on WebSocket subprotocol
+ * upgrades from cross-origin SPA + browsers strip them on subprotocol-only
+ * channels) so the SPA fetches a short-lived ws-ticket JWT first and passes
+ * it as the `Sec-WebSocket-Protocol` value (see `handleWsTicket`).
+ */
+export const WEB_JWT_COOKIE = 'web_jwt';
+
+function extractWebJwtCookie(req: Request): string | null {
+  const raw = req.headers.get('cookie');
+  if (raw === null) return null;
+  for (const pair of raw.split(';')) {
+    const eq = pair.indexOf('=');
+    if (eq <= 0) continue;
+    const k = pair.slice(0, eq).trim();
+    if (k !== WEB_JWT_COOKIE) continue;
+    const v = pair.slice(eq + 1).trim();
+    return v.length > 0 ? v : null;
+  }
+  return null;
+}
+
+/**
+ * Verify a browser-presented web JWT.
+ *
+ * Source priority (audit F-S-4, Task #152):
+ *   1. HttpOnly `web_jwt` cookie — REST `/api/*` requests in cookie-based
+ *      flow. The SPA never reads or sets this; only the cf-worker does.
+ *   2. WS subprotocol `ccsm.<jwt>` — `/ws/default` upgrades carry a
+ *      short-lived ws-ticket JWT here (cookies don't ride WebSocket
+ *      subprotocol channels).
+ *   3. Authorization Bearer — Tauri shell / smoke / loopback backstop where
+ *      the daemon-minted token path is still in play.
  *
  * Returns null on:
- *   - no token present
+ *   - no token present in any source
  *   - signature invalid / expired (verifyJwt returns null)
  *   - `kind` is not `'web'` (daemon-class token presented at browser path)
  */
@@ -104,7 +153,10 @@ export async function extractWebJwt(
   req: Request,
   env: AuthEnv,
 ): Promise<WebJwtClaims | null> {
-  const token = extractSubprotocolToken(req) ?? extractBearer(req);
+  const token =
+    extractWebJwtCookie(req) ??
+    extractSubprotocolToken(req) ??
+    extractBearer(req);
   if (token === null) return null;
   const claims = await verifyJwt<WebJwtClaims>(token, env.JWT_SIGNING_KEY);
   if (claims === null) return null;
