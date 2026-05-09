@@ -23,11 +23,26 @@ import {
   type HostConfig,
 } from '@ccsm/ui';
 import { DaemonStateProvider, useDaemonPhase } from './DaemonStateProvider';
+import { LoginButton } from './auth/LoginButton';
 import type { DaemonPhase } from './types';
 
 function AppContent() {
   useBootstrap();
-  return <AppShell sidebar={<Sidebar />} main={<MainPane />} />;
+  return (
+    <AppShell
+      sidebar={
+        <div className="tauri-sidebar">
+          {/* S4-T8 (#141): device-flow login button. Untouched daemon still
+              works in legacy loopback mode if the user never logs in. */}
+          <div className="tauri-sidebar__login">
+            <LoginButton />
+          </div>
+          <Sidebar />
+        </div>
+      }
+      main={<MainPane />}
+    />
+  );
 }
 
 function buildHostConfig(port: number, token: string): HostConfig {

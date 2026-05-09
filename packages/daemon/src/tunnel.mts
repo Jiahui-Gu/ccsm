@@ -77,6 +77,18 @@ export interface TunnelClientOptions {
    */
   wsFactory?: WsFactory;
   /**
+   * Optional WebSocket subprotocols to negotiate at handshake (RFC 6455 §1.9).
+   *
+   * S4-T8 (Task #141): when the daemon is running with a cloud-issued tunnel
+   * JWT (env `CCSM_TUNNEL_JWT`, set by the Tauri shell after the user
+   * completes device-flow login), we encode the JWT as `ccsm.<jwt>` here.
+   * The Cloudflare Worker / TunnelDO will (in future) validate this against
+   * the JWT signing key the same way it already validates browser-side
+   * `ccsm.<token>` subprotocol values for `/ws/default`. Legacy / unauth
+   * daemons leave this undefined and dial without subprotocols.
+   */
+  subprotocols?: string[];
+  /**
    * DI seam for tests. Defaults to `globalThis.fetch` (Node 22). Tests
    * inject a stub so we can drive http_req → http_res without binding a
    * real loopback server.
@@ -140,14 +152,14 @@ export interface WsLike {
   close(code?: number, reason?: string): void;
 }
 
-export type WsFactory = (url: string) => WsLike;
+export type WsFactory = (url: string, protocols?: string[]) => WsLike;
 
 // Backoff sequence (ms). Each step gets ±20% jitter. Capped at 30s.
 const BACKOFF_SEQUENCE_MS = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000];
 const BACKOFF_JITTER = 0.2;
 
-function defaultWsFactory(url: string): WsLike {
-  return new WebSocket(url) as unknown as WsLike;
+function defaultWsFactory(url: string, protocols?: string[]): WsLike {
+  return new WebSocket(url, protocols) as unknown as WsLike;
 }
 
 /**
@@ -341,6 +353,7 @@ export class TunnelClient {
   private readonly wsFactory: WsFactory;
   private readonly daemonLoopbackPort: number;
   private readonly fetchImpl: typeof fetch;
+  private readonly subprotocols: string[] | undefined;
 
   private state: TunnelState = 'idle';
   private ws: WsLike | null = null;
@@ -372,6 +385,10 @@ export class TunnelClient {
     this.daemonLoopbackPort = opts.daemonLoopbackPort ?? 0;
     this.fetchImpl = opts.fetchImpl ?? globalThis.fetch.bind(globalThis);
     this.onBrowserAttach = opts.onBrowserAttach ?? null;
+    this.subprotocols =
+      opts.subprotocols !== undefined && opts.subprotocols.length > 0
+        ? opts.subprotocols
+        : undefined;
   }
 
   getState(): TunnelState {
@@ -447,7 +464,7 @@ export class TunnelClient {
     this.identities.clear();
     let socket: WsLike;
     try {
-      socket = this.wsFactory(this.url);
+      socket = this.wsFactory(this.url, this.subprotocols);
     } catch (err) {
       console.warn('[ccsm/tunnel] factory threw:', (err as Error).message);
       this.scheduleReconnect();

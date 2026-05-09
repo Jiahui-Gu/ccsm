@@ -6,10 +6,14 @@
 //     orphan-Node-on-port-hostage failure mode. Non-Windows: stub no-op (kill_on_drop
 //     is the soft baseline; see job_object.rs).
 
+mod auth;
 mod daemon_mgr;
 mod daemon_state;
 mod job_object;
 
+use auth::{
+    get_oauth_login, get_oauth_state, oauth_logout, start_oauth, OauthStore,
+};
 use daemon_mgr::{start_daemon, supervise, DaemonState};
 use daemon_state::DaemonStateStore;
 use job_object::JobObject;
@@ -21,6 +25,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .manage(DaemonState::default())
         .manage(DaemonStateStore::default())
+        .manage(OauthStore::default())
         .setup(|app| {
             // Create the Job once at app startup. Held in State so daemon_mgr
             // can call .assign(pid) after spawn. Dropped on app exit, which
@@ -49,7 +54,13 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![start_daemon])
+        .invoke_handler(tauri::generate_handler![
+            start_daemon,
+            start_oauth,
+            get_oauth_state,
+            get_oauth_login,
+            oauth_logout
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
