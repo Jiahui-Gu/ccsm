@@ -1,72 +1,348 @@
-// Task #112-T3: minimal pre-Ready overlay. Renders while the daemon has not
-// reached `Ready` yet so the user sees something instead of a black screen.
-// T4 owns the polished visuals; this stub only proves the wiring.
+// Task #137 / #112-T4: full UI for the pre-Ready / failure / auth overlay.
+// Replaces the T3 stub. Renders for any non-Ready daemon phase so the user
+// sees something instead of a black screen. Styles live in `styles.css`
+// alongside the rest of @ccsm/ui (the package builds via `tsc` only, so
+// CSS modules — which the spec hinted at — would not survive build; we
+// follow the existing BEM-in-styles.css convention instead).
+//
+// Phase coverage (matches frontend-tauri DaemonPhase discriminator):
+//   notSpawned / spawning / starting       → spinner + "Starting daemon..."
+//   tunnelDisconnected                     → spinner + "Connecting to cloud..."
+//   tunnelConnected                        → spinner + "Tunnel connected..."
+//   ready                                  → null (the real app takes over)
+//   spawnFailed { reason, retryInMs? }     → red banner + retry countdown
+//   exited { code, reason }                → red banner
+//   awaitingAuth { verificationUri,        → auth panel + Open browser btn
+//                  userCode, expiresAt? }
+//   authFailed { reason }                  → red banner + Try again btn
+//
+// The `View logs`, `Open browser`, and `Try again` buttons are wired to
+// console.log only — real IPC lands in S4-T8.
 
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 
 export type DaemonStatusVariant = 'info' | 'error' | 'auth';
 
-// Loose phase shape: this component is rendered by the Tauri shell for any
-// non-Ready phase. We only read `.phase` (the discriminator) and a couple of
-// optional fields, so we keep the type minimal here to avoid pulling shell
-// types into @ccsm/ui.
+// Loose phase shape: we only read the discriminator + a handful of optional
+// fields, keeping this independent from the shell's full DaemonPhase union
+// so @ccsm/ui doesn't pull in shell types.
 export interface DaemonStatusPhase {
   phase: string;
   reason?: string;
+  // Mirrors `exited.code: Option<i32>` Rust wire shape (null = absent).
+  code?: number | null;
+  // Mirrors the Rust `Option<u64>` wire shape on `spawnFailed.retryInMs`,
+  // which serializes to JSON `null` when absent. Frontend-tauri's
+  // DaemonPhase['spawnFailed'] declares `retryInMs: number | null`, so this
+  // prop type accepts both `null` (wire absent) and `undefined` (other phases
+  // that omit the field entirely).
+  retryInMs?: number | null;
   verificationUri?: string;
   userCode?: string;
+  expiresAt?: number;
 }
 
 export interface DaemonStatusOverlayProps {
   phase: DaemonStatusPhase;
+  /**
+   * Optional override. When omitted the variant is inferred from
+   * phase.phase (failure phases → 'error', awaitingAuth → 'auth',
+   * everything else → 'info').
+   */
   variant?: DaemonStatusVariant;
 }
 
-const COLORS: Record<DaemonStatusVariant, { bg: string; fg: string }> = {
-  info: { bg: '#1e1e1e', fg: '#e6e6e6' },
-  error: { bg: '#3a1f1f', fg: '#f5d0d0' },
-  auth: { bg: '#1f2a3a', fg: '#d0e0f5' },
-};
-
-function describe(phase: DaemonStatusPhase): ReactNode {
-  switch (phase.phase) {
+function inferVariant(phase: string): DaemonStatusVariant {
+  switch (phase) {
     case 'spawnFailed':
-      return `Failed to start daemon: ${phase.reason ?? 'unknown'}`;
-    case 'authFailed':
-      return `Authentication failed: ${phase.reason ?? 'unknown'}`;
     case 'exited':
-      return `Daemon exited: ${phase.reason ?? 'unknown'}`;
+    case 'authFailed':
+      return 'error';
     case 'awaitingAuth':
-      return `Awaiting authentication. Visit ${phase.verificationUri ?? ''} and enter ${phase.userCode ?? ''}.`;
+      return 'auth';
     default:
-      return `Phase: ${phase.phase}`;
+      return 'info';
   }
+}
+
+function Spinner(): ReactNode {
+  return (
+    <span
+      className="daemon-overlay__spinner"
+      data-testid="daemon-status-overlay-spinner"
+      aria-hidden="true"
+    />
+  );
+}
+
+interface RetryCountdownProps {
+  retryInMs: number;
+}
+
+/**
+ * Local ticking countdown. We snapshot retryInMs once on mount and tick
+ * it down every second; the parent prop is treated as the initial value
+ * so re-renders driven by other state don't reset the clock.
+ */
+function RetryCountdown({ retryInMs }: RetryCountdownProps): ReactNode {
+  const [remaining, setRemaining] = useState(retryInMs);
+  useEffect(() => {
+    setRemaining(retryInMs);
+  }, [retryInMs]);
+  useEffect(() => {
+    if (remaining <= 0) return;
+    const t = setInterval(() => {
+      setRemaining((r) => Math.max(0, r - 1000));
+    }, 1000);
+    return () => clearInterval(t);
+  }, [remaining]);
+  const seconds = Math.ceil(remaining / 1000);
+  if (seconds <= 0) {
+    return (
+      <span
+        className="daemon-overlay__retry"
+        data-testid="daemon-status-overlay-retry"
+      >
+        Retrying now…
+      </span>
+    );
+  }
+  return (
+    <span
+      className="daemon-overlay__retry"
+      data-testid="daemon-status-overlay-retry"
+    >
+      Retrying in {seconds}s…
+    </span>
+  );
+}
+
+function StartingBody({ message }: { message: string }): ReactNode {
+  return (
+    <div
+      className="daemon-overlay__row"
+      data-testid="daemon-status-overlay-loading"
+    >
+      <Spinner />
+      <span className="daemon-overlay__message">{message}</span>
+    </div>
+  );
+}
+
+interface ErrorBannerProps {
+  title: string;
+  detail?: string;
+  retryInMs?: number;
+  actionLabel: string;
+  onAction: () => void;
+  actionTestId: string;
+}
+
+function ErrorBanner(props: ErrorBannerProps): ReactNode {
+  const { title, detail, retryInMs, actionLabel, onAction, actionTestId } =
+    props;
+  return (
+    <div
+      className="daemon-overlay__banner daemon-overlay__banner--error"
+      role="alert"
+      data-testid="daemon-status-overlay-banner"
+    >
+      <h2 className="daemon-overlay__title">{title}</h2>
+      {detail !== undefined && detail !== '' ? (
+        <p
+          className="daemon-overlay__detail"
+          data-testid="daemon-status-overlay-detail"
+        >
+          {detail}
+        </p>
+      ) : null}
+      {typeof retryInMs === 'number' && retryInMs > 0 ? (
+        <RetryCountdown retryInMs={retryInMs} />
+      ) : null}
+      <div className="daemon-overlay__actions">
+        <button
+          type="button"
+          className="daemon-overlay__btn"
+          onClick={onAction}
+          data-testid={actionTestId}
+        >
+          {actionLabel}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+interface AuthPanelProps {
+  verificationUri: string;
+  userCode: string;
+  expiresAt?: number;
+}
+
+function AuthPanel({
+  verificationUri,
+  userCode,
+  expiresAt,
+}: AuthPanelProps): ReactNode {
+  const expiresText =
+    typeof expiresAt === 'number' && expiresAt > Date.now()
+      ? `Code expires in ${Math.max(
+          1,
+          Math.floor((expiresAt - Date.now()) / 60_000),
+        )} min`
+      : null;
+  return (
+    <div
+      className="daemon-overlay__banner daemon-overlay__banner--auth"
+      role="dialog"
+      aria-label="Sign in with GitHub"
+      data-testid="daemon-status-overlay-auth"
+    >
+      <h2 className="daemon-overlay__title">Sign in with GitHub</h2>
+      <p className="daemon-overlay__detail">
+        Visit{' '}
+        <span
+          className="daemon-overlay__uri"
+          data-testid="daemon-status-overlay-uri"
+        >
+          {verificationUri}
+        </span>{' '}
+        and enter the code below.
+      </p>
+      <div
+        className="daemon-overlay__user-code"
+        data-testid="daemon-status-overlay-user-code"
+      >
+        {userCode}
+      </div>
+      {expiresText !== null ? (
+        <p className="daemon-overlay__hint">{expiresText}</p>
+      ) : null}
+      <div className="daemon-overlay__actions">
+        <button
+          type="button"
+          className="daemon-overlay__btn"
+          onClick={() => {
+            // Real shell.open lands in S4-T8; logging is a placeholder so
+            // the click is observable in the dev console + by tests.
+            // eslint-disable-next-line no-console
+            console.log(
+              '[DaemonStatusOverlay] open browser:',
+              verificationUri,
+            );
+          }}
+          data-testid="daemon-status-overlay-open-browser"
+        >
+          Open browser
+        </button>
+      </div>
+    </div>
+  );
 }
 
 export function DaemonStatusOverlay({
   phase,
-  variant = 'info',
-}: DaemonStatusOverlayProps) {
-  const { bg, fg } = COLORS[variant];
+  variant,
+}: DaemonStatusOverlayProps): ReactNode {
+  // Ready is owned by the real app — overlay must collapse out of the way.
+  if (phase.phase === 'ready') {
+    return null;
+  }
+
+  const resolvedVariant: DaemonStatusVariant = variant ?? inferVariant(phase.phase);
+
+  let body: ReactNode;
+  switch (phase.phase) {
+    case 'notSpawned':
+    case 'spawning':
+    case 'starting':
+      body = <StartingBody message="Starting daemon…" />;
+      break;
+    case 'tunnelDisconnected':
+      body = <StartingBody message="Connecting to cloud…" />;
+      break;
+    case 'tunnelConnected':
+      body = <StartingBody message="Tunnel connected, waiting…" />;
+      break;
+    case 'spawnFailed':
+      body = (
+        <ErrorBanner
+          title="Daemon failed to start"
+          detail={phase.reason ?? 'Unknown error.'}
+          {...(typeof phase.retryInMs === 'number'
+            ? { retryInMs: phase.retryInMs }
+            : {})}
+          actionLabel="View logs"
+          actionTestId="daemon-status-overlay-view-logs"
+          onAction={() => {
+            // eslint-disable-next-line no-console
+            console.log('[DaemonStatusOverlay] view logs (spawnFailed)');
+          }}
+        />
+      );
+      break;
+    case 'exited': {
+      const codeText =
+        typeof phase.code === 'number' ? ` (code ${phase.code})` : '';
+      body = (
+        <ErrorBanner
+          title={`Daemon exited${codeText}`}
+          detail={phase.reason ?? 'Process terminated unexpectedly.'}
+          actionLabel="View logs"
+          actionTestId="daemon-status-overlay-view-logs"
+          onAction={() => {
+            // eslint-disable-next-line no-console
+            console.log('[DaemonStatusOverlay] view logs (exited)');
+          }}
+        />
+      );
+      break;
+    }
+    case 'awaitingAuth':
+      body = (
+        <AuthPanel
+          verificationUri={phase.verificationUri ?? ''}
+          userCode={phase.userCode ?? ''}
+          {...(typeof phase.expiresAt === 'number'
+            ? { expiresAt: phase.expiresAt }
+            : {})}
+        />
+      );
+      break;
+    case 'authFailed':
+      body = (
+        <ErrorBanner
+          title="Sign-in failed"
+          detail={phase.reason ?? 'Authentication did not complete.'}
+          actionLabel="Try again"
+          actionTestId="daemon-status-overlay-try-again"
+          onAction={() => {
+            // eslint-disable-next-line no-console
+            console.log('[DaemonStatusOverlay] try again (authFailed)');
+          }}
+        />
+      );
+      break;
+    default:
+      // Unknown phase — surface it instead of going blank, so an out-of-sync
+      // shell/daemon is debuggable in the wild.
+      body = <StartingBody message={`Phase: ${phase.phase}`} />;
+      break;
+  }
+
   return (
     <div
+      className={`daemon-overlay daemon-overlay--${resolvedVariant}`}
       data-testid="daemon-status-overlay"
-      data-variant={variant}
+      data-variant={resolvedVariant}
       data-phase={phase.phase}
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: bg,
-        color: fg,
-        padding: 24,
-        fontFamily: 'system-ui, sans-serif',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 8,
-      }}
+      role="status"
+      aria-live="polite"
     >
-      <h1 style={{ margin: 0, fontSize: 20 }}>ccsm</h1>
-      <p style={{ margin: 0, fontSize: 14 }}>{describe(phase)}</p>
+      <div className="daemon-overlay__inner">
+        <div className="daemon-overlay__brand">ccsm</div>
+        {body}
+      </div>
     </div>
   );
 }
