@@ -172,8 +172,28 @@ pub async fn spawn_daemon_inner(app: AppHandle) -> Result<(), String> {
 
     #[cfg(windows)]
     {
-        // tokio::process::Command exposes creation_flags directly on Windows.
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW — avoid console flash
+        // R-30 (Task #87): use CREATE_NEW_CONSOLE instead of CREATE_NO_WINDOW.
+        //
+        // Background: node-pty 1.1.0 on Windows forks a helper subprocess
+        // (`conpty_console_list_agent.js`) for every `pty.spawn()` that calls
+        // `AttachConsole(shellPid)`. AttachConsole requires the calling process
+        // to NOT already be attached to a console. With CREATE_NO_WINDOW the
+        // daemon has no console, so the FIRST PTY spawn implicitly
+        // AllocConsole's; the SECOND spawn then fails because a Windows
+        // process can be attached to only ONE console at a time → conpty #2
+        // is internally broken with no onData → second tab terminal never
+        // receives output. Confirmed by R-29 forensics on cloud-e2e two-tab
+        // harness (PR #1202).
+        //
+        // CREATE_NEW_CONSOLE gives the daemon its own console up front. The
+        // helper subprocess inherits it; AttachConsole(target) → ... →
+        // FreeConsole + AttachConsole(parent) cycle works for every spawn.
+        //
+        // The console window is hidden by daemon JS at startup
+        // (packages/daemon/src/console-hide-windows.mts via koffi → user32.dll
+        // ShowWindow) so users don't see a Node prompt.
+        const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+        cmd.creation_flags(CREATE_NEW_CONSOLE);
     }
 
     let mut child = cmd.spawn().map_err(|e| format!("spawn failed: {e}"))?;
@@ -389,6 +409,30 @@ fn write_token_file(path: &Path, token: &str) -> Result<(), String> {
     Ok(())
 }
 
+// R-30 (Task #87): Allocate a hidden console for the Tauri process so the
+// spawned daemon (and node-pty's `conpty_console_list_agent.js` helper that
+// it forks per PTY) inherits a stable console handle.
+//
+// Background: node-pty 1.1.0 on Windows forks a helper subprocess for every
+// `pty.spawn()` that calls `AttachConsole(shellPid)`. AttachConsole requires
+// the calling process to not already be attached to a console; if the daemon
+// implicitly AllocConsole'd on the first spawn (because it had none), the
+// SECOND spawn's AttachConsole fails — the second tab's terminal never
+// receives PTY output. Forensics from R-29 (PR #1202) confirmed this exact
+// sequence on cloud-e2e two-tab harness.
+//
+// Fix: ensure the parent (Tauri) process owns a console before any daemon
+// spawn. The daemon inherits it via normal CreateProcess inheritance (no
+// CREATE_NO_WINDOW / no CREATE_NEW_CONSOLE). The helper subprocess, when it
+// AttachConsole's to a conpty shell, can cleanly return to the inherited
+// console afterward — so spawn #2, #3, ... all work.
+//
+// We hide the console window (`ShowWindow(SW_HIDE)`) immediately after
+// AllocConsole so users never see a stray window. AllocConsole may legitimately
+// fail if the process already has a console (ERROR_ACCESS_DENIED 0x5);
+// that's fine — we just hide whatever console exists.
+//
+// Idempotent and safe to call multiple times. Logs once-per-call.
 #[cfg(test)]
 mod tests {
     use super::*;

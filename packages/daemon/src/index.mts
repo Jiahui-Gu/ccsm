@@ -24,6 +24,7 @@ import type { AddressInfo } from 'node:net';
 
 import { openDb } from './db.mjs';
 import { createDaemonHttp } from './http.mjs';
+import { hideOwnConsoleWindowOnWindows } from './hide-console-windows.mjs';
 import { createRuntimeRegistry } from './runtime.mjs';
 import { TunnelClient } from './tunnel.mjs';
 import { attachFrameRouter, attachWebSocket } from './ws.mjs';
@@ -103,6 +104,12 @@ async function listenWithRetry(
 }
 
 async function main(): Promise<void> {
+  // R-30 (Task #87): when launched by Tauri with CREATE_NEW_CONSOLE (so
+  // node-pty's conpty helper has a stable console to attach/detach), hide the
+  // resulting Node console window so users don't see it pop up. No-op when
+  // run standalone (no console / not Windows).
+  await hideOwnConsoleWindowOnWindows();
+
   const handshakeMode = process.argv.includes(HANDSHAKE_FLAG);
   const startPort = parsePort(process.env.PORT);
   const token =

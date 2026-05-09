@@ -60,6 +60,9 @@ importers:
       better-sqlite3:
         specifier: ^11.10.0
         version: 11.10.0
+      koffi:
+        specifier: ^2.16.2
+        version: 2.16.2
       node-pty:
         specifier: ^1.1.0
         version: 1.1.0
