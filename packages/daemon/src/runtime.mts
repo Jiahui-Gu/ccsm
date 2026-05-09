@@ -171,6 +171,42 @@ const defaultPtyFactory: PtyFactory = (opts) => {
     opts.sid,
     isWindows,
   );
+  // Task #86 (R-29) — log-only forensics for conpty `AttachConsole failed`
+  // crash observed under `tauri dev` cloud-e2e harness. node-pty 1.1.0's
+  // conpty agent (lib/conpty_console_list_agent.js) calls Win32
+  // GetConsoleProcessList, which requires AttachConsole(pid) to succeed
+  // first. If the daemon process has no inheritable console (e.g. spawned
+  // by Tauri Rust with CREATE_NO_WINDOW=0x0800_0000, see
+  // packages/frontend-tauri/src-tauri/src/daemon_mgr.rs:176), AttachConsole
+  // fails and node-pty's helper subprocess throws + exits, killing the
+  // daemon. This block dumps the daemon's own stdio/console state before
+  // each spawn so we can correlate a crash to the daemon's console
+  // ancestry. NOT a fix — see Phase 2 task proposal in the PR body.
+  /* eslint-disable no-console */
+  console.error('[ccsm-pty-forensics] spawn=' + JSON.stringify({
+    sid: opts.sid,
+    mode: opts.mode,
+    cmd,
+    args,
+    isWindows,
+    platform: process.platform,
+    nodeVersion: process.version,
+    pid: process.pid,
+    ppid: typeof process.ppid === 'number' ? process.ppid : null,
+    stdinIsTTY: Boolean((process.stdin as { isTTY?: boolean }).isTTY),
+    stdoutIsTTY: Boolean((process.stdout as { isTTY?: boolean }).isTTY),
+    stderrIsTTY: Boolean((process.stderr as { isTTY?: boolean }).isTTY),
+    connected: typeof process.connected === 'boolean' ? process.connected : null,
+    hasParentIPC: Boolean(process.send),
+    cwd: opts.cwd,
+    useConpty: true,
+    // Surrogate for "do we have a console" — on Windows the only userspace
+    // signal short of FFI is whether stdout is a TTY (false under
+    // CREATE_NO_WINDOW + Stdio::piped) and whether process.stdin was wired.
+    // The conpty agent itself is what would call GetConsoleWindow; we can't
+    // call it from JS without FFI, so we proxy via TTY flags.
+  }));
+  /* eslint-enable no-console */
   const pty = nodePty.spawn(cmd, args, {
     name: 'xterm-256color',
     cols: opts.cols,
