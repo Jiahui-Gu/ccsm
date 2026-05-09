@@ -25,6 +25,10 @@ importers:
         version: 2.1.9(@types/node@22.19.17)(jsdom@25.0.1)
 
   packages/cf-worker:
+    dependencies:
+      '@ccsm/shared':
+        specifier: workspace:*
+        version: link:../shared
     devDependencies:
       '@cloudflare/workers-types':
         specifier: ^4.20240909.0
