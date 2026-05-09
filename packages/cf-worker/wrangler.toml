@@ -4,8 +4,8 @@ compatibility_date = "2026-01-01"
 
 # S4 (Task #113): GitHub OAuth App credentials + JWT signing keys.
 # Set in production via:
-#   wrangler secret put GITHUB_APP_CLIENT_ID
-#   wrangler secret put GITHUB_APP_CLIENT_SECRET
+#   wrangler secret put GITHUB_OAUTH_CLIENT_ID
+#   wrangler secret put GITHUB_OAUTH_CLIENT_SECRET
 #   wrangler secret put JWT_SIGNING_KEY
 #   wrangler secret put JWT_REFRESH_SIGNING_KEY
 # Local dev: copy `.dev.vars.example` → `.dev.vars` (gitignored) and fill in.
