@@ -106,6 +106,15 @@ interface HttpReqFrame {
   path: string;
   headers: Record<string, string>;
   body_b64: string;
+  /**
+   * R-46 audit-P0 (Task #158, F-T-2): worker-derived request_id propagated
+   * to the daemon so daemon-side log records can be correlated with the
+   * Worker + DO records for the same request. Optional for wire-format
+   * backward compat — daemons running an older build will simply ignore
+   * the field, and the DO accepts a frame without `request_id` (legacy
+   * Worker callsite).
+   */
+  request_id?: string;
 }
 
 interface HttpResFrame {
@@ -625,6 +634,15 @@ export class TunnelDO extends DurableObject<Env> {
       headers,
       body_b64,
     };
+    // R-46 audit-P0 (Task #158, F-T-2): propagate request_id end-to-end so
+    // daemon log records can be correlated with worker + DO records for the
+    // same request. Header is set by the Worker entry (deriveRequestId);
+    // missing header (legacy / direct DO test) leaves the field unset, and
+    // the daemon falls back to "no-req-id" placeholder.
+    const reqId = req.headers.get('X-CCSM-Request-Id');
+    if (reqId !== null && reqId.length > 0) {
+      frame.request_id = reqId;
+    }
     console.log('[r28][do] proxyHttp send-frame path=' + r28Path + ' id=' + id + ' body_len=' + body.byteLength);
     return new Promise<Response>((resolve) => {
       const timer = setTimeout(() => {

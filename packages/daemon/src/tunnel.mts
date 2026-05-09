@@ -247,6 +247,14 @@ interface HttpReqFrame {
   path: string;
   headers: Record<string, string>;
   body_b64: string;
+  /**
+   * R-46 audit-P0 (Task #158, F-T-2): worker-derived request_id propagated
+   * end-to-end so daemon log records can be correlated with worker + DO
+   * records. Optional for wire-format backward compat: a daemon talking to
+   * an older cf-worker (no field) falls back to a `"no-req-id"` placeholder
+   * in log records.
+   */
+  request_id?: string;
 }
 
 interface HttpResFrame {
@@ -264,6 +272,15 @@ function parseHttpReq(parsed: Record<string, unknown>): HttpReqFrame | null {
   if (typeof parsed.path !== 'string') return null;
   if (typeof parsed.body_b64 !== 'string') return null;
   if (parsed.headers === null || typeof parsed.headers !== 'object') return null;
+  // R-46 (Task #158): request_id is optional. Older cf-worker builds will
+  // not send it; we tolerate the missing field rather than rejecting the
+  // frame (would break wire compat).
+  if (
+    parsed.request_id !== undefined &&
+    typeof parsed.request_id !== 'string'
+  ) {
+    return null;
+  }
   // Trust the DO; we already shape-checked the surface fields.
   return parsed as unknown as HttpReqFrame;
 }
@@ -762,8 +779,13 @@ export class TunnelClient {
    * deterministic upstream error instead of a hung request.
    */
   private async handleHttpReq(frame: HttpReqFrame): Promise<void> {
+    // R-46 (Task #158, F-T-2): request_id propagated from cf-worker via
+    // the http_req frame; placeholder when absent (older worker / direct
+    // unit test). Surfaced into r28 forensics tags so the daemon line can
+    // be correlated with worker+DO lines for the same request.
+    const reqId = frame.request_id ?? 'no-req-id';
     if (this.daemonLoopbackPort === 0) {
-      console.error('[r28][daemon] http_req id=' + frame.id + ' ' + frame.method + ' ' + frame.path + ' decision=503-no-loopback-port');
+      console.error('[r28][daemon] http_req id=' + frame.id + ' req_id=' + reqId + ' ' + frame.method + ' ' + frame.path + ' decision=503-no-loopback-port');
       this.send(JSON.stringify({
         type: 'http_res',
         id: frame.id,
@@ -786,7 +808,7 @@ export class TunnelClient {
       headers[k] = v;
     }
     console.error(`[ccsm] tunnel: rx http_req ${frame.method} ${frame.path}`);
-    console.error('[r28][daemon] http_req enter id=' + frame.id + ' ' + frame.method + ' ' + frame.path + ' loopback_port=' + this.daemonLoopbackPort + ' body_len=' + (body?.length ?? 0));
+    console.error('[r28][daemon] http_req enter id=' + frame.id + ' req_id=' + reqId + ' ' + frame.method + ' ' + frame.path + ' loopback_port=' + this.daemonLoopbackPort + ' body_len=' + (body?.length ?? 0));
     const r28Started = Date.now();
     let response: globalThis.Response;
     try {
@@ -800,7 +822,7 @@ export class TunnelClient {
       }
       response = await this.fetchImpl(url, init);
     } catch (err) {
-      console.error('[r28][daemon] http_req id=' + frame.id + ' fetch-threw err=' + (err as Error).message + ' dur_ms=' + (Date.now() - r28Started));
+      console.error('[r28][daemon] http_req id=' + frame.id + ' req_id=' + reqId + ' fetch-threw err=' + (err as Error).message + ' dur_ms=' + (Date.now() - r28Started));
       this.send(JSON.stringify({
         type: 'http_res',
         id: frame.id,
@@ -815,7 +837,7 @@ export class TunnelClient {
       resHeaders[k] = v;
     });
     const resBody = Buffer.from(await response.arrayBuffer());
-    console.error('[r28][daemon] http_req exit id=' + frame.id + ' status=' + response.status + ' body_len=' + resBody.length + ' dur_ms=' + (Date.now() - r28Started));
+    console.error('[r28][daemon] http_req exit id=' + frame.id + ' req_id=' + reqId + ' status=' + response.status + ' body_len=' + resBody.length + ' dur_ms=' + (Date.now() - r28Started));
     this.send(JSON.stringify({
       type: 'http_res',
       id: frame.id,
