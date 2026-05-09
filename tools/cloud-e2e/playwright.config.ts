@@ -9,6 +9,17 @@
 //
 // Failure artifacts (trace.zip, screenshots, video) land in
 // `test-results/` so the manager can inspect them after a red run.
+//
+// S4-T9 (Task #135) addendum: `cross-user-isolation.spec.ts` is a raw
+// WebSocket spec (no SPA boot) and reads three env vars directly from
+// `process.env` inside the spec body:
+//   - CCSM_CLOUD_WS_BASE       — ws origin of the running wrangler dev
+//   - JWT_SIGNING_KEY          — must match `.dev.vars` in cf-worker
+//   - JWT_REFRESH_SIGNING_KEY  — must match `.dev.vars` in cf-worker
+// Playwright forwards process.env into spec workers by default so no
+// explicit `use:` plumbing is required — the spec auto-skips when those
+// vars are absent so the existing two-tab spec keeps running unchanged
+// against deployed cc-sm.pages.dev.
 import { defineConfig, devices } from '@playwright/test';
 
 const BASE_URL = process.env.CCSM_CLOUD_BASE_URL ?? 'https://cc-sm.pages.dev';

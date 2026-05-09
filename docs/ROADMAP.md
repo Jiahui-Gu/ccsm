@@ -60,6 +60,25 @@ URL `?token=`.
 - Daemon (local): no longer authenticates the token; trusts only the tunnel layer (mTLS / one-shot credential)
 - Auth: GitHub identity. Web uses browser OAuth, Tauri uses device flow. The cloud is the sole trust anchor.
 
+**Status: completed 2026-05-10.** All nine S4 tasks have shipped to the
+`working` branch:
+
+- T1 (Task #113): Cloudflare wrangler.toml + `.dev.vars` setup, OAuth client provisioning runbook (`docs/S4-SETUP.md`).
+- T2 (Task #121): HS256 JWT primitives (`packages/cf-worker/src/auth/jwt.ts`) + UserDO skeleton.
+- T3 (Task #140): web OAuth callback + refresh + logout (`packages/cf-worker/src/auth/webOauth.ts`).
+- T4 (Task #142): GitHub device flow + tunnel-JWT mint route (`packages/cf-worker/src/auth/deviceFlow.ts`).
+- T5 (Task #136): JWT routing middleware + `CCSM_AUTH_MODE` flag (`packages/cf-worker/src/auth/middleware.ts`); per-user TunnelDO id `user:<github_id>`. Production rolls out with `legacy` (default), flips to `jwt` once T7/T8 SPA changes are live.
+- T6 (Task #133): cloud-authenticated browser identity carried inside the daemon hello frame (`X-CCSM-Identity-Login` / `X-CCSM-Identity-Id` injected by the worker, echoed by TunnelDO).
+- T7 (Task #139): SPA `SignInGate` + `AuthContext` (`packages/frontend-web/src/auth/`).
+- T8 (Task #141): main-UI Login button driving the device flow on demand (`packages/frontend-tauri/...`).
+- T9 (Task #135): cross-user isolation cloud-e2e harness (`tools/cloud-e2e/specs/cross-user-isolation.spec.ts` + `tools/cloud-e2e/fixtures/jwt-sign.ts`); two raw WebSocket clients per user verify per-user TunnelDO routing + sid envelope isolation against `wrangler dev` running `CCSM_AUTH_MODE=jwt`. T9 also caught and fixed a subprotocol-echo gap on the daemon `/tunnel/default` 101 response that would have broken jwt-mode daemon dial-in (`packages/cf-worker/src/tunnel-do.ts`).
+
+Production cutover ladder (S4 -> S5):
+
+1. Deploy cf-worker with `CCSM_AUTH_MODE=legacy` (current).
+2. Validate OAuth + device flow on a preview deployment; flip a single env to `CCSM_AUTH_MODE=jwt` once SPA + Tauri shells are propagating tokens.
+3. Once the legacy code path has zero traffic for a full week, delete the legacy branches in `cf-worker/src/index.ts` (S5).
+
 ## Stage S5 end state
 - Web frontend: pure SPA that only understands JWT + WS; does not know where the daemon is
 - Tauri shell: background daemon process + tunnel client; registers on startup, reconnects on disconnect

@@ -335,6 +335,24 @@ export class TunnelDO extends DurableObject<Env> {
       server.serializeAttachment(attachment);
       // R-17 log #1 (Task #45): daemon ws accepted into hibernation pool.
       console.log('[do] daemon ws accepted');
+      // S4-T9 (Task #135): if the daemon dialed with a `ccsm.<jwt>`
+      // subprotocol (Task #141 jwt-mode path), RFC 6455 §4.2.2 requires
+      // the server to echo back exactly one of the offered subprotocols on
+      // the 101 response — otherwise standards-compliant clients (Node's
+      // built-in WebSocket, recent `ws@8`, browsers) close the handshake
+      // with "Server sent no subprotocol". The browser path already echoes
+      // (line below); the daemon path forgot to until cross-user-isolation
+      // (T9) tried to dial with a tunnel JWT subprotocol against wrangler
+      // dev. legacy / unauth daemons don't send a subprotocol — we echo
+      // only when one was offered.
+      const daemonProto = extractBrowserToken(req);
+      if (daemonProto !== null) {
+        return new Response(null, {
+          status: 101,
+          webSocket: client,
+          headers: { 'Sec-WebSocket-Protocol': daemonProto.protocol },
+        });
+      }
       return new Response(null, { status: 101, webSocket: client });
     }
 
