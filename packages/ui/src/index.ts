@@ -17,6 +17,12 @@
 export { AppShell } from './components/AppShell';
 export { Sidebar } from './components/Sidebar';
 export { MainPane } from './components/MainPane';
+export {
+  DaemonStatusOverlay,
+  type DaemonStatusOverlayProps,
+  type DaemonStatusPhase,
+  type DaemonStatusVariant,
+} from './components/DaemonStatusOverlay';
 export { useBootstrap } from './hooks/useBootstrap';
 export { useStore } from './store';
 export {
