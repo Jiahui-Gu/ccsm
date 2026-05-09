@@ -274,6 +274,8 @@ export class TunnelClient {
       return;
     }
     try {
+      const r38SendBytes = typeof data === 'string' ? data.length : data.byteLength;
+      console.error('[r38-tunnel-tx] state=' + this.state + ' bytes=' + r38SendBytes);
       this.ws.send(data);
     } catch (err) {
       console.warn('[ccsm/tunnel] send error:', (err as Error).message);

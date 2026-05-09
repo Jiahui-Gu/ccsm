@@ -323,9 +323,21 @@ export function createRuntimeRegistry(opts: RuntimeRegistryOptions): RuntimeRegi
     });
     runtime.set(sid, rt);
 
+    console.error('[r38-spawn-armed] sid=' + sid + ' armed_at=' + Date.now());
+    const r38Started = Date.now();
+    const r38NoByteTimer = setInterval(() => {
+      if (rt.outputSeq === 0) {
+        console.error('[r38-still-silent] sid=' + sid + ' elapsed_ms=' + (Date.now() - r38Started) + ' subs=' + rt.subscribers.size);
+      } else {
+        clearInterval(r38NoByteTimer);
+      }
+    }, 2000);
+    r38NoByteTimer.unref();
+
     pty.onData((data) => {
       const payload = Buffer.from(data, 'utf8');
       const payloadView = new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength);
+      console.error('[r38-pty-data] sid=' + sid + ' bytes=' + payloadView.byteLength + ' subs=' + rt.subscribers.size + ' first32hex=' + Buffer.from(payloadView.subarray(0, 32)).toString('hex'));
       rt.outputSeq = (rt.outputSeq + 1) >>> 0;
       rt.ring.append(rt.outputSeq, payloadView);
       const frame = encodeFrame({
