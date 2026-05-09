@@ -2,6 +2,19 @@ name = "ccsm-worker"
 main = "src/index.ts"
 compatibility_date = "2026-01-01"
 
+# S4-T5 (Task #136): auth mode toggle. `legacy` keeps the S3-era
+# token-based flow with a single shared TunnelDO keyed by `'default'` —
+# what production runs today and what `npm run smoke` exercises. `jwt`
+# enforces JWT verification on /ws/*, /tunnel/*, /api/* and /token, and
+# routes each user into a per-user TunnelDO id (`user:<github_id>`).
+#
+# Production rollout: deploy with `legacy`, then flip to `jwt` (via
+# `wrangler deploy --var CCSM_AUTH_MODE:jwt` or by editing this file) once
+# the SPA sign-in UI (T7/T8) is shipped and propagating JWTs on the
+# WebSocket subprotocol / Authorization header.
+[vars]
+CCSM_AUTH_MODE = "legacy"
+
 # S4 (Task #113): GitHub OAuth App credentials + JWT signing keys.
 # Set in production via:
 #   wrangler secret put GITHUB_OAUTH_CLIENT_ID
