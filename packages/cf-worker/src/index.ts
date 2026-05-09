@@ -49,7 +49,17 @@ export default {
       const stub = env.TUNNEL.get(id);
       // R-17 log #12 (Task #45): record HTTP-mux route entry into the DO stub.
       console.log('[worker] route ' + url.pathname + ' upgrade=' + isUpgrade);
-      return stub.fetch(req);
+      // R-28 (Task #85): /token 502 取证 — log each /token request entry +
+      // upstream response status, including method + the cf-ray + the
+      // request id from cf headers so we can correlate with the DO log.
+      const r28Method = req.method;
+      const r28Cf = req.headers.get('cf-ray') ?? '-';
+      const r28Ua = (req.headers.get('user-agent') ?? '-').slice(0, 32);
+      console.log('[r28][worker] enter path=' + url.pathname + ' method=' + r28Method + ' cf-ray=' + r28Cf + ' ua=' + r28Ua);
+      const r28Started = Date.now();
+      const r28Res = await stub.fetch(req);
+      console.log('[r28][worker] exit path=' + url.pathname + ' status=' + r28Res.status + ' dur_ms=' + (Date.now() - r28Started) + ' cf-ray=' + r28Cf);
+      return r28Res;
     }
 
     return new Response('Not Found', { status: 404 });
