@@ -8,6 +8,20 @@ export { TunnelDO } from './tunnel-do';
 // dispatch into UserDO are introduced in T5 — this is a binding-only export.
 export { UserDO } from './auth/userDO';
 
+import { signJwt, verifyJwt } from './auth/jwt';
+
+// Task #127 (POC, temporary): typed view of the 4 production secrets the user
+// already `wrangler secret put`-ed under their NEW names (`GITHUB_OAUTH_*`,
+// not the older `GITHUB_APP_*` interface in auth/bindings.ts — rename is
+// tracked by Task #125, intentionally NOT touched here to avoid race). This
+// inline type is scoped to the debug endpoints below; AuthEnv stays as-is.
+interface SecretsPocEnv {
+  GITHUB_OAUTH_CLIENT_ID?: string;
+  GITHUB_OAUTH_CLIENT_SECRET?: string;
+  JWT_SIGNING_KEY?: string;
+  JWT_REFRESH_SIGNING_KEY?: string;
+}
+
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
@@ -24,6 +38,65 @@ export default {
     // a stuck listener.
     if (url.pathname === '/health') {
       return new Response('ok\n', { status: 200 });
+    }
+
+    // Task #127 (POC, temporary — remove after verification): debug endpoints
+    // to confirm (a) the 4 production secrets the user `wrangler secret put`-ed
+    // are reachable inside the deployed worker, and (b) the S4-T2 JWT helpers
+    // round-trip sign+verify under workerd's real SubtleCrypto. Both endpoints
+    // are read-only and never expose full secret values — only booleans,
+    // length, and a short prefix of the (public) Client ID. To be deleted
+    // along with this comment block once production verification is done.
+    if (url.pathname === '/api/debug/secrets-poc') {
+      const e = env as Env & SecretsPocEnv;
+      return Response.json({
+        has_client_id: !!e.GITHUB_OAUTH_CLIENT_ID,
+        client_id_prefix: e.GITHUB_OAUTH_CLIENT_ID?.slice(0, 6) ?? null,
+        has_client_secret: !!e.GITHUB_OAUTH_CLIENT_SECRET,
+        client_secret_length: e.GITHUB_OAUTH_CLIENT_SECRET?.length ?? 0,
+        has_jwt_key: !!e.JWT_SIGNING_KEY,
+        jwt_key_length: e.JWT_SIGNING_KEY?.length ?? 0,
+        has_refresh_key: !!e.JWT_REFRESH_SIGNING_KEY,
+        refresh_key_length: e.JWT_REFRESH_SIGNING_KEY?.length ?? 0,
+      });
+    }
+
+    if (url.pathname === '/api/debug/jwt-poc') {
+      const e = env as Env & SecretsPocEnv;
+      const jwtKey = e.JWT_SIGNING_KEY;
+      if (!jwtKey) {
+        return Response.json(
+          { error: 'JWT_SIGNING_KEY not bound' },
+          { status: 500 },
+        );
+      }
+      const nowSec = Math.floor(Date.now() / 1000);
+      const claims = {
+        sub: 'poc-user',
+        login: 'poc',
+        exp: nowSec + 60,
+        iat: nowSec,
+        kind: 'web' as const,
+      };
+      try {
+        const token = await signJwt(claims, jwtKey);
+        const verified = await verifyJwt<typeof claims>(token, jwtKey);
+        return Response.json({
+          sign_ok: !!token,
+          token_length: token.length,
+          verify_ok: !!verified,
+          verified_sub: verified?.sub ?? null,
+        });
+      } catch (err) {
+        return Response.json(
+          {
+            sign_ok: false,
+            verify_ok: false,
+            error: err instanceof Error ? err.message : String(err),
+          },
+          { status: 500 },
+        );
+      }
     }
 
     if (
