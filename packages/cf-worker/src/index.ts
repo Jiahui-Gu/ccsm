@@ -1,12 +1,23 @@
 export interface Env {
   TUNNEL: DurableObjectNamespace;
+  // S4-T3 (Task #140): the auth subsystem (web OAuth + UserDO) needs these.
+  // Augmented shape is `AuthEnv` in `./auth/bindings`; we keep the names
+  // here so the worker fetch handler can pass `env` into `dispatchAuth`
+  // without an explicit cast. They are populated by wrangler secret in prod
+  // and by `.dev.vars` locally — see `.dev.vars.example`.
+  GITHUB_OAUTH_CLIENT_ID: string;
+  GITHUB_OAUTH_CLIENT_SECRET: string;
+  JWT_SIGNING_KEY: string;
+  JWT_REFRESH_SIGNING_KEY: string;
+  USER_DO: DurableObjectNamespace;
 }
 
 export { TunnelDO } from './tunnel-do';
 // S4-T2 (Task #121): UserDO is bound in wrangler.toml so it must be re-exported
-// from the worker entrypoint for the runtime to resolve the class. Routes that
-// dispatch into UserDO are introduced in T5 — this is a binding-only export.
+// from the worker entrypoint for the runtime to resolve the class.
 export { UserDO } from './auth/userDO';
+
+import { dispatchAuth } from './auth/webOauth';
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
@@ -24,6 +35,17 @@ export default {
     // a stuck listener.
     if (url.pathname === '/health') {
       return new Response('ok\n', { status: 200 });
+    }
+
+    // S4-T3 (Task #140): browser OAuth + refresh + logout. These run in the
+    // Worker itself (NOT muxed through TunnelDO) because they talk to GitHub
+    // directly and read/write UserDO. Routing them before the TunnelDO
+    // /api/* branch ensures /api/auth/* never reaches the daemon path.
+    if (url.pathname.startsWith('/api/auth/')) {
+      const authRes = await dispatchAuth(req, env);
+      if (authRes !== null) return authRes;
+      // Path under /api/auth/ but not ours (e.g. wrong method) → 404.
+      return new Response('Not Found', { status: 404 });
     }
 
     if (

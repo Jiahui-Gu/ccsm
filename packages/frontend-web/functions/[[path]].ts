@@ -53,6 +53,11 @@ export const onRequest: PagesFunction<Env> = async (ctx) => {
     url.pathname === '/ws/default' ||
     url.pathname === '/tunnel/default' ||
     url.pathname === '/token' ||
+    // S4-T3 (Task #140): browser OAuth (login/callback/refresh/logout) lives
+    // under /api/auth/* in the Worker. The existing `/api/*` prefix already
+    // matches it, but we list it explicitly for grep-ability — the Worker
+    // routes /api/auth/* to its OAuth handlers before the TunnelDO mux.
+    url.pathname.startsWith('/api/auth/') ||
     url.pathname.startsWith('/api/')
   ) {
     // R-17 log #7 (Task #45): proxy entry — pathname + upgrade hint.
