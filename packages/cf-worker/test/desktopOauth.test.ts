@@ -263,7 +263,7 @@ describe('handleDesktopStart', () => {
     expect(state).toMatch(/^[0-9a-f]{64}$/);
     expect(u.searchParams.get('scope')).toBe('read:user');
     expect(u.searchParams.get('redirect_uri')).toBe(
-      'https://example.com/oauth/desktop/cb',
+      'https://example.com/oauth/desktop/cb/',
     );
     const challenge = u.searchParams.get('code_challenge')!;
     // base64url, no padding, length 43 for SHA-256.
@@ -393,7 +393,7 @@ describe('handleDesktopExchange', () => {
     // PKCE verifier was forwarded; redirect_uri matched start; client_secret
     // present (GitHub OAuth Apps require it even with PKCE).
     expect(capturedVerifier).toBe(expectedVerifier);
-    expect(capturedRedirect).toBe('https://example.com/oauth/desktop/cb');
+    expect(capturedRedirect).toBe('https://example.com/oauth/desktop/cb/');
     expect(capturedClientSecret).toBe('test-client-secret');
 
     // pkce row consumed (one-shot use).

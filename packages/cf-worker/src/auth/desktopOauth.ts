@@ -62,7 +62,14 @@ const GH_USER_URL = 'https://api.github.com/user';
 
 const TUNNEL_JWT_TTL_SEC = 60 * 60 * 24; // 24h, mirrors deviceFlow
 const PKCE_STATE_TTL_SEC = 5 * 60; // 5 minutes — short by design.
-const DESKTOP_CALLBACK_PATH = '/oauth/desktop/cb';
+// R-53 (Task #175): trailing slash matters. Cloudflare Workers Static
+// Assets serves directory index files (`oauth/desktop/cb/index.html`) by
+// 307-redirecting `/oauth/desktop/cb` → `/oauth/desktop/cb/` (with the
+// query string preserved). To avoid the redirect hop on every callback
+// (and to keep the redirect_uri stable on both sides), we standardise on
+// the trailing-slash form. The GitHub OAuth App callback URL must be
+// configured with a prefix that allows `/oauth/desktop/cb/`.
+const DESKTOP_CALLBACK_PATH = '/oauth/desktop/cb/';
 const DESKTOP_EXCHANGE_PATH = '/api/auth/desktop/exchange';
 
 function loggerFor(req: Request): Logger {
