@@ -69,8 +69,6 @@ export function PhaseSwitch() {
     case 'notSpawned':
     case 'spawning':
     case 'starting':
-    case 'tunnelDisconnected':
-    case 'tunnelConnected':
       return <DaemonStatusOverlay phase={phase} variant="info" />;
     case 'spawnFailed':
     case 'exited':

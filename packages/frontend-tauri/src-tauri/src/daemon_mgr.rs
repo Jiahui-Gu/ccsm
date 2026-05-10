@@ -21,7 +21,7 @@ use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout};
 
 use crate::job_object::JobObject;
-use crate::daemon_state::{next_backoff, DaemonPhase, DaemonStateStore};
+use crate::daemon_state::{next_backoff, DaemonPhase, DaemonStateStore, TunnelState};
 
 #[derive(Default)]
 pub struct DaemonState {
@@ -418,29 +418,23 @@ async fn run_cycle(app: &AppHandle, kill_rx: &mut mpsc::Receiver<()>) -> CycleOu
 
     // stderr forwarder — surfaces daemon log lines + sniffs tunnel state
     // markers. Lives only as long as the stderr pipe (closes on child exit).
+    //
+    // R-50 (Task #164): tunnel state is now a sub-state of `Ready`, not a
+    // top-level phase. We call `set_tunnel_state` which (a) mutates Ready in
+    // place when the handshake has already landed, or (b) stashes the value
+    // when stderr races ahead of the handshake parse — preventing the bug
+    // where a top-level `TunnelConnected` emit overwrote `Ready` and froze
+    // the SPA on the "Tunnel connected, waiting…" overlay.
     let app_for_stderr = app.clone();
-    let token_for_stderr = token.clone();
     tokio::spawn(async move {
         let store: State<DaemonStateStore> = app_for_stderr.state();
         let mut reader = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = reader.next_line().await {
             eprintln!("[daemon stderr] {line}");
             if line.contains("[ccsm] tunnel: connected") {
-                store.set_and_emit(
-                    &app_for_stderr,
-                    DaemonPhase::TunnelConnected {
-                        port: 9876,
-                        token: token_for_stderr.clone(),
-                    },
-                );
+                store.set_tunnel_state(&app_for_stderr, TunnelState::Connected);
             } else if line.contains("[ccsm] tunnel: disconnected") {
-                store.set_and_emit(
-                    &app_for_stderr,
-                    DaemonPhase::TunnelDisconnected {
-                        port: 9876,
-                        token: token_for_stderr.clone(),
-                    },
-                );
+                store.set_tunnel_state(&app_for_stderr, TunnelState::Disconnected);
             }
             let _ = app_for_stderr.emit("daemon-stderr", line);
         }
@@ -465,6 +459,12 @@ async fn run_cycle(app: &AppHandle, kill_rx: &mut mpsc::Receiver<()>) -> CycleOu
                     port: hs.port,
                     token: hs.token.clone(),
                     identity: None, // S4-T8 will populate after auth.
+                    // R-50 (Task #164): tunnel sub-state defaults to Pending
+                    // here. If the stderr observer already saw "tunnel:
+                    // connected" before this commit, the store's
+                    // `fold_pending_tunnel` step swaps Pending out for the
+                    // stashed value automatically.
+                    tunnel: TunnelState::Pending,
                 },
             );
             let _ = app.emit("daemon-ready", hs);

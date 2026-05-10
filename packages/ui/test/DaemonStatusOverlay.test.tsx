@@ -24,8 +24,6 @@ describe('DaemonStatusOverlay', () => {
     ['notSpawned', 'Starting daemon'],
     ['spawning', 'Starting daemon'],
     ['starting', 'Starting daemon'],
-    ['tunnelDisconnected', 'Connecting to cloud'],
-    ['tunnelConnected', 'Tunnel connected'],
   ])('renders spinner + status text for %s', (phaseName, fragment) => {
     render(<DaemonStatusOverlay phase={{ phase: phaseName }} />);
     const root = screen.getByTestId('daemon-status-overlay');
@@ -35,6 +33,30 @@ describe('DaemonStatusOverlay', () => {
     const loading = screen.getByTestId('daemon-status-overlay-loading');
     expect(loading.textContent ?? '').toContain(fragment);
   });
+
+  // --- R-50 (Task #164): Ready collapses regardless of tunnel sub-state ---
+
+  it.each(['pending', 'connected', 'disconnected'] as const)(
+    'returns null when phase=ready with tunnel=%s (overlay must not freeze SPA)',
+    (tunnel) => {
+      // Regression guard: previously a stderr-driven `tunnelConnected` emit
+      // overwrote `Ready` and kept the overlay mounted on
+      // "Tunnel connected, waiting…". Tunnel state is now a Ready sub-state;
+      // the overlay must collapse for every tunnel value.
+      const { container } = render(
+        <DaemonStatusOverlay
+          phase={{ phase: 'ready', tunnel } as { phase: string }}
+        />,
+      );
+      expect(
+        container.querySelector('[data-testid="daemon-status-overlay"]'),
+      ).toBeNull();
+      expect(container.firstChild).toBeNull();
+      // And the deleted overlay text must never render under Ready.
+      expect(container.textContent ?? '').not.toContain('Tunnel connected, waiting');
+      expect(container.textContent ?? '').not.toContain('Starting daemon');
+    },
+  );
 
   // --- Ready collapses to null --------------------------------------------
 

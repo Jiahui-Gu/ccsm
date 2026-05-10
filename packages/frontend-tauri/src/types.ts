@@ -10,16 +10,30 @@
 //
 // The `DaemonStateEvent` envelope flattens the variant payload alongside
 // `generation`, so a `Ready` event arrives on the wire as:
-//   { generation: 7, phase: "ready", port: 9876, token: "...", identity: ... }
+//   { generation: 7, phase: "ready", port: 9876, token: "...",
+//     identity: ..., tunnel: "pending" | "connected" | "disconnected" }
 // and a `SpawnFailed` event as:
 //   { generation: 3, phase: "spawnFailed", reason: "...", retryInMs: 1000 }
 //
 // Field names within payloads are also camelCase (`retryInMs`, `verificationUri`,
-// `userCode`, `expiresAt`, `userId`).
+// `userCode`, `expiresAt`, `userId`, `tunnel`).
+//
+// R-50 (Task #164): tunnel state is now a sub-state of `Ready`. The previous
+// top-level `tunnelConnected` / `tunnelDisconnected` variants were removed
+// because they were causing a stderr-vs-handshake race to overwrite Ready
+// (freezing the SPA on the "Tunnel connected, waiting…" overlay). Tunnel
+// up/down is orthogonal to local PTY/HTTP readiness, so it lives inside
+// Ready as `tunnel: TunnelState`.
 
 export interface Identity {
   userId: string;
 }
+
+/**
+ * Cloud tunnel sub-state inside `phase=ready`. Mirrors the Rust
+ * `TunnelState` enum (camelCase serde).
+ */
+export type TunnelState = 'pending' | 'connected' | 'disconnected';
 
 export type DaemonPhase =
   | { phase: 'notSpawned' }
@@ -33,9 +47,13 @@ export type DaemonPhase =
       expiresAt: number;
     }
   | { phase: 'authFailed'; reason: string }
-  | { phase: 'tunnelDisconnected'; port: number; token: string }
-  | { phase: 'tunnelConnected'; port: number; token: string }
-  | { phase: 'ready'; port: number; token: string; identity: Identity | null }
+  | {
+      phase: 'ready';
+      port: number;
+      token: string;
+      identity: Identity | null;
+      tunnel: TunnelState;
+    }
   | { phase: 'exited'; code: number | null; reason: string };
 
 /**
