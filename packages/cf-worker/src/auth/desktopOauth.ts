@@ -39,7 +39,7 @@
  * does not auto-expire).
  *
  * Redirect URI: `<auth_base>/oauth/desktop/cb`. v0.4 uses
- * `https://cc-sm.pages.dev/oauth/desktop/cb` in production, matching the
+ * `https://ccsm-worker.jiahuigu.workers.dev/oauth/desktop/cb` in production, matching the
  * GitHub OAuth App's prefix-allowed callback. The `auth_base` is derived
  * from the request URL so wrangler dev / cloud tunnel both resolve the same
  * way without baking in a hostname. R-53 keeps this URL stable so the GH
@@ -104,7 +104,7 @@ async function pkceChallengeS256(verifier: string): Promise<string> {
 
 /** Derive the auth base (origin) from the inbound request URL so we don't
  *  hard-code a host name. wrangler dev sees `http://127.0.0.1:8787`,
- *  production sees `https://cc-sm.pages.dev`. */
+ *  production sees `https://ccsm-worker.jiahuigu.workers.dev`. */
 function authOrigin(req: Request): string {
   return new URL(req.url).origin;
 }
@@ -232,7 +232,7 @@ export async function handleDesktopExchange(
   let body: ExchangeRequestBody;
   try {
     body = (await req.json()) as ExchangeRequestBody;
-  } catch (_err) {
+  } catch {
     log.warn('oauth.desktop.exchange_fail', { reason: 'malformed_json' });
     return new Response('malformed JSON body', { status: 400 });
   }

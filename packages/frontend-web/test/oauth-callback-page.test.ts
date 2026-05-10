@@ -59,16 +59,40 @@ async function runPage(opts: {
     .replace(/<\/html>[\s\S]*$/i, '');
   document.documentElement.innerHTML = stripped;
 
+  // jsdom's `Location.prototype.replace` is non-configurable, so neither
+  // vi.spyOn nor Object.defineProperty(location, 'replace', ...) work. We
+  // replace the entire `window.location` with a plain mock object that
+  // captures `replace()` calls and proxies `search` to a mutable string.
+  // window-level properties ARE configurable in jsdom, so this works.
   const replaceCalls: string[] = [];
-  vi.spyOn(window.location, 'replace').mockImplementation(
-    (url: string | URL) => {
+  const mockLocation = {
+    href: 'http://127.0.0.1/oauth/desktop/cb' + opts.search,
+    origin: 'http://127.0.0.1',
+    pathname: '/oauth/desktop/cb',
+    search: opts.search,
+    hash: '',
+    host: '127.0.0.1',
+    hostname: '127.0.0.1',
+    port: '',
+    protocol: 'http:',
+    replace(url: string | URL): void {
       replaceCalls.push(String(url));
     },
-  );
-
-  // Set the search via history.replaceState (jsdom backs location.search
-  // with the current URL; `location.search = ` is read-only here).
-  window.history.replaceState({}, '', '/oauth/desktop/cb' + opts.search);
+    assign(url: string | URL): void {
+      replaceCalls.push(String(url));
+    },
+    reload(): void {
+      /* no-op */
+    },
+    toString(): string {
+      return this.href;
+    },
+  };
+  Object.defineProperty(window, 'location', {
+    configurable: true,
+    writable: true,
+    value: mockLocation,
+  });
 
   // Stub fetch on both window and global so the script (running in indirect
   // eval) finds it.
@@ -81,7 +105,17 @@ async function runPage(opts: {
   (0, eval)(script);
 
   // Let microtasks (fetch promise resolution + .then chain) flush.
-  for (let i = 0; i < 6; i++) await Promise.resolve();
+  // Response.json() returns a promise so we need several flushes.
+  for (let i = 0; i < 20; i++) {
+    await Promise.resolve();
+    // If fake timers are running, advance them so any awaited
+    // setTimeout(0)-ish microtask scheduler also progresses.
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+    } catch (_e) {
+      /* fake timers not active in this test */
+    }
+  }
 
   return { replaceCalls, document };
 }
@@ -96,11 +130,9 @@ describe('static oauth callback page', () => {
   });
 
   it('on success: POSTs code+state to /api/auth/desktop/exchange and location.replaces into ccsm://oauth?token=...', async () => {
+    const fetchCalls: Array<{ input: string; init?: RequestInit }> = [];
     const fetchSpy = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      expect(String(input)).toBe('/api/auth/desktop/exchange');
-      expect(init?.method).toBe('POST');
-      const body = JSON.parse(init?.body as string) as { code: string; state: string };
-      expect(body).toEqual({ code: 'gh-code-123', state: 'state-abc' });
+      fetchCalls.push({ input: String(input), init });
       return new Response(
         JSON.stringify({
           tunnel_jwt: 'jwt.value.here',
@@ -115,7 +147,15 @@ describe('static oauth callback page', () => {
       fetchImpl: fetchSpy as unknown as typeof globalThis.fetch,
     });
 
-    expect(fetchSpy).toHaveBeenCalledOnce();
+    expect(fetchCalls).toHaveLength(1);
+    expect(fetchCalls[0]!.input).toBe('/api/auth/desktop/exchange');
+    expect(fetchCalls[0]!.init?.method).toBe('POST');
+    const body = JSON.parse(fetchCalls[0]!.init?.body as string) as {
+      code: string;
+      state: string;
+    };
+    expect(body).toEqual({ code: 'gh-code-123', state: 'state-abc' });
+
     expect(replaceCalls).toHaveLength(1);
     const target = replaceCalls[0]!;
     expect(target.startsWith('ccsm://oauth?')).toBe(true);
@@ -200,8 +240,11 @@ describe('static oauth callback page', () => {
 
   it('page HTML is self-contained (no <script src>, no React, no module import)', () => {
     const html = readPage();
-    expect(html).not.toMatch(/<script[^>]*\bsrc=/);
-    expect(html).not.toMatch(/import\s+.*from/);
-    expect(html).not.toMatch(/\breact\b/i);
+    // Strip HTML comments before scanning so our own "no React" prose
+    // doesn't trip the regex.
+    const stripped = html.replace(/<!--[\s\S]*?-->/g, '');
+    expect(stripped).not.toMatch(/<script[^>]*\bsrc=/);
+    expect(stripped).not.toMatch(/import\s+.*from/);
+    expect(stripped).not.toMatch(/\breact\b/i);
   });
 });

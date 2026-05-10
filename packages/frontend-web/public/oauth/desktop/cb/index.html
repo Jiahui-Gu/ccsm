@@ -10,7 +10,7 @@
   race for `/oauth/desktop/cb` and short-circuited before the Worker handler
   ran, breaking the callback for desktop sign-in. R-53 splits the work:
 
-    - this static page is served from `cc-sm.pages.dev/oauth/desktop/cb`
+    - this static page is served from `ccsm-worker.jiahuigu.workers.dev/oauth/desktop/cb`
       directly out of `frontend-web/dist`. It contains no token logic; it
       just receives `?code=&state=` from GitHub and POSTs them to the
       Worker.
