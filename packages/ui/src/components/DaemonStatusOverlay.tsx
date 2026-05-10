@@ -7,14 +7,20 @@
 //
 // Phase coverage (matches frontend-tauri DaemonPhase discriminator):
 //   notSpawned / spawning / starting       → spinner + "Starting daemon..."
-//   tunnelDisconnected                     → spinner + "Connecting to cloud..."
-//   tunnelConnected                        → spinner + "Tunnel connected..."
 //   ready                                  → null (the real app takes over)
 //   spawnFailed { reason, retryInMs? }     → red banner + retry countdown
 //   exited { code, reason }                → red banner
 //   awaitingAuth { verificationUri,        → auth panel + Open browser btn
 //                  userCode, expiresAt? }
 //   authFailed { reason }                  → red banner + Try again btn
+//
+// R-50 (Task #164): the previous top-level `tunnelConnected` /
+// `tunnelDisconnected` cases were removed. Tunnel state is now a sub-state
+// of `ready` (see types.ts `TunnelState`), so once the daemon is Ready the
+// overlay collapses regardless of tunnel up/down — preventing the regression
+// where a stderr-driven tunnel emit froze the SPA on
+// "Tunnel connected, waiting…". Tunnel sub-state UI (e.g. a status-bar icon)
+// is owned by the main app shell, not this overlay.
 //
 // The `View logs`, `Open browser`, and `Try again` buttons are wired to
 // console.log only — real IPC lands in S4-T8.
@@ -257,12 +263,6 @@ export function DaemonStatusOverlay({
     case 'spawning':
     case 'starting':
       body = <StartingBody message="Starting daemon…" />;
-      break;
-    case 'tunnelDisconnected':
-      body = <StartingBody message="Connecting to cloud…" />;
-      break;
-    case 'tunnelConnected':
-      body = <StartingBody message="Tunnel connected, waiting…" />;
       break;
     case 'spawnFailed':
       body = (

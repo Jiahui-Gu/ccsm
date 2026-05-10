@@ -90,6 +90,16 @@ vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn().mockResolvedValue(() => undefined),
 }));
 
+// LoginButton's mount effect calls Tauri `invoke('get_oauth_login')` which
+// throws in jsdom because `window.__TAURI_INTERNALS__` is undefined. Stub the
+// component so tests that render the Ready branch (which mounts AppContent →
+// AppShell → sidebar slot containing <LoginButton />) don't surface unhandled
+// rejections from a side-effect that is irrelevant to the routing contract
+// under test.
+vi.mock('../src/auth/LoginButton', () => ({
+  LoginButton: () => <div data-testid="stub-login-button" />,
+}));
+
 // --- helpers -------------------------------------------------------------
 
 function renderWithPhase(payload: DaemonStatePayload) {
@@ -129,32 +139,41 @@ describe('PhaseSwitch (Task #138 / #112-T5)', () => {
   );
 
   it('renders DaemonStatusOverlay (info) for tunnelDisconnected', () => {
+    // R-50 (Task #164) regression guard: previously this case rendered an
+    // overlay that froze the SPA. Now `tunnelDisconnected` is no longer a
+    // top-level phase — it lives inside `ready` as `tunnel: 'disconnected'`,
+    // and the overlay must collapse so the main app stays mounted while the
+    // tunnel reconnects in the background.
     renderWithPhase({
       generation: 2,
-      phase: 'tunnelDisconnected',
+      phase: 'ready',
       port: 9876,
       token: 't',
+      identity: null,
+      tunnel: 'disconnected',
     });
-    const overlay = screen.getByTestId('daemon-status-overlay');
-    expect(overlay.getAttribute('data-variant')).toBe('info');
-    expect(
-      screen.getByTestId('daemon-status-overlay-loading').textContent ?? '',
-    ).toContain('Connecting to cloud');
-    expect(screen.queryByTestId('terminal-pane')).toBeNull();
+    expect(screen.queryByTestId('daemon-status-overlay')).toBeNull();
+    expect(screen.getByTestId('runtime-provider')).toBeDefined();
   });
 
   it('renders DaemonStatusOverlay (info) for tunnelConnected', () => {
+    // R-50 regression guard: handshake-then-tunnel:connected sequence used to
+    // overwrite Ready with a top-level TunnelConnected, freezing the SPA on
+    // the "Tunnel connected, waiting…" overlay. The fix moves tunnel to a
+    // Ready sub-state, so the overlay must NEVER show that text once Ready
+    // has landed (regardless of tunnel value).
     renderWithPhase({
       generation: 3,
-      phase: 'tunnelConnected',
+      phase: 'ready',
       port: 9876,
       token: 't',
+      identity: null,
+      tunnel: 'connected',
     });
-    const overlay = screen.getByTestId('daemon-status-overlay');
-    expect(overlay.getAttribute('data-variant')).toBe('info');
-    expect(
-      screen.getByTestId('daemon-status-overlay-loading').textContent ?? '',
-    ).toContain('Tunnel connected');
+    expect(screen.queryByTestId('daemon-status-overlay')).toBeNull();
+    expect(screen.queryByText(/Tunnel connected, waiting/)).toBeNull();
+    expect(screen.queryByText(/Starting daemon/)).toBeNull();
+    expect(screen.getByTestId('runtime-provider')).toBeDefined();
   });
 
   // Failure phases — error variant + reason text surfaced (this is the
@@ -231,6 +250,7 @@ describe('PhaseSwitch (Task #138 / #112-T5)', () => {
       port: 9876,
       token: 'tok-xyz',
       identity: { userId: 'u1' },
+      tunnel: 'pending',
     });
     expect(screen.queryByTestId('daemon-status-overlay')).toBeNull();
     const rp = screen.getByTestId('runtime-provider');
@@ -271,6 +291,7 @@ describe('PhaseSwitch (Task #138 / #112-T5)', () => {
           port: 4321,
           token: 'tok2',
           identity: null,
+          tunnel: 'pending',
         }}
       >
         <PhaseSwitch />
