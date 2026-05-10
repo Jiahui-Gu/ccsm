@@ -70,14 +70,20 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
+      # Task #172 [R-52 bug-infra]: build workspace deps BEFORE typecheck.
+      # cf-worker imports @ccsm/shared (since R-48 sid envelope SoT moved to
+      # shared), and frontend-web depends on shared/core/ui. Without dist
+      # artifacts on disk, `tsc` resolving `@ccsm/shared` falls through to
+      # the source pnpm symlink whose `package.json#types` points at the
+      # *built* `.d.ts`, yielding `TS2307: Cannot find module '@ccsm/shared'`.
+      # ci.yml already builds these before its `pnpm -r typecheck`; this
+      # workflow had the build step AFTER typecheck — fixed below.
+      # See gh run 25610689776..25619387306 (5 consecutive failures from R-48).
+      - name: Build workspace deps (shared + core + ui — required by cf-worker typecheck and frontend-web build)
+        run: pnpm -F @ccsm/shared build && pnpm -F @ccsm/core build && pnpm -F @ccsm/ui build
+
       - name: Typecheck cf-worker
         run: pnpm -F @ccsm/cf-worker typecheck
-
-      # Task #154: build the SPA before `wrangler deploy` so the
-      # `[assets] directory = "../frontend-web/dist"` binding has content
-      # to upload alongside the Worker script.
-      - name: Build workspace deps (shared + core + ui required by frontend-web)
-        run: pnpm -F @ccsm/shared build && pnpm -F @ccsm/core build && pnpm -F @ccsm/ui build
 
       - name: Build frontend-web (SPA assets bundled into the Worker deploy)
         run: pnpm -F @ccsm/frontend-web build
