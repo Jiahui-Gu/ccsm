@@ -1,9 +1,13 @@
 /**
- * R-51b (Task #168): cf-worker desktop OAuth (PKCE) flow handlers.
+ * R-51b (Task #168) + R-53 (Task #175): cf-worker desktop OAuth (PKCE) flow
+ * handlers.
  *
  * Tauri shells use this path instead of device flow when the OS supports a
- * `ccsm://` deep link (R-51c will demote device flow to a fallback UI). The
- * round-trip:
+ * `ccsm://` deep link. R-53 split the callback handling so Cloudflare Pages
+ * legacy routing (which can return 308 on the bare /oauth/desktop/cb path
+ * before the Worker ever sees it) cannot break sign-in.
+ *
+ * Round-trip:
  *
  *   POST /api/auth/desktop/start
  *     — mint random `state` + PKCE `code_verifier` + `code_challenge` (S256),
@@ -11,41 +15,41 @@
  *       role (`pkce:state:<state>`), return `{auth_url}` containing the
  *       GitHub authorize URL with state + code_challenge + redirect_uri.
  *
- *   GET  /oauth/desktop/cb?code=&state=
+ *   GET  /oauth/desktop/cb?code=&state=  (R-53: STATIC — not handled here)
+ *     — served as a static HTML page out of `frontend-web/dist`. The page
+ *       extracts code + state from the URL and POSTs them to the exchange
+ *       endpoint below. See
+ *       `packages/frontend-web/public/oauth/desktop/cb/index.html`.
+ *
+ *   POST /api/auth/desktop/exchange  body { code, state }
  *     — verify state (UserDO hit + age <5min), exchange `code` + the stored
- *       `code_verifier` against GitHub /access_token (PKCE: client side does
- *       NOT need a client_secret — but GitHub OAuth Apps still demand it so
- *       we send both, GitHub still validates the verifier), fetch user info,
- *       run shared linker (R-51a), mint tunnel JWT + refresh token, render an
- *       HTML page that immediately redirects to
- *       `ccsm://oauth?token=<jwt>&refresh=<refresh>&state=<state>` with a
- *       fallback button + copy.
+ *       `code_verifier` against GitHub /access_token (PKCE), fetch user
+ *       info, run shared linker (R-51a), mint tunnel JWT + refresh token,
+ *       return JSON { tunnel_jwt, refresh_token }. The static page composes
+ *       the `ccsm://oauth?...` deep link from the response and triggers
+ *       location.replace.
  *
  * Why PKCE in addition to client_secret: although the GitHub Web flow does
  * not strictly require PKCE, it accepts the PKCE verifier and is the recipe
  * that lets us be CSRF-tight even with the public redirect_uri scheme. The
- * stored `code_verifier` ties the started authorize to the callback.
+ * stored `code_verifier` ties the started authorize to the exchange.
  *
  * State row TTL: 5 minutes. After expiry the entry is treated as missing and
- * the callback returns 400 even if the row is still on disk (UserDO storage
+ * the exchange returns 400 even if the row is still on disk (UserDO storage
  * does not auto-expire).
  *
  * Redirect URI: `<auth_base>/oauth/desktop/cb`. v0.4 uses
  * `https://cc-sm.pages.dev/oauth/desktop/cb` in production, matching the
  * GitHub OAuth App's prefix-allowed callback. The `auth_base` is derived
  * from the request URL so wrangler dev / cloud tunnel both resolve the same
- * way without baking in a hostname.
+ * way without baking in a hostname. R-53 keeps this URL stable so the GH
+ * OAuth App configuration does not need to change.
  *
- * State storage role (added to UserDO in this PR):
+ * State storage role:
  *   - idFromName('pkce:state:<state>') → { code_verifier, created_at }
  *
  * Logger event prefix: `oauth.desktop.*` (start_ok / start_fail /
- * callback_ok / callback_fail). Token-bearing fields are dropped by the
- * logger redactor (R-46) so the rendered URL never appears in logs.
- *
- * NOT in scope for this PR (R-51c):
- *   - Tauri renderer SPA UI changes
- *   - cf-worker deploy (left to R-51c end-to-end verification)
+ * exchange_ok / exchange_fail).
  */
 import type { AuthEnv } from './bindings';
 import { signJwt, type TunnelJwtClaims } from './jwt';
@@ -59,6 +63,7 @@ const GH_USER_URL = 'https://api.github.com/user';
 const TUNNEL_JWT_TTL_SEC = 60 * 60 * 24; // 24h, mirrors deviceFlow
 const PKCE_STATE_TTL_SEC = 5 * 60; // 5 minutes — short by design.
 const DESKTOP_CALLBACK_PATH = '/oauth/desktop/cb';
+const DESKTOP_EXCHANGE_PATH = '/api/auth/desktop/exchange';
 
 function loggerFor(req: Request): Logger {
   const requestId = req.headers.get('X-CCSM-Request-Id') ?? 'no-req-id';
@@ -134,7 +139,7 @@ async function takePkceState(
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`getPkceState http ${res.status}`);
   const row = (await res.json()) as PkceStateRow;
-  // One-shot use: clear immediately so a replayed callback cannot reuse the
+  // One-shot use: clear immediately so a replayed exchange cannot reuse the
   // verifier even if the GitHub /access_token call below fails.
   await stub.fetch(new Request('https://do/clearPkceState', { method: 'POST' }));
   return row;
@@ -143,7 +148,7 @@ async function takePkceState(
 /**
  * POST /api/auth/desktop/start — Tauri shell calls this before opening the
  * system browser. We mint state + verifier + challenge, persist (state →
- * verifier) for the callback, and return the GitHub authorize URL the shell
+ * verifier) for the exchange, and return the GitHub authorize URL the shell
  * should open via Shell.open.
  */
 export async function handleDesktopStart(
@@ -201,77 +206,40 @@ interface GithubUserResponse {
   email?: string | null;
 }
 
-/** Render the deep-link bounce page. Uses location.replace so the user does
- *  not see an intermediate URL in history; provides a manual button + copy
- *  in case the OS prompt was dismissed. The token bearing URL never lands
- *  in `Location:` (which CF logs); it lives in the inline script + button. */
-function renderBouncePage(deepLink: string): Response {
-  // We deliberately interpolate the token-bearing URL into the page body.
-  // It is one-shot (PKCE state has been cleared by takePkceState above) and
-  // never logged: cf-worker emits no log line containing the deep link.
-  const html = `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Signing in to ccsm-tauri</title>
-  <style>
-    body { font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
-           max-width: 480px; margin: 6rem auto; padding: 0 1rem; color: #222; }
-    h1 { font-size: 1.25rem; margin: 0 0 1rem; }
-    p { margin: 0 0 1rem; }
-    a.btn { display: inline-block; padding: 0.6rem 1rem; background: #1f2937;
-            color: #fff; text-decoration: none; border-radius: 6px;
-            font-weight: 600; }
-    a.btn:hover { background: #111827; }
-    .muted { color: #6b7280; font-size: 0.9rem; }
-  </style>
-</head>
-<body>
-  <h1>Sign-in successful</h1>
-  <p>Returning to the ccsm desktop app&hellip;</p>
-  <p><a id="open" class="btn" href="${escapeHtml(deepLink)}">Open ccsm desktop</a></p>
-  <p class="muted">If nothing happens, click the button above. You can close this tab afterwards.</p>
-  <script>
-    // Immediate handoff. location.replace avoids a back-button ghost.
-    location.replace(${JSON.stringify(deepLink)});
-  </script>
-</body>
-</html>`;
-  return new Response(html, {
-    status: 200,
-    headers: { 'content-type': 'text/html; charset=utf-8' },
-  });
+interface ExchangeRequestBody {
+  code?: unknown;
+  state?: unknown;
 }
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+interface ExchangeResponseBody {
+  tunnel_jwt: string;
+  refresh_token: string;
 }
 
 /**
- * GET /oauth/desktop/cb?code=&state= — desktop OAuth callback.
+ * POST /api/auth/desktop/exchange — desktop OAuth code exchange.
  *
- * On success renders an HTML page that location.replace()s into
- * `ccsm://oauth?token=<jwt>&refresh=<refresh_token>&state=<state>` so the
- * Tauri shell's deep-link listener picks it up. The Tauri side
- * (`auth.rs::handle_desktop_callback`) verifies `state` against an in-memory
- * map populated when `start_pkce_oauth` ran, then writes the creds file.
+ * Body: { code: string, state: string }. The static
+ * `/oauth/desktop/cb/index.html` page POSTs this after extracting the params
+ * GitHub put on the redirect URL.
  */
-export async function handleDesktopCallback(
+export async function handleDesktopExchange(
   req: Request,
   env: AuthEnv,
 ): Promise<Response> {
   const log = loggerFor(req);
-  const url = new URL(req.url);
-  const code = url.searchParams.get('code');
-  const state = url.searchParams.get('state');
+
+  let body: ExchangeRequestBody;
+  try {
+    body = (await req.json()) as ExchangeRequestBody;
+  } catch (_err) {
+    log.warn('oauth.desktop.exchange_fail', { reason: 'malformed_json' });
+    return new Response('malformed JSON body', { status: 400 });
+  }
+  const code = typeof body.code === 'string' ? body.code : '';
+  const state = typeof body.state === 'string' ? body.state : '';
   if (!code || !state) {
-    log.warn('oauth.desktop.callback_fail', {
+    log.warn('oauth.desktop.exchange_fail', {
       reason: 'missing_code_or_state',
     });
     return new Response('missing code or state', { status: 400 });
@@ -281,14 +249,14 @@ export async function handleDesktopCallback(
   try {
     row = await takePkceState(env, state);
   } catch (err) {
-    log.error('oauth.desktop.callback_fail', {
+    log.error('oauth.desktop.exchange_fail', {
       reason: 'userdo_takepkce_failed',
       err: String(err),
     });
     return new Response('userDO takePkceState failed', { status: 500 });
   }
   if (row === null) {
-    log.warn('oauth.desktop.callback_fail', {
+    log.warn('oauth.desktop.exchange_fail', {
       reason: 'unknown_state',
       state_prefix: shortSub(state),
     });
@@ -296,7 +264,7 @@ export async function handleDesktopCallback(
   }
   const ageSec = Math.floor(Date.now() / 1000) - row.created_at;
   if (ageSec > PKCE_STATE_TTL_SEC) {
-    log.warn('oauth.desktop.callback_fail', {
+    log.warn('oauth.desktop.exchange_fail', {
       reason: 'state_expired',
       age_sec: ageSec,
     });
@@ -307,7 +275,7 @@ export async function handleDesktopCallback(
 
   // Exchange code → access_token, including code_verifier (PKCE). GitHub
   // OAuth Apps require client_secret too; PKCE is layered on top, providing
-  // proof that the callback caller is the same shell that opened the
+  // proof that the exchange caller is the same shell that opened the
   // authorize URL (verifier never leaves cf-worker storage).
   const tokenRes = await fetch(GH_TOKEN_URL, {
     method: 'POST',
@@ -324,7 +292,7 @@ export async function handleDesktopCallback(
     }).toString(),
   });
   if (!tokenRes.ok) {
-    log.warn('oauth.desktop.callback_fail', {
+    log.warn('oauth.desktop.exchange_fail', {
       reason: 'github_token_exchange_http_error',
       status: tokenRes.status,
     });
@@ -334,7 +302,7 @@ export async function handleDesktopCallback(
   if (!tokenJson.access_token) {
     // PKCE verifier mismatch shows up here as `error: bad_verification_code`
     // (or invalid_grant) — GitHub returns 200 with an error payload.
-    log.warn('oauth.desktop.callback_fail', {
+    log.warn('oauth.desktop.exchange_fail', {
       reason: 'github_token_exchange_rejected',
       gh_error: tokenJson.error ?? 'unknown',
     });
@@ -353,7 +321,7 @@ export async function handleDesktopCallback(
     },
   });
   if (!userRes.ok) {
-    log.warn('oauth.desktop.callback_fail', {
+    log.warn('oauth.desktop.exchange_fail', {
       reason: 'github_user_http_error',
       status: userRes.status,
     });
@@ -361,7 +329,7 @@ export async function handleDesktopCallback(
   }
   const userJson = (await userRes.json()) as GithubUserResponse;
   if (typeof userJson.id !== 'number' || typeof userJson.login !== 'string') {
-    log.warn('oauth.desktop.callback_fail', {
+    log.warn('oauth.desktop.exchange_fail', {
       reason: 'github_user_malformed',
     });
     return new Response('github user response malformed', { status: 502 });
@@ -382,14 +350,14 @@ export async function handleDesktopCallback(
     });
   } catch (err) {
     if (err instanceof MultipleAccountsError) {
-      log.warn('oauth.desktop.callback_fail', {
+      log.warn('oauth.desktop.exchange_fail', {
         reason: 'multiple_accounts',
         email_index_user_id: err.emailIndexUserId,
         identity_user_id: err.identityUserId,
       });
       return new Response('multiple-accounts', { status: 409 });
     }
-    log.error('oauth.desktop.callback_fail', {
+    log.error('oauth.desktop.exchange_fail', {
       reason: 'linker_failed',
       err: String(err),
     });
@@ -409,7 +377,7 @@ export async function handleDesktopCallback(
     }),
   );
   if (!setHashRes.ok) {
-    log.error('oauth.desktop.callback_fail', {
+    log.error('oauth.desktop.exchange_fail', {
       reason: 'userdo_settunnelrefreshhash_failed',
       status: setHashRes.status,
     });
@@ -430,33 +398,31 @@ export async function handleDesktopCallback(
   };
   const tunnelJwt = await signJwt(claims, env.JWT_REFRESH_SIGNING_KEY);
 
-  log.info('oauth.desktop.callback_ok', {
+  log.info('oauth.desktop.exchange_ok', {
     decision: linkResult.decision,
     login,
     sub_prefix: shortSub(userId),
     jti: claims.jti,
   });
 
-  // Compose the deep link. `state` is echoed back so the Tauri-side listener
-  // can verify it against the in-memory state minted at start_pkce_oauth
-  // and reject replays / cross-instance bounces.
-  const deepLink =
-    'ccsm://oauth?' +
-    new URLSearchParams({
-      token: tunnelJwt,
-      refresh: tunnelRefreshToken,
-      state,
-    }).toString();
-
-  return renderBouncePage(deepLink);
+  const body_out: ExchangeResponseBody = {
+    tunnel_jwt: tunnelJwt,
+    refresh_token: tunnelRefreshToken,
+  };
+  return Response.json(body_out);
 }
 
 /**
  * Top-level dispatch. Returns null when the path is not ours.
  *
- * Two prefixes:
+ * Two routes (R-53):
  *   POST /api/auth/desktop/start
- *   GET  /oauth/desktop/cb
+ *   POST /api/auth/desktop/exchange
+ *
+ * Note: `/oauth/desktop/cb` is no longer handled by the Worker — the static
+ * HTML page in `frontend-web/public/oauth/desktop/cb/index.html` serves it
+ * directly. wrangler.toml has been updated to remove `/oauth/desktop/cb`
+ * from `[assets].run_worker_first`.
  */
 export async function dispatchDesktop(
   req: Request,
@@ -467,8 +433,8 @@ export async function dispatchDesktop(
   if (req.method === 'POST' && path === '/api/auth/desktop/start') {
     return handleDesktopStart(req, env);
   }
-  if (req.method === 'GET' && path === DESKTOP_CALLBACK_PATH) {
-    return handleDesktopCallback(req, env);
+  if (req.method === 'POST' && path === DESKTOP_EXCHANGE_PATH) {
+    return handleDesktopExchange(req, env);
   }
   return null;
 }

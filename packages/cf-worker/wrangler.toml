@@ -2,6 +2,19 @@ name = "ccsm-worker"
 main = "src/index.ts"
 compatibility_date = "2026-01-01"
 
+# R-53 (Task #175): expose this Worker on the account's workers.dev subdomain
+# so the SPA + tunnel + OAuth all live under
+# `https://ccsm-worker.<account-subdomain>.workers.dev`. This replaces the
+# `cc-sm.pages.dev` Pages project (deleted as part of R-53). The account's
+# `workers.dev` subdomain prefix is set per-account in the Cloudflare dashboard
+# (Workers & Pages → Workers Subdomain); for jiahuigu@sjtu.edu.cn it is
+# `jiahuigu`, so the production hostname is
+# `ccsm-worker.jiahuigu.workers.dev`.
+#
+# Refs (verified via Cloudflare docs 2026-05-10):
+#   - https://developers.cloudflare.com/workers/configuration/routing/workers-dev/
+workers_dev = true
+
 # Task #154 (R-49 audit P1, F-A-2): Cloudflare Workers Static Assets binding
 # folds the cc-sm Pages site into this Worker, eliminating the prior
 # Pages-Function reproxy hop (`packages/frontend-web/functions/[[path]].ts`)
@@ -40,12 +53,13 @@ run_worker_first = [
   "/tunnel/default",
   "/token",
   "/api/*",
-  # R-51b (Task #168): desktop OAuth callback. Lives outside /api/* because
-  # the GitHub OAuth App callback URL prefix is the bare origin
-  # (`https://cc-sm.pages.dev/`), and the desktop redirect_uri is
-  # `<origin>/oauth/desktop/cb`. List it explicitly so the Worker (not the
-  # static asset server) renders the deep-link bounce page.
-  "/oauth/desktop/cb",
+  # R-53 (Task #175): `/oauth/desktop/cb` is intentionally NOT listed here.
+  # It is a static HTML page (`frontend-web/public/oauth/desktop/cb/index.html`
+  # → `frontend-web/dist/oauth/desktop/cb/index.html`) and must be served on
+  # the Workers Static Assets fast path so it bypasses any Pages-side legacy
+  # routing (which previously returned 308 and broke the desktop OAuth flow).
+  # The browser-side script then POSTs to `/api/auth/desktop/exchange` (in
+  # the `/api/*` glob above) which the Worker handles.
 ]
 
 # S4-T5 (Task #136): auth mode toggle. `legacy` keeps the S3-era
