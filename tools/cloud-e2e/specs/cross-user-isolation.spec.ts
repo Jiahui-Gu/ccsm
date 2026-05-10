@@ -2,7 +2,7 @@
  * S4-T9 (Task #135): cross-user isolation cloud-e2e spec.
  *
  * Sibling to `two-tab-pairing.spec.ts`. Where that spec verifies "one user,
- * two tabs each get their own PTY" against the deployed cc-sm.pages.dev SPA,
+ * two tabs each get their own PTY" against the deployed ccsm-worker.jiahuigu.workers.dev SPA,
  * this spec verifies the per-user TunnelDO routing introduced by S4-T5 (the
  * `CCSM_AUTH_MODE=jwt` switch that derives DO id from the JWT subject):
  *
@@ -45,7 +45,7 @@
  * or by editing wrangler.toml `[vars]` locally (don't commit the edit).
  *
  * Skipping: the test auto-skips when the env vars above are absent, so
- * `pnpm test` against deployed cc-sm.pages.dev (the existing two-tab spec's
+ * `pnpm test` against deployed ccsm-worker.jiahuigu.workers.dev (the existing two-tab spec's
  * default) still runs without manual configuration. CI must set these env
  * vars when it wants the cross-user gate.
  */
@@ -293,7 +293,7 @@ const TUNNEL_KEY = process.env.JWT_REFRESH_SIGNING_KEY ?? '';
  * the failure mode that lets cross-user leaks ship. Operators who don't
  * want the cross-user gate must filter the spec out explicitly via
  * `playwright test --grep-invert "cross-user"` (CI matrices already do
- * this for the legacy-mode lane against deployed cc-sm.pages.dev).
+ * this for the legacy-mode lane against deployed ccsm-worker.jiahuigu.workers.dev).
  */
 function requireEnv(): { wsBase: string; webKey: string; tunnelKey: string } {
   const missing: string[] = [];
@@ -307,7 +307,7 @@ function requireEnv(): { wsBase: string; webKey: string; tunnelKey: string } {
       'a `.dev.vars` populated with matching JWT keys, then re-run with ' +
       'CCSM_CLOUD_WS_BASE=ws://127.0.0.1:8787. See spec header for the ' +
       'full setup. Filter this spec out with `--grep-invert "cross-user"` ' +
-      'when targeting deployed cc-sm.pages.dev (legacy-mode lane).',
+      'when targeting deployed ccsm-worker.jiahuigu.workers.dev (legacy-mode lane).',
     );
   }
   return { wsBase: WS_BASE, webKey: WEB_KEY, tunnelKey: TUNNEL_KEY };

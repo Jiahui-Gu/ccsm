@@ -1,6 +1,6 @@
 // Two-tab pairing spec (Task #82).
 //
-// Simulates two independent machines hitting the deployed cc-sm.pages.dev
+// Simulates two independent machines hitting the deployed ccsm-worker.jiahuigu.workers.dev
 // SPA simultaneously. Each "machine" gets its own browser context (fresh
 // storage / cookies — equivalent to a separate browser profile), opens the
 // SPA, creates a new session, types a unique echo, and asserts that the
@@ -13,7 +13,7 @@
 //   - aria-label="Terminal input"  — xterm's hidden textarea (focus target)
 //
 // Token bootstrap: the SPA's hostConfig.ts already does the 3-step priority
-// chain (URL ?token= → fetch /token → fail). cc-sm.pages.dev serves /token
+// chain (URL ?token= → fetch /token → fail). ccsm-worker.jiahuigu.workers.dev serves /token
 // via the Pages Function + Worker tunnel, so we just navigate to '/' and
 // let the SPA do its thing.
 //

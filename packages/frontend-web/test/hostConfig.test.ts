@@ -59,10 +59,10 @@ describe('resolveWsBase', () => {
 
   it('synthesizes wss:// from window.location for the same-origin default', () => {
     (globalThis as { window?: unknown }).window = {
-      location: { protocol: 'https:', host: 'cc-sm.pages.dev', search: '' },
+      location: { protocol: 'https:', host: 'ccsm-worker.jiahuigu.workers.dev', search: '' },
     };
     const got = resolveWsBase({ search: '' });
-    expect(got).toBe('wss://cc-sm.pages.dev');
+    expect(got).toBe('wss://ccsm-worker.jiahuigu.workers.dev');
   });
 
   it('synthesizes ws:// when the SPA is served over plain http (smoke / Vite dev)', () => {

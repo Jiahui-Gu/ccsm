@@ -4,7 +4,7 @@
 //   - The monorepo's `pnpm-workspace.yaml` only globs `packages/*`, so this
 //     tool stays out of the workspace install graph and avoids hot-file
 //     mutex contention on the root lockfile when manager runs it ad-hoc.
-//   - Target is the *deployed* cc-sm.pages.dev cloud SPA; no local fixtures,
+//   - Target is the *deployed* ccsm-worker.jiahuigu.workers.dev cloud SPA; no local fixtures,
 //     no orchestrator, no daemon spawn — manager just runs `pnpm test`.
 //
 // Failure artifacts (trace.zip, screenshots, video) land in
@@ -19,10 +19,10 @@
 // Playwright forwards process.env into spec workers by default so no
 // explicit `use:` plumbing is required — the spec auto-skips when those
 // vars are absent so the existing two-tab spec keeps running unchanged
-// against deployed cc-sm.pages.dev.
+// against deployed ccsm-worker.jiahuigu.workers.dev.
 import { defineConfig, devices } from '@playwright/test';
 
-const BASE_URL = process.env.CCSM_CLOUD_BASE_URL ?? 'https://cc-sm.pages.dev';
+const BASE_URL = process.env.CCSM_CLOUD_BASE_URL ?? 'https://ccsm-worker.jiahuigu.workers.dev';
 
 export default defineConfig({
   testDir: './specs',

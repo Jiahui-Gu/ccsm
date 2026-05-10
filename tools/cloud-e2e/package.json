@@ -2,7 +2,7 @@
   "name": "ccsm-cloud-e2e",
   "version": "0.0.0",
   "private": true,
-  "description": "Standalone Playwright harness that exercises the deployed cc-sm.pages.dev cloud SPA end-to-end (Task #82). Lives outside the pnpm workspace on purpose so installing browsers / @playwright/test does not perturb the monorepo lockfile.",
+  "description": "Standalone Playwright harness that exercises the deployed ccsm-worker.jiahuigu.workers.dev cloud SPA end-to-end (Task #82). Lives outside the pnpm workspace on purpose so installing browsers / @playwright/test does not perturb the monorepo lockfile.",
   "type": "module",
   "scripts": {
     "test": "playwright test",

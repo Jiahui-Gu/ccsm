@@ -62,7 +62,7 @@ export interface PersistedTunnelCreds {
 }
 
 export interface TunnelRefreshOptions {
-  /** Cloud auth base, e.g. `https://cc-sm.pages.dev`. */
+  /** Cloud auth base, e.g. `https://ccsm-worker.jiahuigu.workers.dev`. */
   authBase: string;
   /**
    * Initial creds (parsed from `~/.ccsm/tunnel_jwt` by the caller — or

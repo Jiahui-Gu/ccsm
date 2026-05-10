@@ -57,15 +57,17 @@ jobs:
       - name: Build
         run: pnpm -r build
 
-      - name: Tauri shell guard (Task #711, S2-T10) — frontend-tauri must never reference Pages
+      - name: Tauri shell guard (Task #711, S2-T10) — frontend-tauri must never reference cloud host
         # Architectural red-line: the Tauri desktop shell embeds frontend-web
-        # and loads loopback daemon; it must NEVER fetch https://cc-sm.pages.dev.
-        # See DESIGN.md §11 Deployment Topologies. Any hit here is a regression.
+        # and loads loopback daemon; it must NEVER fetch the cloud host
+        # (was https://cc-sm.pages.dev pre-R-53; now
+        # https://ccsm-worker.jiahuigu.workers.dev). See DESIGN.md §11
+        # Deployment Topologies. Any hit here is a regression.
         shell: bash
         run: |
           set -e
           fail=0
-          for pat in 'pages\.dev' 'cc-sm' 'Pages'; do
+          for pat in 'pages\.dev' 'cc-sm' 'Pages' 'workers\.dev' 'ccsm-worker'; do
             hits=$(git grep -nE "$pat" -- packages/frontend-tauri/ || true)
             if [ -n "$hits" ]; then
               echo "::error::Tauri shell guard tripped — pattern '$pat' found in packages/frontend-tauri/:"
@@ -74,7 +76,7 @@ jobs:
             fi
           done
           if [ "$fail" = "1" ]; then exit 1; fi
-          echo "Tauri shell guard OK — no Pages references in packages/frontend-tauri/."
+          echo "Tauri shell guard OK — no cloud host references in packages/frontend-tauri/."
 
   tauri-build:
     # T14 (#681): nightly Windows tauri build producing the .msi artifact.

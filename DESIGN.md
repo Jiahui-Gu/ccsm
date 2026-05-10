@@ -479,7 +479,7 @@ one of them being offline does not affect the others:
    own `http://127.0.0.1:<port>/` in a regular browser and gets the SPA
    that the daemon serves directly.
 3. **Browser -> Cloudflare Pages -> local daemon** (S2) — the user
-   opens `https://cc-sm.pages.dev` in a regular browser; Pages
+   opens `https://ccsm-worker.jiahuigu.workers.dev` in a regular browser; Pages
    distributes the same SPA, and the SPA fetches the loopback daemon
    (`http://127.0.0.1:<port>`) from inside the browser. Pages is just a
    static-asset CDN — it does not participate in auth and does not
@@ -488,7 +488,7 @@ one of them being offline does not affect the others:
 ### Red lines (architectural invariants)
 
 - The Tauri shell's webview URL **must** be `http://127.0.0.1:<port>/...`;
-  it **must not** point to `https://cc-sm.pages.dev` or any remote host.
+  it **must not** point to `https://ccsm-worker.jiahuigu.workers.dev` or any remote host.
 - The Tauri shell source (`packages/frontend-tauri/`) **must not**
   contain `pages.dev` / `cc-sm` / remote-fetch logic. CI grep guards
   enforce this; see `.github/workflows/ci.yml`.
@@ -538,7 +538,7 @@ from a developer's perspective.
                                              |  CDN)                |
                                              +----------------------+
 
-origin (browser)   : https://cc-sm.pages.dev
+origin (browser)   : https://ccsm-worker.jiahuigu.workers.dev
 origin (daemon)    : http://127.0.0.1:9876
 relation           : cross-origin (HTTPS -> HTTP loopback)
 static asset path  : Cloudflare CDN (`/_headers` immutable for /assets/*)
@@ -549,7 +549,7 @@ token bootstrap    : URL `?token=` -> sessionStorage; or `GET <daemonBase>/token
 Security constraints:
 
 - The daemon's `classifyOrigin()` allow-list must include
-  `https://cc-sm.pages.dev` (S2-T1). Look-alike domains / PR-preview
+  `https://ccsm-worker.jiahuigu.workers.dev` (S2-T1). Look-alike domains / PR-preview
   subdomains are rejected by default (unless
   `CCSM_ALLOW_PAGES_PREVIEWS=1`, S2-T8).
 - Chromium >=120 PNA: when an HTTPS page fetches loopback, the browser
@@ -636,7 +636,7 @@ token bootstrap    : Rust reads daemon stdout, splices it into the initial webvi
 Security constraints:
 
 - The Tauri webview URL **must** be `http://127.0.0.1:<port>/...`; it
-  **must not** point to `https://cc-sm.pages.dev` (§11 red line + CI
+  **must not** point to `https://ccsm-worker.jiahuigu.workers.dev` (§11 red line + CI
   grep guard, S2-T10).
 - The daemon's `classifyOrigin()` is the same as mode 2: only loopback
   origins are allowed. Tauri's own `tauri://localhost` (custom-protocol
@@ -655,7 +655,7 @@ Security constraints:
 |-----------|----------------------|-------------------|----------------|
 | static-asset location | Cloudflare CDN | daemon-embedded serve | daemon-embedded (ships with the app) |
 | daemon location | user machine loopback | user machine loopback | child spawned by Tauri |
-| browser origin | `https://cc-sm.pages.dev` | `http://127.0.0.1:<port>` | `http://127.0.0.1:<port>` |
+| browser origin | `https://ccsm-worker.jiahuigu.workers.dev` | `http://127.0.0.1:<port>` | `http://127.0.0.1:<port>` |
 | daemon origin | `http://127.0.0.1:9876` | same as browser | same as browser |
 | same/cross-origin | cross | same | same |
 | CORS | required (Pages allow-list) | not needed | not needed |

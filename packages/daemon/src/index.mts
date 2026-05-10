@@ -35,7 +35,11 @@ import { attachFrameRouter, attachWebSocket } from './ws.mjs';
 const DEFAULT_PORT = 17832;
 const PORT_RETRY_MAX = 20;
 const SHUTDOWN_TIMEOUT_MS = 2000;
-const DEFAULT_TUNNEL_URL = 'wss://cc-sm.pages.dev/tunnel/default';
+// R-53 (Task #175): production host moved from the cc-sm Pages project
+// (`cc-sm.pages.dev`, deleted) to the cf-worker on the account workers.dev
+// subdomain (`ccsm-worker.jiahuigu.workers.dev`). Same script now serves
+// the SPA + the tunnel + the OAuth callback path on a single origin.
+const DEFAULT_TUNNEL_URL = 'wss://ccsm-worker.jiahuigu.workers.dev/tunnel/default';
 const TUNNEL_CONNECT_POLL_MS = 100;
 
 const HANDSHAKE_FLAG = '--handshake-stdout';
@@ -257,7 +261,7 @@ async function main(): Promise<void> {
           return;
         }
         tunnelRefresh = new TunnelRefreshClient({
-          authBase: process.env.CCSM_AUTH_BASE ?? 'https://cc-sm.pages.dev',
+          authBase: process.env.CCSM_AUTH_BASE ?? 'https://ccsm-worker.jiahuigu.workers.dev',
           creds,
           onRefreshed: (newJwt) => {
             currentJwt = newJwt;

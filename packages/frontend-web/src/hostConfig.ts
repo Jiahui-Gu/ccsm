@@ -104,7 +104,10 @@ function normalizeBase(raw: string): string {
  * `https://cc-sm.pages.dev`. Task #25 went back to same-origin because the
  * hard-coded URL broke smoke (SPA at `127.0.0.1:8788` cannot fetch a Pages
  * URL — `ERR_FAILED` / CORS) AND was redundant in cloud (Pages serves the
- * SPA AND proxies the tunnel from the same origin).
+ * SPA AND proxies the tunnel from the same origin). R-53 #175 retired
+ * Cloudflare Pages entirely — same-origin now means
+ * `https://ccsm-worker.jiahuigu.workers.dev` (the cf-worker on workers.dev),
+ * which serves both the SPA static assets and the tunnel/api routes.
  */
 export function resolveDaemonBase(deps: ResolveDaemonBaseDeps): string {
   const fromUrl = new URLSearchParams(deps.search).get('daemon');

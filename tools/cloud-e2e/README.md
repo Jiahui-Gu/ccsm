@@ -1,7 +1,7 @@
 # cloud-e2e
 
 Standalone Playwright harness that exercises the **deployed** cloud SPA at
-`https://cc-sm.pages.dev` end-to-end. Built for Task #82 so manager (or any
+`https://ccsm-worker.jiahuigu.workers.dev` end-to-end. Built for Task #82 so manager (or any
 maintainer) can verify "real users on two machines" scenarios without
 hand-clicking a browser.
 
@@ -28,7 +28,7 @@ pnpm install:browsers   # downloads Chromium (~150 MB, one-time)
 
 ```bash
 cd tools/cloud-e2e
-pnpm test                       # headless, default base = https://cc-sm.pages.dev
+pnpm test                       # headless, default base = https://ccsm-worker.jiahuigu.workers.dev
 pnpm test:headed                # eyeballs mode for debugging
 CCSM_CLOUD_BASE_URL=https://my-preview.pages.dev pnpm test  # custom origin
 ```
