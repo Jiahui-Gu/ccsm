@@ -38,6 +38,7 @@ export { UserDO } from './auth/userDO';
 
 import { dispatchAuth } from './auth/webOauth';
 import { dispatchDevice } from './auth/deviceFlow';
+import { dispatchDesktop } from './auth/desktopOauth';
 import {
   extractTunnelJwt,
   extractWebJwt,
@@ -115,11 +116,27 @@ export default {
       // S4-T4 (Task #142): device flow + tunnel refresh land here first.
       const devRes = await dispatchDevice(stampedReq, env);
       if (devRes !== null) return devRes;
+      // R-51b (Task #168): desktop PKCE start endpoint
+      // (`POST /api/auth/desktop/start`).
+      const deskRes = await dispatchDesktop(stampedReq, env);
+      if (deskRes !== null) return deskRes;
       const authRes = await dispatchAuth(stampedReq, env);
       if (authRes !== null) return authRes;
       // Path under /api/auth/ but not ours (e.g. wrong method) → 404.
       log.warn('worker.api_auth_not_found', { path: url.pathname, method: req.method });
       return new Response('Not Found', { status: 404 });
+    }
+
+    // R-51b (Task #168): desktop OAuth callback lives at
+    // `GET /oauth/desktop/cb` (NOT under /api/auth/*) so the GitHub OAuth App
+    // callback URL prefix `https://cc-sm.pages.dev/` stays compatible. The
+    // worker run_first glob in wrangler.toml needs to include /oauth/* — see
+    // wrangler.toml updates in this PR. Routing this branch BEFORE the
+    // /api/* + /token + ws branches keeps the static-asset catch-all at the
+    // tail of the function intact.
+    if (url.pathname === '/oauth/desktop/cb') {
+      const deskRes = await dispatchDesktop(stampedReq, env);
+      if (deskRes !== null) return deskRes;
     }
 
     // S4-T5 (Task #136): mode toggle. In `legacy` (default, current

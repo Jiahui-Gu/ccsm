@@ -40,6 +40,12 @@ run_worker_first = [
   "/tunnel/default",
   "/token",
   "/api/*",
+  # R-51b (Task #168): desktop OAuth callback. Lives outside /api/* because
+  # the GitHub OAuth App callback URL prefix is the bare origin
+  # (`https://cc-sm.pages.dev/`), and the desktop redirect_uri is
+  # `<origin>/oauth/desktop/cb`. List it explicitly so the Worker (not the
+  # static asset server) renders the deep-link bounce page.
+  "/oauth/desktop/cb",
 ]
 
 # S4-T5 (Task #136): auth mode toggle. `legacy` keeps the S3-era

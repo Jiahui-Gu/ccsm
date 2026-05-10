@@ -43,6 +43,12 @@ use tokio::time::sleep;
 
 const MAX_POLL_INTERVAL_SEC: u64 = 60;
 
+/// R-51b (Task #168): max age of an in-memory PKCE state entry. Mirrors the
+/// cf-worker side's 5-minute TTL on the persisted code_verifier row; if the
+/// user takes longer than that to complete the browser round-trip both
+/// sides reject the deep-link / callback consistently.
+const PKCE_STATE_TTL_SEC: u64 = 5 * 60;
+
 /// Persisted credential blob — read by `daemon_mgr` at spawn time.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PersistedTunnelCreds {
@@ -89,6 +95,67 @@ impl Default for OauthState {
         // If a credential file already exists at startup, the manager flips us
         // to Success on first read. Until then we are idle.
         OauthState::Idle
+    }
+}
+
+// ---------------------------------------------------------------------------
+// R-51b (Task #168): PKCE deep-link state.
+//
+// `start_pkce_oauth` calls cf-worker /api/auth/desktop/start, which returns
+// the GitHub authorize URL plus an opaque `state`. We extract the state from
+// the URL and remember it in `PkceStateStore` so the deep-link listener
+// (registered in lib.rs / dispatched here via `handle_desktop_callback`) can
+// reject any `ccsm://oauth?...&state=X` payload whose state was not minted by
+// us.
+//
+// The store is intentionally tiny — at most one outstanding entry per OS
+// session in the common case, but we model a small map so a user who restarts
+// the flow before finishing the first one still works. Entries are one-shot
+// (consumed on first matching deep link) and time-out after PKCE_STATE_TTL_SEC.
+// ---------------------------------------------------------------------------
+
+#[derive(Default)]
+pub struct PkceStateStore {
+    entries: Mutex<Vec<PkceStateEntry>>,
+}
+
+#[derive(Clone, Debug)]
+struct PkceStateEntry {
+    state: String,
+    created_at: u64,
+}
+
+impl PkceStateStore {
+    /// Record a freshly minted state. Caller is `start_pkce_oauth`.
+    fn insert(&self, state: String) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let mut g = self.entries.lock().expect("pkce state mutex poisoned");
+        // Prune expired.
+        g.retain(|e| now.saturating_sub(e.created_at) <= PKCE_STATE_TTL_SEC);
+        g.push(PkceStateEntry { state, created_at: now });
+    }
+
+    /// Look up + remove the entry matching `state`. Returns true if a fresh,
+    /// not-yet-consumed entry was found and consumed; false otherwise (used
+    /// once, never minted, or aged out).
+    fn take(&self, state: &str) -> bool {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let mut g = self.entries.lock().expect("pkce state mutex poisoned");
+        // Drop expired up front so a state can't survive past TTL even if the
+        // user races a second start.
+        g.retain(|e| now.saturating_sub(e.created_at) <= PKCE_STATE_TTL_SEC);
+        if let Some(idx) = g.iter().position(|e| e.state == state) {
+            g.remove(idx);
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -307,7 +374,7 @@ fn auth_base() -> Result<String, String> {
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub async fn start_oauth(
+pub async fn start_device_oauth(
     app: AppHandle,
     store: State<'_, OauthStore>,
 ) -> Result<StartOauthSpaPayload, String> {
@@ -537,6 +604,229 @@ fn emit_failed(app: &AppHandle, store: &State<OauthStore>, reason: String) {
 }
 
 // ---------------------------------------------------------------------------
+// R-51b (Task #168): PKCE deep-link OAuth flow
+// ---------------------------------------------------------------------------
+
+/// Parsed `ccsm://oauth?...` deep-link payload. Returned by `parse_deeplink_url`
+/// for unit-testable URL handling separate from the live Tauri runtime path.
+#[derive(Debug, PartialEq, Eq)]
+pub struct DeepLinkPayload {
+    pub token: String,
+    pub refresh: String,
+    pub state: String,
+}
+
+/// Parse `ccsm://oauth?token=<jwt>&refresh=<token>&state=<state>` into its
+/// three required fields. Returns `None` on any structural failure:
+///   - scheme is not `ccsm`
+///   - host (URL "authority") is not `oauth`
+///   - any of token / refresh / state is missing or empty
+///
+/// The verifier is run on the parsed URL only; signature validity / state
+/// freshness are the caller's job (`PkceStateStore::take`).
+pub fn parse_deeplink_url(url: &str) -> Option<DeepLinkPayload> {
+    // We deliberately do NOT pull in a URL parser dep — the format is fully
+    // controlled by cf-worker's renderBouncePage and is `ccsm://oauth?...`
+    // with percent-encoded values. Hand-rolling 30 lines is cheaper than
+    // adding `url = "2"` to Cargo for one call site.
+    let after_scheme = url.strip_prefix("ccsm://")?;
+    // Split at the first `?` — the part before is `<authority>[/<path>]`,
+    // after is the query string.
+    let (authority_path, query) = match after_scheme.find('?') {
+        Some(i) => (&after_scheme[..i], &after_scheme[i + 1..]),
+        None => return None,
+    };
+    // Accept both `ccsm://oauth?` (no path) and `ccsm://oauth/?` (trailing
+    // slash). Reject anything else, e.g. `ccsm://other`, `ccsm://oauth/x`.
+    let authority = authority_path.trim_end_matches('/');
+    if authority != "oauth" {
+        return None;
+    }
+    let mut token: Option<String> = None;
+    let mut refresh: Option<String> = None;
+    let mut state: Option<String> = None;
+    for pair in query.split('&') {
+        let (k, v) = match pair.find('=') {
+            Some(i) => (&pair[..i], &pair[i + 1..]),
+            None => continue,
+        };
+        // Percent-decode the value for symmetry with cf-worker URLSearchParams
+        // encoding. We intentionally don't decode plus-signs as spaces (RFC
+        // 3986 vs application/x-www-form-urlencoded) because the only field
+        // that can contain `+` is the JWT, where `+` is part of base64url's
+        // alphabet — but cf-worker uses base64url-without-padding which has
+        // `-` and `_`, not `+`, so a literal `+` here is unexpected and we
+        // pass it through.
+        let decoded = percent_decode(v);
+        match k {
+            "token" => token = Some(decoded),
+            "refresh" => refresh = Some(decoded),
+            "state" => state = Some(decoded),
+            _ => {}
+        }
+    }
+    let token = token?;
+    let refresh = refresh?;
+    let state = state?;
+    if token.is_empty() || refresh.is_empty() || state.is_empty() {
+        return None;
+    }
+    Some(DeepLinkPayload { token, refresh, state })
+}
+
+/// RFC 3986 §2.1 percent-decoding of an URL component. Invalid escape
+/// sequences are left as-is; this is a conservative parser sized for the
+/// limited set of characters cf-worker actually emits.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = hex_val(bytes[i + 1]);
+            let lo = hex_val(bytes[i + 2]);
+            if let (Some(h), Some(l)) = (hi, lo) {
+                out.push((h << 4) | l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
+}
+
+fn hex_val(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// React to a `ccsm://oauth?...` deep link arriving from the OS. Verifies
+/// `state` against the in-memory PkceStateStore (one-shot; entries that have
+/// been consumed or aged out are rejected), persists the credentials to
+/// `~/.ccsm/tunnel_jwt`, and emits `oauth-complete`.
+///
+/// Called from the deep-link plugin's `on_open_url` listener registered in
+/// `lib.rs`; also from any single-instance forward path (the second
+/// instance's argv carries the URL on Linux/Windows).
+pub fn handle_desktop_callback(app: &AppHandle, url: &str) -> Result<(), String> {
+    let payload = parse_deeplink_url(url)
+        .ok_or_else(|| format!("malformed deep link url: {url}"))?;
+    let pkce: State<PkceStateStore> = app.state();
+    if !pkce.take(&payload.state) {
+        return Err(
+            "deep-link state not recognized (state mismatch / replay / expired)".to_string(),
+        );
+    }
+    // Best-effort sub extraction so persisted creds stay shape-compatible
+    // with the device-flow path. The persisted blob's `login` is what the
+    // SPA renders, so we leave it empty here — R-51c will surface the
+    // `/api/auth/me`-derived login on first daemon connect.
+    let creds = PersistedTunnelCreds {
+        tunnel_jwt: payload.token,
+        tunnel_refresh_token: payload.refresh,
+        // login is unknown until the daemon reports back; persistence
+        // round-trip works either way (read_persisted_creds rejects empty
+        // login though, so we fill in a placeholder). This will be
+        // refreshed on first /api/auth/me call (R-51c scope).
+        login: String::from("pending"),
+    };
+    write_persisted_creds(&creds)
+        .map_err(|e| format!("persist desktop creds: {e}"))?;
+    // Match the device-flow side's state transition + event so consumers
+    // (SPA, daemon supervisor) see one unified Success surface.
+    let store: State<OauthStore> = app.state();
+    store.set(app, OauthState::Success);
+    let _ = app.emit(
+        "oauth-complete",
+        OauthCompletePayload { login: creds.login.clone() },
+    );
+    Ok(())
+}
+
+/// Wire response from cf-worker `POST /api/auth/desktop/start`.
+#[derive(Deserialize, Debug)]
+struct DesktopStartResponse {
+    auth_url: String,
+}
+
+/// `start_pkce_oauth` Tauri command — preferred OAuth path on platforms
+/// where deep-link delivery is reliable (Windows installed-app, Linux
+/// installed-app). The Tauri shell asks cf-worker to mint a state +
+/// code_verifier (verifier stored server-side in the PKCE-state UserDO
+/// role; never travels to the desktop). The shell extracts `state` from
+/// the returned `auth_url`, parks it in `PkceStateStore`, opens the URL
+/// via plugin-shell, and waits for the deep-link listener (lib.rs) to
+/// dispatch a callback to `handle_desktop_callback`.
+///
+/// This intentionally does NOT spawn a poll loop — the OS deep-link
+/// delivery is the completion signal. Device flow (`start_device_oauth`)
+/// remains available as a fallback for environments where deep-links are
+/// unreliable (macOS dev mode; sandboxed flatpak/snap without the
+/// declared single-instance slot).
+#[tauri::command]
+pub async fn start_pkce_oauth(
+    app: AppHandle,
+    store: State<'_, OauthStore>,
+    pkce: State<'_, PkceStateStore>,
+) -> Result<(), String> {
+    if matches!(store.snapshot(), OauthState::AwaitingUser) {
+        return Err("oauth already in progress".to_string());
+    }
+    let url = format!("{}/api/auth/desktop/start", auth_base()?);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("build http client: {e}"))?;
+
+    let res = client
+        .post(&url)
+        .send()
+        .await
+        .map_err(|e| format!("desktop/start http error: {e}"))?;
+    if !res.status().is_success() {
+        return Err(format!("desktop/start status {}", res.status()));
+    }
+    let parsed: DesktopStartResponse = res
+        .json()
+        .await
+        .map_err(|e| format!("desktop/start json: {e}"))?;
+
+    // Extract `state` from the auth_url so the deep-link callback can verify
+    // it later. Hand-roll the lookup to avoid pulling in the `url` crate;
+    // `state=` is always present (cf-worker always emits it) so the parser
+    // is not load-bearing for security — the cf-worker side is also
+    // verifying state before exchanging the code.
+    let state = extract_query_param(&parsed.auth_url, "state")
+        .ok_or_else(|| "auth_url missing state param".to_string())?;
+    pkce.insert(state);
+
+    store.set(&app, OauthState::AwaitingUser);
+    if let Err(e) = app.shell().open(&parsed.auth_url, None) {
+        eprintln!("[auth] shell.open({}) failed: {e}", parsed.auth_url);
+    }
+    Ok(())
+}
+
+/// Read `?key=<value>&...` and return the first matching value (URL-decoded).
+/// Returns `None` if the URL has no query string or the key isn't present.
+fn extract_query_param(url: &str, key: &str) -> Option<String> {
+    let q = url.split_once('?').map(|(_, q)| q)?;
+    for pair in q.split('&') {
+        let (k, v) = pair.split_once('=')?;
+        if k == key {
+            return Some(percent_decode(v));
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -735,5 +1025,93 @@ mod tests {
         let payload_padded = "eyJzdWIiOiIxIn0="; // {"sub":"1"}
         let jwt = format!("{}.{}.s", header, payload_padded);
         assert_eq!(parse_jwt_sub_unverified(&jwt), Some("1".to_string()));
+    }
+
+    // R-51b (Task #168): deep-link URL parser + PKCE state map.
+
+    #[test]
+    fn parse_deeplink_url_extracts_token_refresh_state() {
+        let url = "ccsm://oauth?token=abc.def.ghi&refresh=01234567&state=feedface";
+        let p = parse_deeplink_url(url).expect("must parse");
+        assert_eq!(p.token, "abc.def.ghi");
+        assert_eq!(p.refresh, "01234567");
+        assert_eq!(p.state, "feedface");
+    }
+
+    #[test]
+    fn parse_deeplink_url_handles_percent_encoded_values() {
+        // cf-worker URLSearchParams encodes `+` as `%2B` etc. Make sure the
+        // parser round-trips a percent-encoded JWT sig (rare but possible).
+        let url = "ccsm://oauth?token=a.b%2Bc&refresh=r&state=s";
+        let p = parse_deeplink_url(url).expect("must parse");
+        assert_eq!(p.token, "a.b+c");
+    }
+
+    #[test]
+    fn parse_deeplink_url_rejects_wrong_authority() {
+        // `ccsm://other?...` and `ccsm://oauth/extra?...` both reject.
+        assert!(parse_deeplink_url("ccsm://other?token=t&refresh=r&state=s").is_none());
+        assert!(parse_deeplink_url("ccsm://oauth/extra?token=t&refresh=r&state=s").is_none());
+    }
+
+    #[test]
+    fn parse_deeplink_url_rejects_missing_or_empty_fields() {
+        // missing state
+        assert!(parse_deeplink_url("ccsm://oauth?token=t&refresh=r").is_none());
+        // empty token
+        assert!(parse_deeplink_url("ccsm://oauth?token=&refresh=r&state=s").is_none());
+        // entirely malformed
+        assert!(parse_deeplink_url("ccsm://oauth?invalid").is_none());
+        // wrong scheme
+        assert!(parse_deeplink_url("https://oauth?token=t&refresh=r&state=s").is_none());
+    }
+
+    #[test]
+    fn pkce_state_store_one_shot_take() {
+        let store = PkceStateStore::default();
+        store.insert("S1".into());
+        // First take consumes.
+        assert!(store.take("S1"));
+        // Second take of the same value rejects (replay).
+        assert!(!store.take("S1"));
+    }
+
+    #[test]
+    fn pkce_state_store_rejects_unknown_state() {
+        let store = PkceStateStore::default();
+        store.insert("S1".into());
+        // Different state never inserted → reject.
+        assert!(!store.take("S2"));
+        // Original still consumable since the unknown attempt didn't touch it.
+        assert!(store.take("S1"));
+    }
+
+    #[test]
+    fn pkce_state_store_drops_expired_entries_on_take() {
+        // Use the internal struct directly to plant an expired entry.
+        let store = PkceStateStore::default();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // Insert an entry then backdate it past the TTL.
+        store.insert("OLD".into());
+        {
+            let mut g = store.entries.lock().unwrap();
+            for e in g.iter_mut() {
+                if e.state == "OLD" {
+                    e.created_at = now.saturating_sub(PKCE_STATE_TTL_SEC + 60);
+                }
+            }
+        }
+        assert!(!store.take("OLD"), "expired state must be rejected");
+    }
+
+    #[test]
+    fn extract_query_param_pulls_state_from_auth_url() {
+        let url = "https://github.com/login/oauth/authorize?client_id=cid&state=feedface&scope=read%3Auser";
+        assert_eq!(extract_query_param(url, "state"), Some("feedface".to_string()));
+        assert_eq!(extract_query_param(url, "scope"), Some("read:user".to_string()));
+        assert_eq!(extract_query_param(url, "missing"), None);
     }
 }
