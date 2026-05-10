@@ -36,6 +36,7 @@
 import type { AuthEnv } from './bindings';
 import { signJwt, verifyJwt, type WebJwtClaims } from './jwt';
 import { Logger, shortSub } from '../logger';
+import { decideAndLink, MultipleAccountsError } from './oauthLinker';
 
 /** R-46 audit-P0 (Task #158, F-T-2): rebuild a child logger from the
  *  request_id header that the Worker entry stamped on. */
@@ -57,6 +58,11 @@ const WEB_JWT_TTL_SEC = 60 * 60; // 1h
 const WS_TICKET_TTL_SEC = 60;
 const CSRF_COOKIE = 'csrf';
 const REFRESH_COOKIE = 'refresh';
+/** R-51a (Task #167): hint cookie used by /refresh + /logout to locate the
+ *  user blob. Carries the user uuid (NOT the github login). HttpOnly is
+ *  fine — the uuid is not a secret, just a UserDO key. Renamed from `login`
+ *  in pre-R-51 schema where UserDO was keyed by login. */
+const UID_HINT_COOKIE = 'uid';
 /** Audit F-S-4: HttpOnly session cookie carrying the web JWT, scoped to /api. */
 const WEB_JWT_COOKIE = 'web_jwt';
 const CALLBACK_PATH = '/api/auth/github/callback';
@@ -154,6 +160,11 @@ interface GithubTokenResponse {
 interface GithubUserResponse {
   id?: number;
   login?: string;
+  /** Public primary email if user opted in. read:user scope returns this
+   *  but does NOT include a verified flag, so we treat it as unverified for
+   *  R-51a (web/device handlers pass email_verified=false to oauthLinker).
+   *  v0.5 may add user:email scope + /user/emails fetch to upgrade this. */
+  email?: string | null;
 }
 
 /**
@@ -236,30 +247,42 @@ export async function handleGithubCallback(
   }
   const githubId = String(userJson.id);
   const login = userJson.login;
+  const email = typeof userJson.email === 'string' ? userJson.email : '';
 
-  // Persist into UserDO (idFromName(login)).
-  const userDoId = env.USER_DO.idFromName(login);
-  const userDoStub = env.USER_DO.get(userDoId);
-
-  const setLoginRes = await userDoStub.fetch(
-    new Request('https://do/setLogin', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ github_id: githubId, login }),
-    }),
-  );
-  if (!setLoginRes.ok) {
-    log.error('oauth.callback_fail', {
-      reason: 'userdo_setlogin_failed',
-      status: setLoginRes.status,
+  // R-51a (Task #167): hand the freshly authenticated identity tuple to the
+  // shared linker, which decides login_existing / create_no_email /
+  // link_to_existing / create_new and writes identity + email index + user
+  // blob through. Web side currently always lands in Branch 1 or 2 because
+  // we don't fetch /user/emails (read:user scope) — verified=false. Future
+  // user:email scope upgrade flips Branch 3/4 on without webOauth changes.
+  let linkResult;
+  try {
+    linkResult = await decideAndLink(env, {
+      provider: 'github',
+      provider_sub: githubId,
+      login,
+      email,
+      email_verified: false,
     });
-    return new Response('userDO setLogin failed', { status: 500 });
+  } catch (err) {
+    if (err instanceof MultipleAccountsError) {
+      log.warn('oauth.callback_fail', {
+        reason: 'multiple_accounts',
+        email_index_user_id: err.emailIndexUserId,
+        identity_user_id: err.identityUserId,
+      });
+      return new Response('multiple-accounts', { status: 409 });
+    }
+    log.error('oauth.callback_fail', { reason: 'linker_failed', err: String(err) });
+    return new Response('linker failed', { status: 500 });
   }
+  const userId = linkResult.user_id;
 
-  // Mint the refresh token (opaque hex) + persist its SHA-256 hash in UserDO.
+  // Persist the web refresh-token hash on the user blob (per-uuid).
+  const userBlobStub = env.USER_DO.get(env.USER_DO.idFromName(`user:${userId}`));
   const refreshToken = randomHex(32);
   const refreshHash = await sha256Hex(refreshToken);
-  const setHashRes = await userDoStub.fetch(
+  const setHashRes = await userBlobStub.fetch(
     new Request('https://do/setRefreshTokenHash', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -274,10 +297,10 @@ export async function handleGithubCallback(
     return new Response('userDO setRefreshTokenHash failed', { status: 500 });
   }
 
-  // Mint the web JWT.
+  // Mint the web JWT — sub is now the uuid, not the github_id.
   const iat = Math.floor(Date.now() / 1000);
   const claims: WebJwtClaims = {
-    sub: githubId,
+    sub: userId,
     login,
     iat,
     exp: iat + WEB_JWT_TTL_SEC,
@@ -286,8 +309,9 @@ export async function handleGithubCallback(
   const webJwt = await signJwt(claims, env.JWT_SIGNING_KEY);
 
   log.info('oauth.callback_ok', {
+    decision: linkResult.decision,
     login,
-    sub_prefix: shortSub(githubId),
+    sub_prefix: shortSub(userId),
   });
 
   // Compose the redirect: the web JWT now rides an HttpOnly cookie scoped to
@@ -320,11 +344,12 @@ export async function handleGithubCallback(
       sameSite: 'Lax',
     }),
   );
-  // `login` hint cookie — not a secret, only the UserDO key. Scoped to
-  // /api/auth so it accompanies refresh + logout requests.
+  // `uid` hint cookie — not a secret, just the user uuid used as UserDO
+  // key for the user-blob role. Scoped to /api/auth so it accompanies
+  // refresh + logout requests.
   headers.append(
     'Set-Cookie',
-    buildCookie('login', login, {
+    buildCookie(UID_HINT_COOKIE, userId, {
       path: '/api/auth',
       maxAge: 60 * 60 * 24 * 30,
       httpOnly: true,
@@ -340,18 +365,10 @@ export async function handleGithubCallback(
  * **rotate** it (write a fresh hash + send a fresh cookie), and re-mint a web
  * JWT.
  *
- * Audit F-S-5 (Task #152): web refresh now rotates on every call (parity
- * with deviceFlow tunnel-refresh). Without rotation a leaked refresh
- * token grants attacker indefinite access until manual revoke. The new
- * opaque token is sent back as the same HttpOnly cookie; the old hash is
- * overwritten so subsequent presentations of the old token 401.
+ * R-51a (Task #167): hint cookie carries `uid` (user uuid) not `login`,
+ * UserDO is keyed `user:<uuid>`, claims.sub = uuid.
  *
- * The browser has no other way to identify the user (web JWT may already be
- * gone), so we recover the login by stuffing the SHA-256 lookup into a
- * UserDO instance keyed by login... except we don't know the login yet. To
- * keep T3 simple, the refresh cookie is paired with a small hint cookie that
- * carries `login` (HttpOnly is fine, this isn't a secret). We trust the hint
- * and validate the hash before re-issuing anything.
+ * Audit F-S-5: rotation invalidates the old refresh token.
  */
 export async function handleRefresh(
   req: Request,
@@ -360,12 +377,12 @@ export async function handleRefresh(
   const log = loggerFor(req);
   const cookies = parseCookies(req.headers.get('Cookie'));
   const refreshToken = cookies.get(REFRESH_COOKIE);
-  const loginHint = cookies.get('login');
-  if (!refreshToken || !loginHint) {
+  const uidHint = cookies.get(UID_HINT_COOKIE);
+  if (!refreshToken || !uidHint) {
     log.warn('auth.refresh_fail', { reason: 'missing_cookie' });
     return new Response('missing refresh cookie', { status: 401 });
   }
-  const userDoId = env.USER_DO.idFromName(loginHint);
+  const userDoId = env.USER_DO.idFromName(`user:${uidHint}`);
   const userDoStub = env.USER_DO.get(userDoId);
 
   const refreshHash = await sha256Hex(refreshToken);
@@ -382,26 +399,24 @@ export async function handleRefresh(
   }
   const verifyJson = (await verifyRes.json()) as { ok?: boolean };
   if (verifyJson.ok !== true) {
-    log.warn('auth.refresh_fail', { reason: 'invalid_refresh_token', login: loginHint });
+    log.warn('auth.refresh_fail', { reason: 'invalid_refresh_token', uid_prefix: shortSub(uidHint) });
     return new Response('invalid refresh token', { status: 401 });
   }
 
-  // Look up the persisted login record so we mint claims with the canonical
-  // (server-side) github_id, not just the cookie hint.
-  const getLoginRes = await userDoStub.fetch(new Request('https://do/getLogin'));
-  if (getLoginRes.status === 404) {
-    log.warn('auth.refresh_fail', { reason: 'user_not_found', login: loginHint });
+  // Look up the canonical user blob so we mint claims with the server-side
+  // primary_login, not the cookie hint.
+  const getBlobRes = await userDoStub.fetch(new Request('https://do/getUserBlob'));
+  if (getBlobRes.status === 404) {
+    log.warn('auth.refresh_fail', { reason: 'user_not_found', uid_prefix: shortSub(uidHint) });
     return new Response('user not found', { status: 401 });
   }
-  if (!getLoginRes.ok) {
-    log.error('auth.refresh_fail', { reason: 'userdo_getlogin_failed', status: getLoginRes.status });
-    return new Response('userDO getLogin failed', { status: 500 });
+  if (!getBlobRes.ok) {
+    log.error('auth.refresh_fail', { reason: 'userdo_getuserblob_failed', status: getBlobRes.status });
+    return new Response('userDO getUserBlob failed', { status: 500 });
   }
-  const rec = (await getLoginRes.json()) as { github_id: string; login: string };
+  const blob = (await getBlobRes.json()) as { user_id: string; primary_login: string };
 
-  // Audit F-S-5: rotate the refresh token. Mint a new opaque hex + write
-  // its hash into UserDO (overwrites the previous slot). Old token's hash
-  // can no longer pass verifyRefreshTokenHash on a subsequent call.
+  // Rotate refresh token.
   const newRefreshToken = randomHex(32);
   const newRefreshHash = await sha256Hex(newRefreshToken);
   const setHashRes = await userDoStub.fetch(
@@ -418,18 +433,18 @@ export async function handleRefresh(
 
   const iat = Math.floor(Date.now() / 1000);
   const claims: WebJwtClaims = {
-    sub: rec.github_id,
-    login: rec.login,
+    sub: blob.user_id,
+    login: blob.primary_login,
     iat,
     exp: iat + WEB_JWT_TTL_SEC,
     kind: 'web',
   };
   const webJwt = await signJwt(claims, env.JWT_SIGNING_KEY);
-  log.info('auth.refresh_ok', { login: rec.login, sub_prefix: shortSub(rec.github_id) });
+  log.info('auth.refresh_ok', {
+    login: blob.primary_login,
+    sub_prefix: shortSub(blob.user_id),
+  });
   const headers = new Headers({ 'content-type': 'application/json' });
-  // Audit F-S-4: also re-set the web_jwt HttpOnly cookie so cookie-based
-  // SPAs pick the new JWT up automatically without storing it in JS-reachable
-  // state. body still echoes web_jwt for the legacy fragment-era callers.
   headers.append(
     'Set-Cookie',
     buildCookie(WEB_JWT_COOKIE, webJwt, {
@@ -444,16 +459,16 @@ export async function handleRefresh(
     'Set-Cookie',
     buildCookie(REFRESH_COOKIE, newRefreshToken, {
       path: REFRESH_PATH,
-      maxAge: 60 * 60 * 24 * 30, // 30 days, mirroring callback
+      maxAge: 60 * 60 * 24 * 30,
       httpOnly: true,
       secure: true,
       sameSite: 'Lax',
     }),
   );
-  return new Response(JSON.stringify({ web_jwt: webJwt, login: rec.login }), {
-    status: 200,
-    headers,
-  });
+  return new Response(
+    JSON.stringify({ web_jwt: webJwt, login: blob.primary_login }),
+    { status: 200, headers },
+  );
 }
 
 /**
@@ -465,29 +480,29 @@ export async function handleLogout(
 ): Promise<Response> {
   const log = loggerFor(req);
   const cookies = parseCookies(req.headers.get('Cookie'));
-  const loginHint = cookies.get('login');
+  const uidHint = cookies.get(UID_HINT_COOKIE);
   // Best-effort revoke: if we don't have a hint, we still clear the cookie.
-  if (loginHint) {
-    const userDoId = env.USER_DO.idFromName(loginHint);
+  if (uidHint) {
+    const userDoId = env.USER_DO.idFromName(`user:${uidHint}`);
     const userDoStub = env.USER_DO.get(userDoId);
     await userDoStub.fetch(new Request('https://do/revoke', { method: 'POST' }));
   }
-  log.info('auth.logout', { login: loginHint });
+  log.info('auth.logout', { uid_prefix: uidHint ? shortSub(uidHint) : undefined });
   const headers = new Headers();
   headers.append('Set-Cookie', clearCookie(REFRESH_COOKIE, REFRESH_PATH));
-  headers.append('Set-Cookie', clearCookie('login', '/api/auth'));
+  headers.append('Set-Cookie', clearCookie(UID_HINT_COOKIE, '/api/auth'));
   // Audit F-S-4: also nuke the web_jwt session cookie.
   headers.append('Set-Cookie', clearCookie(WEB_JWT_COOKIE, WEB_JWT_COOKIE_PATH));
   return new Response(null, { status: 204, headers });
 }
 
 /**
- * GET /api/auth/me — audit F-S-4 (Task #152).
+ * GET /api/auth/me — audit F-S-4 (Task #152), R-51a (Task #167).
  *
  * Reads the HttpOnly `web_jwt` cookie, verifies it, returns
- * `{ login, github_id }`. The SPA mounts and calls this to learn whether
- * the user is signed-in (replacing the old fragment-decode + sessionStorage
- * read). 401 means "not signed-in" — caller renders SignInScreen.
+ * `{ login, user_id }`. R-51a replaced the `github_id` field in the
+ * response with `user_id` (the new uuid PK); SPA + Tauri shells consume
+ * `user_id` to identify the signed-in user. 401 means "not signed-in".
  *
  * No CSRF token is required because:
  *   (a) it's a GET / safe method,
@@ -502,7 +517,7 @@ export async function handleMe(req: Request, env: AuthEnv): Promise<Response> {
   if (claims === null || claims.kind !== 'web') {
     return new Response('unauthorized', { status: 401 });
   }
-  return Response.json({ login: claims.login, github_id: claims.sub });
+  return Response.json({ login: claims.login, user_id: claims.sub });
 }
 
 /**
