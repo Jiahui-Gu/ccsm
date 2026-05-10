@@ -37,6 +37,7 @@
 import type { AuthEnv } from './bindings';
 import { signJwt, type TunnelJwtClaims } from './jwt';
 import { Logger, shortSub } from '../logger';
+import { decideAndLink, MultipleAccountsError } from './oauthLinker';
 
 /** R-46 audit-P0 (Task #158): logger child bound to the request_id header
  *  the Worker entry stamped on. */
@@ -90,6 +91,8 @@ interface GithubTokenPollResponse {
 interface GithubUserResponse {
   id?: number;
   login?: string;
+  /** read:user scope returns this without a verified flag — see webOauth. */
+  email?: string | null;
 }
 
 /**
@@ -227,24 +230,39 @@ export async function handleDevicePoll(req: Request, env: AuthEnv): Promise<Resp
   }
   const githubId = String(userJson.id);
   const login = userJson.login;
+  const email = typeof userJson.email === 'string' ? userJson.email : '';
 
-  // Persist into UserDO.
-  const userDoStub = env.USER_DO.get(env.USER_DO.idFromName(login));
-  const setLoginRes = await userDoStub.fetch(
-    new Request('https://do/setLogin', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ github_id: githubId, login }),
-    }),
-  );
-  if (!setLoginRes.ok) {
-    return new Response('userDO setLogin failed', { status: 500 });
+  // R-51a (Task #167): shared linker decides login_existing /
+  // create_no_email / link_to_existing / create_new and writes user blob +
+  // identity + (verified) email index through. Device flow + web callback
+  // both arrive here.
+  let linkResult;
+  try {
+    linkResult = await decideAndLink(env, {
+      provider: 'github',
+      provider_sub: githubId,
+      login,
+      email,
+      email_verified: false,
+    });
+  } catch (err) {
+    if (err instanceof MultipleAccountsError) {
+      log.warn('device.poll', { result: 'fail', reason: 'multiple_accounts' });
+      return new Response(JSON.stringify({ status: 'multiple-accounts' }), {
+        status: 409,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    log.error('device.poll', { result: 'fail', reason: 'linker_failed', err: String(err) });
+    return new Response('linker failed', { status: 500 });
   }
+  const userId = linkResult.user_id;
 
-  // Mint tunnel refresh token + persist hash under the tunnel slot.
+  // Mint tunnel refresh token + persist hash on the user blob role.
+  const userBlobStub = env.USER_DO.get(env.USER_DO.idFromName(`user:${userId}`));
   const tunnelRefreshToken = randomHex(32);
   const tunnelRefreshHash = await sha256Hex(tunnelRefreshToken);
-  const setHashRes = await userDoStub.fetch(
+  const setHashRes = await userBlobStub.fetch(
     new Request('https://do/setTunnelRefreshTokenHash', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -255,10 +273,10 @@ export async function handleDevicePoll(req: Request, env: AuthEnv): Promise<Resp
     return new Response('userDO setTunnelRefreshTokenHash failed', { status: 500 });
   }
 
-  // Mint tunnel JWT.
+  // Mint tunnel JWT — claims.sub = uuid (was github_id pre-R-51).
   const iat = Math.floor(Date.now() / 1000);
   const claims: TunnelJwtClaims = {
-    sub: githubId,
+    sub: userId,
     login,
     iat,
     exp: iat + TUNNEL_JWT_TTL_SEC,
@@ -267,11 +285,19 @@ export async function handleDevicePoll(req: Request, env: AuthEnv): Promise<Resp
   };
   const tunnelJwt = await signJwt(claims, env.JWT_REFRESH_SIGNING_KEY);
 
-  log.info('device.poll', { result: 'ok', login, sub_prefix: shortSub(githubId) });
+  log.info('device.poll', {
+    result: 'ok',
+    decision: linkResult.decision,
+    login,
+    sub_prefix: shortSub(userId),
+  });
 
+  // R-51a: response carries `user_id` so daemon (R-51b) persists the new
+  // PK alongside its existing `login` field for display continuity.
   return Response.json({
     tunnel_jwt: tunnelJwt,
     tunnel_refresh_token: tunnelRefreshToken,
+    user_id: userId,
     login,
   });
 }
@@ -280,15 +306,16 @@ export async function handleDevicePoll(req: Request, env: AuthEnv): Promise<Resp
  * POST /api/auth/tunnel/refresh — verify the tunnel refresh token, rotate it,
  * mint a fresh tunnel JWT.
  *
- * Body: { tunnel_refresh_token, login }. We need `login` because UserDO is
- * keyed by login (idFromName); the refresh token alone has no identity. The
- * daemon persists `login` alongside the refresh token at device-poll success.
+ * Body: { tunnel_refresh_token, user_id }. R-51a (Task #167) replaced the
+ * previous `login` field with `user_id` (the new uuid PK). The daemon
+ * (R-51b) persists `user_id` alongside the refresh token at device-poll
+ * success and replays it here so the worker can locate the user blob.
  */
 export async function handleTunnelRefresh(req: Request, env: AuthEnv): Promise<Response> {
   const log = loggerFor(req);
-  let body: { tunnel_refresh_token?: unknown; login?: unknown };
+  let body: { tunnel_refresh_token?: unknown; user_id?: unknown };
   try {
-    body = (await req.json()) as { tunnel_refresh_token?: unknown; login?: unknown };
+    body = (await req.json()) as { tunnel_refresh_token?: unknown; user_id?: unknown };
   } catch {
     log.warn('tunnel.refresh_fail', { reason: 'bad_json' });
     return new Response('bad json', { status: 400 });
@@ -296,16 +323,16 @@ export async function handleTunnelRefresh(req: Request, env: AuthEnv): Promise<R
   if (
     typeof body.tunnel_refresh_token !== 'string' ||
     body.tunnel_refresh_token.length === 0 ||
-    typeof body.login !== 'string' ||
-    body.login.length === 0
+    typeof body.user_id !== 'string' ||
+    body.user_id.length === 0
   ) {
     log.warn('tunnel.refresh_fail', { reason: 'missing_fields' });
-    return new Response('missing tunnel_refresh_token or login', { status: 400 });
+    return new Response('missing tunnel_refresh_token or user_id', { status: 400 });
   }
   const oldToken = body.tunnel_refresh_token;
-  const login = body.login;
+  const userId = body.user_id;
 
-  const userDoStub = env.USER_DO.get(env.USER_DO.idFromName(login));
+  const userDoStub = env.USER_DO.get(env.USER_DO.idFromName(`user:${userId}`));
 
   const oldHash = await sha256Hex(oldToken);
   const verifyRes = await userDoStub.fetch(
@@ -316,29 +343,39 @@ export async function handleTunnelRefresh(req: Request, env: AuthEnv): Promise<R
     }),
   );
   if (!verifyRes.ok) {
-    log.error('tunnel.refresh_fail', { reason: 'userdo_verify_http_error', status: verifyRes.status, login });
+    log.error('tunnel.refresh_fail', {
+      reason: 'userdo_verify_http_error',
+      status: verifyRes.status,
+      uid_prefix: shortSub(userId),
+    });
     return new Response('tunnel refresh verify failed', { status: 500 });
   }
   const verifyJson = (await verifyRes.json()) as { ok?: boolean };
   if (verifyJson.ok !== true) {
-    log.warn('tunnel.refresh_fail', { reason: 'invalid_token', login });
+    log.warn('tunnel.refresh_fail', {
+      reason: 'invalid_token',
+      uid_prefix: shortSub(userId),
+    });
     return new Response('invalid tunnel refresh token', { status: 401 });
   }
 
-  // Look up the canonical github_id.
-  const getLoginRes = await userDoStub.fetch(new Request('https://do/getLogin'));
-  if (getLoginRes.status === 404) {
-    log.warn('tunnel.refresh_fail', { reason: 'user_not_found', login });
+  // Look up the canonical user blob.
+  const getBlobRes = await userDoStub.fetch(new Request('https://do/getUserBlob'));
+  if (getBlobRes.status === 404) {
+    log.warn('tunnel.refresh_fail', { reason: 'user_not_found', uid_prefix: shortSub(userId) });
     return new Response('user not found', { status: 401 });
   }
-  if (!getLoginRes.ok) {
-    log.error('tunnel.refresh_fail', { reason: 'userdo_getlogin_failed', status: getLoginRes.status, login });
-    return new Response('userDO getLogin failed', { status: 500 });
+  if (!getBlobRes.ok) {
+    log.error('tunnel.refresh_fail', {
+      reason: 'userdo_getuserblob_failed',
+      status: getBlobRes.status,
+      uid_prefix: shortSub(userId),
+    });
+    return new Response('userDO getUserBlob failed', { status: 500 });
   }
-  const rec = (await getLoginRes.json()) as { github_id: string; login: string };
+  const blob = (await getBlobRes.json()) as { user_id: string; primary_login: string };
 
-  // Rotate: new opaque refresh + new hash. Writing the new hash overwrites
-  // the old one, so the old token can no longer pass verifyTunnelRefreshTokenHash.
+  // Rotate.
   const newToken = randomHex(32);
   const newHash = await sha256Hex(newToken);
   const setHashRes = await userDoStub.fetch(
@@ -349,14 +386,18 @@ export async function handleTunnelRefresh(req: Request, env: AuthEnv): Promise<R
     }),
   );
   if (!setHashRes.ok) {
-    log.error('tunnel.refresh_fail', { reason: 'userdo_setrefreshhash_failed', status: setHashRes.status, login });
+    log.error('tunnel.refresh_fail', {
+      reason: 'userdo_setrefreshhash_failed',
+      status: setHashRes.status,
+      uid_prefix: shortSub(userId),
+    });
     return new Response('userDO setTunnelRefreshTokenHash failed', { status: 500 });
   }
 
   const iat = Math.floor(Date.now() / 1000);
   const claims: TunnelJwtClaims = {
-    sub: rec.github_id,
-    login: rec.login,
+    sub: blob.user_id,
+    login: blob.primary_login,
     iat,
     exp: iat + TUNNEL_JWT_TTL_SEC,
     kind: 'tunnel',
@@ -365,8 +406,8 @@ export async function handleTunnelRefresh(req: Request, env: AuthEnv): Promise<R
   const tunnelJwt = await signJwt(claims, env.JWT_REFRESH_SIGNING_KEY);
 
   log.info('tunnel.refresh_ok', {
-    login: rec.login,
-    sub_prefix: shortSub(rec.github_id),
+    login: blob.primary_login,
+    sub_prefix: shortSub(blob.user_id),
     jti: claims.jti,
   });
 

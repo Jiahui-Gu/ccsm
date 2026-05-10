@@ -83,11 +83,13 @@ function findEvent(
 }
 
 interface UserDoState {
-  github_id?: string;
-  login?: string;
+  user_id?: string;
+  primary_login?: string;
   refresh_hash?: string;
   tunnel_refresh_hash?: string;
   created_at?: number;
+  identity_record?: unknown;
+  email_index_record?: unknown;
   revoked: boolean;
 }
 
@@ -96,13 +98,22 @@ function makeUserDoStub(state: UserDoState) {
     async fetch(req: Request): Promise<Response> {
       const url = new URL(req.url);
       const path = url.pathname;
-      if (req.method === 'POST' && path === '/setLogin') {
-        const body = (await req.json()) as { github_id: string; login: string };
-        state.github_id = body.github_id;
-        state.login = body.login;
+      // user-blob role
+      if (req.method === 'POST' && path === '/setUserBlob') {
+        const body = (await req.json()) as { user_id: string; primary_login: string };
+        state.user_id = body.user_id;
+        state.primary_login = body.primary_login;
         if (state.created_at === undefined)
           state.created_at = Math.floor(Date.now() / 1000);
         return new Response(null, { status: 204 });
+      }
+      if (req.method === 'GET' && path === '/getUserBlob') {
+        if (state.user_id === undefined) return new Response('not found', { status: 404 });
+        return Response.json({
+          user_id: state.user_id,
+          primary_login: state.primary_login,
+          created_at: state.created_at,
+        });
       }
       if (req.method === 'POST' && path === '/setRefreshTokenHash') {
         const body = (await req.json()) as { hash: string };
@@ -122,15 +133,25 @@ function makeUserDoStub(state: UserDoState) {
         const body = (await req.json()) as { hash: string };
         return Response.json({ ok: state.tunnel_refresh_hash === body.hash });
       }
-      if (req.method === 'GET' && path === '/getLogin') {
-        if (state.github_id === undefined) {
+      // identity role
+      if (req.method === 'GET' && path === '/getIdentity') {
+        if (state.identity_record === undefined)
           return new Response('not found', { status: 404 });
-        }
-        return Response.json({
-          github_id: state.github_id,
-          login: state.login,
-          created_at: state.created_at,
-        });
+        return Response.json(state.identity_record);
+      }
+      if (req.method === 'POST' && path === '/setIdentity') {
+        state.identity_record = await req.json();
+        return new Response(null, { status: 204 });
+      }
+      // email-index role
+      if (req.method === 'GET' && path === '/getEmailIndex') {
+        if (state.email_index_record === undefined)
+          return new Response('not found', { status: 404 });
+        return Response.json(state.email_index_record);
+      }
+      if (req.method === 'POST' && path === '/setEmailIndex') {
+        state.email_index_record = await req.json();
+        return new Response(null, { status: 204 });
       }
       return new Response('not found', { status: 404 });
     },
@@ -253,7 +274,7 @@ describe('OAuth event log — failure paths (F-T-3)', () => {
         method: 'POST',
         headers: {
           'X-CCSM-Request-Id': 'req-refresh-bad',
-          Cookie: 'refresh=wrong_token; login=octocat',
+          Cookie: 'refresh=wrong_token; uid=uuid-octocat',
         },
       });
       const res = await handleRefresh(req, env);
@@ -333,7 +354,7 @@ describe('OAuth event log — failure paths (F-T-3)', () => {
         },
         body: JSON.stringify({
           tunnel_refresh_token: 'wrong',
-          login: 'octocat',
+          user_id: 'uuid-octocat',
         }),
       });
       const res = await handleTunnelRefresh(req, env);
@@ -345,8 +366,8 @@ describe('OAuth event log — failure paths (F-T-3)', () => {
     expect(ev).toBeDefined();
     expect(ev!.request_id).toBe('req-tun-1');
     expect((ev!.fields as Record<string, unknown>).reason).toBe('invalid_token');
-    // Login is not a secret, but assert it surfaces so ops can attribute.
-    expect((ev!.fields as Record<string, unknown>).login).toBe('octocat');
+    // R-51a: log carries `uid_prefix`, not `login`.
+    expect((ev!.fields as Record<string, unknown>).uid_prefix).toBeDefined();
   });
 });
 
@@ -388,8 +409,8 @@ describe('redaction at integration boundary (F-T-3)', () => {
     for (const l of cap.lines) {
       expect(l.raw).not.toContain('gho_should_never_appear_in_logs');
     }
-    // sub_prefix surfaces but full sub does not (sub=12345678 happens to be
-    // 8 chars, identical to its prefix; assert prefix shape).
-    expect((ok!.fields as Record<string, unknown>).sub_prefix).toBe('12345678');
+    // R-51a: sub is now a uuid (mint inside oauthLinker), not the github_id
+    // string. Assert prefix shape: shortSub returns first 8 hex chars.
+    expect((ok!.fields as Record<string, unknown>).sub_prefix).toMatch(/^[0-9a-f]{8}$/i);
   });
 });

@@ -62,12 +62,13 @@ export function getAuthMode(env: { CCSM_AUTH_MODE?: string }): AuthMode {
 }
 
 /**
- * Per-user TunnelDO id name. Matches the spec in Task #136 — one GitHub
- * user, one DO. github_id (the OAuth subject's numeric id, NOT login) is
- * stable across login renames so the DO survives a username change.
+ * Per-user TunnelDO id name. R-51a (Task #167): the input is now the user
+ * uuid (claims.sub) — pre-R-51 it was the github_id. This same string also
+ * keys the user-blob role of UserDO (idFromName('user:<uuid>')) so a single
+ * lookup namespace covers both DOs.
  */
-export function getUserDoIdName(github_id: string): string {
-  return 'user:' + github_id;
+export function getUserDoIdName(user_id: string): string {
+  return 'user:' + user_id;
 }
 
 /**
