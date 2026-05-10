@@ -41,6 +41,10 @@
  *     GET  /getEmailIndex                    → 200 JSON | 404
  *     POST /setEmailIndex     { user_id, created_at } → 204
  *     POST /clearEmailIndex                  → 204
+ *   pkce-state role (R-51b, Task #168 — desktop OAuth flow):
+ *     GET  /getPkceState                     → 200 JSON | 404
+ *     POST /setPkceState      { code_verifier, created_at } → 204
+ *     POST /clearPkceState                   → 204
  */
 import { DurableObject } from 'cloudflare:workers';
 import type { AuthEnv } from './bindings';
@@ -57,6 +61,9 @@ const KEY_IDENTITY = 'identity_record';
 
 // Email-index storage keys.
 const KEY_EMAIL_INDEX = 'email_index_record';
+
+// PKCE-state storage keys (R-51b, Task #168).
+const KEY_PKCE_STATE = 'pkce_state_record';
 
 export interface UserBlob {
   user_id: string;
@@ -76,6 +83,15 @@ export interface IdentityRecord {
 
 export interface EmailIndexRecord {
   user_id: string;
+  created_at: number;
+}
+
+/** R-51b (Task #168): persisted PKCE flow row, written at desktop/start
+ *  and read+cleared at desktop/cb. `code_verifier` is the RFC 7636 secret
+ *  the callback presents to GitHub /access_token. `created_at` is epoch
+ *  seconds; the desktop callback enforces a 5-minute TTL. */
+export interface PkceStateRecord {
+  code_verifier: string;
   created_at: number;
 }
 
@@ -174,6 +190,23 @@ export class UserDO extends DurableObject<AuthEnv> {
   }
 
   // ---------------------------------------------------------------------
+  // pkce:state:<state> role (R-51b, Task #168)
+  // ---------------------------------------------------------------------
+
+  async setPkceState(rec: PkceStateRecord): Promise<void> {
+    await this.storage.put(KEY_PKCE_STATE, rec);
+  }
+
+  async getPkceState(): Promise<PkceStateRecord | null> {
+    const rec = await this.storage.get<PkceStateRecord>(KEY_PKCE_STATE);
+    return rec ?? null;
+  }
+
+  async clearPkceState(): Promise<void> {
+    await this.storage.delete(KEY_PKCE_STATE);
+  }
+
+  // ---------------------------------------------------------------------
   // RPC fetch handler
   // ---------------------------------------------------------------------
 
@@ -251,6 +284,28 @@ export class UserDO extends DurableObject<AuthEnv> {
       }
       if (req.method === 'POST' && path === '/clearEmailIndex') {
         await this.clearEmailIndex();
+        return new Response(null, { status: 204 });
+      }
+
+      // pkce-state role (R-51b, Task #168)
+      if (req.method === 'GET' && path === '/getPkceState') {
+        const rec = await this.getPkceState();
+        if (rec === null) return new Response('not found', { status: 404 });
+        return Response.json(rec);
+      }
+      if (req.method === 'POST' && path === '/setPkceState') {
+        const body = await req.json<{ code_verifier?: unknown; created_at?: unknown }>();
+        if (typeof body.code_verifier !== 'string' || typeof body.created_at !== 'number') {
+          return new Response('bad request', { status: 400 });
+        }
+        await this.setPkceState({
+          code_verifier: body.code_verifier,
+          created_at: body.created_at,
+        });
+        return new Response(null, { status: 204 });
+      }
+      if (req.method === 'POST' && path === '/clearPkceState') {
+        await this.clearPkceState();
         return new Response(null, { status: 204 });
       }
 

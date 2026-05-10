@@ -19,6 +19,20 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["process", "io-util", "rt-multi-thread", "macros"] }
 
+# R-51b (Task #168): PKCE deep-link OAuth flow.
+#   - tauri-plugin-deep-link registers the `ccsm://` custom scheme so the
+#     OS hands the cf-worker bounce page's location.replace target back to
+#     the desktop shell.
+#   - tauri-plugin-single-instance with the `deep-link` feature is REQUIRED
+#     by the deep-link plugin on Linux/Windows so a freshly-launched second
+#     instance forwards its argv (which carries the deep-link URL) back to
+#     the original process instead of opening a fresh window. macOS
+#     dispatches deep links to the running instance via the on_open_url
+#     listener directly (no single-instance round-trip needed there).
+#   Verified against https://v2.tauri.app/plugin/deep-linking/ +
+#   https://v2.tauri.app/plugin/single-instance/ on 2026-05-10.
+tauri-plugin-deep-link = "2"
+
 # S1 (#695): random bytes for generating ~/.ccsm/token on first launch.
 # `getrandom` is the de-facto standard thin wrapper over OS RNG
 # (BCryptGenRandom on Windows, getrandom(2) / /dev/urandom on Unix).
@@ -42,3 +56,11 @@ windows = { version = "0.62", features = [
     "Win32_System_JobObjects",
     "Win32_System_Threading",
 ] }
+
+# R-51b (Task #168): single-instance plugin with the deep-link feature on
+# Linux/Windows/macOS. Verified per official Tauri v2 docs
+# (https://v2.tauri.app/plugin/deep-linking/, "Desktop" section). Without
+# the `deep-link` feature, the second instance does not forward its argv
+# (which carries the deep-link URL) to the running instance.
+[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
