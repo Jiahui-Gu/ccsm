@@ -18,6 +18,8 @@ vi.mock('@tauri-apps/api/event', () => ({
 // Import AFTER mocks so the module picks up the mocked invoke/listen.
 import {
   invokeStartOauth,
+  invokeStartPkceOauth,
+  invokeStartDeviceOauth,
   invokeGetOauthState,
   invokeGetOauthLogin,
   invokeOauthLogout,
@@ -43,6 +45,28 @@ describe('oauth-state helpers', () => {
     expect(invokeMock).toHaveBeenCalledTimes(1);
     expect(invokeMock).toHaveBeenCalledWith('start_oauth');
     expect(out.user_code).toBe('ABCD-1234');
+  });
+
+  it('invokeStartPkceOauth invokes the start_pkce_oauth command', async () => {
+    // R-51c (Task #169): default sign-in path. The Rust command resolves
+    // void once the browser has been launched; completion arrives later
+    // via the oauth-complete event listener.
+    invokeMock.mockResolvedValueOnce(undefined);
+    await invokeStartPkceOauth();
+    expect(invokeMock).toHaveBeenCalledWith('start_pkce_oauth');
+  });
+
+  it('invokeStartDeviceOauth invokes the start_device_oauth command', async () => {
+    // R-51c (Task #169): fallback path. Same payload shape as start_oauth.
+    invokeMock.mockResolvedValueOnce({
+      user_code: 'EFGH-5678',
+      verification_uri: 'https://github.com/login/device',
+      expires_in: 900,
+      interval: 5,
+    });
+    const out = await invokeStartDeviceOauth();
+    expect(invokeMock).toHaveBeenCalledWith('start_device_oauth');
+    expect(out.user_code).toBe('EFGH-5678');
   });
 
   it('invokeGetOauthState invokes get_oauth_state', async () => {

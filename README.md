@@ -124,6 +124,27 @@ ccsm-tauri
 
 Detailed architecture diagrams: see [DESIGN.md §13 Deployment Modes](./DESIGN.md#13-deployment-modes-architecture-diagrams).
 
+#### Local Tauri dev — `CCSM_AUTH_BASE` is mandatory (R-51c / Task #169)
+
+Per the Tauri shell's repo-agnostic ROADMAP red-line, the auth host is
+**never hardcoded** — it must be injected via the `CCSM_AUTH_BASE` env
+var. Without it, the in-app sign-in flows surface a clear failure
+("CCSM_AUTH_BASE env not set …") instead of dialing a default host.
+
+```sh
+# Production / staging
+CCSM_AUTH_BASE=https://cc-sm.pages.dev pnpm tauri dev
+
+# Local cf-worker (run `pnpm --filter @ccsm/cf-worker dev` in another terminal)
+CCSM_AUTH_BASE=http://127.0.0.1:8787 pnpm tauri dev
+```
+
+Release builds inject this value through the packaging pipeline; end
+users do not need to set it manually.
+
+See [docs/S4-SETUP.md](./docs/S4-SETUP.md#desktop-sign-in-flows-r-51--tasks-167-169)
+for the full PKCE-vs-device-flow flow description.
+
 ## Tests
 
 - **Daemon** (`packages/daemon`): `pnpm -F @ccsm/daemon test` — unit /
