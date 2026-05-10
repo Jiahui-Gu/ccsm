@@ -98,10 +98,10 @@ describe('buildWsUrl (hostBase injection)', () => {
   // through to the SPA index.html.
   it('honours an explicit wsPath override', () => {
     const url = buildWsUrl('s', 't', 0, {
-      httpBase: 'https://cc-sm.pages.dev',
+      httpBase: 'https://ccsm-worker.jiahuigu.workers.dev',
       wsPath: '/ws/default',
     });
-    expect(url).toBe('wss://cc-sm.pages.dev/ws/default?sid=s&token=t');
+    expect(url).toBe('wss://ccsm-worker.jiahuigu.workers.dev/ws/default?sid=s&token=t');
   });
 
   it('falls back to API_PATHS.ws when wsPath is omitted', () => {

@@ -43,8 +43,8 @@ Recommended values:
 | Field | Value |
 |-------|-------|
 | Application name | `ccsm` |
-| Homepage URL | `https://cc-sm.pages.dev` |
-| Authorization callback URL | `https://cc-sm.pages.dev/api/auth/github/callback` |
+| Homepage URL | `https://ccsm-worker.jiahuigu.workers.dev` |
+| Authorization callback URL | `https://ccsm-worker.jiahuigu.workers.dev/api/auth/github/callback` |
 | Enable Device Flow | **checked** (required for S4-T8 desktop login) |
 
 OAuth Apps allow only **one** Authorization callback URL. We use the
@@ -164,7 +164,7 @@ Default for installed Windows / Linux desktops where the OS can dispatch
    GitHub authorize URL.
 3. The shell opens the URL via `tauri-plugin-shell`. The user authorizes
    on github.com.
-4. GitHub redirects back to `https://cc-sm.pages.dev/oauth/desktop/cb`,
+4. GitHub redirects back to `https://ccsm-worker.jiahuigu.workers.dev/oauth/desktop/cb`,
    which renders a tiny bounce page that immediately navigates to
    `ccsm://oauth?token=<jwt>&refresh=<token>&state=<state>`.
 5. The OS routes the deep link to the running Tauri instance (single-
@@ -190,7 +190,7 @@ mints a `user_code` + `verification_uri`; SPA shows the modal; Rust polls
 The single OAuth App registered in step 1 above already supports both
 desktop paths. No second app is needed:
 
-- **Authorization callback URL**: `https://cc-sm.pages.dev/oauth/desktop/cb`
+- **Authorization callback URL**: `https://ccsm-worker.jiahuigu.workers.dev/oauth/desktop/cb`
   (R-51a re-routed the desktop path to this endpoint; the legacy
   `/api/auth/github/callback` continues to serve the web flow). If your
   app was registered before R-51a, update the callback URL in the GitHub
@@ -204,7 +204,7 @@ The Tauri shell is repo-agnostic by ROADMAP red-line, so the auth host is
 
 ```bash
 # Production / staging
-CCSM_AUTH_BASE=https://cc-sm.pages.dev pnpm tauri dev
+CCSM_AUTH_BASE=https://ccsm-worker.jiahuigu.workers.dev pnpm tauri dev
 
 # Local cf-worker dev
 CCSM_AUTH_BASE=http://127.0.0.1:8787 pnpm tauri dev

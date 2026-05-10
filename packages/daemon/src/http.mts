@@ -140,8 +140,8 @@ function handleCorsPreflight(req: IncomingMessage, res: ServerResponse): void {
   // Cache preflight for 10 min — keeps Tauri webview from re-issuing OPTIONS
   // on every fetch. Spec lets browsers cap at their discretion (Chromium 2h).
   res.setHeader('Access-Control-Max-Age', '600');
-  // S2 #702 — Chrome 120+ Private Network Access (PNA): when a public-network
-  // page (https://cc-sm.pages.dev) initiates a fetch to a private/loopback
+  // S2 #702 / R-53 #175 — Chrome 120+ Private Network Access (PNA): when a public-network
+  // page (https://ccsm-worker.jiahuigu.workers.dev) initiates a fetch to a private/loopback
   // address (127.0.0.1), the browser sends `Access-Control-Request-Private-
   // Network: true` on the preflight and REQUIRES the response to echo back
   // `Access-Control-Allow-Private-Network: true`, otherwise the actual

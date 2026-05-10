@@ -273,27 +273,27 @@ describe('ws upgrade auth', () => {
   });
 
   // S2 T2 (Task #727): ws upgrade must auto-inherit T1's classifyOrigin
-  // allow-list for `https://cc-sm.pages.dev`. ws.mts calls
+  // allow-list for `https://ccsm-worker.jiahuigu.workers.dev`. ws.mts calls
   // `classifyOrigin(origin)` and rejects on 'rejected'. After T1 (PR #1141)
   // the prod Pages host classifies as 'allowed', so the upgrade should yield
   // a 101 (ws OPEN) without any further change to ws.mts.
-  it('accepts Origin: https://cc-sm.pages.dev (S2 T2 #727)', async () => {
+  it('accepts Origin: https://ccsm-worker.jiahuigu.workers.dev (S2 T2 #727)', async () => {
     const sid = await createSid();
     const d = dial(`${baseWs}/ws?sid=${sid}&token=${TOKEN}`, {
-      Origin: 'https://cc-sm.pages.dev',
+      Origin: 'https://ccsm-worker.jiahuigu.workers.dev',
     });
     await waitOpen(d.ws);
     expect(d.ws.readyState).toBe(WebSocket.OPEN);
     d.ws.close();
   });
 
-  it('rejects Origin: https://cc-sm-evil.pages.dev (sibling spoof, S2 T2 #727)', async () => {
+  it('rejects Origin: https://ccsm-worker-evil.jiahuigu.workers.dev (sibling spoof, S2 T2 #727)', async () => {
     // Defense-in-depth: confirm the ws path also rejects the spoof variant
     // that classifyOrigin marks 'rejected'. Without this we could regress
     // ws.mts independently of http.mts.
     const sid = await createSid();
     const d = dial(`${baseWs}/ws?sid=${sid}&token=${TOKEN}`, {
-      Origin: 'https://cc-sm-evil.pages.dev',
+      Origin: 'https://ccsm-worker-evil.jiahuigu.workers.dev',
     });
     const closed = await d.closed;
     expect(closed.code).toBeGreaterThanOrEqual(1000);

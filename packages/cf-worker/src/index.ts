@@ -127,17 +127,12 @@ export default {
       return new Response('Not Found', { status: 404 });
     }
 
-    // R-51b (Task #168): desktop OAuth callback lives at
-    // `GET /oauth/desktop/cb` (NOT under /api/auth/*) so the GitHub OAuth App
-    // callback URL prefix `https://cc-sm.pages.dev/` stays compatible. The
-    // worker run_first glob in wrangler.toml needs to include /oauth/* — see
-    // wrangler.toml updates in this PR. Routing this branch BEFORE the
-    // /api/* + /token + ws branches keeps the static-asset catch-all at the
-    // tail of the function intact.
-    if (url.pathname === '/oauth/desktop/cb') {
-      const deskRes = await dispatchDesktop(stampedReq, env);
-      if (deskRes !== null) return deskRes;
-    }
+    // R-53 (Task #175): `/oauth/desktop/cb` is now a static HTML page served
+    // straight out of `frontend-web/dist/oauth/desktop/cb/index.html` via
+    // Workers Static Assets. The Worker no longer handles that path — the
+    // static page POSTs to `/api/auth/desktop/exchange` (handled above by
+    // dispatchDesktop) for the PKCE verifier exchange + JWT mint. See
+    // packages/cf-worker/src/auth/desktopOauth.ts header comment.
 
     // S4-T5 (Task #136): mode toggle. In `legacy` (default, current
     // production) the routing below behaves exactly as before: single shared
@@ -226,7 +221,7 @@ export default {
     // Task #787 (S3-C): REST `/api/*` and `/token` flow through the same DO
     // instance, which serializes them as http_req control frames over the
     // daemon-dialed ws and awaits the matching http_res. The browser only
-    // ever talks to cc-sm.pages.dev; the DO bridges to the NAT'd daemon.
+    // ever talks to ccsm-worker.jiahuigu.workers.dev; the DO bridges to the NAT'd daemon.
     if (url.pathname.startsWith('/api/') || url.pathname === '/token') {
       let doIdName = 'default';
       let routedLogin: string | undefined;

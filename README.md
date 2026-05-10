@@ -70,15 +70,15 @@ authentication nor proxies traffic.
 node packages/daemon/dist/index.mjs
 
 # 2. Open in a browser:
-#    https://cc-sm.pages.dev
+#    https://ccsm-worker.jiahuigu.workers.dev
 ```
 
 Two paths for token bootstrap:
 
 - Append the `?token=<t>` from the daemon stdout line to the Pages URL:
-  `https://cc-sm.pages.dev/?token=<token>`. The SPA writes it to
+  `https://ccsm-worker.jiahuigu.workers.dev/?token=<token>`. The SPA writes it to
   sessionStorage.
-- Or open `https://cc-sm.pages.dev/` directly. The SPA automatically
+- Or open `https://ccsm-worker.jiahuigu.workers.dev/` directly. The SPA automatically
   `GET http://127.0.0.1:9876/token` (this endpoint is exposed only to
   loopback origins and Pages allow-list origins) to retrieve the token.
 
@@ -90,7 +90,7 @@ must be on a version with PNA (Private Network Access) preflight support
 CI: every push to `main` or `working` whose diff touches
 `packages/{frontend-web,ui,core,shared}` triggers
 `.github/workflows/deploy-pages.yml`, which builds and deploys to
-https://cc-sm.pages.dev (no manual `gh workflow run` needed). You can also
+https://ccsm-worker.jiahuigu.workers.dev (no manual `gh workflow run` needed). You can also
 `workflow_dispatch` it manually from the Actions page (e.g. after rotating
 Cloudflare env vars).
 
@@ -133,7 +133,7 @@ var. Without it, the in-app sign-in flows surface a clear failure
 
 ```sh
 # Production / staging
-CCSM_AUTH_BASE=https://cc-sm.pages.dev pnpm tauri dev
+CCSM_AUTH_BASE=https://ccsm-worker.jiahuigu.workers.dev pnpm tauri dev
 
 # Local cf-worker (run `pnpm --filter @ccsm/cf-worker dev` in another terminal)
 CCSM_AUTH_BASE=http://127.0.0.1:8787 pnpm tauri dev

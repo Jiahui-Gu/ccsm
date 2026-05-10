@@ -18,6 +18,9 @@ import '@ccsm/ui/styles.css';
 // Task #780 (S3-T5): the default daemon base flipped to the CF Pages
 // tunnel, so `/token` now goes to `https://cc-sm.pages.dev/token` unless
 // the user passes `?daemon=` to redirect at a local loopback daemon.
+// R-53 (Task #175): Pages was retired; the same-origin host is now the
+// cf-worker on `https://ccsm-worker.jiahuigu.workers.dev` which serves
+// both the SPA and `/token` itself.
 //
 // Task #31 (R-13): the boot path emits `[ccsm spa] …` console.log markers
 // so the smoke spec's beforeEach console-forwarder can fingerprint where

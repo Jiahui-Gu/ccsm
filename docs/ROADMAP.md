@@ -81,7 +81,7 @@ Production cutover ladder (S4 -> S5):
 
 ## Deployment topology change — Task #154 (R-49 audit P1, F-A-2), 2026-05-10
 
-The standalone Cloudflare **Pages** project (`cc-sm.pages.dev`) and its
+The standalone Cloudflare **Pages** project (`ccsm-worker.jiahuigu.workers.dev`) and its
 reproxy Pages Function (`packages/frontend-web/functions/[[path]].ts`) have
 been folded into the same Worker that owns `TunnelDO`. The Worker now uses
 [Cloudflare Workers Static Assets](https://developers.cloudflare.com/workers/static-assets/)
@@ -90,7 +90,7 @@ to serve the SPA bundle (`packages/frontend-web/dist`) directly:
 - `packages/cf-worker/wrangler.toml` declares `[assets] directory = "../frontend-web/dist"` with `not_found_handling = "single-page-application"` for SPA history-mode fallback and `run_worker_first = ["/health", "/ws/default", "/tunnel/default", "/token", "/api/*"]` so dynamic paths still hit the Worker script.
 - `.github/workflows/deploy-pages.yml` is removed; `.github/workflows/deploy-worker.yml` now builds `frontend-web` before `wrangler deploy` so the Worker upload includes both the script and the SPA bundle in a single atomic deploy.
 - `packages/frontend-web/wrangler.toml`, `packages/frontend-web/functions/[[path]].ts`, and `packages/frontend-web/tsconfig.functions.json` are deleted.
-- `cc-sm.pages.dev` is left intact for now — this PR only prepares the Worker side. The production DNS cutover (point the canonical SPA hostname at the Worker) is a follow-up.
+- `ccsm-worker.jiahuigu.workers.dev` is left intact for now — this PR only prepares the Worker side. The production DNS cutover (point the canonical SPA hostname at the Worker) is a follow-up.
 
 Why: the prior topology required two deploy pipelines, two wrangler configs, and a Pages-Function reproxy hop on every browser request that already terminated in the Worker. The folded topology halves the deploy surface and eliminates the reproxy latency.
 
