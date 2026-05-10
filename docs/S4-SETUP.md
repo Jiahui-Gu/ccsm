@@ -144,3 +144,72 @@ To rotate a secret (compromise or scheduled rotation):
 GitHub OAuth App **client secret** can be rotated from the App settings page
 ("Generate a new client secret"); the old secret remains valid for a brief
 grace window so you can roll the new value into Cloudflare without downtime.
+
+## Desktop sign-in flows (R-51 / Tasks #167-#169)
+
+The Tauri shell ships with **two** sign-in paths, gated through the same
+GitHub OAuth App as the web flow. The SPA (`LoginButton`) shows the PKCE
+path as the primary affordance and the device-flow path as a collapsible
+fallback.
+
+### Primary — PKCE deep-link (R-51b/c)
+
+Default for installed Windows / Linux desktops where the OS can dispatch
+`ccsm://` URLs back to a running app instance.
+
+1. User clicks **"Sign in with GitHub"**.
+2. Tauri command `start_pkce_oauth` POSTs `/api/auth/desktop/start` to
+   cf-worker. The worker mints a `state` + `code_verifier` (verifier
+   persisted server-side in the PKCE-state UserDO role) and returns the
+   GitHub authorize URL.
+3. The shell opens the URL via `tauri-plugin-shell`. The user authorizes
+   on github.com.
+4. GitHub redirects back to `https://cc-sm.pages.dev/oauth/desktop/cb`,
+   which renders a tiny bounce page that immediately navigates to
+   `ccsm://oauth?token=<jwt>&refresh=<token>&state=<state>`.
+5. The OS routes the deep link to the running Tauri instance (single-
+   instance plugin forwards across instances). The `on_open_url` listener
+   verifies `state` against `PkceStateStore`, persists the credentials to
+   `~/.ccsm/tunnel_jwt`, and emits `oauth-complete`.
+
+The JWT never travels through the SPA — only the resolved login string
+crosses the IPC boundary.
+
+### Fallback — Device flow (S4-T8 / R-51c)
+
+Reachable from the **"Trouble signing in? Use a code instead"** link
+under the primary button. The link auto-expands 5 s after a PKCE click
+that has not resolved.
+
+Same wire flow as before R-51 (Task #141): cf-worker `/api/auth/device/start`
+mints a `user_code` + `verification_uri`; SPA shows the modal; Rust polls
+`/api/auth/device/poll` until success or timeout.
+
+### GitHub OAuth App configuration for desktop
+
+The single OAuth App registered in step 1 above already supports both
+desktop paths. No second app is needed:
+
+- **Authorization callback URL**: `https://cc-sm.pages.dev/oauth/desktop/cb`
+  (R-51a re-routed the desktop path to this endpoint; the legacy
+  `/api/auth/github/callback` continues to serve the web flow). If your
+  app was registered before R-51a, update the callback URL in the GitHub
+  App settings.
+- **Enable Device Flow**: must remain checked for the fallback path.
+
+### Local dev / preview
+
+The Tauri shell is repo-agnostic by ROADMAP red-line, so the auth host is
+**injected via env**, never hardcoded:
+
+```bash
+# Production / staging
+CCSM_AUTH_BASE=https://cc-sm.pages.dev pnpm tauri dev
+
+# Local cf-worker dev
+CCSM_AUTH_BASE=http://127.0.0.1:8787 pnpm tauri dev
+```
+
+Without `CCSM_AUTH_BASE`, the `start_pkce_oauth` / `start_device_oauth`
+commands surface a clear `oauth-failed` event with reason
+`"CCSM_AUTH_BASE env not set ..."` rather than dialing a default host.
