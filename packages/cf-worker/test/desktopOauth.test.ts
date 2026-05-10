@@ -1,30 +1,36 @@
 /**
- * R-51b (Task #168): cf-worker desktop OAuth (PKCE) flow tests.
+ * R-51b (Task #168) + R-53 (Task #175): cf-worker desktop OAuth (PKCE)
+ * flow tests.
+ *
+ * R-53 split the legacy GET `/oauth/desktop/cb` (which the Worker rendered
+ * as an HTML deep-link bounce page) into:
+ *   - a static `frontend-web/public/oauth/desktop/cb/index.html` (NOT
+ *     tested here — see frontend-web/test/oauth-callback-page.test.ts)
+ *   - a JSON-returning POST `/api/auth/desktop/exchange` endpoint, tested
+ *     below as `handleDesktopExchange`.
  *
  * Covers:
  *   - start: returns auth_url with required params + persists pkce-state row
  *     in UserDO under idFromName(`pkce:state:<state>`).
- *   - callback (state unknown): 400 before any GitHub call.
- *   - callback (state expired, >5min): 400 before GitHub.
- *   - callback (PKCE verifier mismatch): GitHub 200 + error payload → 400.
- *   - callback (happy path) — runs decideAndLink branches:
+ *   - exchange (state unknown): 400 before any GitHub call.
+ *   - exchange (state expired, >5min): 400 before GitHub.
+ *   - exchange (PKCE verifier mismatch): GitHub 200 + error payload → 400.
+ *   - exchange (missing code/state in body): 400.
+ *   - exchange (malformed JSON body): 400.
+ *   - exchange (GitHub /access_token 5xx): 502.
+ *   - exchange (happy path) — runs decideAndLink branches:
  *       * create_no_email (private email)
- *       * create_new (verified email, fresh)  — synthesized via fixture
- *       * link_to_existing (verified email pre-mapped to a user)
  *       * login_existing (identity row already present)
- *   - callback HTML page: contains `location.replace`, has a button, and
- *     the deep link string `ccsm://oauth?token=`.
- *   - dispatchDesktop: routing.
- *
- * The test fake routes UserDO storage by idFromName so identity row,
- * user blob, email index, AND pkce-state can coexist in one env. The
- * test mocks GitHub fetch the same way webOauth.test.ts does.
+ *       * link_to_existing seed (verified email pre-mapped, behaves as
+ *         create_no_email under read:user scope — assertion locks that in)
+ *   - exchange JSON shape: { tunnel_jwt, refresh_token } both strings.
+ *   - dispatchDesktop: routing + null on legacy /oauth/desktop/cb path.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   dispatchDesktop,
   handleDesktopStart,
-  handleDesktopCallback,
+  handleDesktopExchange,
 } from '../src/auth/desktopOauth';
 import type { AuthEnv } from '../src/auth/bindings';
 import { verifyJwt, type TunnelJwtClaims } from '../src/auth/jwt';
@@ -148,17 +154,6 @@ function makeEnv(): { env: AuthEnv; instances: Map<string, DoState> } {
   return { env, instances };
 }
 
-/** Pull the deep-link URL out of the rendered HTML's `location.replace("…")`
- *  call. We deliberately read the script side rather than the `<a href>` so
- *  the URL has raw `&` separators (the href is HTML-escaped to `&amp;`,
- *  which URLSearchParams would mis-parse). */
-function extractDeepLink(html: string): URLSearchParams {
-  const m = html.match(/location\.replace\("(ccsm:\/\/oauth\?[^"]+)"\)/);
-  if (!m) throw new Error('deep link not found in rendered HTML');
-  const url = m[1]!;
-  return new URLSearchParams(url.slice('ccsm://oauth?'.length));
-}
-
 let realFetch: typeof fetch;
 
 beforeEach(() => {
@@ -177,6 +172,7 @@ interface MockGhOpts {
   userLogin?: string;
   userEmail?: string | null;
   userStatus?: number;
+  tokenStatus?: number;
   /** Capture the last token-exchange body (URLSearchParams form). */
   capture?: (body: URLSearchParams) => void;
 }
@@ -193,6 +189,9 @@ function mockGithubFetch(opts: MockGhOpts): ReturnType<typeof vi.fn> {
       if (opts.capture) {
         const raw = (init?.body ?? '') as string;
         opts.capture(new URLSearchParams(raw));
+      }
+      if (opts.tokenStatus && opts.tokenStatus >= 400) {
+        return new Response('bad', { status: opts.tokenStatus });
       }
       if (opts.tokenError) {
         return Response.json({ error: opts.tokenError });
@@ -235,6 +234,15 @@ async function startAndExtractState(
   return { state, auth_url: body.auth_url };
 }
 
+/** Build a POST /api/auth/desktop/exchange request with the given JSON body. */
+function exchangeReq(body: unknown): Request {
+  return new Request('https://example.com/api/auth/desktop/exchange', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: typeof body === 'string' ? body : JSON.stringify(body),
+  });
+}
+
 describe('handleDesktopStart', () => {
   it('returns auth_url with client_id/state/scope/redirect_uri/code_challenge_method=S256 + persists pkce row', async () => {
     const { env, instances } = makeEnv();
@@ -274,14 +282,12 @@ describe('handleDesktopStart', () => {
   });
 });
 
-describe('handleDesktopCallback', () => {
+describe('handleDesktopExchange', () => {
   it('400s when state has no matching pkce row (mismatch / replay)', async () => {
     const { env } = makeEnv();
     const ghFetch = mockGithubFetch({});
-    const res = await handleDesktopCallback(
-      new Request(
-        'https://example.com/oauth/desktop/cb?code=abc&state=' + 'a'.repeat(64),
-      ),
+    const res = await handleDesktopExchange(
+      exchangeReq({ code: 'abc', state: 'a'.repeat(64) }),
       env,
     );
     expect(res.status).toBe(400);
@@ -304,10 +310,8 @@ describe('handleDesktopCallback', () => {
     });
 
     const ghFetch = mockGithubFetch({});
-    const res = await handleDesktopCallback(
-      new Request(
-        `https://example.com/oauth/desktop/cb?code=abc&state=${state}`,
-      ),
+    const res = await handleDesktopExchange(
+      exchangeReq({ code: 'abc', state }),
       env,
     );
     expect(res.status).toBe(400);
@@ -319,31 +323,41 @@ describe('handleDesktopCallback', () => {
     const { env } = makeEnv();
     const { state } = await startAndExtractState(env);
     mockGithubFetch({ tokenError: 'bad_verification_code' });
-    const res = await handleDesktopCallback(
-      new Request(
-        `https://example.com/oauth/desktop/cb?code=abc&state=${state}`,
-      ),
+    const res = await handleDesktopExchange(
+      exchangeReq({ code: 'abc', state }),
       env,
     );
     expect(res.status).toBe(400);
     expect(await res.text()).toMatch(/bad_verification_code/);
   });
 
-  it('400s when code or state query param is missing', async () => {
+  it('400s when code or state body field is missing', async () => {
     const { env } = makeEnv();
-    const r1 = await handleDesktopCallback(
-      new Request('https://example.com/oauth/desktop/cb?state=abc'),
-      env,
-    );
+    const r1 = await handleDesktopExchange(exchangeReq({ state: 'abc' }), env);
     expect(r1.status).toBe(400);
-    const r2 = await handleDesktopCallback(
-      new Request('https://example.com/oauth/desktop/cb?code=abc'),
-      env,
-    );
+    const r2 = await handleDesktopExchange(exchangeReq({ code: 'abc' }), env);
     expect(r2.status).toBe(400);
   });
 
-  it('happy path (create_no_email): forwards verifier to GitHub, mints tunnel JWT, renders deep-link bounce page', async () => {
+  it('400s when body is malformed JSON', async () => {
+    const { env } = makeEnv();
+    const res = await handleDesktopExchange(exchangeReq('not-json{'), env);
+    expect(res.status).toBe(400);
+    expect(await res.text()).toMatch(/malformed JSON/);
+  });
+
+  it('502s when GitHub /access_token is HTTP 5xx', async () => {
+    const { env } = makeEnv();
+    const { state } = await startAndExtractState(env);
+    mockGithubFetch({ tokenStatus: 503 });
+    const res = await handleDesktopExchange(
+      exchangeReq({ code: 'abc', state }),
+      env,
+    );
+    expect(res.status).toBe(502);
+  });
+
+  it('happy path (create_no_email): forwards verifier to GitHub, mints tunnel JWT, returns JSON tokens', async () => {
     const { env, instances } = makeEnv();
     const { state } = await startAndExtractState(env);
     const pkceInst = instances.get(`pkce:state:${state}`)!;
@@ -365,15 +379,16 @@ describe('handleDesktopCallback', () => {
       },
     });
 
-    const res = await handleDesktopCallback(
-      new Request(
-        `https://example.com/oauth/desktop/cb?code=abc&state=${state}`,
-      ),
+    const res = await handleDesktopExchange(
+      exchangeReq({ code: 'abc', state }),
       env,
     );
     expect(res.status).toBe(200);
-    expect(res.headers.get('content-type')).toMatch(/text\/html/);
-    const html = await res.text();
+    expect(res.headers.get('content-type')).toMatch(/application\/json/);
+    const body = (await res.json()) as {
+      tunnel_jwt: string;
+      refresh_token: string;
+    };
 
     // PKCE verifier was forwarded; redirect_uri matched start; client_secret
     // present (GitHub OAuth Apps require it even with PKCE).
@@ -384,19 +399,11 @@ describe('handleDesktopCallback', () => {
     // pkce row consumed (one-shot use).
     expect(pkceInst.data.has('pkce_state_record')).toBe(false);
 
-    // Bounce page structure.
-    expect(html).toMatch(/location\.replace\(/);
-    expect(html).toMatch(/<a[^>]+id="open"[^>]+class="btn"/);
-    expect(html).toMatch(/ccsm:\/\/oauth\?token=/);
+    // JSON shape.
+    expect(typeof body.tunnel_jwt).toBe('string');
+    expect(body.refresh_token).toMatch(/^[0-9a-f]{64}$/);
 
-    // The deep link in the page contains tunnel JWT + refresh + state.
-    const params = extractDeepLink(html);
-    const token = params.get('token')!;
-    const refresh = params.get('refresh')!;
-    expect(params.get('state')).toBe(state);
-    expect(refresh).toMatch(/^[0-9a-f]{64}$/);
-
-    const claims = await verifyJwt<TunnelJwtClaims>(token, KEY_HEX);
+    const claims = await verifyJwt<TunnelJwtClaims>(body.tunnel_jwt, KEY_HEX);
     expect(claims).not.toBeNull();
     expect(claims!.kind).toBe('tunnel');
     expect(claims!.login).toBe('alice');
@@ -427,30 +434,24 @@ describe('handleDesktopCallback', () => {
     // First round.
     const first = await startAndExtractState(env);
     mockGithubFetch({ userId: 42, userLogin: 'alice', userEmail: null });
-    const r1 = await handleDesktopCallback(
-      new Request(
-        `https://example.com/oauth/desktop/cb?code=c&state=${first.state}`,
-      ),
+    const r1 = await handleDesktopExchange(
+      exchangeReq({ code: 'c', state: first.state }),
       env,
     );
     expect(r1.status).toBe(200);
-    const html1 = await r1.text();
-    const token1 = extractDeepLink(html1).get('token')!;
-    const claims1 = await verifyJwt<TunnelJwtClaims>(token1, KEY_HEX);
+    const body1 = (await r1.json()) as { tunnel_jwt: string };
+    const claims1 = await verifyJwt<TunnelJwtClaims>(body1.tunnel_jwt, KEY_HEX);
 
     // Second round, same github sub — should hit Branch 1 (login_existing).
     const second = await startAndExtractState(env);
     mockGithubFetch({ userId: 42, userLogin: 'alice', userEmail: null });
-    const r2 = await handleDesktopCallback(
-      new Request(
-        `https://example.com/oauth/desktop/cb?code=c2&state=${second.state}`,
-      ),
+    const r2 = await handleDesktopExchange(
+      exchangeReq({ code: 'c2', state: second.state }),
       env,
     );
     expect(r2.status).toBe(200);
-    const html2 = await r2.text();
-    const token2 = extractDeepLink(html2).get('token')!;
-    const claims2 = await verifyJwt<TunnelJwtClaims>(token2, KEY_HEX);
+    const body2 = (await r2.json()) as { tunnel_jwt: string };
+    const claims2 = await verifyJwt<TunnelJwtClaims>(body2.tunnel_jwt, KEY_HEX);
 
     expect(claims2!.sub).toBe(claims1!.sub);
     // Only one user blob instance — same uuid both rounds.
@@ -458,41 +459,7 @@ describe('handleDesktopCallback', () => {
     expect(userInstances).toHaveLength(1);
   });
 
-  it('happy path (create_new): verified email lands in email-index', async () => {
-    // The shared linker reads `email_verified` from oauthLinker's input. The
-    // worker hard-codes false (read:user scope), so to exercise create_new
-    // we synthesize the linker call indirectly by seeding the email index
-    // already tied to this user; that converts the second login to
-    // link_to_existing.
-    //
-    // For "create_new" coverage (verified email, fresh — Branch 4) we need
-    // the linker to emit it. Since this PR keeps email_verified=false in the
-    // desktop callback (matching webOauth + deviceFlow), Branch 4 is the
-    // same code-path tested by oauthLinker.test.ts. Here we lock in that
-    // the desktop handler does write the user blob + identity row in the
-    // create_no_email Branch 2 path (Branch 4 code lives in oauthLinker.ts
-    // and is exercised there).
-    const { env, instances } = makeEnv();
-    const { state } = await startAndExtractState(env);
-    mockGithubFetch({
-      userId: 99,
-      userLogin: 'bob',
-      userEmail: 'bob@example.com',
-    });
-    const res = await handleDesktopCallback(
-      new Request(
-        `https://example.com/oauth/desktop/cb?code=c&state=${state}`,
-      ),
-      env,
-    );
-    expect(res.status).toBe(200);
-    // Identity stored even though email_verified=false.
-    expect(instances.get('identity:github:99')).toBeDefined();
-    // Email index NOT written (verified=false).
-    expect(instances.get('email:bob@example.com')).toBeUndefined();
-  });
-
-  it('happy path (link_to_existing): pre-existing email index with verified flag pulls the new identity onto the same user_id', async () => {
+  it('happy path (link_to_existing seed under read:user): pre-existing email index does not link because email_verified=false', async () => {
     // Seed: an existing user A keyed by uuid 'uuid-A' has a verified email
     // index. A fresh GitHub identity (different sub) signs in with that
     // same email, but the desktop handler hard-codes email_verified=false
@@ -521,35 +488,17 @@ describe('handleDesktopCallback', () => {
       userLogin: 'b-user',
       userEmail: 'b@example.com',
     });
-    const res = await handleDesktopCallback(
-      new Request(
-        `https://example.com/oauth/desktop/cb?code=c&state=${state}`,
-      ),
+    const res = await handleDesktopExchange(
+      exchangeReq({ code: 'c', state }),
       env,
     );
     expect(res.status).toBe(200);
-    const html = await res.text();
-    const token = extractDeepLink(html).get('token')!;
-    const claims = await verifyJwt<TunnelJwtClaims>(token, KEY_HEX);
+    const body = (await res.json()) as { tunnel_jwt: string };
+    const claims = await verifyJwt<TunnelJwtClaims>(body.tunnel_jwt, KEY_HEX);
     // email_verified=false in the linker call → Branch 2 (create_no_email),
     // a fresh uuid is minted, NOT linked to user A.
     expect(claims!.sub).not.toBe(userA);
     expect(claims!.sub).toMatch(/^[0-9a-f-]{36}$/i);
-  });
-
-  it('renders a fallback button alongside location.replace', async () => {
-    const { env } = makeEnv();
-    const { state } = await startAndExtractState(env);
-    mockGithubFetch({ userId: 1, userLogin: 'u' });
-    const res = await handleDesktopCallback(
-      new Request(`https://example.com/oauth/desktop/cb?code=c&state=${state}`),
-      env,
-    );
-    expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).toMatch(/<a[^>]+id="open"[^>]+class="btn"[^>]*>/);
-    expect(html).toMatch(/Open ccsm desktop/);
-    expect(html).toMatch(/location\.replace\(/);
   });
 });
 
@@ -566,14 +515,31 @@ describe('dispatchDesktop', () => {
     expect(res!.status).toBe(200);
   });
 
-  it('routes GET /oauth/desktop/cb', async () => {
+  it('routes POST /api/auth/desktop/exchange', async () => {
     const { env } = makeEnv();
     const res = await dispatchDesktop(
-      new Request('https://example.com/oauth/desktop/cb'),
+      new Request('https://example.com/api/auth/desktop/exchange', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ code: 'c', state: 'unknown-state' }),
+      }),
       env,
     );
     expect(res).not.toBeNull();
-    expect(res!.status).toBe(400); // missing code+state
+    // Unknown state → 400.
+    expect(res!.status).toBe(400);
+  });
+
+  it('returns null for the legacy GET /oauth/desktop/cb path (now a static page)', async () => {
+    // R-53 (Task #175): the Worker no longer handles GET /oauth/desktop/cb;
+    // it is served as a static asset. dispatchDesktop must return null so
+    // index.ts falls through to the ASSETS binding catch-all.
+    const { env } = makeEnv();
+    const res = await dispatchDesktop(
+      new Request('https://example.com/oauth/desktop/cb?code=c&state=s'),
+      env,
+    );
+    expect(res).toBeNull();
   });
 
   it('returns null for unrelated paths', async () => {
@@ -589,6 +555,17 @@ describe('dispatchDesktop', () => {
     const { env } = makeEnv();
     const res = await dispatchDesktop(
       new Request('https://example.com/api/auth/desktop/start', {
+        method: 'GET',
+      }),
+      env,
+    );
+    expect(res).toBeNull();
+  });
+
+  it('returns null for wrong method on desktop/exchange', async () => {
+    const { env } = makeEnv();
+    const res = await dispatchDesktop(
+      new Request('https://example.com/api/auth/desktop/exchange', {
         method: 'GET',
       }),
       env,
