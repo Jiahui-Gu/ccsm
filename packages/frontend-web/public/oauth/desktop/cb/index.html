@@ -1,0 +1,158 @@
+<!doctype html>
+<!--
+  R-53 (Task #175): static GitHub OAuth callback page for the Tauri desktop
+  PKCE flow.
+
+  Why static (not Worker-rendered): the Cloudflare Worker fold-in (R-49 P1,
+  Task #154) put the SPA on Workers Static Assets, but the Worker only
+  receives requests for paths listed in `[assets].run_worker_first` in
+  wrangler.toml. Pages-side legacy routing (308) intermittently won the
+  race for `/oauth/desktop/cb` and short-circuited before the Worker handler
+  ran, breaking the callback for desktop sign-in. R-53 splits the work:
+
+    - this static page is served from `cc-sm.pages.dev/oauth/desktop/cb`
+      directly out of `frontend-web/dist`. It contains no token logic; it
+      just receives `?code=&state=` from GitHub and POSTs them to the
+      Worker.
+    - `POST /api/auth/desktop/exchange` (handled by the Worker) does the
+      PKCE verifier exchange + JWT mint + deep-link composition, returning
+      the tokens as JSON.
+    - this page then `location.replace`s into `ccsm://oauth?token=...` to
+      trigger the desktop deep-link listener.
+
+  Self-contained: no React, no bundler, no module imports. Deploys verbatim
+  via Vite's `public/` passthrough into `dist/oauth/desktop/cb/index.html`.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Signing in to ccsm-tauri</title>
+  <style>
+    body {
+      font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+      max-width: 480px;
+      margin: 6rem auto;
+      padding: 0 1rem;
+      color: #222;
+    }
+    h1 { font-size: 1.25rem; margin: 0 0 1rem; }
+    p { margin: 0 0 1rem; }
+    a.btn, button.btn {
+      display: inline-block;
+      padding: 0.6rem 1rem;
+      background: #1f2937;
+      color: #fff;
+      text-decoration: none;
+      border: 0;
+      border-radius: 6px;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    a.btn:hover, button.btn:hover { background: #111827; }
+    .muted { color: #6b7280; font-size: 0.9rem; }
+    .err { color: #b91c1c; }
+    #fallback, #error { display: none; }
+  </style>
+</head>
+<body>
+  <h1 id="title">Signing in&hellip;</h1>
+  <p id="status">Completing GitHub sign-in&hellip;</p>
+
+  <div id="fallback">
+    <p>If your browser blocked the redirect, click below to open the desktop app.</p>
+    <p><a id="open" class="btn" href="#">Open in App</a></p>
+    <p class="muted">You can close this tab once the desktop app has focused.</p>
+  </div>
+
+  <div id="error">
+    <p class="err" id="errorMessage">Sign-in failed.</p>
+    <p><button class="btn" id="retry" type="button">Try again</button></p>
+    <p class="muted">You can close this tab and start over from the desktop app.</p>
+  </div>
+
+  <script>
+  (function () {
+    var statusEl = document.getElementById('status');
+    var titleEl = document.getElementById('title');
+    var fallbackEl = document.getElementById('fallback');
+    var errorEl = document.getElementById('error');
+    var errorMessageEl = document.getElementById('errorMessage');
+    var openBtn = document.getElementById('open');
+    var retryBtn = document.getElementById('retry');
+
+    function showError(msg) {
+      titleEl.textContent = 'Sign-in failed';
+      statusEl.style.display = 'none';
+      errorMessageEl.textContent = msg;
+      errorEl.style.display = 'block';
+    }
+
+    function showFallback(deepLink) {
+      titleEl.textContent = 'Sign-in successful';
+      statusEl.textContent = 'Returning to the ccsm desktop app…';
+      openBtn.setAttribute('href', deepLink);
+      fallbackEl.style.display = 'block';
+    }
+
+    retryBtn.addEventListener('click', function () {
+      try { window.close(); } catch (_e) { /* ignore */ }
+      window.location.replace('/');
+    });
+
+    var params = new URLSearchParams(window.location.search);
+    var code = params.get('code');
+    var state = params.get('state');
+    var ghError = params.get('error');
+
+    if (ghError) {
+      showError('GitHub returned an error: ' + ghError);
+      return;
+    }
+    if (!code || !state) {
+      showError('Missing code or state parameter from GitHub.');
+      return;
+    }
+
+    fetch('/api/auth/desktop/exchange', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code: code, state: state }),
+    })
+      .then(function (res) {
+        if (!res.ok) {
+          return res.text().then(function (txt) {
+            throw new Error('exchange failed (' + res.status + '): ' + txt);
+          });
+        }
+        return res.json();
+      })
+      .then(function (data) {
+        if (!data || typeof data.tunnel_jwt !== 'string' || typeof data.refresh_token !== 'string') {
+          throw new Error('exchange response malformed');
+        }
+        var deepLink =
+          'ccsm://oauth?' +
+          new URLSearchParams({
+            token: data.tunnel_jwt,
+            refresh: data.refresh_token,
+            state: state,
+          }).toString();
+
+        // Always render the fallback button so it's clickable if the browser
+        // blocks the deep-link or the OS prompt was dismissed. Schedule the
+        // visible reveal a touch after the redirect attempt so successful
+        // hand-offs don't flash UI.
+        setTimeout(function () { showFallback(deepLink); }, 5000);
+        // Immediate hand-off attempt. location.replace avoids a back-button
+        // ghost; if the OS handles ccsm:// the page is unloaded.
+        window.location.replace(deepLink);
+      })
+      .catch(function (err) {
+        showError(String(err && err.message ? err.message : err));
+      });
+  })();
+  </script>
+</body>
+</html>
