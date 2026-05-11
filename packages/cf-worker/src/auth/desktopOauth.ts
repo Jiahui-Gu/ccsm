@@ -221,6 +221,21 @@ interface ExchangeRequestBody {
 interface ExchangeResponseBody {
   tunnel_jwt: string;
   refresh_token: string;
+  /**
+   * GitHub login (handle) of the signed-in user, sourced from the GitHub
+   * `/user` response after PKCE exchange. Returned alongside the tokens so
+   * the Tauri shell can persist it in `~/.ccsm/tunnel_jwt` without parsing
+   * the JWT on the desktop side (the JWT's `login` claim is the same value,
+   * but parsing on the desktop would duplicate the SSOT and require base64
+   * decode logic in the shell — keep the linker as the only producer).
+   *
+   * Why a wire field instead of "Tauri reads JWT": Task #177 — desktop side
+   * previously persisted the placeholder string "pending" because the deep
+   * link only carried `{token, refresh, state}`, so the SPA rendered the
+   * literal `@pending`. The fix is to ship the resolved login alongside the
+   * tokens — same shape as the device-flow response (`DevicePollSuccess`).
+   */
+  login: string;
 }
 
 /**
@@ -415,6 +430,7 @@ export async function handleDesktopExchange(
   const body_out: ExchangeResponseBody = {
     tunnel_jwt: tunnelJwt,
     refresh_token: tunnelRefreshToken,
+    login,
   };
   return Response.json(body_out);
 }

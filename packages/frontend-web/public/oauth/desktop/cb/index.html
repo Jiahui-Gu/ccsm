@@ -129,7 +129,12 @@
         return res.json();
       })
       .then(function (data) {
-        if (!data || typeof data.tunnel_jwt !== 'string' || typeof data.refresh_token !== 'string') {
+        if (
+          !data ||
+          typeof data.tunnel_jwt !== 'string' ||
+          typeof data.refresh_token !== 'string' ||
+          typeof data.login !== 'string'
+        ) {
           throw new Error('exchange response malformed');
         }
         var deepLink =
@@ -138,6 +143,7 @@
             token: data.tunnel_jwt,
             refresh: data.refresh_token,
             state: state,
+            login: data.login,
           }).toString();
 
         // Always render the fallback button so it's clickable if the browser

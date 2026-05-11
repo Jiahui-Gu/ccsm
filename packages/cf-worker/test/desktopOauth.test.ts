@@ -388,6 +388,7 @@ describe('handleDesktopExchange', () => {
     const body = (await res.json()) as {
       tunnel_jwt: string;
       refresh_token: string;
+      login: string;
     };
 
     // PKCE verifier was forwarded; redirect_uri matched start; client_secret
@@ -402,11 +403,29 @@ describe('handleDesktopExchange', () => {
     // JSON shape.
     expect(typeof body.tunnel_jwt).toBe('string');
     expect(body.refresh_token).toMatch(/^[0-9a-f]{64}$/);
+    // Task #177: login on the wire mirrors the GitHub /user `login` field and
+    // matches the JWT's `login` claim — Tauri persists this verbatim into
+    // `~/.ccsm/tunnel_jwt` so the SPA renders "@alice", not "@pending".
+    expect(body.login).toBe('alice');
+
+    // Task #177 (coverage hardening): response object keys are EXACTLY the
+    // expected set. Catches future "dropped field" regressions (the original
+    // bug shipped because the desktop side defaulted login to "pending"
+    // instead of getting it from the wire — locking the wire shape down here
+    // means any field rename / removal trips this test immediately).
+    expect(Object.keys(body).sort()).toEqual(
+      ['login', 'refresh_token', 'tunnel_jwt'].sort(),
+    );
 
     const claims = await verifyJwt<TunnelJwtClaims>(body.tunnel_jwt, KEY_HEX);
     expect(claims).not.toBeNull();
     expect(claims!.kind).toBe('tunnel');
     expect(claims!.login).toBe('alice');
+    // Task #177 (coverage hardening): the response `login` and the JWT
+    // `login` claim are sourced from the same `userJson.login` value in
+    // handleDesktopExchange. Lock that consistency in so a future refactor
+    // can't split them.
+    expect(body.login).toBe(claims!.login);
     // sub is uuid (R-51a) — not the github_id 42.
     expect(claims!.sub).not.toBe('42');
     expect(claims!.sub).toMatch(/^[0-9a-f-]{36}$/i);
