@@ -10,17 +10,25 @@
 //   - Setting activeSid (the user picks; bootstrap must not yank focus).
 //   - Spinning up ws / scrollback (session-runtime owns that).
 //   - Retrying on transient failure (post-MVP — today we just warn).
+//
+// R-57 (Task #181): if the daemon is not Ready (hostReady === false) we
+// skip the fetch entirely — the api wrapper would reject with "daemon not
+// ready" anyway, and we don't want a noisy console.warn on every render
+// while the daemon is starting. The hook re-runs when hostReady flips true
+// and hydrates the store at that point.
 
 import { useEffect } from 'react';
-import { HttpError, useApi } from '../runtime-context';
+import { HttpError, useApi, useHostReady } from '../runtime-context';
 import { useStore } from '../store';
 
 export function useBootstrap(): void {
   const token = useStore((s) => s.token);
   const hydrateSessions = useStore((s) => s.hydrateSessions);
   const api = useApi();
+  const hostReady = useHostReady();
 
   useEffect(() => {
+    if (!hostReady) return;
     if (!token) return;
     let cancelled = false;
     api
@@ -47,5 +55,5 @@ export function useBootstrap(): void {
     return () => {
       cancelled = true;
     };
-  }, [token, hydrateSessions, api]);
+  }, [hostReady, token, hydrateSessions, api]);
 }

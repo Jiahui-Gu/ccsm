@@ -54,6 +54,10 @@ const runtimeSubscribeOutput = vi.hoisted(() =>
   }),
 );
 
+// R-57 (Task #181): MainPane gates on useHostReady() — true here so existing
+// xterm/runtime assertions stay valid. Flipped to false in new R-57 tests.
+const mainPaneHostReady = vi.hoisted(() => ({ value: true }));
+
 vi.mock('../src/runtime-context', () => ({
   useRuntime: () => ({
     attach: runtimeAttach,
@@ -86,6 +90,7 @@ vi.mock('../src/runtime-context', () => ({
     resumeSession: async () => ({ ok: true }),
   }),
   useGetToken: () => () => 'test-token',
+  useHostReady: () => mainPaneHostReady.value,
   HttpError: class extends Error {
     constructor(
       public readonly status: number,
@@ -114,6 +119,8 @@ describe('MainPane under React.StrictMode (T10 reshape of P1-3 regression)', () 
   let fetchMock: Mock;
 
   beforeEach(() => {
+    // R-57: default to ready so the existing T10 assertions run unchanged.
+    mainPaneHostReady.value = true;
     sessionStorage.setItem('ccsm.token', 'test-token');
     useStore.setState({
       token: 'test-token',
@@ -371,5 +378,30 @@ describe('MainPane under React.StrictMode (T10 reshape of P1-3 regression)', () 
       '[data-testid="terminal-pane"]',
     ) as HTMLElement | null;
     expect(pane!.getAttribute('data-ws-state')).toBe('closed');
+  });
+
+  // ---- R-57 (Task #181): hostReady=false placeholder --------------------
+
+  it('renders terminal-pane (no black screen) and stays data-ws-state="closed" when hostReady=false', async () => {
+    mainPaneHostReady.value = false;
+    // No activeSid, no token in store. The architectural assertion is that
+    // MainPane still renders a terminal-pane element so AppShell's main slot
+    // is filled — what the user sees instead of a daemon-not-ready overlay.
+    const { container } = render(
+      <StrictMode>
+        <MainPane />
+      </StrictMode>,
+    );
+    await flushMicrotasks();
+    const pane = container.querySelector(
+      '[data-testid="terminal-pane"]',
+    ) as HTMLElement | null;
+    expect(pane).not.toBeNull();
+    // No active sid → ws-state attr should be 'closed', not stuck on 'connecting'.
+    expect(pane!.getAttribute('data-ws-state')).toBe('closed');
+    // xterm container present.
+    expect(
+      container.querySelector('[data-testid="main-terminal"]'),
+    ).not.toBeNull();
   });
 });

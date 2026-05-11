@@ -30,6 +30,7 @@ import {
   HttpError,
   useApi,
   useGetToken,
+  useHostReady,
   useRuntime,
 } from '../runtime-context';
 import { useStore } from '../store';
@@ -85,6 +86,11 @@ export function Sidebar() {
   const runtime = useRuntime();
   const api = useApi();
   const hostGetToken = useGetToken();
+  // R-57 (Task #181): SPA renders before the daemon handshake resolves. While
+  // hostReady === false, every api.* would reject with "daemon not ready",
+  // so we disable the New Session button + ignore row clicks instead of
+  // surfacing alerts the user can't act on.
+  const hostReady = useHostReady();
 
   // Mirror MainPane.getToken: prefer the store cache, fall back to the
   // shell-injected getToken at action time so unit tests that stash the
@@ -97,6 +103,10 @@ export function Sidebar() {
 
   const onNewSession = async (): Promise<void> => {
     if (creating) return;
+    // R-57: daemon not Ready → button is already visually disabled below, but
+    // bail defensively so a programmatic click (e.g. accessibility tooling)
+    // can't trigger a rejected fetch.
+    if (!hostReady) return;
     const tok = getToken();
     if (!tok) {
       alert('no token — append ?token=<t> to the URL and reload');
@@ -163,6 +173,10 @@ export function Sidebar() {
    *   - other → leave the row in place; user can click again to retry.
    */
   const onSelectSession = async (sid: string): Promise<void> => {
+    // R-57: daemon not Ready → can't /resume, swallow the click rather than
+    // pop an alert. The row is rendered with aria-disabled so this is
+    // mostly a defensive guard for programmatic clicks.
+    if (!hostReady) return;
     // P1 #2: if a resume is already in flight for this exact sid, swallow
     // the second click. Without this guard a double-click would issue two
     // POST /resume + two attach() pairs, opening two ws against the same
@@ -271,7 +285,9 @@ export function Sidebar() {
           type="button"
           className="sidebar__btn sidebar__btn--primary"
           data-testid="sidebar-new-session"
-          disabled={creating}
+          disabled={creating || !hostReady}
+          data-host-ready={hostReady ? 'true' : 'false'}
+          title={hostReady ? undefined : 'Waiting for daemon…'}
           onClick={() => {
             void onNewSession();
           }}

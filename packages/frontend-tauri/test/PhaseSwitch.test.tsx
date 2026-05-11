@@ -1,40 +1,28 @@
-// Task #138 (#112-T5) — vitest coverage of PhaseSwitch routing.
+// Task #138 / #181 — vitest coverage of the Tauri shell's PhaseSwitch.
 //
-// Contract validated here:
-//   "When the daemon has not (yet) spawned successfully, the Tauri shell
-//    must render DaemonStatusOverlay with a phase-appropriate variant
-//    instead of a black screen. Once the daemon emits Ready, the overlay
-//    collapses and the real app shell mounts under RuntimeProvider with a
-//    hostConfig built from the Ready payload."
+// R-57 (Task #181) ARCHITECTURAL REWRITE:
 //
-// Why a vitest-based assertion stands in for an e2e Tauri-window assertion:
-//   - The black-screen regression we're guarding against was 'React tree
-//     never mounted because bootstrap awaited daemon-ready before
-//     createRoot' (see main.tsx header). Task #112-T3 fixed it by mounting
-//     <App> synchronously and routing on phase inside the tree. The
-//     observable contract that proves the fix is: for every non-Ready
-//     phase, the component tree renders a visible non-empty Overlay.
-//     That contract lives entirely in PhaseSwitch — which is what we
-//     exercise here.
-//   - Option A (tauri-driver + Playwright) requires `cargo install
-//     tauri-driver`, an Edge WebDriver pin, and a Tauri release build per
-//     run. The task spec explicitly authorises falling back to Option B
-//     (this file) when Option A's setup exceeds 30 min, with the
-//     Tauri-window check moved to a manual smoke recorded in the PR body.
+// Before this test asserted "every non-Ready phase renders DaemonStatusOverlay
+// in PLACE OF the SPA — no terminal-pane / runtime-provider". That was wrong;
+// it locked in the bug the user wants fixed (the SPA being hidden behind a
+// full-screen overlay during the 2-3 s daemon spawn window).
 //
-// What we mock and why:
-//   - `@ccsm/ui`: the real RuntimeProvider mounts useBootstrap, which fires
-//     `GET /api/sessions` against the daemon. We don't want this suite to
-//     spin up an HTTP server or stub fetch globally, so RuntimeProvider /
-//     AppShell / MainPane / Sidebar / useBootstrap are replaced with
-//     identity stubs. DaemonStatusOverlay is re-exported as the real
-//     component because it's the assertion target.
-//   - `@tauri-apps/api/event`: PhaseSwitch is wrapped in DaemonStateContext
-//     directly in tests, so the real `listen` from the Tauri runtime never
-//     runs. We still mock it defensively in case future refactors pull
-//     the listener back into PhaseSwitch.
+// The NEW contract:
+//   - For EVERY phase (including notSpawned / spawning / starting /
+//     spawnFailed / exited / awaitingAuth / authFailed / ready), the SPA
+//     mounts <RuntimeProvider>, <AppShell> with Sidebar + MainPane.
+//   - For non-Ready phases, DaemonStatusOverlay is ALSO rendered (as a
+//     chip / banner / dialog, never full-screen).
+//   - For Ready phase, DaemonStatusOverlay collapses to null and api/runtime
+//     are wired to the real httpBase/token.
+//   - For non-Ready phases, RuntimeProvider's api rejects every call with
+//     "daemon not ready" (asserted in runtime-context.test, not here).
 //
-// Phase coverage matches src/types.ts DaemonPhase exhaustiveness.
+// Why we still keep the legacy `PhaseSwitch` export name + this filename:
+// minimising churn for downstream readers + because the routing of phase to
+// overlay mode still lives in PhaseSwitch. The test file could be renamed
+// to AppShellRouting.test.tsx but #138 traceability is easier with the
+// existing name.
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
@@ -43,14 +31,16 @@ import {
   type DaemonStatusOverlayProps,
 } from '@ccsm/ui';
 
-import { PhaseSwitch } from '../src/App';
+import { PhaseSwitch, hostConfigForPhase } from '../src/App';
 import { DaemonStateContext } from '../src/DaemonStateProvider';
-import type { DaemonStatePayload } from '../src/types';
+import type { DaemonPhase, DaemonStatePayload } from '../src/types';
 
 // --- module mocks --------------------------------------------------------
 
-// Replace the heavy parts of @ccsm/ui with leaf stubs so Ready can render
-// without hitting the network. Keep DaemonStatusOverlay real.
+// Replace the heavy parts of @ccsm/ui with leaf stubs so the SPA tree can
+// render without hitting the network. Keep DaemonStatusOverlay real because
+// it is the indicator surface under test. RuntimeProvider is stubbed to
+// expose `hostConfig` and `hostReady` as data attributes for assertions.
 vi.mock('@ccsm/ui', async () => {
   const actual =
     await vi.importActual<typeof import('@ccsm/ui')>('@ccsm/ui');
@@ -69,13 +59,14 @@ vi.mock('@ccsm/ui', async () => {
       hostConfig,
       children,
     }: {
-      hostConfig: { httpBase: string; getToken: () => string };
+      hostConfig: { httpBase: string; getToken: () => string } | null;
       children: React.ReactNode;
     }) => (
       <div
         data-testid="runtime-provider"
-        data-http-base={hostConfig.httpBase}
-        data-token={hostConfig.getToken()}
+        data-host-ready={hostConfig !== null ? 'true' : 'false'}
+        data-http-base={hostConfig?.httpBase ?? ''}
+        data-token={hostConfig?.getToken?.() ?? ''}
       >
         {children}
       </div>
@@ -92,7 +83,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 // LoginButton's mount effect calls Tauri `invoke('get_oauth_login')` which
 // throws in jsdom because `window.__TAURI_INTERNALS__` is undefined. Stub the
-// component so tests that render the Ready branch (which mounts AppContent →
+// component so tests that render any phase (which mounts AppContent →
 // AppShell → sidebar slot containing <LoginButton />) don't surface unhandled
 // rejections from a side-effect that is irrelevant to the routing contract
 // under test.
@@ -116,34 +107,91 @@ afterEach(() => {
 
 // --- tests ---------------------------------------------------------------
 
-describe('PhaseSwitch (Task #138 / #112-T5)', () => {
-  // Loading-style phases — info variant, no terminal pane.
+describe('hostConfigForPhase (pure routing helper)', () => {
+  it('returns a HostConfig with httpBase + getToken for phase=ready', () => {
+    const phase: DaemonPhase = {
+      phase: 'ready',
+      port: 9876,
+      token: 'tok-xyz',
+      identity: null,
+      tunnel: 'pending',
+    };
+    const cfg = hostConfigForPhase(phase);
+    expect(cfg).not.toBeNull();
+    expect(cfg?.httpBase).toBe('http://127.0.0.1:9876');
+    expect(cfg?.getToken()).toBe('tok-xyz');
+  });
+
   it.each([
-    ['notSpawned', 'Starting daemon'],
-    ['spawning', 'Starting daemon'],
-    ['starting', 'Starting daemon'],
+    'notSpawned',
+    'spawning',
+    'starting',
+  ] as const)('returns null for loading phase %s', (p) => {
+    expect(
+      hostConfigForPhase({ phase: p } as DaemonPhase),
+    ).toBeNull();
+  });
+
+  it('returns null for spawnFailed / exited / authFailed / awaitingAuth', () => {
+    expect(
+      hostConfigForPhase({
+        phase: 'spawnFailed',
+        reason: 'x',
+        retryInMs: null,
+      }),
+    ).toBeNull();
+    expect(
+      hostConfigForPhase({ phase: 'exited', code: 1, reason: 'r' }),
+    ).toBeNull();
+    expect(
+      hostConfigForPhase({ phase: 'authFailed', reason: 'r' }),
+    ).toBeNull();
+    expect(
+      hostConfigForPhase({
+        phase: 'awaitingAuth',
+        verificationUri: 'u',
+        userCode: 'c',
+        expiresAt: 0,
+      }),
+    ).toBeNull();
+  });
+});
+
+describe('PhaseSwitch — SPA shell renders for every phase (Task #181 / R-57)', () => {
+  // Loading-style phases — chip overlay + AppShell + Sidebar all visible.
+  it.each([
+    ['notSpawned', 'daemon: not started'],
+    ['spawning', 'daemon: spawning'],
+    ['starting', 'daemon: starting'],
   ] as const)(
-    'renders DaemonStatusOverlay (info) for phase %s — no black screen',
-    (phaseName, fragment) => {
+    'renders AppShell + Sidebar + chip overlay for phase %s (no black screen, no full overlay)',
+    (phaseName, label) => {
       renderWithPhase({ generation: 1, phase: phaseName });
+      // R-57 architectural assertion: AppShell + Sidebar + MainPane MUST be
+      // present even though the daemon is not yet Ready.
+      expect(screen.getByTestId('terminal-pane')).toBeDefined();
+      expect(screen.getByTestId('appshell-sidebar')).toBeDefined();
+      expect(screen.getByTestId('appshell-main')).toBeDefined();
+      expect(screen.getByTestId('stub-sidebar')).toBeDefined();
+      expect(screen.getByTestId('stub-main')).toBeDefined();
+      // RuntimeProvider mounts in "not-ready" mode (hostConfig === null).
+      const rp = screen.getByTestId('runtime-provider');
+      expect(rp.getAttribute('data-host-ready')).toBe('false');
+      expect(rp.getAttribute('data-http-base')).toBe('');
+      // Indicator overlay is rendered as a chip ON TOP of the shell.
       const overlay = screen.getByTestId('daemon-status-overlay');
       expect(overlay.getAttribute('data-phase')).toBe(phaseName);
       expect(overlay.getAttribute('data-variant')).toBe('info');
+      expect(overlay.getAttribute('data-mode')).toBe('chip');
       expect(
         screen.getByTestId('daemon-status-overlay-loading').textContent ?? '',
-      ).toContain(fragment);
-      // The real app must not have mounted yet.
-      expect(screen.queryByTestId('terminal-pane')).toBeNull();
-      expect(screen.queryByTestId('runtime-provider')).toBeNull();
+      ).toContain(label);
     },
   );
 
-  it('renders DaemonStatusOverlay (info) for tunnelDisconnected', () => {
-    // R-50 (Task #164) regression guard: previously this case rendered an
-    // overlay that froze the SPA. Now `tunnelDisconnected` is no longer a
-    // top-level phase — it lives inside `ready` as `tunnel: 'disconnected'`,
-    // and the overlay must collapse so the main app stays mounted while the
-    // tunnel reconnects in the background.
+  // R-50 regression guards stay — Ready + tunnel sub-state collapses the
+  // overlay entirely, regardless of tunnel value.
+  it('collapses overlay and mounts ready RuntimeProvider with tunnel=disconnected', () => {
     renderWithPhase({
       generation: 2,
       phase: 'ready',
@@ -153,15 +201,11 @@ describe('PhaseSwitch (Task #138 / #112-T5)', () => {
       tunnel: 'disconnected',
     });
     expect(screen.queryByTestId('daemon-status-overlay')).toBeNull();
-    expect(screen.getByTestId('runtime-provider')).toBeDefined();
+    const rp = screen.getByTestId('runtime-provider');
+    expect(rp.getAttribute('data-host-ready')).toBe('true');
   });
 
-  it('renders DaemonStatusOverlay (info) for tunnelConnected', () => {
-    // R-50 regression guard: handshake-then-tunnel:connected sequence used to
-    // overwrite Ready with a top-level TunnelConnected, freezing the SPA on
-    // the "Tunnel connected, waiting…" overlay. The fix moves tunnel to a
-    // Ready sub-state, so the overlay must NEVER show that text once Ready
-    // has landed (regardless of tunnel value).
+  it('collapses overlay and mounts ready RuntimeProvider with tunnel=connected', () => {
     renderWithPhase({
       generation: 3,
       phase: 'ready',
@@ -172,60 +216,68 @@ describe('PhaseSwitch (Task #138 / #112-T5)', () => {
     });
     expect(screen.queryByTestId('daemon-status-overlay')).toBeNull();
     expect(screen.queryByText(/Tunnel connected, waiting/)).toBeNull();
-    expect(screen.queryByText(/Starting daemon/)).toBeNull();
-    expect(screen.getByTestId('runtime-provider')).toBeDefined();
+    const rp = screen.getByTestId('runtime-provider');
+    expect(rp.getAttribute('data-host-ready')).toBe('true');
   });
 
-  // Failure phases — error variant + reason text surfaced (this is the
-  // "no daemon => still see an explanation, not black" guarantee).
-  it('renders DaemonStatusOverlay (error) with reason for spawnFailed', () => {
+  // Failure phases — banner overlay AT TOP of the shell, sidebar still visible.
+  it('renders banner overlay + AppShell for spawnFailed (user can still see sidebar)', () => {
     renderWithPhase({
       generation: 4,
       phase: 'spawnFailed',
       reason: 'binary not found on PATH',
       retryInMs: null,
     });
+    // R-57: SPA shell stays mounted.
+    expect(screen.getByTestId('terminal-pane')).toBeDefined();
+    expect(screen.getByTestId('stub-sidebar')).toBeDefined();
+    // hostConfig=null while daemon failed to spawn.
+    expect(
+      screen.getByTestId('runtime-provider').getAttribute('data-host-ready'),
+    ).toBe('false');
+    // Banner overlay surfaces the error on top.
     const overlay = screen.getByTestId('daemon-status-overlay');
-    expect(overlay.getAttribute('data-phase')).toBe('spawnFailed');
+    expect(overlay.getAttribute('data-mode')).toBe('banner');
     expect(overlay.getAttribute('data-variant')).toBe('error');
     expect(
       screen.getByTestId('daemon-status-overlay-detail').textContent ?? '',
     ).toContain('binary not found on PATH');
-    expect(screen.queryByTestId('terminal-pane')).toBeNull();
-    expect(screen.queryByTestId('runtime-provider')).toBeNull();
   });
 
-  it('renders DaemonStatusOverlay (error) for exited phase', () => {
+  it('renders banner overlay + AppShell for exited phase', () => {
     renderWithPhase({
       generation: 5,
       phase: 'exited',
       code: 1,
       reason: 'daemon crashed',
     });
+    expect(screen.getByTestId('terminal-pane')).toBeDefined();
     const overlay = screen.getByTestId('daemon-status-overlay');
+    expect(overlay.getAttribute('data-mode')).toBe('banner');
     expect(overlay.getAttribute('data-variant')).toBe('error');
     expect(
       screen.getByTestId('daemon-status-overlay-banner').textContent ?? '',
     ).toContain('daemon crashed');
   });
 
-  it('renders DaemonStatusOverlay (error) for authFailed', () => {
+  it('renders banner overlay + AppShell for authFailed', () => {
     renderWithPhase({
       generation: 6,
       phase: 'authFailed',
       reason: 'token rejected',
     });
-    expect(
-      screen
-        .getByTestId('daemon-status-overlay')
-        .getAttribute('data-variant'),
-    ).toBe('error');
+    expect(screen.getByTestId('terminal-pane')).toBeDefined();
+    const overlay = screen.getByTestId('daemon-status-overlay');
+    expect(overlay.getAttribute('data-mode')).toBe('banner');
+    expect(overlay.getAttribute('data-variant')).toBe('error');
     expect(
       screen.getByTestId('daemon-status-overlay-detail').textContent ?? '',
     ).toContain('token rejected');
   });
 
-  it('renders DaemonStatusOverlay (auth) for awaitingAuth', () => {
+  // Awaiting auth — dialog (modal) overlay + shell still mounted under it.
+  // The dialog is the ONE blocking surface by design (user must read user_code).
+  it('renders dialog overlay + AppShell underneath for awaitingAuth', () => {
     renderWithPhase({
       generation: 7,
       phase: 'awaitingAuth',
@@ -233,17 +285,19 @@ describe('PhaseSwitch (Task #138 / #112-T5)', () => {
       userCode: 'ABCD-1234',
       expiresAt: Date.now() + 600_000,
     });
+    // Shell still rendered (the architectural fix), the dialog floats on top.
+    expect(screen.getByTestId('terminal-pane')).toBeDefined();
     const overlay = screen.getByTestId('daemon-status-overlay');
+    expect(overlay.getAttribute('data-mode')).toBe('dialog');
     expect(overlay.getAttribute('data-variant')).toBe('auth');
+    expect(overlay.getAttribute('aria-modal')).toBe('true');
     expect(
       screen.getByTestId('daemon-status-overlay-user-code').textContent ?? '',
     ).toContain('ABCD-1234');
   });
 
-  // Ready — overlay collapses, real shell mounts with hostConfig built from
-  // the payload (#112-T3 contract: rebuilding hostConfig per Ready render
-  // means a re-spawn re-mounts RuntimeProvider with fresh port/token).
-  it('mounts RuntimeProvider + AppShell on phase=ready and hides overlay', () => {
+  // Ready — overlay collapses, RuntimeProvider wired to real port/token.
+  it('mounts RuntimeProvider with real hostConfig + hides overlay on phase=ready', () => {
     renderWithPhase({
       generation: 8,
       phase: 'ready',
@@ -254,15 +308,15 @@ describe('PhaseSwitch (Task #138 / #112-T5)', () => {
     });
     expect(screen.queryByTestId('daemon-status-overlay')).toBeNull();
     const rp = screen.getByTestId('runtime-provider');
+    expect(rp.getAttribute('data-host-ready')).toBe('true');
     expect(rp.getAttribute('data-http-base')).toBe('http://127.0.0.1:9876');
     expect(rp.getAttribute('data-token')).toBe('tok-xyz');
     expect(screen.getByTestId('terminal-pane')).toBeDefined();
   });
 
-  // Recovery flow: re-render with a Ready payload after a SpawnFailed render
-  // (matches the spec's "restart Tauri => phase=Ready, terminal-pane visible"
-  // step from Option A, expressed as a context-driven re-render).
-  it('transitions from spawnFailed overlay to Ready app shell on recovery', () => {
+  // Recovery flow: re-render with a Ready payload after a SpawnFailed render.
+  // Shell stays mounted throughout (no remount thrash).
+  it('transitions from spawnFailed banner to Ready (shell persists, overlay collapses)', () => {
     const { rerender } = render(
       <DaemonStateContext.Provider
         value={{
@@ -275,12 +329,12 @@ describe('PhaseSwitch (Task #138 / #112-T5)', () => {
         <PhaseSwitch />
       </DaemonStateContext.Provider>,
     );
+    expect(screen.getByTestId('terminal-pane')).toBeDefined();
     expect(
       screen
         .getByTestId('daemon-status-overlay')
-        .getAttribute('data-variant'),
-    ).toBe('error');
-    expect(screen.queryByTestId('terminal-pane')).toBeNull();
+        .getAttribute('data-mode'),
+    ).toBe('banner');
 
     // Daemon recovers — generation bumps, phase flips to ready.
     rerender(
@@ -299,8 +353,8 @@ describe('PhaseSwitch (Task #138 / #112-T5)', () => {
     );
     expect(screen.queryByTestId('daemon-status-overlay')).toBeNull();
     expect(screen.getByTestId('terminal-pane')).toBeDefined();
-    expect(
-      screen.getByTestId('runtime-provider').getAttribute('data-token'),
-    ).toBe('tok2');
+    const rp = screen.getByTestId('runtime-provider');
+    expect(rp.getAttribute('data-host-ready')).toBe('true');
+    expect(rp.getAttribute('data-token')).toBe('tok2');
   });
 });

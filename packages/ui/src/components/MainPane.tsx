@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import { Terminal } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import 'xterm/css/xterm.css';
-import { useGetToken, useRuntime } from '../runtime-context';
+import { useGetToken, useHostReady, useRuntime } from '../runtime-context';
 import { useStore } from '../store';
 
 // MainPane (Task #662 / T10 — DESIGN.md §7).
@@ -59,6 +59,13 @@ export function MainPane() {
 
   const runtime = useRuntime();
   const hostGetToken = useGetToken();
+  // R-57 (Task #181): when the daemon hasn't emitted Ready yet, the runtime
+  // is a stub that no-ops attach/get and the api would reject every call.
+  // We render the terminal pane regardless (so the user sees layout, not a
+  // black screen — fixes the architectural problem in #181) but the xterm
+  // surface prints a "[waiting for daemon…]" placeholder instead of trying
+  // to replay a non-existent runtime entry.
+  const hostReady = useHostReady();
 
   // Token resolution: prefer the store cache, but fall back to the shell-
   // injected getToken at action-time. The store eagerly snapshots its
@@ -170,7 +177,12 @@ export function MainPane() {
     activeSidRef.current = activeSid;
 
     // ---- Replay scrollback for the new active session ----
-    if (!activeSid) {
+    if (!hostReady) {
+      // R-57: daemon hasn't emitted Ready yet. The runtime is a stub; trying
+      // to replay scrollback or call sendResize would no-op anyway. Show a
+      // placeholder so the user knows the SPA is alive and waiting.
+      writeNoticeTo(term, '[waiting for daemon…]');
+    } else if (!activeSid) {
       writeNoticeTo(term, '[no active session — click + New Session]');
     } else if (!tok) {
       writeNoticeTo(term, '[no token in URL — append ?token=<t> and reload]');
@@ -240,7 +252,7 @@ export function MainPane() {
       // StrictMode remounts. detach() is invoked only by the sidebar's
       // closeSession path (after DELETE /api/sessions/:sid succeeds).
     };
-  }, [activeSid, token]);
+  }, [activeSid, token, hostReady]);
 
   return (
     <div
