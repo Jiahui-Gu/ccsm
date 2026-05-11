@@ -56,10 +56,17 @@ const runtimeAttach = runtimeStub.attach;
 const runtimeDetach = runtimeStub.detach;
 const runtimeGet = runtimeStub.get;
 
+// R-57 (Task #181): Sidebar now also calls useHostReady() to gate the
+// New Session button. The hostReady hoist allows individual tests to flip
+// it to false; default true so the existing test bodies (which assume the
+// daemon is up) keep passing unchanged.
+const hostReadyRef = vi.hoisted(() => ({ value: true }));
+
 vi.mock('../src/runtime-context', () => ({
   useRuntime: () => runtimeStub,
   useApi: () => apiStub,
   useGetToken: () => () => 'test-token',
+  useHostReady: () => hostReadyRef.value,
   HttpError: HttpErrorMock,
 }));
 
@@ -84,6 +91,9 @@ describe('Sidebar', () => {
 
   beforeEach(() => {
     resetStore();
+    // R-57: default to hostReady=true for the existing assertions; specific
+    // R-57 cases below flip it to false to verify the disabled UX.
+    hostReadyRef.value = true;
     runtimeAttach.mockClear();
     runtimeDetach.mockClear();
     runtimeGet.mockReset();
@@ -661,5 +671,61 @@ describe('Sidebar', () => {
       await Promise.resolve();
     });
     expect(useStore.getState().activeSid).toBe('cccc3333');
+  });
+
+  // ---- R-57 (Task #181): hostReady=false UX -----------------------------
+
+  describe('R-57: daemon not ready', () => {
+    it('disables + New Session button + sets tooltip while daemon is not ready', () => {
+      hostReadyRef.value = false;
+      render(<Sidebar />);
+      const btn = screen.getByTestId('sidebar-new-session') as HTMLButtonElement;
+      expect(btn.disabled).toBe(true);
+      expect(btn.getAttribute('data-host-ready')).toBe('false');
+      expect(btn.getAttribute('title')).toBe('Waiting for daemon…');
+    });
+
+    it('does not call api.createSession when New Session is clicked while not ready', async () => {
+      hostReadyRef.value = false;
+      apiStub.createSession.mockClear();
+      render(<Sidebar />);
+      const btn = screen.getByTestId('sidebar-new-session');
+      // A programmatic click on a disabled button still fires onClick in
+      // testing-library; we assert the guard inside onNewSession bails out.
+      await act(async () => {
+        fireEvent.click(btn);
+        await Promise.resolve();
+      });
+      expect(apiStub.createSession).not.toHaveBeenCalled();
+    });
+
+    it('re-enables the button when hostReady flips back to true', () => {
+      hostReadyRef.value = false;
+      const { rerender } = render(<Sidebar />);
+      const before = screen.getByTestId('sidebar-new-session') as HTMLButtonElement;
+      expect(before.disabled).toBe(true);
+
+      hostReadyRef.value = true;
+      rerender(<Sidebar />);
+      const after = screen.getByTestId('sidebar-new-session') as HTMLButtonElement;
+      expect(after.disabled).toBe(false);
+      expect(after.getAttribute('data-host-ready')).toBe('true');
+      expect(after.getAttribute('title')).toBeNull();
+    });
+
+    it('ignores row clicks while daemon is not ready (no api.resumeSession)', async () => {
+      hostReadyRef.value = false;
+      apiStub.resumeSession.mockClear();
+      useStore.setState({
+        sessions: [{ sid: 'aaaa1111', createdAt: Date.now(), alive: true }],
+      });
+      render(<Sidebar />);
+      const row = screen.getByTestId('sidebar-session-row-aaaa1111');
+      await act(async () => {
+        fireEvent.click(row);
+        await Promise.resolve();
+      });
+      expect(apiStub.resumeSession).not.toHaveBeenCalled();
+    });
   });
 });

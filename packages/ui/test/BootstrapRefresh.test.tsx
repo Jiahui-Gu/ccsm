@@ -60,6 +60,10 @@ vi.mock('../src/runtime-context', () => ({
     resumeSession: resumeSessionMock,
   }),
   useGetToken: () => () => 'test-token',
+  // R-57 (Task #181): useBootstrap + MainPane now consult useHostReady().
+  // Tests in this file always run against a "daemon ready" scenario (they
+  // exercise the listSessions hydration), so we stub a constant true.
+  useHostReady: () => true,
   HttpError: class extends Error {
     constructor(
       public readonly status: number,

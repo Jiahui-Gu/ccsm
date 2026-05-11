@@ -260,35 +260,67 @@ button {
   width: 100%;
 }
 
-/* DaemonStatusOverlay (Task #137 / #112-T4) — full-viewport pre-Ready panel
- * shown by the Tauri shell while the daemon is starting / tunnel is
- * reconnecting / auth is pending / startup has failed. */
+/* DaemonStatusOverlay (Task #137 / #112-T4) — pre-Ready / failure / auth
+ * surfaces shown on TOP of the SPA main shell. R-57 (Task #181) split:
+ *   - .daemon-overlay--chip:        small bottom-right pill (loading phases)
+ *   - .daemon-overlay--banner-host: top sticky bar (failure phases)
+ *   - .daemon-overlay--dialog:      modal (awaitingAuth only)
+ * The base class no longer covers the viewport — SPA UI stays visible. */
 .daemon-overlay {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  color: #e5e5e5;
+}
+
+/* Chip — small status pill, bottom-right. Non-blocking. */
+.daemon-overlay--chip {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 9000;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(20, 20, 20, 0.92);
+  border: 1px solid #333;
+  font-size: 12px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+}
+
+/* Banner — top sticky bar across the viewport. Pushes nothing; floats. */
+.daemon-overlay--banner-host {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 9500;
+  padding: 12px 16px;
+  background: rgba(13, 13, 13, 0.96);
+  border-bottom: 1px solid #2a2a2a;
+}
+
+/* Dialog — modal backdrop + centred panel (awaitingAuth). */
+.daemon-overlay--dialog {
   position: fixed;
   inset: 0;
+  z-index: 10000;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 24px;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  background: #0d0d0d;
-  color: #e5e5e5;
-  z-index: 10000;
+  background: rgba(0, 0, 0, 0.72);
 }
 
 .daemon-overlay--info {
-  background: #0d0d0d;
-  color: #e5e5e5;
+  /* Chip variant uses its own bg; banner/dialog override below. */
 }
 
-.daemon-overlay--error {
-  background: #1a0d0d;
+.daemon-overlay--banner-host.daemon-overlay--error {
+  background: rgba(26, 13, 13, 0.96);
   color: #f5d0d0;
+  border-bottom-color: #5a2424;
 }
 
-.daemon-overlay--auth {
-  background: #0d141a;
-  color: #d0e0f5;
+.daemon-overlay--dialog.daemon-overlay--auth {
+  /* Backdrop stays dark; panel uses the auth banner styles below. */
 }
 
 .daemon-overlay__inner {

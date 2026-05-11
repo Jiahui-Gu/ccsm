@@ -19,19 +19,30 @@ describe('DaemonStatusOverlay', () => {
   });
 
   // --- loading phases ------------------------------------------------------
+  //
+  // R-57 (Task #181): loading phases render as a non-blocking chip (bottom-
+  // right pill) instead of the old full-screen overlay. The chip still
+  // carries `daemon-status-overlay-loading` for backward-compat with the
+  // existing assertion shape; the label text now reads "daemon: <phase>".
 
   it.each([
-    ['notSpawned', 'Starting daemon'],
-    ['spawning', 'Starting daemon'],
-    ['starting', 'Starting daemon'],
-  ])('renders spinner + status text for %s', (phaseName, fragment) => {
+    ['notSpawned', 'daemon: not started'],
+    ['spawning', 'daemon: spawning'],
+    ['starting', 'daemon: starting'],
+  ])('renders spinner + chip label for %s', (phaseName, label) => {
     render(<DaemonStatusOverlay phase={{ phase: phaseName }} />);
     const root = screen.getByTestId('daemon-status-overlay');
     expect(root.getAttribute('data-phase')).toBe(phaseName);
     expect(root.getAttribute('data-variant')).toBe('info');
+    expect(root.getAttribute('data-mode')).toBe('chip');
     expect(screen.getByTestId('daemon-status-overlay-spinner')).toBeDefined();
     const loading = screen.getByTestId('daemon-status-overlay-loading');
-    expect(loading.textContent ?? '').toContain(fragment);
+    expect(loading.textContent ?? '').toContain(label);
+    // Regression guard for the architectural fix: the chip must NOT cover
+    // the viewport. We check the className surface; the actual rule lives
+    // in styles.css (.daemon-overlay--chip → position: fixed; right + bottom).
+    expect(root.className).toContain('daemon-overlay--chip');
+    expect(root.className).not.toContain('daemon-overlay--dialog');
   });
 
   // --- R-50 (Task #164): Ready collapses regardless of tunnel sub-state ---
@@ -192,6 +203,59 @@ describe('DaemonStatusOverlay', () => {
     expect(
       screen.getByTestId('daemon-status-overlay').getAttribute('data-variant'),
     ).toBe('error');
+  });
+
+  // --- R-57 (Task #181) mode routing --------------------------------------
+  //
+  // The split is the architectural point of R-57: SPA shell must remain
+  // visible regardless of phase, so the overlay component renders three
+  // distinct, non-full-screen surfaces.
+
+  it('routes loading phases to chip mode (non-blocking)', () => {
+    render(<DaemonStatusOverlay phase={{ phase: 'spawning' }} />);
+    const root = screen.getByTestId('daemon-status-overlay');
+    expect(root.getAttribute('data-mode')).toBe('chip');
+    // role=status is the screen-reader cue for non-modal status updates.
+    expect(root.getAttribute('role')).toBe('status');
+  });
+
+  it('routes failure phases to banner mode (sticky top bar, not modal)', () => {
+    render(
+      <DaemonStatusOverlay phase={{ phase: 'spawnFailed', reason: 'x' }} />,
+    );
+    const root = screen.getByTestId('daemon-status-overlay');
+    expect(root.getAttribute('data-mode')).toBe('banner');
+    // Banner is NOT aria-modal — the user can keep interacting with the SPA
+    // (e.g. sign in / inspect existing rows) while the daemon is down.
+    expect(root.getAttribute('aria-modal')).toBeNull();
+  });
+
+  it('routes awaitingAuth to dialog mode (the one remaining blocking surface)', () => {
+    render(
+      <DaemonStatusOverlay
+        phase={{
+          phase: 'awaitingAuth',
+          verificationUri: 'https://github.com/login/device',
+          userCode: 'AB-CD',
+        }}
+      />,
+    );
+    const root = screen.getByTestId('daemon-status-overlay');
+    expect(root.getAttribute('data-mode')).toBe('dialog');
+    expect(root.getAttribute('role')).toBe('dialog');
+    expect(root.getAttribute('aria-modal')).toBe('true');
+  });
+
+  it('allows shells to force a chip mode for a failure phase via the mode prop', () => {
+    render(
+      <DaemonStatusOverlay
+        phase={{ phase: 'spawnFailed', reason: 'x' }}
+        mode="chip"
+      />,
+    );
+    expect(
+      screen.getByTestId('daemon-status-overlay').getAttribute('data-mode'),
+    ).toBe('chip');
   });
 
   // --- unknown phase fallback (defensive) ---------------------------------

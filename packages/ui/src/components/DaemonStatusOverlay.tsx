@@ -1,33 +1,41 @@
-// Task #137 / #112-T4: full UI for the pre-Ready / failure / auth overlay.
-// Replaces the T3 stub. Renders for any non-Ready daemon phase so the user
-// sees something instead of a black screen. Styles live in `styles.css`
-// alongside the rest of @ccsm/ui (the package builds via `tsc` only, so
-// CSS modules — which the spec hinted at — would not survive build; we
-// follow the existing BEM-in-styles.css convention instead).
+// Task #137 / #112-T4: daemon status UI surfaces.
+// R-57 (Task #181): split out of the full-screen overlay design — SPA main
+// shell now renders unconditionally, so this component only renders
+// non-blocking surfaces (chip / banner / dialog) on top of the shell.
 //
-// Phase coverage (matches frontend-tauri DaemonPhase discriminator):
-//   notSpawned / spawning / starting       → spinner + "Starting daemon..."
-//   ready                                  → null (the real app takes over)
-//   spawnFailed { reason, retryInMs? }     → red banner + retry countdown
-//   exited { code, reason }                → red banner
-//   awaitingAuth { verificationUri,        → auth panel + Open browser btn
+// Rendering modes (chosen by inferMode + `mode` prop):
+//   notSpawned / spawning / starting   → 'chip'   (bottom-right pill)
+//   spawnFailed / exited / authFailed  → 'banner' (top sticky bar)
+//   awaitingAuth                       → 'dialog' (modal, login flow)
+//   ready                              → null (no surface)
+//
+// Phase coverage (mirrors frontend-tauri DaemonPhase discriminator):
+//   notSpawned / spawning / starting       → chip "daemon: starting"
+//   ready                                  → null
+//   spawnFailed { reason, retryInMs? }     → banner + retry countdown
+//   exited { code, reason }                → banner
+//   awaitingAuth { verificationUri,        → dialog with user_code
 //                  userCode, expiresAt? }
-//   authFailed { reason }                  → red banner + Try again btn
+//   authFailed { reason }                  → banner + Try again btn
 //
 // R-50 (Task #164): the previous top-level `tunnelConnected` /
 // `tunnelDisconnected` cases were removed. Tunnel state is now a sub-state
-// of `ready` (see types.ts `TunnelState`), so once the daemon is Ready the
-// overlay collapses regardless of tunnel up/down — preventing the regression
-// where a stderr-driven tunnel emit froze the SPA on
-// "Tunnel connected, waiting…". Tunnel sub-state UI (e.g. a status-bar icon)
-// is owned by the main app shell, not this overlay.
+// of `ready` (see types.ts `TunnelState`).
 //
-// The `View logs`, `Open browser`, and `Try again` buttons are wired to
-// console.log only — real IPC lands in S4-T8.
+// R-57 backward-compat note: this component used to render full-screen for
+// EVERY non-Ready phase, which meant the SPA was hidden behind a dark
+// overlay during the 2-3 s daemon spawn window. That contradicted Task
+// #112's "no daemon also has UI" design intent. We keep the existing
+// testids (`daemon-status-overlay`, `daemon-status-overlay-loading`,
+// `daemon-status-overlay-banner`, `daemon-status-overlay-auth`,
+// `daemon-status-overlay-user-code`, etc.) so #138-derived e2e + vitest
+// suites can keep asserting on them — only the layout / z-index / position
+// changes.
 
 import { useEffect, useState, type ReactNode } from 'react';
 
 export type DaemonStatusVariant = 'info' | 'error' | 'auth';
+export type DaemonStatusMode = 'chip' | 'banner' | 'dialog';
 
 // Loose phase shape: we only read the discriminator + a handful of optional
 // fields, keeping this independent from the shell's full DaemonPhase union
@@ -56,6 +64,14 @@ export interface DaemonStatusOverlayProps {
    * everything else → 'info').
    */
   variant?: DaemonStatusVariant;
+  /**
+   * R-57: optional layout override. Omitted → inferred from phase:
+   *   - loading phases → 'chip'
+   *   - failure phases → 'banner'
+   *   - awaitingAuth   → 'dialog'
+   * Shells can force a specific mode (e.g. always-chip during dev).
+   */
+  mode?: DaemonStatusMode;
 }
 
 function inferVariant(phase: string): DaemonStatusVariant {
@@ -68,6 +84,19 @@ function inferVariant(phase: string): DaemonStatusVariant {
       return 'auth';
     default:
       return 'info';
+  }
+}
+
+function inferMode(phase: string): DaemonStatusMode {
+  switch (phase) {
+    case 'spawnFailed':
+    case 'exited':
+    case 'authFailed':
+      return 'banner';
+    case 'awaitingAuth':
+      return 'dialog';
+    default:
+      return 'chip';
   }
 }
 
@@ -246,58 +275,141 @@ function AuthPanel({
   );
 }
 
+/**
+ * R-57: chip label per loading-phase. Kept terse to fit a small pill.
+ */
+function chipLabel(phase: string): string {
+  switch (phase) {
+    case 'notSpawned':
+      return 'daemon: not started';
+    case 'spawning':
+      return 'daemon: spawning';
+    case 'starting':
+      return 'daemon: starting';
+    default:
+      return `daemon: ${phase}`;
+  }
+}
+
 export function DaemonStatusOverlay({
   phase,
   variant,
+  mode,
 }: DaemonStatusOverlayProps): ReactNode {
-  // Ready is owned by the real app — overlay must collapse out of the way.
+  // Ready is owned by the real app — chip/banner/dialog must collapse out.
   if (phase.phase === 'ready') {
     return null;
   }
 
-  const resolvedVariant: DaemonStatusVariant = variant ?? inferVariant(phase.phase);
+  const resolvedVariant: DaemonStatusVariant =
+    variant ?? inferVariant(phase.phase);
+  const resolvedMode: DaemonStatusMode = mode ?? inferMode(phase.phase);
 
+  // --- chip: small bottom-right pill for loading phases ---
+  if (resolvedMode === 'chip') {
+    return (
+      <div
+        className={`daemon-overlay daemon-overlay--chip daemon-overlay--${resolvedVariant}`}
+        data-testid="daemon-status-overlay"
+        data-variant={resolvedVariant}
+        data-phase={phase.phase}
+        data-mode="chip"
+        role="status"
+        aria-live="polite"
+      >
+        <div
+          className="daemon-overlay__row"
+          data-testid="daemon-status-overlay-loading"
+        >
+          <Spinner />
+          <span
+            className="daemon-overlay__message"
+            data-testid="daemon-status-overlay-chip-label"
+          >
+            {chipLabel(phase.phase)}
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  // --- banner: top sticky bar for failure phases ---
+  if (resolvedMode === 'banner') {
+    let body: ReactNode;
+    switch (phase.phase) {
+      case 'spawnFailed':
+        body = (
+          <ErrorBanner
+            title="Daemon failed to start"
+            detail={phase.reason ?? 'Unknown error.'}
+            {...(typeof phase.retryInMs === 'number'
+              ? { retryInMs: phase.retryInMs }
+              : {})}
+            actionLabel="View logs"
+            actionTestId="daemon-status-overlay-view-logs"
+            onAction={() => {
+              // eslint-disable-next-line no-console
+              console.log('[DaemonStatusOverlay] view logs (spawnFailed)');
+            }}
+          />
+        );
+        break;
+      case 'exited': {
+        const codeText =
+          typeof phase.code === 'number' ? ` (code ${phase.code})` : '';
+        body = (
+          <ErrorBanner
+            title={`Daemon exited${codeText}`}
+            detail={phase.reason ?? 'Process terminated unexpectedly.'}
+            actionLabel="View logs"
+            actionTestId="daemon-status-overlay-view-logs"
+            onAction={() => {
+              // eslint-disable-next-line no-console
+              console.log('[DaemonStatusOverlay] view logs (exited)');
+            }}
+          />
+        );
+        break;
+      }
+      case 'authFailed':
+        body = (
+          <ErrorBanner
+            title="Sign-in failed"
+            detail={phase.reason ?? 'Authentication did not complete.'}
+            actionLabel="Try again"
+            actionTestId="daemon-status-overlay-try-again"
+            onAction={() => {
+              // eslint-disable-next-line no-console
+              console.log('[DaemonStatusOverlay] try again (authFailed)');
+            }}
+          />
+        );
+        break;
+      default:
+        body = <StartingBody message={`Phase: ${phase.phase}`} />;
+        break;
+    }
+    return (
+      <div
+        className={`daemon-overlay daemon-overlay--banner-host daemon-overlay--${resolvedVariant}`}
+        data-testid="daemon-status-overlay"
+        data-variant={resolvedVariant}
+        data-phase={phase.phase}
+        data-mode="banner"
+        role="status"
+        aria-live="polite"
+      >
+        <div className="daemon-overlay__inner">{body}</div>
+      </div>
+    );
+  }
+
+  // --- dialog: modal for awaitingAuth (login flow needs full attention) ---
+  // R-57: this is the ONE remaining blocking surface. User must read the
+  // user_code to authorize, so a modal makes sense — but it's a real
+  // <dialog>, not a full-bleed bootstrap overlay.
   let body: ReactNode;
   switch (phase.phase) {
-    case 'notSpawned':
-    case 'spawning':
-    case 'starting':
-      body = <StartingBody message="Starting daemon…" />;
-      break;
-    case 'spawnFailed':
-      body = (
-        <ErrorBanner
-          title="Daemon failed to start"
-          detail={phase.reason ?? 'Unknown error.'}
-          {...(typeof phase.retryInMs === 'number'
-            ? { retryInMs: phase.retryInMs }
-            : {})}
-          actionLabel="View logs"
-          actionTestId="daemon-status-overlay-view-logs"
-          onAction={() => {
-            // eslint-disable-next-line no-console
-            console.log('[DaemonStatusOverlay] view logs (spawnFailed)');
-          }}
-        />
-      );
-      break;
-    case 'exited': {
-      const codeText =
-        typeof phase.code === 'number' ? ` (code ${phase.code})` : '';
-      body = (
-        <ErrorBanner
-          title={`Daemon exited${codeText}`}
-          detail={phase.reason ?? 'Process terminated unexpectedly.'}
-          actionLabel="View logs"
-          actionTestId="daemon-status-overlay-view-logs"
-          onAction={() => {
-            // eslint-disable-next-line no-console
-            console.log('[DaemonStatusOverlay] view logs (exited)');
-          }}
-        />
-      );
-      break;
-    }
     case 'awaitingAuth':
       body = (
         <AuthPanel
@@ -309,34 +421,20 @@ export function DaemonStatusOverlay({
         />
       );
       break;
-    case 'authFailed':
-      body = (
-        <ErrorBanner
-          title="Sign-in failed"
-          detail={phase.reason ?? 'Authentication did not complete.'}
-          actionLabel="Try again"
-          actionTestId="daemon-status-overlay-try-again"
-          onAction={() => {
-            // eslint-disable-next-line no-console
-            console.log('[DaemonStatusOverlay] try again (authFailed)');
-          }}
-        />
-      );
-      break;
     default:
-      // Unknown phase — surface it instead of going blank, so an out-of-sync
-      // shell/daemon is debuggable in the wild.
+      // Unknown phase routed to dialog — surface it instead of going blank.
       body = <StartingBody message={`Phase: ${phase.phase}`} />;
       break;
   }
-
   return (
     <div
-      className={`daemon-overlay daemon-overlay--${resolvedVariant}`}
+      className={`daemon-overlay daemon-overlay--dialog daemon-overlay--${resolvedVariant}`}
       data-testid="daemon-status-overlay"
       data-variant={resolvedVariant}
       data-phase={phase.phase}
-      role="status"
+      data-mode="dialog"
+      role="dialog"
+      aria-modal="true"
       aria-live="polite"
     >
       <div className="daemon-overlay__inner">
