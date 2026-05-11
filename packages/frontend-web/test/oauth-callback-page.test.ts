@@ -137,6 +137,7 @@ describe('static oauth callback page', () => {
         JSON.stringify({
           tunnel_jwt: 'jwt.value.here',
           refresh_token: 'rrr',
+          login: 'alice',
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
       );
@@ -163,6 +164,10 @@ describe('static oauth callback page', () => {
     expect(params.get('token')).toBe('jwt.value.here');
     expect(params.get('refresh')).toBe('rrr');
     expect(params.get('state')).toBe('state-abc');
+    // Task #177: login is forwarded into the deep link so the Tauri shell can
+    // persist it verbatim (instead of writing the literal "pending" placeholder
+    // and rendering "@pending" in the SPA).
+    expect(params.get('login')).toBe('alice');
   });
 
   it('on missing code/state in URL: shows error, does NOT call fetch', async () => {
@@ -211,13 +216,41 @@ describe('static oauth callback page', () => {
     expect(document.getElementById('retry')).not.toBeNull();
   });
 
+  it('Task #177: on exchange response missing `login` field: shows malformed error, no location.replace', async () => {
+    // Locks in that the page treats a `{tunnel_jwt, refresh_token}` response
+    // (without `login`) as malformed. The original Task #177 bug shipped
+    // because nothing on the wire forced login to be present — guard against
+    // a future refactor dropping it again.
+    const fetchSpy = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({ tunnel_jwt: 'jwt', refresh_token: 'rrr' }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+    );
+    const { document, replaceCalls } = await runPage({
+      search: '?code=c&state=s',
+      fetchImpl: fetchSpy as unknown as typeof globalThis.fetch,
+    });
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    expect(replaceCalls).toHaveLength(0);
+    const errEl = document.getElementById('error') as HTMLElement;
+    expect(errEl.style.display).toBe('block');
+    const msg = document.getElementById('errorMessage')!.textContent ?? '';
+    expect(msg).toMatch(/malformed/);
+  });
+
   it('after 5s the fallback "Open in App" button is shown with the deep link href', async () => {
     const fetchSpy = vi.fn(
       async () =>
-        new Response(JSON.stringify({ tunnel_jwt: 'tjt', refresh_token: 'rrr' }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        }),
+        new Response(
+          JSON.stringify({ tunnel_jwt: 'tjt', refresh_token: 'rrr', login: 'alice' }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          },
+        ),
     );
     const { document } = await runPage({
       search: '?code=c&state=s',

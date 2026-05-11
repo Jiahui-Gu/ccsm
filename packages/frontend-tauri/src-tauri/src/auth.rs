@@ -614,21 +614,26 @@ pub struct DeepLinkPayload {
     pub token: String,
     pub refresh: String,
     pub state: String,
+    /// GitHub login (handle) of the signed-in user. Task #177: the static
+    /// callback page now forwards the cf-worker `exchange` response's `login`
+    /// field into the deep link so the desktop shell can persist a real value
+    /// instead of the legacy placeholder "pending".
+    pub login: String,
 }
 
-/// Parse `ccsm://oauth?token=<jwt>&refresh=<token>&state=<state>` into its
-/// three required fields. Returns `None` on any structural failure:
+/// Parse `ccsm://oauth?token=<jwt>&refresh=<token>&state=<state>&login=<login>`
+/// into its four required fields. Returns `None` on any structural failure:
 ///   - scheme is not `ccsm`
 ///   - host (URL "authority") is not `oauth`
-///   - any of token / refresh / state is missing or empty
+///   - any of token / refresh / state / login is missing or empty
 ///
 /// The verifier is run on the parsed URL only; signature validity / state
 /// freshness are the caller's job (`PkceStateStore::take`).
 pub fn parse_deeplink_url(url: &str) -> Option<DeepLinkPayload> {
     // We deliberately do NOT pull in a URL parser dep — the format is fully
-    // controlled by cf-worker's renderBouncePage and is `ccsm://oauth?...`
-    // with percent-encoded values. Hand-rolling 30 lines is cheaper than
-    // adding `url = "2"` to Cargo for one call site.
+    // controlled by the static callback page's URLSearchParams encoder and is
+    // `ccsm://oauth?...` with percent-encoded values. Hand-rolling 30 lines
+    // is cheaper than adding `url = "2"` to Cargo for one call site.
     let after_scheme = url.strip_prefix("ccsm://")?;
     // Split at the first `?` — the part before is `<authority>[/<path>]`,
     // after is the query string.
@@ -645,6 +650,7 @@ pub fn parse_deeplink_url(url: &str) -> Option<DeepLinkPayload> {
     let mut token: Option<String> = None;
     let mut refresh: Option<String> = None;
     let mut state: Option<String> = None;
+    let mut login: Option<String> = None;
     for pair in query.split('&') {
         let (k, v) = match pair.find('=') {
             Some(i) => (&pair[..i], &pair[i + 1..]),
@@ -662,16 +668,18 @@ pub fn parse_deeplink_url(url: &str) -> Option<DeepLinkPayload> {
             "token" => token = Some(decoded),
             "refresh" => refresh = Some(decoded),
             "state" => state = Some(decoded),
+            "login" => login = Some(decoded),
             _ => {}
         }
     }
     let token = token?;
     let refresh = refresh?;
     let state = state?;
-    if token.is_empty() || refresh.is_empty() || state.is_empty() {
+    let login = login?;
+    if token.is_empty() || refresh.is_empty() || state.is_empty() || login.is_empty() {
         return None;
     }
-    Some(DeepLinkPayload { token, refresh, state })
+    Some(DeepLinkPayload { token, refresh, state, login })
 }
 
 /// RFC 3986 §2.1 percent-decoding of an URL component. Invalid escape
@@ -723,18 +731,18 @@ pub fn handle_desktop_callback(app: &AppHandle, url: &str) -> Result<(), String>
             "deep-link state not recognized (state mismatch / replay / expired)".to_string(),
         );
     }
-    // Best-effort sub extraction so persisted creds stay shape-compatible
-    // with the device-flow path. The persisted blob's `login` is what the
-    // SPA renders, so we leave it empty here — R-51c will surface the
-    // `/api/auth/me`-derived login on first daemon connect.
+    // Task #177: persist the login that the cf-worker `exchange` endpoint
+    // resolved (sourced from the GitHub /user response inside the linker).
+    // Previously this hard-coded "pending" because the deep-link only carried
+    // {token, refresh, state}, and the SPA ended up rendering "@pending".
+    // The static callback page now forwards `login` from the exchange
+    // response into the `ccsm://oauth?...&login=<login>` query, so the
+    // desktop side can store it verbatim — keeping cf-worker's oauthLinker
+    // as the single producer of the login value (no JWT parsing here).
     let creds = PersistedTunnelCreds {
         tunnel_jwt: payload.token,
         tunnel_refresh_token: payload.refresh,
-        // login is unknown until the daemon reports back; persistence
-        // round-trip works either way (read_persisted_creds rejects empty
-        // login though, so we fill in a placeholder). This will be
-        // refreshed on first /api/auth/me call (R-51c scope).
-        login: String::from("pending"),
+        login: payload.login,
     };
     write_persisted_creds(&creds)
         .map_err(|e| format!("persist desktop creds: {e}"))?;
@@ -1031,18 +1039,21 @@ mod tests {
 
     #[test]
     fn parse_deeplink_url_extracts_token_refresh_state() {
-        let url = "ccsm://oauth?token=abc.def.ghi&refresh=01234567&state=feedface";
+        let url = "ccsm://oauth?token=abc.def.ghi&refresh=01234567&state=feedface&login=octocat";
         let p = parse_deeplink_url(url).expect("must parse");
         assert_eq!(p.token, "abc.def.ghi");
         assert_eq!(p.refresh, "01234567");
         assert_eq!(p.state, "feedface");
+        // Task #177: login is the resolved GitHub handle, not a placeholder.
+        assert_eq!(p.login, "octocat");
     }
 
     #[test]
     fn parse_deeplink_url_handles_percent_encoded_values() {
-        // cf-worker URLSearchParams encodes `+` as `%2B` etc. Make sure the
-        // parser round-trips a percent-encoded JWT sig (rare but possible).
-        let url = "ccsm://oauth?token=a.b%2Bc&refresh=r&state=s";
+        // The static callback page's URLSearchParams encodes `+` as `%2B` etc.
+        // Make sure the parser round-trips a percent-encoded JWT sig (rare but
+        // possible).
+        let url = "ccsm://oauth?token=a.b%2Bc&refresh=r&state=s&login=u";
         let p = parse_deeplink_url(url).expect("must parse");
         assert_eq!(p.token, "a.b+c");
     }
@@ -1050,20 +1061,27 @@ mod tests {
     #[test]
     fn parse_deeplink_url_rejects_wrong_authority() {
         // `ccsm://other?...` and `ccsm://oauth/extra?...` both reject.
-        assert!(parse_deeplink_url("ccsm://other?token=t&refresh=r&state=s").is_none());
-        assert!(parse_deeplink_url("ccsm://oauth/extra?token=t&refresh=r&state=s").is_none());
+        assert!(parse_deeplink_url("ccsm://other?token=t&refresh=r&state=s&login=u").is_none());
+        assert!(
+            parse_deeplink_url("ccsm://oauth/extra?token=t&refresh=r&state=s&login=u").is_none()
+        );
     }
 
     #[test]
     fn parse_deeplink_url_rejects_missing_or_empty_fields() {
         // missing state
-        assert!(parse_deeplink_url("ccsm://oauth?token=t&refresh=r").is_none());
+        assert!(parse_deeplink_url("ccsm://oauth?token=t&refresh=r&login=u").is_none());
         // empty token
-        assert!(parse_deeplink_url("ccsm://oauth?token=&refresh=r&state=s").is_none());
+        assert!(parse_deeplink_url("ccsm://oauth?token=&refresh=r&state=s&login=u").is_none());
+        // Task #177: missing login is now a structural failure (no fallback
+        // to "pending" placeholder).
+        assert!(parse_deeplink_url("ccsm://oauth?token=t&refresh=r&state=s").is_none());
+        // empty login
+        assert!(parse_deeplink_url("ccsm://oauth?token=t&refresh=r&state=s&login=").is_none());
         // entirely malformed
         assert!(parse_deeplink_url("ccsm://oauth?invalid").is_none());
         // wrong scheme
-        assert!(parse_deeplink_url("https://oauth?token=t&refresh=r&state=s").is_none());
+        assert!(parse_deeplink_url("https://oauth?token=t&refresh=r&state=s&login=u").is_none());
     }
 
     #[test]
@@ -1113,5 +1131,94 @@ mod tests {
         assert_eq!(extract_query_param(url, "state"), Some("feedface".to_string()));
         assert_eq!(extract_query_param(url, "scope"), Some("read:user".to_string()));
         assert_eq!(extract_query_param(url, "missing"), None);
+    }
+
+    /// Task #177 (coverage hardening): explicit serde round-trip on the
+    /// persisted blob shape. Catches "dropped field" regressions on the
+    /// on-disk schema — if anyone removes the `login` field from
+    /// `PersistedTunnelCreds`, deserialization here will fail to populate
+    /// it and the SPA bug from Task #177 returns. By pinning the JSON
+    /// keys explicitly we also catch silent renames (serde's default is
+    /// snake_case but it does not validate "unknown fields", and a
+    /// missing field on the struct silently drops it from the wire).
+    #[test]
+    fn persisted_tunnel_creds_serde_round_trip_includes_login() {
+        let json = r#"{"tunnel_jwt":"jwt.body.sig","tunnel_refresh_token":"abcd","login":"alice"}"#;
+        let parsed: PersistedTunnelCreds = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(parsed.tunnel_jwt, "jwt.body.sig");
+        assert_eq!(parsed.tunnel_refresh_token, "abcd");
+        assert_eq!(parsed.login, "alice");
+
+        // Re-serialize and assert the produced JSON contains all three keys —
+        // this defends against a future `#[serde(skip_serializing)]` slipping
+        // onto the login field.
+        let out = serde_json::to_string(&parsed).expect("serialize");
+        assert!(out.contains("\"tunnel_jwt\""));
+        assert!(out.contains("\"tunnel_refresh_token\""));
+        assert!(out.contains("\"login\""));
+        assert!(out.contains("alice"));
+    }
+
+    /// Task #177 (coverage hardening): regression guard that the `login`
+    /// field stored by the desktop OAuth deep-link path is NOT the literal
+    /// placeholder string "pending". The original bug shipped because
+    /// `handle_desktop_callback` wrote `login: String::from("pending")`
+    /// when it had real data on the wire — this test mirrors the deep-link
+    /// happy path and asserts the literal can never sneak back in for that
+    /// code path.
+    ///
+    /// Note: we deliberately don't grep the whole module for the string
+    /// "pending" because GitHub's device-flow API uses `"pending"` as a
+    /// legitimate poll-status value (see `run_poll_loop`), and a coarse
+    /// grep would generate false positives on that legitimate match.
+    #[test]
+    fn deep_link_login_is_never_pending_literal() {
+        with_tmp_home("never-pending", || {
+            let url =
+                "ccsm://oauth?token=jwt.body.sig&refresh=rrr&state=feedface&login=octocat";
+            let payload = parse_deeplink_url(url).expect("must parse");
+            let creds = PersistedTunnelCreds {
+                tunnel_jwt: payload.token,
+                tunnel_refresh_token: payload.refresh,
+                login: payload.login,
+            };
+            assert_ne!(creds.login, "pending");
+            assert_eq!(creds.login, "octocat");
+        });
+    }
+
+    /// uses — take a deep link string, parse it, copy the parsed `login` (and
+    /// the other two credential fields) into `PersistedTunnelCreds`, write to
+    /// disk, read back, and verify the persisted `login` matches the deep
+    /// link's `login` (NOT the legacy literal "pending").
+    ///
+    /// We can't drive the real `handle_desktop_callback` directly from a
+    /// `#[test]` because it needs a `tauri::AppHandle` (live Tauri runtime).
+    /// Instead we mirror the exact composition it performs — same fields,
+    /// same write_persisted_creds path — so any future drift that puts
+    /// "pending" back into the persisted blob will fail this test.
+    #[test]
+    fn deep_link_login_round_trips_through_persisted_creds() {
+        with_tmp_home("deeplink-login", || {
+            let url =
+                "ccsm://oauth?token=jwt.value.here&refresh=rrr&state=feedface&login=Jiahui-Gu";
+            let payload = parse_deeplink_url(url).expect("must parse");
+            assert_eq!(payload.login, "Jiahui-Gu");
+
+            let creds = PersistedTunnelCreds {
+                tunnel_jwt: payload.token.clone(),
+                tunnel_refresh_token: payload.refresh.clone(),
+                login: payload.login.clone(),
+            };
+            write_persisted_creds(&creds).unwrap();
+
+            let back = read_persisted_creds().expect("read back");
+            assert_eq!(back.tunnel_jwt, "jwt.value.here");
+            assert_eq!(back.tunnel_refresh_token, "rrr");
+            // The bug from Task #177 wrote the literal string "pending" here.
+            // Lock in the real login.
+            assert_eq!(back.login, "Jiahui-Gu");
+            assert_ne!(back.login, "pending");
+        });
     }
 }
