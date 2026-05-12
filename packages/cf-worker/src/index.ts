@@ -54,16 +54,22 @@ import { Logger, deriveRequestId, shortSub } from './logger';
  * identity headers so the TunnelDO can echo them into the daemon hello
  * frame (Task #133 wire format). Browser ws path only — the daemon path
  * does not need identity injection (the tunnel JWT itself carries login +
- * github_id and the daemon already trusts the cloud-issued token).
+ * user_id and the daemon already trusts the cloud-issued token).
+ *
+ * R-58 (Task #182): `user_id` here is the uuid PK from `claims.sub`
+ * (R-51a Task #167), NOT a GitHub numeric id. The `X-CCSM-Identity-Id`
+ * HTTP header name is kept stable on the wire (changing it would need a
+ * lockstep DO + worker deploy); the DO reads it and fills
+ * `BrowserIdentity.user_id` (renamed from `github_id` in R-58).
  */
 function withIdentityHeaders(
   req: Request,
   login: string,
-  github_id: string,
+  user_id: string,
 ): Request {
   const headers = new Headers(req.headers);
   headers.set('X-CCSM-Identity-Login', login);
-  headers.set('X-CCSM-Identity-Id', github_id);
+  headers.set('X-CCSM-Identity-Id', user_id);
   return new Request(req, { headers });
 }
 

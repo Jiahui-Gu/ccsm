@@ -924,7 +924,7 @@ describe('TunnelClient', () => {
     });
 
     it('accepts hello with identity and no token', () => {
-      const attachCalls: Array<{ sid: string; identity?: { login: string; github_id: string } }> = [];
+      const attachCalls: Array<{ sid: string; identity?: { login: string; user_id: string } }> = [];
       const client = new TunnelClient({
         url: 'wss://x',
         // daemon-side token kept for legacy callers but not consulted in trust mode.
@@ -943,16 +943,16 @@ describe('TunnelClient', () => {
         type: 'hello',
         sid: 'sess-A',
         lastSeq: 0,
-        identity: { login: 'octocat', github_id: '583231' },
+        identity: { login: 'octocat', user_id: 'a3c7ac23-2d79-4810-8c61-207179e44e91' },
       }));
 
       expect(sockets[0].closedCalls).toHaveLength(0);
       expect(attachCalls).toEqual([
-        { sid: 'sess-A', identity: { login: 'octocat', github_id: '583231' } },
+        { sid: 'sess-A', identity: { login: 'octocat', user_id: 'a3c7ac23-2d79-4810-8c61-207179e44e91' } },
       ]);
       expect(client.getBrowserIdentity('sess-A')).toEqual({
         login: 'octocat',
-        github_id: '583231',
+        user_id: 'a3c7ac23-2d79-4810-8c61-207179e44e91',
       });
       // Legacy browserToken stays null when no token rode along.
       expect(client.getBrowserToken()).toBeNull();
@@ -1018,7 +1018,7 @@ describe('TunnelClient', () => {
       sockets[0].pushText(JSON.stringify({
         type: 'hello',
         sid: 'sess-A',
-        identity: { login: 'octocat', github_id: '583231' },
+        identity: { login: 'octocat', user_id: 'a3c7ac23-2d79-4810-8c61-207179e44e91' },
       }));
 
       expect(sockets[0].closedCalls).toHaveLength(1);
@@ -1069,11 +1069,18 @@ describe('TunnelClient', () => {
   });
 
   // ---- Audit F-S-2 (Task #152): trust-tunnel identity bind ---------------
+  //
+  // R-58 (Task #182): fixtures rewritten — the wire field on `BrowserIdentity`
+  // is now `user_id` (uuid PK from cf-worker, R-51a Task #167); pre-R-58 it
+  // was called `github_id` and tests used GitHub numeric ids like '583231'.
+  // The bind check semantics are unchanged: daemon compares hello identity
+  // against CCSM_EXPECTED_OWNER_ID (also a uuid, parsed from the persisted
+  // tunnel JWT's `sub` claim).
   it('audit F-S-2: trust-tunnel rejects hello whose identity does not match CCSM_EXPECTED_OWNER_ID', () => {
     const priorTrust = process.env.CCSM_TRUST_TUNNEL;
     const priorOwner = process.env.CCSM_EXPECTED_OWNER_ID;
     process.env.CCSM_TRUST_TUNNEL = '1';
-    process.env.CCSM_EXPECTED_OWNER_ID = '583231';
+    process.env.CCSM_EXPECTED_OWNER_ID = 'a3c7ac23-2d79-4810-8c61-207179e44e91';
     try {
       const client = new TunnelClient({
         url: 'wss://example/tunnel/x',
@@ -1087,7 +1094,7 @@ describe('TunnelClient', () => {
         JSON.stringify({
           type: 'hello',
           sid: 'sess-A',
-          identity: { login: 'attacker', github_id: '999999' },
+          identity: { login: 'attacker', user_id: 'b9999999-0000-0000-0000-000000000000' },
         }),
       );
       expect(sockets[0].closedCalls).toHaveLength(1);
@@ -1106,7 +1113,7 @@ describe('TunnelClient', () => {
     const priorTrust = process.env.CCSM_TRUST_TUNNEL;
     const priorOwner = process.env.CCSM_EXPECTED_OWNER_ID;
     process.env.CCSM_TRUST_TUNNEL = '1';
-    process.env.CCSM_EXPECTED_OWNER_ID = '583231';
+    process.env.CCSM_EXPECTED_OWNER_ID = 'a3c7ac23-2d79-4810-8c61-207179e44e91';
     try {
       const client = new TunnelClient({
         url: 'wss://example/tunnel/x',
@@ -1119,7 +1126,7 @@ describe('TunnelClient', () => {
       sockets[0].pushText(
         JSON.stringify({
           type: 'hello',
-          identity: { login: 'octocat', github_id: '583231' },
+          identity: { login: 'octocat', user_id: 'a3c7ac23-2d79-4810-8c61-207179e44e91' },
         }),
       );
       expect(sockets[0].closedCalls).toHaveLength(0);
@@ -1148,7 +1155,7 @@ describe('TunnelClient', () => {
       sockets[0].pushText(
         JSON.stringify({
           type: 'hello',
-          identity: { login: 'anyone', github_id: '11' },
+          identity: { login: 'anyone', user_id: 'c0000000-1111-2222-3333-444444444444' },
         }),
       );
       expect(sockets[0].closedCalls).toHaveLength(0);
@@ -1156,6 +1163,45 @@ describe('TunnelClient', () => {
       if (priorTrust === undefined) delete process.env.CCSM_TRUST_TUNNEL;
       else process.env.CCSM_TRUST_TUNNEL = priorTrust;
       if (priorOwner !== undefined) process.env.CCSM_EXPECTED_OWNER_ID = priorOwner;
+    }
+  });
+
+  // R-58 (Task #182): parseHello must REJECT a hello using the legacy
+  // `github_id` wire field — the schema migration is a hard cut, not a
+  // double-field tolerance. Without this, a stale browser bundle could
+  // smuggle a non-conforming identity past the daemon and we'd never know
+  // until production. parseIdentity returns null → parseHello rejects the
+  // identity, and since the identity branch is required in trust mode,
+  // the daemon closes 1008.
+  it('R-58: trust-tunnel rejects hello using legacy `github_id` field name', () => {
+    const priorTrust = process.env.CCSM_TRUST_TUNNEL;
+    const priorOwner = process.env.CCSM_EXPECTED_OWNER_ID;
+    process.env.CCSM_TRUST_TUNNEL = '1';
+    process.env.CCSM_EXPECTED_OWNER_ID = 'a3c7ac23-2d79-4810-8c61-207179e44e91';
+    try {
+      const client = new TunnelClient({
+        url: 'wss://example/tunnel/x',
+        token: 'tok',
+        onFrame: () => {},
+        wsFactory: factory,
+      });
+      client.start();
+      sockets[0].open();
+      sockets[0].pushText(
+        JSON.stringify({
+          type: 'hello',
+          sid: 'sess-A',
+          // Legacy field name — must NOT be accepted.
+          identity: { login: 'octocat', github_id: 'a3c7ac23-2d79-4810-8c61-207179e44e91' },
+        }),
+      );
+      expect(sockets[0].closedCalls).toHaveLength(1);
+      expect(sockets[0].closedCalls[0].code).toBe(1008);
+    } finally {
+      if (priorTrust === undefined) delete process.env.CCSM_TRUST_TUNNEL;
+      else process.env.CCSM_TRUST_TUNNEL = priorTrust;
+      if (priorOwner === undefined) delete process.env.CCSM_EXPECTED_OWNER_ID;
+      else process.env.CCSM_EXPECTED_OWNER_ID = priorOwner;
     }
   });
 });

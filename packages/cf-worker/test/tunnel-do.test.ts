@@ -475,6 +475,44 @@ describe('TunnelDO', () => {
     expect('identity' in hello).toBe(false);
   });
 
+  // R-58 (Task #182): when the cf-worker has injected X-CCSM-Identity-Login
+  // + X-CCSM-Identity-Id headers (jwt mode, middleware extracted them from
+  // the verified web JWT), the DO must surface them in the daemon-bound
+  // hello frame under `identity.user_id` — NOT `identity.github_id` (the
+  // pre-R-58 field name lied, since R-51a moved sub to the uuid PK).
+  it('R-58: hello frame echoes X-CCSM-Identity-* under identity.user_id (uuid PK from R-51a)', async () => {
+    const TunnelDO = await loadDO();
+    const inst = new TunnelDO(makeState(), fakeEnv);
+    await inst.fetch(makeReq('/tunnel/default'));
+
+    // Browser ws upgrade with the identity headers the middleware would
+    // inject after verifyJwt against the web JWT (claims.sub = uuid).
+    const browserReq = new Request('https://example.test/ws/default?sid=sess-y', {
+      headers: {
+        Upgrade: 'websocket',
+        'Sec-WebSocket-Protocol': BROWSER_PROTO,
+        'X-CCSM-Identity-Login': 'octocat',
+        'X-CCSM-Identity-Id': 'a3c7ac23-2d79-4810-8c61-207179e44e91',
+      },
+    });
+    await inst.fetch(browserReq);
+    const daemon = created[0].server;
+    const hello = JSON.parse(daemon.sent[0] as string);
+    expect(hello).toEqual({
+      type: 'hello',
+      token: 'test-token-xyz',
+      sid: 'sess-y',
+      lastSeq: 0,
+      identity: {
+        login: 'octocat',
+        user_id: 'a3c7ac23-2d79-4810-8c61-207179e44e91',
+      },
+    });
+    // Defensive: the legacy field name must NOT be emitted (any double-write
+    // would re-introduce the schema lie R-58 explicitly removed).
+    expect('github_id' in hello.identity).toBe(false);
+  });
+
   // ---- HTTP-over-tunnel (Task #787, S3-C) -------------------------------
 
   function makeHttpReq(path: string, method = 'GET', body?: string): Request {    return new Request(`https://example.test${path}`, {
