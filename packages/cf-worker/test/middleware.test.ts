@@ -94,7 +94,7 @@ describe('getAuthMode', () => {
 });
 
 describe('getUserDoIdName', () => {
-  it('namespaces github_id under user: prefix', () => {
+  it('namespaces user_id under user: prefix', () => {
     expect(getUserDoIdName('12345')).toBe('user:12345');
     expect(getUserDoIdName('99')).toBe('user:99');
   });

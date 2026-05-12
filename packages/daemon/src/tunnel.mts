@@ -195,8 +195,8 @@ function parseIdentity(value: unknown): BrowserIdentity | null {
   if (value === null || typeof value !== 'object') return null;
   const obj = value as Record<string, unknown>;
   if (typeof obj.login !== 'string' || obj.login.length === 0) return null;
-  if (typeof obj.github_id !== 'string' || obj.github_id.length === 0) return null;
-  return { login: obj.login, github_id: obj.github_id };
+  if (typeof obj.user_id !== 'string' || obj.user_id.length === 0) return null;
+  return { login: obj.login, user_id: obj.user_id };
 }
 
 /**
@@ -215,14 +215,15 @@ export function isTrustTunnelEnabled(): boolean {
 
 /**
  * Audit F-S-2 (Task #152): in trust-tunnel mode the daemon must reject any
- * hello whose cloud-authenticated identity does not match the GitHub user
- * the daemon was started for. Without this check, a misconfigured cloud
+ * hello whose cloud-authenticated identity does not match the user the
+ * daemon was started for. Without this check, a misconfigured cloud
  * deploy that signs a JWT for ANY user would let that user hijack this
  * daemon's tunnel.
  *
  * The expected owner is injected by the Tauri shell at spawn time
  * (env `CCSM_EXPECTED_OWNER_ID`, parsed from the local `~/.ccsm/tunnel_jwt`
- * `sub` claim). Empty / unset returns null and the bind check is skipped —
+ * `sub` claim — a uuid since R-51a Task #167; pre-R-51 it was the GitHub
+ * numeric id). Empty / unset returns null and the bind check is skipped —
  * legacy deployments without the Tauri shell stay unaffected.
  *
  * Read on every call so tests can toggle via process.env without re-import.
@@ -586,17 +587,20 @@ export class TunnelClient {
             return;
           }
           // Audit F-S-2 (Task #152): identity-bind check. The Tauri shell
-          // baked the expected GitHub user id into the daemon's env at
-          // spawn time (parsed from the persisted tunnel JWT's `sub`).
-          // Reject any hello whose cloud-stamped identity disagrees so a
-          // mis-issued JWT cannot hijack this user's daemon.
+          // baked the expected user id into the daemon's env at spawn time
+          // (parsed from the persisted tunnel JWT's `sub` claim — a uuid
+          // since R-51a Task #167). Reject any hello whose cloud-stamped
+          // identity disagrees so a mis-issued JWT cannot hijack this
+          // user's daemon. R-58 (Task #182) renamed the wire field
+          // `github_id` → `user_id` so the name matches the actual value
+          // semantics.
           const expectedOwner = getExpectedOwnerId();
-          if (expectedOwner !== null && hello.identity.github_id !== expectedOwner) {
+          if (expectedOwner !== null && hello.identity.user_id !== expectedOwner) {
             this.rejectHello(
               'identity-mismatch (expected owner=' +
                 expectedOwner +
                 ' got=' +
-                hello.identity.github_id +
+                hello.identity.user_id +
                 ')',
             );
             return;

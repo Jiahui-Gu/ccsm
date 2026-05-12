@@ -322,29 +322,44 @@ async fn run_cycle(app: &AppHandle, kill_rx: &mut mpsc::Receiver<()>) -> CycleOu
     // cloud-issued credential. Absence is fine — the daemon falls back to
     // the legacy loopback-token-only path and the cloud tunnel runs in
     // legacy mode (or is skipped, depending on CCSM_TUNNEL_DISABLE).
+    //
+    // R-58 (Task #182): also surface the (login, user_id) pair so the
+    // post-handshake `Ready { identity }` branch can fill the daemon-state
+    // identity slot (was hardcoded `None` waiting on S4-T8 — wire-up never
+    // happened; collapsing the TODO here). `user_id` is the uuid from the
+    // tunnel JWT's `sub` claim (R-51a Task #167); `parse_jwt_sub_unverified`
+    // returns None on a malformed JWT in which case we leave identity unset
+    // and the bind check is skipped (same degraded path as before).
+    let mut identity_for_ready: Option<crate::daemon_state::Identity> = None;
     if let Some(creds) = crate::auth::read_persisted_creds() {
         cmd.env("CCSM_TUNNEL_JWT", &creds.tunnel_jwt);
         cmd.env("CCSM_TUNNEL_REFRESH_TOKEN", &creds.tunnel_refresh_token);
         cmd.env("CCSM_TUNNEL_LOGIN", &creds.login);
         cmd.env("CCSM_TRUST_TUNNEL", "1");
-        // Audit F-S-2 (Task #152): bind the daemon to the GitHub user id
-        // baked into the persisted tunnel JWT. The daemon-side hello
-        // handler (tunnel.mts handleHello trust-tunnel branch) refuses
-        // any cloud-stamped identity that does not match this value, so a
+        // Audit F-S-2 (Task #152): bind the daemon to the user id baked
+        // into the persisted tunnel JWT. The daemon-side hello handler
+        // (tunnel.mts handleHello trust-tunnel branch) refuses any
+        // cloud-stamped identity that does not match this value, so a
         // mis-issued JWT for some other user cannot hijack the tunnel.
         // Absence (malformed JWT) leaves the env unset and the daemon
         // skips the bind check — degraded but not fail-open since hello
         // identity is still checked against trust-tunnel's existing
         // "must carry identity" gate.
-        if let Some(owner_id) = crate::auth::parse_jwt_sub_unverified(&creds.tunnel_jwt) {
-            cmd.env("CCSM_EXPECTED_OWNER_ID", &owner_id);
+        //
+        // R-58 (Task #182): the env name `CCSM_EXPECTED_OWNER_ID` is kept
+        // for back-compat (lockstep daemon + Tauri deploy required to
+        // rename); the value is a uuid since R-51a, not a GitHub numeric
+        // id. See daemon/src/tunnel.mts `getExpectedOwnerId` doc.
+        if let Some(user_id) = crate::auth::parse_jwt_sub_unverified(&creds.tunnel_jwt) {
+            cmd.env("CCSM_EXPECTED_OWNER_ID", &user_id);
             eprintln!(
-                "[daemon-mgr] injecting tunnel JWT for login={} owner_id={} (trust-tunnel mode)",
-                creds.login, owner_id,
+                "[daemon-mgr] injecting tunnel JWT for login={} user_id={} (trust-tunnel mode)",
+                creds.login, user_id,
             );
+            identity_for_ready = Some(crate::daemon_state::Identity { user_id });
         } else {
             eprintln!(
-                "[daemon-mgr] injecting tunnel JWT for login={} (trust-tunnel mode; owner_id parse failed, identity-bind disabled)",
+                "[daemon-mgr] injecting tunnel JWT for login={} (trust-tunnel mode; user_id parse failed, identity-bind disabled)",
                 creds.login,
             );
         }
@@ -458,7 +473,13 @@ async fn run_cycle(app: &AppHandle, kill_rx: &mut mpsc::Receiver<()>) -> CycleOu
                 DaemonPhase::Ready {
                     port: hs.port,
                     token: hs.token.clone(),
-                    identity: None, // S4-T8 will populate after auth.
+                    // R-58 (Task #182): identity now populated from the
+                    // persisted tunnel JWT's `sub` claim (computed above
+                    // alongside CCSM_EXPECTED_OWNER_ID injection). Pre-R-58
+                    // this was hardcoded `None` waiting on S4-T8 which
+                    // never wired it up, so daemon-state.identity stayed
+                    // null in production despite the bind check working.
+                    identity: identity_for_ready.clone(),
                     // R-50 (Task #164): tunnel sub-state defaults to Pending
                     // here. If the stderr observer already saw "tunnel:
                     // connected" before this commit, the store's

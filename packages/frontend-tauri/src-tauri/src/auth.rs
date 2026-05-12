@@ -1035,6 +1035,84 @@ mod tests {
         assert_eq!(parse_jwt_sub_unverified(&jwt), Some("1".to_string()));
     }
 
+    /// R-58 (Task #182): the JWT `sub` claim is now a uuid (R-51a Task #167)
+    /// rather than a GitHub numeric id. parse_jwt_sub_unverified must
+    /// return the uuid string verbatim — no shape assumption — so
+    /// daemon_mgr can feed it into both `CCSM_EXPECTED_OWNER_ID` (env)
+    /// and `daemon_state::Identity.user_id` (in-process state).
+    #[test]
+    fn parse_jwt_sub_extracts_uuid_sub_r58() {
+        let header = "eyJhbGciOiJIUzI1NiJ9";
+        // base64url of {"sub":"a3c7ac23-2d79-4810-8c61-207179e44e91","login":"octocat"}
+        // computed with: echo -n '<json>' | base64 -w0 | tr '+/' '-_' | tr -d '='
+        let json_bytes = br#"{"sub":"a3c7ac23-2d79-4810-8c61-207179e44e91","login":"octocat"}"#;
+        let payload = base64url_encode_for_test(json_bytes);
+        let jwt = format!("{}.{}.sig", header, payload);
+        assert_eq!(
+            parse_jwt_sub_unverified(&jwt),
+            Some("a3c7ac23-2d79-4810-8c61-207179e44e91".to_string()),
+            "R-58: parse must surface uuid sub verbatim (no field-name assumption)"
+        );
+    }
+
+    /// R-58 (Task #182): full identity-bind chain — given a JWT with a
+    /// uuid `sub` claim (as cf-worker mints in R-51a), the daemon-state
+    /// `Identity` constructed from it must serialize with the wire key
+    /// `user_id`, not `github_id`. This anchors the SPA contract change
+    /// against future serde rename slips.
+    #[test]
+    fn identity_from_uuid_sub_serializes_as_user_id_r58() {
+        let header = "eyJhbGciOiJIUzI1NiJ9";
+        let json_bytes = br#"{"sub":"a3c7ac23-2d79-4810-8c61-207179e44e91"}"#;
+        let payload = base64url_encode_for_test(json_bytes);
+        let jwt = format!("{}.{}.sig", header, payload);
+        let user_id =
+            parse_jwt_sub_unverified(&jwt).expect("R-58: uuid sub must parse");
+        let identity = crate::daemon_state::Identity { user_id };
+        let json = serde_json::to_string(&identity).expect("serialize");
+        assert_eq!(
+            json,
+            r#"{"user_id":"a3c7ac23-2d79-4810-8c61-207179e44e91"}"#,
+            "R-58: Identity must serialize as user_id (renamed from github_id)"
+        );
+    }
+
+    /// Minimal base64url encoder used only by the R-58 tests above so we
+    /// don't hand-roll payload literals each time. Mirrors the standard
+    /// base64url alphabet (RFC 4648 §5) with no padding emitted.
+    fn base64url_encode_for_test(input: &[u8]) -> String {
+        const ALPHABET: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let mut out = String::new();
+        let mut i = 0;
+        while i + 3 <= input.len() {
+            let b0 = input[i] as u32;
+            let b1 = input[i + 1] as u32;
+            let b2 = input[i + 2] as u32;
+            let n = (b0 << 16) | (b1 << 8) | b2;
+            out.push(ALPHABET[((n >> 18) & 0x3f) as usize] as char);
+            out.push(ALPHABET[((n >> 12) & 0x3f) as usize] as char);
+            out.push(ALPHABET[((n >> 6) & 0x3f) as usize] as char);
+            out.push(ALPHABET[(n & 0x3f) as usize] as char);
+            i += 3;
+        }
+        let rem = input.len() - i;
+        if rem == 1 {
+            let b0 = input[i] as u32;
+            let n = b0 << 16;
+            out.push(ALPHABET[((n >> 18) & 0x3f) as usize] as char);
+            out.push(ALPHABET[((n >> 12) & 0x3f) as usize] as char);
+        } else if rem == 2 {
+            let b0 = input[i] as u32;
+            let b1 = input[i + 1] as u32;
+            let n = (b0 << 16) | (b1 << 8);
+            out.push(ALPHABET[((n >> 18) & 0x3f) as usize] as char);
+            out.push(ALPHABET[((n >> 12) & 0x3f) as usize] as char);
+            out.push(ALPHABET[((n >> 6) & 0x3f) as usize] as char);
+        }
+        out
+    }
+
     // R-51b (Task #168): deep-link URL parser + PKCE state map.
 
     #[test]

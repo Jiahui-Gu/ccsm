@@ -41,12 +41,20 @@ export const WS_SUBPROTOCOL_PREFIX = 'ccsm.';
  * paths still ride the per-browser bearer token in `HelloFrame.token` and
  * leave `identity` undefined.
  *
- * `login` is the GitHub login (handle); `github_id` is the numeric GitHub
- * user id rendered as a string so we don't lose precision on the wire.
+ * `login` is the GitHub login (handle); `user_id` is the cloud-side user
+ * PK (a uuid string, R-51a Task #167 — replaced the pre-R-51 github numeric
+ * id with `crypto.randomUUID()` so future providers like Google can link to
+ * the same user via verified email). The wire field was called `github_id`
+ * pre-R-58 (Task #182); kept the daemon expecting numeric ids while the
+ * cf-worker had already moved to uuids, with both sides happening to agree
+ * (uuid==uuid) but the field name lying about its contents. R-58 renamed it
+ * to `user_id` to match the actual value semantics; identity-bind still
+ * works the same (daemon compares against `CCSM_EXPECTED_OWNER_ID` parsed
+ * from the tunnel JWT's `sub` claim — also a uuid since R-51a).
  */
 export interface BrowserIdentity {
   login: string;
-  github_id: string;
+  user_id: string;
 }
 
 /**

@@ -356,11 +356,16 @@ export class TunnelDO extends DurableObject<Env> {
       // before forwarding into this DO. In legacy mode (no JWT, S3-era
       // smoke flow) the headers are absent and identity stays undefined —
       // the daemon then falls back to validating the bearer token itself.
+      //
+      // R-58 (Task #182): `X-CCSM-Identity-Id` carries the uuid user PK
+      // (claims.sub since R-51a Task #167), NOT the GitHub numeric id. The
+      // wire field on `BrowserIdentity` was renamed `github_id` → `user_id`
+      // to match.
       const idLogin = req.headers.get('X-CCSM-Identity-Login');
-      const idGithub = req.headers.get('X-CCSM-Identity-Id');
+      const idUserId = req.headers.get('X-CCSM-Identity-Id');
       const identity: BrowserIdentity | undefined =
-        idLogin !== null && idGithub !== null
-          ? { login: idLogin, github_id: idGithub }
+        idLogin !== null && idUserId !== null
+          ? { login: idLogin, user_id: idUserId }
           : undefined;
       const attachment: BrowserAttachment = identity !== undefined
         ? { role: 'browser', token: extracted.token, sid, identity }

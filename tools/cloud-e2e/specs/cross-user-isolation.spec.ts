@@ -72,7 +72,7 @@ function encodeSidEnvelope(sid: string, payload: Uint8Array): Uint8Array {
 interface HelloFrame {
   token: string;
   sid: string;
-  identity?: { login: string; github_id: string };
+  identity?: { login: string; user_id: string };
 }
 
 interface DaemonHandle {
@@ -145,9 +145,9 @@ async function connectDaemon(opts: {
     if (obj.type === 'hello' && typeof obj.token === 'string' && typeof obj.sid === 'string') {
       const frame: HelloFrame = { token: obj.token, sid: obj.sid };
       if (obj.identity && typeof obj.identity === 'object') {
-        const id = obj.identity as { login?: unknown; github_id?: unknown };
-        if (typeof id.login === 'string' && typeof id.github_id === 'string') {
-          frame.identity = { login: id.login, github_id: id.github_id };
+        const id = obj.identity as { login?: unknown; user_id?: unknown };
+        if (typeof id.login === 'string' && typeof id.user_id === 'string') {
+          frame.identity = { login: id.login, user_id: id.user_id };
         }
       }
       const waiter = helloWaiters.shift();
@@ -367,9 +367,9 @@ test.describe('cross-user TunnelDO isolation (S4-T9, Task #135)', () => {
         //    X-CCSM-Identity-* headers and the DO echoes them in hello.
         expect(aliceHello.sid).toBe(aliceSid);
         expect(aliceHello.identity?.login, 'alice hello carries login=alice').toBe('alice');
-        expect(aliceHello.identity?.github_id, 'alice hello carries github_id=gh-1').toBe('gh-1');
+        expect(aliceHello.identity?.user_id, 'alice hello carries user_id=gh-1').toBe('gh-1');
         expect(bobHello.identity?.login, 'bob hello carries login=bob').toBe('bob');
-        expect(bobHello.identity?.github_id, 'bob hello carries github_id=gh-2').toBe('gh-2');
+        expect(bobHello.identity?.user_id, 'bob hello carries user_id=gh-2').toBe('gh-2');
 
         // 6. PTY-data isolation: alice daemon emits a unique payload bound
         //    to alice's sid; the DO must route it to alice's browser ONLY.
