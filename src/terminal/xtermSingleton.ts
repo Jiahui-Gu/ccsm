@@ -116,7 +116,27 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
   fit = new FitAddon();
   term.loadAddon(fit);
   try {
-    term.loadAddon(new WebLinksAddon());
+    // Ctrl-click (Win/Linux) / Cmd-click (macOS) opens the link in the
+    // user's default browser; plain clicks are deliberately a no-op.
+    //
+    // Why the modifier gate: matches the Windows Terminal / VS Code
+    // convention so muscle memory carries over, and avoids hijacking
+    // accidental clicks on URL-shaped output (paths, ANSI escapes that
+    // look like links, etc.) from claude's TUI.
+    //
+    // Why route through preload (not WebLinksAddon's default `window.open`):
+    // the BrowserWindow installs a `setWindowOpenHandler` returning
+    // `{action:'deny'}` to block popups, which silently swallows the
+    // default behaviour. `window.ccsm.openExternal` hands the URI to the
+    // main process, which applies a strict http(s) scheme whitelist
+    // before calling `shell.openExternal` (see utilityIpc.ts).
+    term.loadAddon(
+      new WebLinksAddon((event, uri) => {
+        if (event.ctrlKey || event.metaKey) {
+          window.ccsm?.openExternal?.(uri);
+        }
+      }),
+    );
   } catch (e) {
     console.warn('[TerminalPane] web-links addon failed', e);
   }
