@@ -179,14 +179,21 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
     }
   });
 
-  // Copy/paste keyboard shortcuts (Windows Terminal style):
-  //   Ctrl+C  → if selection, copy; else fall through to SIGINT
-  //   Ctrl+V  → paste
-  //   Ctrl+Shift+C / Ctrl+Shift+V → explicit always-clipboard
+  // Copy keyboard shortcuts (Windows Terminal style):
+  //   Ctrl+C        → if selection, copy; else fall through to SIGINT
+  //   Ctrl+Shift+C  → explicit always-copy
+  //
+  // Paste is intentionally NOT handled here. xterm.js has a built-in paste
+  // pipeline (textarea `paste` event → `term.paste()` → `onData` → main
+  // process `pty.write`) which is already wired by `usePtyAttach`. A
+  // previous custom Ctrl+V / Ctrl+Shift+V handler here ran in addition to
+  // the built-in pipeline — returning `false` only suppresses xterm's
+  // keydown→data dispatch, not the browser's native `paste` clipboard
+  // event — so every paste was sent twice. Delegating to xterm's built-in
+  // pipeline gives us a single, canonical paste path.
   term.attachCustomKeyEventHandler((ev) => {
     if (ev.type !== 'keydown') return true;
     const isC = ev.key === 'C' || ev.key === 'c';
-    const isV = ev.key === 'V' || ev.key === 'v';
 
     if (ev.ctrlKey && !ev.shiftKey && !ev.altKey && isC) {
       const sel = term?.getSelection();
@@ -200,15 +207,6 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
       }
       return true;
     }
-    if (ev.ctrlKey && !ev.shiftKey && !ev.altKey && isV) {
-      try {
-        const text = window.ccsmPty?.clipboard?.readText();
-        if (text && activeSid) window.ccsmPty.input(activeSid, text);
-      } catch {
-        // ignore clipboard failures — paste is best-effort.
-      }
-      return false;
-    }
     if (ev.ctrlKey && ev.shiftKey && isC) {
       const sel = term?.getSelection();
       if (sel) {
@@ -217,15 +215,6 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
         } catch {
           // ignore clipboard failures — selection still highlights.
         }
-      }
-      return false;
-    }
-    if (ev.ctrlKey && ev.shiftKey && isV) {
-      try {
-        const text = window.ccsmPty?.clipboard?.readText();
-        if (text && activeSid) window.ccsmPty.input(activeSid, text);
-      } catch {
-        // ignore clipboard failures — paste is best-effort.
       }
       return false;
     }
