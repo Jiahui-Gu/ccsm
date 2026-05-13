@@ -3,9 +3,12 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
+const openExternalMock = vi.fn(async (_url: string) => undefined);
+
 vi.mock('electron', () => ({
   BrowserWindow: { fromWebContents: () => null },
   dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }) },
+  shell: { openExternal: (url: string) => openExternalMock(url) },
 }));
 vi.mock('../../import-scanner', () => ({
   scanImportableSessions: async () => [],
@@ -15,7 +18,11 @@ vi.mock('../../prefs/userCwds', () => ({
   pushUserCwd: (p: string) => [p, os.homedir()],
 }));
 
-import { probePaths } from '../utilityIpc';
+import {
+  probePaths,
+  isAllowedExternalUrl,
+  registerUtilityIpc,
+} from '../utilityIpc';
 
 let tmpDir = '';
 
@@ -67,5 +74,127 @@ describe('probePaths', () => {
     expect(probePaths([tmpDir])[tmpDir]).toBe(true);
     fs.rmSync(tmpDir, { recursive: true, force: true });
     expect(probePaths([tmpDir])[tmpDir]).toBe(false);
+  });
+});
+
+describe('isAllowedExternalUrl (scheme whitelist for ccsm:openExternal)', () => {
+  it('accepts https URLs', () => {
+    expect(isAllowedExternalUrl('https://example.com')).toBe(true);
+    expect(isAllowedExternalUrl('https://example.com/path?q=1#frag')).toBe(true);
+  });
+
+  it('accepts http URLs (intranet / dev links printed by tools)', () => {
+    expect(isAllowedExternalUrl('http://example.com')).toBe(true);
+    expect(isAllowedExternalUrl('http://localhost:3000/x')).toBe(true);
+  });
+
+  it('is case-insensitive on the scheme', () => {
+    expect(isAllowedExternalUrl('HTTPS://example.com')).toBe(true);
+    expect(isAllowedExternalUrl('Http://example.com')).toBe(true);
+  });
+
+  it('rejects file:// URLs (local file disclosure)', () => {
+    expect(isAllowedExternalUrl('file:///etc/passwd')).toBe(false);
+    expect(isAllowedExternalUrl('file://C:/Windows/System32/drivers/etc/hosts')).toBe(false);
+  });
+
+  it('rejects javascript: URLs (XSS / RCE via shell)', () => {
+    expect(isAllowedExternalUrl('javascript:alert(1)')).toBe(false);
+    expect(isAllowedExternalUrl('JaVaScRiPt:alert(1)')).toBe(false);
+  });
+
+  it('rejects data: URLs', () => {
+    expect(isAllowedExternalUrl('data:text/html,<script>alert(1)</script>')).toBe(false);
+  });
+
+  it('rejects vbscript: URLs', () => {
+    expect(isAllowedExternalUrl('vbscript:msgbox(1)')).toBe(false);
+  });
+
+  it('rejects other custom protocols (mailto, ms-settings, ssh, etc.)', () => {
+    expect(isAllowedExternalUrl('mailto:a@b.com')).toBe(false);
+    expect(isAllowedExternalUrl('ms-settings:network')).toBe(false);
+    expect(isAllowedExternalUrl('ssh://user@host')).toBe(false);
+    expect(isAllowedExternalUrl('ftp://example.com')).toBe(false);
+  });
+
+  it('rejects scheme-relative and protocol-confused inputs', () => {
+    expect(isAllowedExternalUrl('//example.com')).toBe(false);
+    expect(isAllowedExternalUrl('example.com')).toBe(false);
+    expect(isAllowedExternalUrl(' https://example.com')).toBe(false);
+  });
+
+  it('rejects non-string inputs', () => {
+    expect(isAllowedExternalUrl(undefined)).toBe(false);
+    expect(isAllowedExternalUrl(null)).toBe(false);
+    expect(isAllowedExternalUrl(42)).toBe(false);
+    expect(isAllowedExternalUrl({ url: 'https://x' })).toBe(false);
+    expect(isAllowedExternalUrl(['https://x'])).toBe(false);
+  });
+
+  it('rejects empty string', () => {
+    expect(isAllowedExternalUrl('')).toBe(false);
+  });
+});
+
+describe('ccsm:openExternal IPC handler', () => {
+  type Handler = (e: unknown, ...args: unknown[]) => unknown;
+  let handler: Handler;
+
+  beforeEach(() => {
+    openExternalMock.mockClear();
+    const handlers = new Map<string, Handler>();
+    const ipcMain = {
+      handle: (ch: string, fn: Handler) => handlers.set(ch, fn),
+      on: (ch: string, fn: Handler) => handlers.set(ch, fn),
+    } as unknown as Electron.IpcMain;
+    registerUtilityIpc({ ipcMain });
+    handler = handlers.get('ccsm:openExternal')!;
+    expect(handler).toBeDefined();
+  });
+
+  it('forwards http(s) URLs to shell.openExternal and returns true', async () => {
+    const r1 = await handler({}, 'https://example.com');
+    const r2 = await handler({}, 'http://localhost:8080/x');
+    expect(r1).toBe(true);
+    expect(r2).toBe(true);
+    expect(openExternalMock).toHaveBeenCalledTimes(2);
+    expect(openExternalMock).toHaveBeenNthCalledWith(1, 'https://example.com');
+    expect(openExternalMock).toHaveBeenNthCalledWith(2, 'http://localhost:8080/x');
+  });
+
+  it('rejects file:// without calling shell.openExternal', async () => {
+    const r = await handler({}, 'file:///etc/passwd');
+    expect(r).toBe(false);
+    expect(openExternalMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects javascript: without calling shell.openExternal', async () => {
+    const r = await handler({}, 'javascript:alert(1)');
+    expect(r).toBe(false);
+    expect(openExternalMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects data: without calling shell.openExternal', async () => {
+    const r = await handler({}, 'data:text/html,x');
+    expect(r).toBe(false);
+    expect(openExternalMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-string inputs without calling shell.openExternal', async () => {
+    expect(await handler({}, 42)).toBe(false);
+    expect(await handler({}, null)).toBe(false);
+    expect(await handler({}, undefined)).toBe(false);
+    expect(await handler({}, { url: 'https://x' })).toBe(false);
+    expect(openExternalMock).not.toHaveBeenCalled();
+  });
+
+  it('returns false (does not throw) when shell.openExternal rejects', async () => {
+    openExternalMock.mockRejectedValueOnce(new Error('boom'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const r = await handler({}, 'https://example.com');
+    expect(r).toBe(false);
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 });

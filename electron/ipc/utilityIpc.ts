@@ -13,7 +13,7 @@
 // internal; main.ts only needs the `prime()` hook to kick the eager load.
 
 import type { IpcMain } from 'electron';
-import { BrowserWindow, dialog } from 'electron';
+import { BrowserWindow, dialog, shell } from 'electron';
 import * as fs from 'fs';
 import * as os from 'os';
 import {
@@ -101,6 +101,22 @@ export function primeImportableCache(): void {
   void refreshImportableCache();
 }
 
+/**
+ * Scheme whitelist for `ccsm:openExternal`. Renderer feeds URIs detected
+ * by xterm's WebLinksAddon — i.e. arbitrary strings printed by whatever
+ * the PTY is running. The IPC handler MUST refuse anything outside
+ * `http://` / `https://` so a malicious TUI cannot trick the user's
+ * Ctrl/Cmd-click into launching `file://`, `javascript:`, `data:`,
+ * `vbscript:` (or any other shell-handled scheme) via `shell.openExternal`.
+ *
+ * Exported for direct unit testing so the security gate is exercised
+ * without spinning up the IPC layer or mocking `electron.shell`.
+ */
+export function isAllowedExternalUrl(url: unknown): url is string {
+  if (typeof url !== 'string') return false;
+  return /^https?:\/\//i.test(url);
+}
+
 export function registerUtilityIpc(deps: UtilityIpcDeps): void {
   const { ipcMain } = deps;
 
@@ -167,4 +183,25 @@ export function registerUtilityIpc(deps: UtilityIpcDeps): void {
     // auto-spawn).
     probePaths(inputPaths),
   );
+
+  // Ctrl/Cmd-click handoff from xterm's WebLinksAddon to the OS browser.
+  // Background: the renderer's BrowserWindow has `setWindowOpenHandler`
+  // returning `{action:'deny'}` (see electron/window/createWindow.ts), so
+  // a plain `window.open(uri)` — WebLinksAddon's default — is silently
+  // dropped. The renderer now gates on modifier key and routes through
+  // this channel; we still apply a strict scheme whitelist here because
+  // the URI originates from arbitrary PTY output and IPC payloads are
+  // untrusted by definition. Anything outside http(s) (file://, javascript:,
+  // data:, vbscript:, custom protocol handlers, ...) is rejected before
+  // touching `shell.openExternal`.
+  ipcMain.handle('ccsm:openExternal', async (_e, url: unknown) => {
+    if (!isAllowedExternalUrl(url)) return false;
+    try {
+      await shell.openExternal(url);
+      return true;
+    } catch (err) {
+      console.warn('[main] ccsm:openExternal failed', err);
+      return false;
+    }
+  });
 }

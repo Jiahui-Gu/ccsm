@@ -106,6 +106,19 @@ const api = {
   pathsExist: (paths: string[]): Promise<Record<string, boolean>> =>
     ipcRenderer.invoke('paths:exist', paths),
 
+  /**
+   * Open an external URL in the user's default browser. Backs the
+   * Ctrl/Cmd-click handler installed on xterm's WebLinksAddon — the only
+   * production caller. The main process enforces a strict http(s) scheme
+   * whitelist (see `electron/ipc/utilityIpc.ts:isAllowedExternalUrl`) so
+   * malicious PTY output cannot smuggle `file://` / `javascript:` /
+   * `data:` URIs through `shell.openExternal`. Returns `true` when the OS
+   * accepted the open, `false` when the URL was rejected by the whitelist
+   * or `shell.openExternal` threw.
+   */
+  openExternal: (url: string): Promise<boolean> =>
+    ipcRenderer.invoke('ccsm:openExternal', url),
+
   updatesStatus: (): Promise<UpdateStatus> => ipcRenderer.invoke('updates:status'),
   updatesCheck: (): Promise<UpdateStatus> => ipcRenderer.invoke('updates:check'),
   updatesDownload: (): Promise<{ ok: true } | { ok: false; reason: string }> =>

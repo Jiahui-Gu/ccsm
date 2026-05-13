@@ -77,6 +77,16 @@ declare global {
        */
       pathsExist: (paths: string[]) => Promise<Record<string, boolean>>;
 
+      /**
+       * Open an external URL in the user's default browser via the main
+       * process's `shell.openExternal`. The IPC handler enforces a strict
+       * http(s) scheme whitelist, so callers can pass arbitrary URIs
+       * harvested from PTY output (xterm WebLinksAddon) without
+       * pre-validating: anything non-http(s) resolves to `false` with no
+       * side effect. Production caller: Ctrl/Cmd-click on a terminal link.
+       */
+      openExternal: (url: string) => Promise<boolean>;
+
       updatesStatus: () => Promise<UpdateStatus>;
       updatesCheck: () => Promise<UpdateStatus>;
       updatesDownload: () => Promise<{ ok: true } | { ok: false; reason: string }>;
