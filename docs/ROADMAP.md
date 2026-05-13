@@ -67,7 +67,7 @@ URL `?token=`.
 - T2 (Task #121): HS256 JWT primitives (`packages/cf-worker/src/auth/jwt.ts`) + UserDO skeleton.
 - T3 (Task #140): web OAuth callback + refresh + logout (`packages/cf-worker/src/auth/webOauth.ts`).
 - T4 (Task #142): GitHub device flow + tunnel-JWT mint route (`packages/cf-worker/src/auth/deviceFlow.ts`).
-- T5 (Task #136): JWT routing middleware + `CCSM_AUTH_MODE` flag (`packages/cf-worker/src/auth/middleware.ts`); per-user TunnelDO id `user:<github_id>`. Production rolls out with `legacy` (default), flips to `jwt` once T7/T8 SPA changes are live.
+- T5 (Task #136): JWT routing middleware + `CCSM_AUTH_MODE` flag (`packages/cf-worker/src/auth/middleware.ts`); per-user TunnelDO id `user:<user_id>` (uuid since R-51a; was `github_id` pre-R-51). Production rolls out with `legacy` (default), flips to `jwt` once T7/T8 SPA changes are live.
 - T6 (Task #133): cloud-authenticated browser identity carried inside the daemon hello frame (`X-CCSM-Identity-Login` / `X-CCSM-Identity-Id` injected by the worker, echoed by TunnelDO).
 - T7 (Task #139): SPA `SignInGate` + `AuthContext` (`packages/frontend-web/src/auth/`).
 - T8 (Task #141): main-UI Login button driving the device flow on demand (`packages/frontend-tauri/...`).

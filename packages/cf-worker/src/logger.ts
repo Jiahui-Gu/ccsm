@@ -95,7 +95,7 @@ export function sanitizeFields(fields: LogFields | undefined): LogFields {
   return out;
 }
 
-/** Truncate a sub (github_id) to the first 8 hex/digits for log surfacing.
+/** Truncate a sub (user_id, uuid since R-51a) to the first 8 chars for log surfacing.
  *  Pairs with logger calls that want to attribute an event to a user without
  *  printing the full id. */
 export function shortSub(sub: string | undefined | null): string {

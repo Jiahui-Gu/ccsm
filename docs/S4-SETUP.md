@@ -29,7 +29,7 @@ Out of scope (handled by later S4 tasks):
 - **D2**: **JWT** (not cookies) for web auth. Per-tunnel JWT is signed by the
   Worker and verified by the daemon's tunnel client.
 - **D3**: Issue a per-tunnel **access JWT** plus a long-lived **refresh token**.
-- **D4**: `UserDO` is keyed by `github_id` (stable, immutable per GitHub user).
+- **D4**: `UserDO` is keyed by `user_id` (uuid since R-51a; was `github_id` pre-R-51).
 - **D5**: Production secrets via `wrangler secret put`. Local dev via
   `.dev.vars` (gitignored). No secrets in repo.
 

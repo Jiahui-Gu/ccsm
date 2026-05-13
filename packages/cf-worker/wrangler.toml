@@ -66,7 +66,7 @@ run_worker_first = [
 # token-based flow with a single shared TunnelDO keyed by `'default'` —
 # what production runs today and what `npm run smoke` exercises. `jwt`
 # enforces JWT verification on /ws/*, /tunnel/*, /api/* and /token, and
-# routes each user into a per-user TunnelDO id (`user:<github_id>`).
+# routes each user into a per-user TunnelDO id (`user:<user_id>`).
 #
 # Production rollout: deploy with `legacy`, then flip to `jwt` (via
 # `wrangler deploy --var CCSM_AUTH_MODE:jwt` or by editing this file) once
