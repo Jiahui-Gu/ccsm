@@ -135,19 +135,41 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Package (macOS)
-        if: matrix.platform == 'mac'
+      # Two mutually-exclusive macOS package steps. We must NOT export
+      # CSC_LINK / CSC_KEY_PASSWORD at all when secrets are missing —
+      # GitHub Actions materializes a missing secret as an empty string
+      # (not unset), and electron-builder 26.x treats CSC_LINK="" as a
+      # certificate path, calls path.resolve(cwd, "") which yields the
+      # workspace dir, then fs.stat fails with "<workspace> not a file"
+      # right after the log line "empty password will be used for code
+      # signing  reason=CSC_KEY_PASSWORD is not defined".
+      # See v0.2.1 release run #25785568643 for the failure trace.
+      - name: Package (macOS, signed)
+        if: matrix.platform == 'mac' && steps.secrets.outputs.signed == 'true'
         run: npx electron-builder --mac --publish never
         env:
+          DEBUG: electron-builder
+          DEBUG_COLORS: 'false'
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # Skip notarization if Apple creds missing — electron-builder
-          # reads these env vars and falls back to unsigned when empty.
-          CSC_IDENTITY_AUTO_DISCOVERY: ${{ steps.secrets.outputs.signed == 'true' && 'true' || 'false' }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'true'
+
+      - name: Package (macOS, unsigned)
+        if: matrix.platform == 'mac' && steps.secrets.outputs.signed != 'true'
+        # Deliberately do NOT export CSC_LINK / CSC_KEY_PASSWORD here —
+        # leaving them unset lets electron-builder take the pure-unsigned
+        # code path. CSC_IDENTITY_AUTO_DISCOVERY=false suppresses keychain
+        # lookup on the runner.
+        run: npx electron-builder --mac --publish never
+        env:
+          DEBUG: electron-builder
+          DEBUG_COLORS: 'false'
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
       - name: Warn on unsigned Windows build
         if: matrix.platform == 'win' && steps.secrets.outputs.signed != 'true'
