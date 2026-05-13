@@ -123,6 +123,5 @@ jobs:
         with:
           name: e2e-logs-${{ matrix.os }}
           path: |
-            dogfood-logs/
             docs/screenshots/
           retention-days: 7
