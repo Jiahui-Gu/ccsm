@@ -29,6 +29,12 @@ let fit: FitAddon | null = null;
 let activeSid: string | null = null;
 let unsubscribeData: (() => void) | null = null;
 let inputDisposable: { dispose: () => void } | null = null;
+// Handoff flag between the Ctrl/Cmd+V keydown hook and the capture-phase
+// `paste` listener. Module-level (not closed over `ensureTerminal`) so a
+// keydown that was attached against an earlier Terminal instance still
+// suppresses the native paste event reaching the current host element.
+// See the paste-path block inside `ensureTerminal` for details.
+let keyboardPasteHandled = false;
 // L4 PR-D (#866): callback installed by `usePtyAttach` once it has wired the
 // snapshot/dedupe-by-seq flow. Invoked by `useTerminalResize` AFTER pushing
 // a new size to the headless mirror so the visible xterm can re-render
@@ -162,6 +168,68 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
 
   term.open(host);
 
+  // Single canonical paste path.
+  //
+  // xterm.js exposes two competing entry points for paste:
+  //   (1) an `attachCustomKeyEventHandler` keydown hook
+  //   (2) a built-in `paste` DOM-event pipeline (`handlePasteEvent` →
+  //       `coreService.triggerDataEvent` → `onData`), wired to BOTH
+  //       `this.textarea` and `this.element`.
+  //
+  // Electron adds a third: `role: 'paste'` in any application menu
+  // resolves Ctrl/Cmd+V via `webContents.paste()` (OS-level), which
+  // bypasses the DOM entirely. (We've removed that role from the
+  // hidden accelerator menu in `electron/lifecycle/appLifecycle.ts`,
+  // but it can still arrive from the right-click context menu.)
+  //
+  // Letting two of these fire concurrently is what caused v0.2.0's
+  // double-paste; disabling the keydown hook (v0.2.1) instead left
+  // paste depending on which descendant of host happened to be
+  // focused, manifesting as zero pastes when focus was on the screen
+  // canvas. Both failure modes have the same root cause: we were
+  // riding xterm's internals instead of owning the user intent.
+  //
+  // Fix: own the user intent. Treat the terminal pane as a single
+  // atomic unit, like a native CLI terminal. Every "user wants to
+  // paste" signal — Ctrl/Cmd+V keydown, Ctrl/Cmd+Shift+V keydown,
+  // bracketed `paste` DOM events — converges on one call:
+  //
+  //   ccsmPty.input(activeSid, clipboard.readText())
+  //
+  // Implementation: install a capture-phase `paste` listener on the
+  // host wrapper that swallows xterm's built-in pipeline before it
+  // can call `triggerDataEvent`, and route Ctrl/Cmd+V via the
+  // keydown hook below (returning `false` to also stop xterm from
+  // translating the keystroke into a 0x16 SYN byte).
+  //
+  // The capture listener also routes `paste` events that did NOT
+  // originate from our keydown hook (right-click → Paste, Shift+Insert,
+  // OS-level `webContents.paste()` via context menu) into the same
+  // canonical sink, so every paste source converges.
+  //
+  // Subtlety: when the user types Ctrl+V, the keydown hook reads the
+  // clipboard and injects synchronously. Some browsers / Electron
+  // versions then dispatch a native `paste` event a moment later;
+  // the keydown handler sets `keyboardPasteHandled` so this listener
+  // discards that follow-up event and we paste exactly once.
+  const onPasteCapture = (e: ClipboardEvent): void => {
+    e.stopImmediatePropagation();
+    e.preventDefault();
+    if (keyboardPasteHandled) {
+      keyboardPasteHandled = false;
+      return;
+    }
+    const text = e.clipboardData?.getData('text/plain');
+    if (text && activeSid) {
+      try {
+        window.ccsmPty.input(activeSid, text);
+      } catch {
+        // best-effort — write can fail if PTY isn't attached.
+      }
+    }
+  };
+  host.addEventListener('paste', onPasteCapture, { capture: true });
+
   // ttyd-style: auto-copy on selection change. Works in alt-screen apps
   // (claude/Ink) when user holds Shift to bypass mouse tracking and
   // drags. Use Electron's clipboard via preload because navigator.clipboard
@@ -179,16 +247,38 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
     }
   });
 
+  const pasteFromClipboard = (): void => {
+    // Mark the keyboard-driven branch so the capture-phase paste
+    // listener below knows to discard the native paste event the
+    // browser is about to dispatch — otherwise we'd inject twice.
+    keyboardPasteHandled = true;
+    // Auto-clear on the next microtask so that if the browser does
+    // NOT dispatch a follow-up paste event (focus on a non-editable
+    // descendant — canvas / div), a future paste from any source
+    // isn't permanently suppressed. Paste dispatch is synchronous
+    // relative to keydown handling, so it lands before microtasks.
+    queueMicrotask(() => { keyboardPasteHandled = false; });
+    try {
+      const text = window.ccsmPty?.clipboard?.readText();
+      if (text && activeSid) window.ccsmPty.input(activeSid, text);
+    } catch {
+      // best-effort — clipboard read can fail under permission edge cases.
+    }
+  };
+
   // Copy/paste keyboard shortcuts (Windows Terminal style):
   //   Ctrl+C  → if selection, copy; else fall through to SIGINT
-  //   Ctrl+V  → paste
+  //   Ctrl+V  → paste (single canonical path, see above)
   //   Ctrl+Shift+C / Ctrl+Shift+V → explicit always-clipboard
+  // On macOS the same handler matches Cmd via `metaKey`.
   term.attachCustomKeyEventHandler((ev) => {
     if (ev.type !== 'keydown') return true;
+    const mod = ev.ctrlKey || ev.metaKey;
+    if (!mod || ev.altKey) return true;
     const isC = ev.key === 'C' || ev.key === 'c';
     const isV = ev.key === 'V' || ev.key === 'v';
 
-    if (ev.ctrlKey && !ev.shiftKey && !ev.altKey && isC) {
+    if (!ev.shiftKey && isC) {
       const sel = term?.getSelection();
       if (sel) {
         try {
@@ -200,16 +290,11 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
       }
       return true;
     }
-    if (ev.ctrlKey && !ev.shiftKey && !ev.altKey && isV) {
-      try {
-        const text = window.ccsmPty?.clipboard?.readText();
-        if (text && activeSid) window.ccsmPty.input(activeSid, text);
-      } catch {
-        // ignore clipboard failures — paste is best-effort.
-      }
+    if (!ev.shiftKey && isV) {
+      pasteFromClipboard();
       return false;
     }
-    if (ev.ctrlKey && ev.shiftKey && isC) {
+    if (ev.shiftKey && isC) {
       const sel = term?.getSelection();
       if (sel) {
         try {
@@ -220,13 +305,8 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
       }
       return false;
     }
-    if (ev.ctrlKey && ev.shiftKey && isV) {
-      try {
-        const text = window.ccsmPty?.clipboard?.readText();
-        if (text && activeSid) window.ccsmPty.input(activeSid, text);
-      } catch {
-        // ignore clipboard failures — paste is best-effort.
-      }
+    if (ev.shiftKey && isV) {
+      pasteFromClipboard();
       return false;
     }
     return true;
@@ -256,6 +336,7 @@ export function __resetSingletonForTests(): void {
   unsubscribeData = null;
   inputDisposable = null;
   snapshotReplay = null;
+  keyboardPasteHandled = false;
   if (typeof window !== 'undefined') {
     delete window.__ccsmTerm;
   }
