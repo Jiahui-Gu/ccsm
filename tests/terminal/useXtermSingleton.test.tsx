@@ -10,7 +10,6 @@ const {
   onSelectionChangeSpy,
   attachCustomKeyEventHandlerSpy,
   getSelectionSpy,
-  pasteSpy,
   terminalCtor,
   webLinksCtor,
 } = vi.hoisted(() => {
@@ -19,7 +18,6 @@ const {
   const onSelectionChangeSpy = vi.fn();
   const attachCustomKeyEventHandlerSpy = vi.fn();
   const getSelectionSpy = vi.fn(() => '');
-  const pasteSpy = vi.fn();
   // vitest v3+ requires `function`/`class` (not arrow) for mocks invoked
   // with `new` — otherwise tinyspy throws "is not a constructor".
   const terminalCtor = vi.fn(function () {
@@ -29,7 +27,6 @@ const {
       onSelectionChange: onSelectionChangeSpy,
       attachCustomKeyEventHandler: attachCustomKeyEventHandlerSpy,
       getSelection: getSelectionSpy,
-      paste: pasteSpy,
       unicode: { activeVersion: '6' },
       _core: { _parent: null },
     };
@@ -43,7 +40,6 @@ const {
     onSelectionChangeSpy,
     attachCustomKeyEventHandlerSpy,
     getSelectionSpy,
-    pasteSpy,
     terminalCtor,
     webLinksCtor,
   };
@@ -73,7 +69,6 @@ describe('useXtermSingleton', () => {
     attachCustomKeyEventHandlerSpy.mockClear();
     getSelectionSpy.mockClear();
     getSelectionSpy.mockReturnValue('');
-    pasteSpy.mockClear();
   });
 
   afterEach(() => {
@@ -284,70 +279,6 @@ describe('useXtermSingleton', () => {
       const result = handler(ev);
       expect(writeTextSpy).toHaveBeenCalledWith('selected text');
       expect(result).toBe(false);
-    });
-  });
-
-  describe('host-level paste listener (v0.2.2 paste-zero-times fix)', () => {
-    // Regression coverage for the v0.2.1 user report: Ctrl+V paste fired
-    // 0 times. Root cause: xterm's built-in paste pipeline only fires
-    // when the hidden helper textarea has focus; in practice focus is
-    // often elsewhere in the host wrapper, so the native `paste` event
-    // never reached xterm. Fix: capture-phase paste listener on the host
-    // element that routes through `term.paste(text)`.
-
-    function mountAndGetHost() {
-      const host = document.createElement('div');
-      // Attach to document so dispatched events bubble through the real
-      // event flow (capture listeners run regardless of attachment, but
-      // we mirror prod conditions).
-      document.body.appendChild(host);
-      const ref = { current: host };
-      renderHook(() => useXtermSingleton(ref));
-      return host;
-    }
-
-    function makePasteEvent(text: string | null) {
-      // jsdom's ClipboardEvent constructor doesn't accept clipboardData
-      // in init dict, so synthesize via Event + assign a stub. The
-      // production listener only reads `ev.clipboardData?.getData(...)`,
-      // `ev.preventDefault`, and `ev.stopPropagation`.
-      const ev = new Event('paste', { bubbles: true, cancelable: true });
-      Object.defineProperty(ev, 'clipboardData', {
-        value: text === null
-          ? null
-          : { getData: vi.fn((_type: string) => text) },
-      });
-      return ev;
-    }
-
-    it('routes paste through term.paste once and prevents default', () => {
-      const host = mountAndGetHost();
-      const ev = makePasteEvent('hello world');
-      const preventSpy = vi.spyOn(ev, 'preventDefault');
-      const stopSpy = vi.spyOn(ev, 'stopPropagation');
-
-      host.dispatchEvent(ev);
-
-      expect(pasteSpy).toHaveBeenCalledTimes(1);
-      expect(pasteSpy).toHaveBeenCalledWith('hello world');
-      expect(preventSpy).toHaveBeenCalledTimes(1);
-      expect(stopSpy).toHaveBeenCalledTimes(1);
-
-      document.body.removeChild(host);
-    });
-
-    it('does not call term.paste when clipboard text is empty', () => {
-      const host = mountAndGetHost();
-      const ev = makePasteEvent('');
-      const preventSpy = vi.spyOn(ev, 'preventDefault');
-
-      host.dispatchEvent(ev);
-
-      expect(pasteSpy).not.toHaveBeenCalled();
-      // No-op path: don't preventDefault so other handlers can decide.
-      expect(preventSpy).not.toHaveBeenCalled();
-
-      document.body.removeChild(host);
     });
   });
 });

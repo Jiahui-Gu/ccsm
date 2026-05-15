@@ -162,43 +162,6 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
 
   term.open(host);
 
-  // v0.2.2 paste fix: host-level capture-phase paste listener.
-  //
-  // Background: PR #1243 removed a custom Ctrl+V handler that was sending
-  // pastes twice (once via direct pty.write, once via xterm's built-in
-  // textarea paste → onData pipeline). The fix correctly delegates to
-  // xterm's built-in pipeline — BUT that pipeline only fires when the
-  // browser dispatches the native `paste` event to xterm's hidden helper
-  // textarea, which requires that textarea to have focus. In practice
-  // users frequently click on the surrounding host wrapper / sidebar /
-  // anywhere that drains focus from the helper textarea, so the native
-  // paste event lands on `host` (or an ancestor) and xterm never sees
-  // it → 0 pastes (v0.2.1 user report).
-  //
-  // Fix: install a capture-phase paste listener on the host element
-  // itself and route the clipboard text through `term.paste(text)`. This
-  //   - preserves the single canonical data path (term.paste →
-  //     prepareTextForTerminal → onData → usePtyAttach → pty.write), so
-  //     bracketed-paste wrapping and CR/LF normalization stay intact;
-  //   - does NOT depend on which descendant of host owns focus;
-  //   - uses capture phase + stopPropagation so xterm's own textarea /
-  //     element paste listeners cannot also fire on the same event
-  //     (prevents regression to the v0.2.0 double-paste bug);
-  //   - preventDefault keeps the browser from inserting the pasted text
-  //     into any contenteditable / input that might be focused inside
-  //     the host subtree.
-  host.addEventListener(
-    'paste',
-    (ev) => {
-      const text = ev.clipboardData?.getData('text/plain');
-      if (!text) return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      term?.paste(text);
-    },
-    true,
-  );
-
   // ttyd-style: auto-copy on selection change. Works in alt-screen apps
   // (claude/Ink) when user holds Shift to bypass mouse tracking and
   // drags. Use Electron's clipboard via preload because navigator.clipboard
