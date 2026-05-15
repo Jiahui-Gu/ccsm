@@ -13,6 +13,7 @@ release/
 .dogfood-userdata/
 .dogfood-userdata-happy/
 .dogfood-userdata-ttyd-debug/
+.dev-userdata/
 docs/screenshots/dogfood-current-ui/
 docs/screenshots/dogfood-happy-path/
 *.exe
