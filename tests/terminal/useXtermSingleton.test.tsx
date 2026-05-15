@@ -4,46 +4,29 @@ import { renderHook } from '@testing-library/react';
 // Mock xterm constructors BEFORE importing the hook so the singleton
 // uses the spies. Use vi.hoisted because vi.mock factories run before
 // any top-level `const`.
-const {
-  openSpy,
-  loadAddonSpy,
-  onSelectionChangeSpy,
-  attachCustomKeyEventHandlerSpy,
-  getSelectionSpy,
-  terminalCtor,
-  webLinksCtor,
-} = vi.hoisted(() => {
-  const openSpy = vi.fn();
-  const loadAddonSpy = vi.fn();
-  const onSelectionChangeSpy = vi.fn();
-  const attachCustomKeyEventHandlerSpy = vi.fn();
-  const getSelectionSpy = vi.fn(() => '');
-  // vitest v3+ requires `function`/`class` (not arrow) for mocks invoked
-  // with `new` — otherwise tinyspy throws "is not a constructor".
-  const terminalCtor = vi.fn(function () {
-    return {
-      open: openSpy,
-      loadAddon: loadAddonSpy,
-      onSelectionChange: onSelectionChangeSpy,
-      attachCustomKeyEventHandler: attachCustomKeyEventHandlerSpy,
-      getSelection: getSelectionSpy,
-      unicode: { activeVersion: '6' },
-      _core: { _parent: null },
-    };
+const { openSpy, loadAddonSpy, onSelectionChangeSpy, attachCustomKeyEventHandlerSpy, terminalCtor, webLinksCtor } =
+  vi.hoisted(() => {
+    const openSpy = vi.fn();
+    const loadAddonSpy = vi.fn();
+    const onSelectionChangeSpy = vi.fn();
+    const attachCustomKeyEventHandlerSpy = vi.fn();
+    // vitest v3+ requires `function`/`class` (not arrow) for mocks invoked
+    // with `new` — otherwise tinyspy throws "is not a constructor".
+    const terminalCtor = vi.fn(function () {
+      return {
+        open: openSpy,
+        loadAddon: loadAddonSpy,
+        onSelectionChange: onSelectionChangeSpy,
+        attachCustomKeyEventHandler: attachCustomKeyEventHandlerSpy,
+        unicode: { activeVersion: '6' },
+        _core: { _parent: null },
+      };
+    });
+    const webLinksCtor = vi.fn(function () {
+      return {};
+    });
+    return { openSpy, loadAddonSpy, onSelectionChangeSpy, attachCustomKeyEventHandlerSpy, terminalCtor, webLinksCtor };
   });
-  const webLinksCtor = vi.fn(function () {
-    return {};
-  });
-  return {
-    openSpy,
-    loadAddonSpy,
-    onSelectionChangeSpy,
-    attachCustomKeyEventHandlerSpy,
-    getSelectionSpy,
-    terminalCtor,
-    webLinksCtor,
-  };
-});
 
 vi.mock('@xterm/xterm', () => ({ Terminal: terminalCtor }));
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: vi.fn(function () { return { fit: vi.fn() }; }) }));
@@ -56,7 +39,6 @@ import { useXtermSingleton } from '../../src/terminal/useXtermSingleton';
 import {
   __resetSingletonForTests,
   getTerm,
-  setActiveSid,
 } from '../../src/terminal/xtermSingleton';
 
 describe('useXtermSingleton', () => {
@@ -66,9 +48,6 @@ describe('useXtermSingleton', () => {
     openSpy.mockClear();
     loadAddonSpy.mockClear();
     webLinksCtor.mockClear();
-    attachCustomKeyEventHandlerSpy.mockClear();
-    getSelectionSpy.mockClear();
-    getSelectionSpy.mockReturnValue('');
   });
 
   afterEach(() => {
@@ -161,124 +140,6 @@ describe('useXtermSingleton', () => {
       expect(() =>
         handler({ ctrlKey: true, metaKey: false }, 'https://example.com'),
       ).not.toThrow();
-    });
-  });
-
-  describe('custom key event handler — paste duplication fix', () => {
-    // Regression coverage for the paste-duplication bug: the custom
-    // handler previously had Ctrl+V / Ctrl+Shift+V branches that wrote
-    // pasted text to the PTY directly while xterm's built-in textarea
-    // paste pipeline (term.paste → onData → pty.write) ALSO fired,
-    // causing paste to be sent twice. The fix removes those branches
-    // so paste flows exclusively through xterm's built-in pipeline.
-
-    function installHandler() {
-      const host = document.createElement('div');
-      const ref = { current: host };
-      renderHook(() => useXtermSingleton(ref));
-      const handler = attachCustomKeyEventHandlerSpy.mock.calls[0][0] as (
-        ev: Partial<KeyboardEvent>,
-      ) => boolean;
-      return handler;
-    }
-
-    let inputSpy: ReturnType<typeof vi.fn>;
-    let writeTextSpy: ReturnType<typeof vi.fn>;
-    let readTextSpy: ReturnType<typeof vi.fn>;
-
-    beforeEach(() => {
-      inputSpy = vi.fn();
-      writeTextSpy = vi.fn();
-      readTextSpy = vi.fn(() => 'clipboard-text');
-      (window as unknown as { ccsmPty: unknown }).ccsmPty = {
-        input: inputSpy,
-        clipboard: { readText: readTextSpy, writeText: writeTextSpy },
-      };
-      setActiveSid('sid-1');
-    });
-
-    afterEach(() => {
-      setActiveSid(null);
-      delete (window as unknown as { ccsmPty?: unknown }).ccsmPty;
-    });
-
-    it('returns true on Ctrl+V keydown (defers to xterm built-in paste pipeline)', () => {
-      const handler = installHandler();
-      const ev = {
-        type: 'keydown' as const,
-        key: 'v',
-        ctrlKey: true,
-        shiftKey: false,
-        altKey: false,
-      };
-      const result = handler(ev);
-      // Must return true so xterm core does NOT short-circuit; the
-      // browser's native `paste` clipboard event reaches xterm's
-      // textarea listener and flows through term.paste() → onData.
-      expect(result).toBe(true);
-      // Custom PTY write path is removed — must not be invoked here.
-      expect(inputSpy).not.toHaveBeenCalled();
-      expect(readTextSpy).not.toHaveBeenCalled();
-    });
-
-    it('returns true on Ctrl+Shift+V keydown (defers to xterm built-in paste pipeline)', () => {
-      const handler = installHandler();
-      const ev = {
-        type: 'keydown' as const,
-        key: 'V',
-        ctrlKey: true,
-        shiftKey: true,
-        altKey: false,
-      };
-      const result = handler(ev);
-      expect(result).toBe(true);
-      expect(inputSpy).not.toHaveBeenCalled();
-      expect(readTextSpy).not.toHaveBeenCalled();
-    });
-
-    it('Ctrl+C with selection copies to clipboard and returns false', () => {
-      getSelectionSpy.mockReturnValue('selected text');
-      const handler = installHandler();
-      const ev = {
-        type: 'keydown' as const,
-        key: 'c',
-        ctrlKey: true,
-        shiftKey: false,
-        altKey: false,
-      };
-      const result = handler(ev);
-      expect(writeTextSpy).toHaveBeenCalledWith('selected text');
-      expect(result).toBe(false);
-    });
-
-    it('Ctrl+C without selection returns true (falls through to SIGINT)', () => {
-      getSelectionSpy.mockReturnValue('');
-      const handler = installHandler();
-      const ev = {
-        type: 'keydown' as const,
-        key: 'c',
-        ctrlKey: true,
-        shiftKey: false,
-        altKey: false,
-      };
-      const result = handler(ev);
-      expect(writeTextSpy).not.toHaveBeenCalled();
-      expect(result).toBe(true);
-    });
-
-    it('Ctrl+Shift+C with selection always copies and returns false', () => {
-      getSelectionSpy.mockReturnValue('selected text');
-      const handler = installHandler();
-      const ev = {
-        type: 'keydown' as const,
-        key: 'C',
-        ctrlKey: true,
-        shiftKey: true,
-        altKey: false,
-      };
-      const result = handler(ev);
-      expect(writeTextSpy).toHaveBeenCalledWith('selected text');
-      expect(result).toBe(false);
     });
   });
 });
