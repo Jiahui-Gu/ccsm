@@ -248,16 +248,15 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
   });
 
   const pasteFromClipboard = (): void => {
-    // Mark the keyboard-driven branch so the capture-phase paste
-    // listener below knows to discard the native paste event the
-    // browser is about to dispatch — otherwise we'd inject twice.
     keyboardPasteHandled = true;
-    // Auto-clear on the next microtask so that if the browser does
-    // NOT dispatch a follow-up paste event (focus on a non-editable
-    // descendant — canvas / div), a future paste from any source
-    // isn't permanently suppressed. Paste dispatch is synchronous
-    // relative to keydown handling, so it lands before microtasks.
-    queueMicrotask(() => { keyboardPasteHandled = false; });
+    // Reset the flag on a macrotask (NOT a microtask). The browser dispatches
+    // the follow-up native `paste` event after our keydown handler returns
+    // but before the next task tick — microtasks fire BEFORE the native
+    // paste, leaving the flag false when the capture listener runs and
+    // causing a second inject (the v0.2.0 double-paste comes back). A
+    // setTimeout 0 task lands AFTER the native paste dispatch, so the
+    // capture listener sees the flag and suppresses.
+    setTimeout(() => { keyboardPasteHandled = false; }, 0);
     try {
       const text = window.ccsmPty?.clipboard?.readText();
       if (text && activeSid) window.ccsmPty.input(activeSid, text);

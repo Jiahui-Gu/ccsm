@@ -250,8 +250,12 @@ describe('useXtermSingleton', () => {
       handler({ type: 'keydown', key: 'v', ctrlKey: true });
       expect(inputSpy).toHaveBeenCalledTimes(1);
 
-      // Wait a microtask for the auto-reset.
-      await Promise.resolve();
+      // Wait for the macrotask that resets the flag. We use setTimeout 0
+      // (not queueMicrotask) because the browser's native paste event
+      // arrives AFTER microtasks but BEFORE the next task tick, so a
+      // microtask reset would race the suppression. A real timer tick
+      // has to elapse for the reset to fire.
+      await new Promise((r) => setTimeout(r, 10));
 
       // A later paste from a different source must still be delivered.
       const evt = makePasteEvent('later');
