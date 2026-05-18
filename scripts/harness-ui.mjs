@@ -363,132 +363,191 @@ async function caseTray({ app, win, log, registerDispose }) {
   log('hide-on-close=true; restore-via-show=true');
 }
 
-// ---------- close-dialog-is-native ----------
-// Regression for the user dogfood report:
-//   "关闭的时候，弹出的提醒仍然不是electron原生的"
-//   (the close-confirmation popup is still not Electron-native)
+// ---------- close-dialog-in-app ----------
+// PR #1256 (#1253) replaced the native Win32 `dialog.showMessageBox`
+// close confirmation with an in-app React modal (`CloseActionDialog`).
+// This case locks the preference to 'ask', then drives `win.close()`
+// through each of the four resolution paths (tray, tray+persist,
+// cancel+dontAskAgain, quit+persist) and asserts:
 //
-// PR #561 wired `win.on('close')` to call `dialog.showMessageBox` (a native
-// Win32 task dialog) when `closeAction === 'ask'`. This probe locks the
-// preference to 'ask', monkey-patches `electron.dialog.showMessageBox` in
-// the main process to record invocations and stub a 'tray' response, then
-// fires close. The native dialog API MUST have been called — if any other
-// code path (renderer-side HTML modal, window.confirm, custom overlay) had
-// surfaced the confirmation instead, our spy would record zero calls.
+//   * `dialog.showMessageBox` is NEVER called (the spy stays empty).
+//   * The renderer mounts `[data-testid="close-action-dialog"]` while
+//     the ask is in flight.
+//   * The IPC reply (`window:resolveCloseAction`) produces the locked
+//     side-effects from `decideCloseAction`:
+//       - 'tray' hides the window; persists pref iff dontAskAgain.
+//       - 'quit' calls app.quit; persists pref iff dontAskAgain.
+//       - 'cancel' is a no-op AND must never persist, even when
+//         dontAskAgain is checked — the critical invariant from the
+//         component's docblock.
+//   * Esc-dismiss routes through 'cancel' (also non-persisting).
 //
-// Reverse-verify: temporarily swap the `showMessageBox` call site in
-// `electron/main.ts` for `webContents.executeJavaScript('window.confirm(...)')`
-// and re-run — Playwright auto-dismisses the renderer-side confirm and the
-// spy records zero invocations, so the probe fails.
-async function caseCloseDialogIsNative({ app, win, log, registerDispose }) {
+// `app.quit` is stubbed in main so the Quit path doesn't actually
+// terminate Playwright's electron instance. The renderer-side replies
+// arrive via the normal IPC channel and the persisted pref is read
+// back via `window.ccsm.loadState('closeAction')`.
+async function caseCloseDialogInApp({ app, win, log, registerDispose }) {
   const prevCloseAction = await win.evaluate(async () => {
     return await window.ccsm.loadState('closeAction');
   });
-  await win.evaluate(async () => {
-    await window.ccsm.saveState('closeAction', 'ask');
-  });
   registerDispose(async () => {
-    await app.evaluate(({ BrowserWindow }) => {
+    await app.evaluate(({ BrowserWindow, dialog, app: electronApp }) => {
       const w = BrowserWindow.getAllWindows().find((x) => !x.webContents.getURL().startsWith('devtools://'));
       try { w?.show(); } catch {}
+      const origDialog = /** @type {any} */ (dialog).__ccsmOriginalShowMessageBox;
+      if (origDialog) {
+        dialog.showMessageBox = origDialog;
+        delete (/** @type {any} */ (dialog)).__ccsmOriginalShowMessageBox;
+      }
+      const origQuit = /** @type {any} */ (electronApp).__ccsmOriginalQuit;
+      if (origQuit) {
+        electronApp.quit = origQuit;
+        delete (/** @type {any} */ (electronApp)).__ccsmOriginalQuit;
+      }
+      delete (/** @type {any} */ (globalThis)).__ccsmCloseDialogLog;
+      delete (/** @type {any} */ (globalThis)).__ccsmQuitCount;
     });
     try {
       await win.evaluate(async (prev) => {
-        if (prev == null) {
-          // Restore to the win32/linux default to keep the harness baseline
-          // sane (mac default is 'tray'). The next case can rely on this.
-          await window.ccsm.saveState('closeAction', 'ask');
-          return;
-        }
-        await window.ccsm.saveState('closeAction', prev);
+        await window.ccsm.saveState('closeAction', prev ?? 'ask');
       }, prevCloseAction);
     } catch {}
-    // Pop the spy off so subsequent cases see the real dialog API.
-    await app.evaluate(({ dialog }) => {
-      const spied = /** @type {any} */ (dialog).__ccsmOriginalShowMessageBox;
-      if (spied) {
-        dialog.showMessageBox = spied;
-        delete (/** @type {any} */ (dialog)).__ccsmOriginalShowMessageBox;
-        delete (/** @type {any} */ (globalThis)).__ccsmCloseDialogLog;
-      }
-    });
   });
 
-  // Install the spy. Replace `dialog.showMessageBox` with a stub that
-  // records the call and resolves to "Minimize to tray" (button 0). This
-  // keeps the existing in-tree behaviour after the dialog returns (the
-  // window hides, the harness window stays available).
-  await app.evaluate(({ dialog }) => {
+  await app.evaluate(({ dialog, app: electronApp }) => {
     /** @type {any} */ (globalThis).__ccsmCloseDialogLog = [];
+    /** @type {any} */ (globalThis).__ccsmQuitCount = 0;
     /** @type {any} */ (dialog).__ccsmOriginalShowMessageBox = dialog.showMessageBox;
     dialog.showMessageBox = (/** @type {any} */ ...args) => {
-      // Two overloads: showMessageBox(opts) and showMessageBox(window, opts).
-      const opts = args.length >= 2 ? args[1] : args[0];
-      const hasParent = args.length >= 2;
-      /** @type {any} */ (globalThis).__ccsmCloseDialogLog.push({
-        hasParent,
-        message: opts?.message ?? null,
-        detail: opts?.detail ?? null,
-        type: opts?.type ?? null,
-        buttonCount: Array.isArray(opts?.buttons) ? opts.buttons.length : 0,
-        checkboxLabel: opts?.checkboxLabel ?? null,
-      });
+      /** @type {any} */ (globalThis).__ccsmCloseDialogLog.push({ args: args.length });
       return Promise.resolve({ response: 0, checkboxChecked: false });
+    };
+    /** @type {any} */ (electronApp).__ccsmOriginalQuit = electronApp.quit.bind(electronApp);
+    electronApp.quit = () => {
+      /** @type {any} */ (globalThis).__ccsmQuitCount += 1;
     };
   });
 
-  // Fire close. The 'ask' branch preventDefaults and awaits the (now
-  // stubbed) dialog promise; on response=0 it falls through to fadeThenHide.
-  await app.evaluate(({ BrowserWindow }) => {
-    const w = BrowserWindow.getAllWindows().find((x) => !x.webContents.getURL().startsWith('devtools://'));
-    w?.close();
-  });
-  // Allow the async dialog promise + fadeThenHide (180ms) to settle.
-  await new Promise((r) => setTimeout(r, 600));
+  const fireClose = async () => {
+    await app.evaluate(({ BrowserWindow }) => {
+      const w = BrowserWindow.getAllWindows().find((x) => !x.webContents.getURL().startsWith('devtools://'));
+      w?.close();
+    });
+  };
+  const readPref = () => win.evaluate(async () => window.ccsm.loadState('closeAction'));
+  const isWindowVisible = () =>
+    app.evaluate(({ BrowserWindow }) => {
+      const w = BrowserWindow.getAllWindows().find((x) => !x.webContents.getURL().startsWith('devtools://'));
+      return w?.isVisible() ?? null;
+    });
+  const showWindow = () =>
+    app.evaluate(({ BrowserWindow }) => {
+      const w = BrowserWindow.getAllWindows().find((x) => !x.webContents.getURL().startsWith('devtools://'));
+      try { w?.show(); } catch {}
+    });
+  const waitForDialog = () =>
+    win.waitForSelector('[data-testid="close-action-dialog"]', { state: 'visible', timeout: 4000 });
+  const waitForDialogGone = () =>
+    win.waitForSelector('[data-testid="close-action-dialog"]', { state: 'detached', timeout: 4000 }).catch(() =>
+      win.waitForFunction(
+        () => !document.querySelector('[data-testid="close-action-dialog"]'),
+        null,
+        { timeout: 4000 }
+      )
+    );
 
-  const calls = await app.evaluate(() => {
-    return /** @type {any} */ (globalThis).__ccsmCloseDialogLog ?? [];
-  });
+  // Scenario 1: Tray + dontAskAgain unchecked → window hides, pref stays 'ask'.
+  await win.evaluate(async () => window.ccsm.saveState('closeAction', 'ask'));
+  await fireClose();
+  await waitForDialog();
+  await win.click('[data-testid="close-action-tray"]');
+  await waitForDialogGone();
+  // fadeThenHide runs 180ms after the IPC reply; wait it out plus slack.
+  await new Promise((r) => setTimeout(r, 400));
+  if ((await isWindowVisible()) !== false) {
+    throw new Error('tray choice: window should be hidden');
+  }
+  if ((await readPref()) !== 'ask') {
+    throw new Error(`tray w/o dontAskAgain: pref should stay 'ask', got '${await readPref()}'`);
+  }
+  await showWindow();
 
-  if (!Array.isArray(calls) || calls.length === 0) {
+  // Scenario 2: Tray + dontAskAgain checked → window hides, pref persists to 'tray'.
+  await win.evaluate(async () => window.ccsm.saveState('closeAction', 'ask'));
+  await fireClose();
+  await waitForDialog();
+  await win.click('[data-testid="close-action-dontask"]');
+  await win.click('[data-testid="close-action-tray"]');
+  await waitForDialogGone();
+  await new Promise((r) => setTimeout(r, 400));
+  if ((await isWindowVisible()) !== false) {
+    throw new Error('tray+persist: window should be hidden');
+  }
+  if ((await readPref()) !== 'tray') {
+    throw new Error(`tray+dontAskAgain: pref should be 'tray', got '${await readPref()}'`);
+  }
+  await showWindow();
+
+  // Scenario 3: Cancel + dontAskAgain checked → window stays open AND pref
+  // stays 'ask'. Cancel must never persist the checkbox tick. To reach the
+  // 'ask' branch on close, the pref must be 'ask' going in.
+  await win.evaluate(async () => window.ccsm.saveState('closeAction', 'ask'));
+  await fireClose();
+  await waitForDialog();
+  await win.click('[data-testid="close-action-dontask"]');
+  await win.click('[data-testid="close-action-cancel"]');
+  await waitForDialogGone();
+  await new Promise((r) => setTimeout(r, 250));
+  if ((await isWindowVisible()) !== true) {
+    throw new Error('cancel: window should remain visible');
+  }
+  if ((await readPref()) !== 'ask') {
+    throw new Error(`cancel+dontAskAgain: pref must NOT persist; expected 'ask', got '${await readPref()}'`);
+  }
+
+  // Scenario 4: Esc dismiss with dontAskAgain checked → routes as 'cancel';
+  // window stays open, pref stays 'ask'.
+  await win.evaluate(async () => window.ccsm.saveState('closeAction', 'ask'));
+  await fireClose();
+  await waitForDialog();
+  await win.click('[data-testid="close-action-dontask"]');
+  await win.keyboard.press('Escape');
+  await waitForDialogGone();
+  await new Promise((r) => setTimeout(r, 250));
+  if ((await isWindowVisible()) !== true) {
+    throw new Error('esc: window should remain visible');
+  }
+  if ((await readPref()) !== 'ask') {
+    throw new Error(`esc+dontAskAgain: pref must NOT persist; expected 'ask', got '${await readPref()}'`);
+  }
+
+  // Scenario 5: Quit + dontAskAgain checked → app.quit invoked, pref='quit'.
+  // app.quit is stubbed above so the harness doesn't actually exit.
+  await win.evaluate(async () => window.ccsm.saveState('closeAction', 'ask'));
+  await fireClose();
+  await waitForDialog();
+  await win.click('[data-testid="close-action-dontask"]');
+  await win.click('[data-testid="close-action-quit"]');
+  await waitForDialogGone();
+  await new Promise((r) => setTimeout(r, 250));
+  const quitCount = await app.evaluate(() => /** @type {any} */ (globalThis).__ccsmQuitCount ?? 0);
+  if (quitCount < 1) {
+    throw new Error(`quit: app.quit should have been called, got count=${quitCount}`);
+  }
+  if ((await readPref()) !== 'quit') {
+    throw new Error(`quit+dontAskAgain: pref should be 'quit', got '${await readPref()}'`);
+  }
+
+  // Final invariant: the native dialog API must NEVER have been touched
+  // across all five scenarios.
+  const nativeCalls = await app.evaluate(() => /** @type {any} */ (globalThis).__ccsmCloseDialogLog ?? []);
+  if (nativeCalls.length !== 0) {
     throw new Error(
-      'dialog.showMessageBox not invoked — close confirmation is going through a non-native code path (HTML overlay / window.confirm / etc.)'
+      `dialog.showMessageBox was invoked ${nativeCalls.length} time(s); close confirmation must be the in-app modal, not native (#1253)`
     );
   }
-  const call = calls[0];
-  if (!call.hasParent) {
-    throw new Error('dialog.showMessageBox called without a parent BrowserWindow (should be modal to the app window)');
-  }
-  if (call.type !== 'question') {
-    throw new Error(`dialog.showMessageBox type='${call.type}', expected 'question'`);
-  }
-  if (call.buttonCount < 2) {
-    throw new Error(`dialog.showMessageBox got ${call.buttonCount} buttons, expected ≥2 (tray + quit)`);
-  }
-  if (!call.checkboxLabel) {
-    throw new Error('dialog.showMessageBox missing checkboxLabel ("Don\'t ask again")');
-  }
-  if (!call.message || !call.detail) {
-    throw new Error('dialog.showMessageBox missing message/detail strings');
-  }
 
-  // Confirm the close path actually completed (window hidden) so we know
-  // the dialog response was honoured, not just consumed.
-  const state = await app.evaluate(({ BrowserWindow }) => {
-    const w = BrowserWindow.getAllWindows().find((x) => !x.webContents.getURL().startsWith('devtools://'));
-    return { exists: !!w, visible: w?.isVisible() ?? null };
-  });
-  if (!state.exists || state.visible !== false) {
-    throw new Error(`window should be hidden after close+tray response; exists=${state.exists} visible=${state.visible}`);
-  }
-
-  // Restore the window for subsequent cases.
-  await app.evaluate(({ BrowserWindow }) => {
-    const w = BrowserWindow.getAllWindows().find((x) => !x.webContents.getURL().startsWith('devtools://'));
-    w?.show();
-  });
-
-  log(`dialog.showMessageBox invoked count=${calls.length} hasParent=${call.hasParent} buttons=${call.buttonCount}`);
+  log(`in-app close dialog OK across 5 scenarios; native showMessageBox calls=${nativeCalls.length}`);
 }
 
 // ---------- theme-toggle ----------
@@ -1609,11 +1668,14 @@ await runHarness({
     // controlled component; covered by tests/tutorial.test.tsx.
     { id: 'titlebar', run: caseTitlebar },
     { id: 'tray', run: caseTray },
-    // close-dialog-is-native: regression for the dogfood report
-    // "关闭的时候，弹出的提醒仍然不是electron原生的". Asserts the close
-    // confirmation goes through `dialog.showMessageBox` (native Win32 task
-    // dialog), not a renderer-side HTML overlay or `window.confirm`.
-    { id: 'close-dialog-is-native', run: caseCloseDialogIsNative },
+    // close-dialog-in-app: PR #1256 (#1253) replaced the native Win32
+    // `dialog.showMessageBox` close confirmation with an in-app React
+    // modal (`CloseActionDialog`). Asserts showMessageBox is NEVER
+    // invoked, the in-app dialog mounts via [data-testid="close-action-dialog"],
+    // and each of Tray / Quit / Cancel / Esc resolves with the locked
+    // semantics from `decideCloseAction` (cancel never persists, even
+    // with dontAskAgain checked).
+    { id: 'close-dialog-in-app', run: caseCloseDialogInApp },
     { id: 'theme-toggle', run: caseThemeToggle },
     // language-toggle removed — Task #740 Batch 3.1. Live-flip already
     // covered by tests/language-switch.test.tsx; Settings-dialog flip +
