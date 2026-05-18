@@ -184,11 +184,19 @@ export function createGroupsSlice(set: SetFn, get: GetFn): GroupsSlice {
         let nextGroups = s.groups;
         let nextSessions = s.sessions;
         if (container) {
-          nextSessions = s.sessions.map((x) =>
-            x.groupId === container.id
-              ? { ...x, groupId: id }
-              : x
-          );
+          // Clear `archivedAt` on the merged sessions. The invariant
+          // `session.archivedAt set ⇔ session lives in a container` only
+          // holds for the container path — after merging into a flipped-
+          // archive original, the per-session stamp must come off or a
+          // future `unarchiveGroup` (flipped path, which only flips kind)
+          // leaves stranded `archivedAt` on sessions that now sit in a
+          // normal group, mislabeling them in SessionRow.
+          nextSessions = s.sessions.map((x) => {
+            if (x.groupId !== container.id) return x;
+            const { archivedAt: _drop, ...rest } = x;
+            void _drop;
+            return { ...rest, groupId: id };
+          });
           nextGroups = s.groups.filter((g) => g.id !== container.id);
         }
         nextGroups = nextGroups.map((g) =>
@@ -207,15 +215,15 @@ export function createGroupsSlice(set: SetFn, get: GetFn): GroupsSlice {
       //      now-empty container. We do NOT flip the container's kind
       //      because the container itself should not survive — its only
       //      purpose was to hold archived sessions.
-      const cur = get();
-      const target = cur.groups.find((g) => g.id === id);
+      const store = get();
+      const target = store.groups.find((g) => g.id === id);
       if (!target || target.kind !== 'archive') return;
       if (target.sourceGroupId) {
-        const memberIds = cur.sessions
+        const memberIds = store.sessions
           .filter((x) => x.groupId === id)
           .map((x) => x.id);
         for (const sid of memberIds) {
-          cur.unarchiveSession(sid);
+          store.unarchiveSession(sid);
         }
         // unarchiveSession already deletes the container when it empties,
         // but defend in case the container started empty.

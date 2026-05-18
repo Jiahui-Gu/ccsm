@@ -483,6 +483,12 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
                 sourceGroupId,
               },
             ];
+        // Direct `groupId` mutation here (instead of routing through
+        // `moveSession`) is intentional: `moveSession` rejects any
+        // non-`normal` target by design (it's the DnD move path for
+        // user-driven reordering, which must never land in archived
+        // territory). Archive flows are the one legitimate way to
+        // move a session into an archive-kind group.
         const sessions = s.sessions.map((x) =>
           x.id === sessionId
             ? { ...x, groupId: containerId, archivedAt: now }
@@ -508,18 +514,22 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
       // Clear `archivedAt`, move back to original source group if it
       // still exists and is normal — otherwise fall back to g-default.
       // If the archive container empties after the move, delete it.
-      const cur = get();
-      const session = cur.sessions.find((x) => x.id === sessionId);
+      // If the user has no active session (e.g. they just archived the
+      // active one and then immediately unarchived it), restore activeId
+      // to the unarchived session — completing the round-trip without
+      // an orphaned empty-active-state.
+      const store = get();
+      const session = store.sessions.find((x) => x.id === sessionId);
       if (!session) return;
       const containerId = session.groupId;
-      const container = cur.groups.find((g) => g.id === containerId);
+      const container = store.groups.find((g) => g.id === containerId);
       // Only act on sessions that live inside an archive container —
       // sessions inside flipped-kind original groups are unarchived by
       // unarchiving the whole group.
       if (!container || container.kind !== 'archive' || !container.sourceGroupId) {
         return;
       }
-      const origin = cur.groups.find(
+      const origin = store.groups.find(
         (g) => g.id === container.sourceGroupId && g.kind === 'normal'
       );
       const targetGroupId = origin ? origin.id : 'g-default';
@@ -536,7 +546,8 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
         const groups = remainingInContainer
           ? s.groups
           : s.groups.filter((g) => g.id !== containerId);
-        return { groups, sessions };
+        const nextActive = s.activeId === '' ? sessionId : s.activeId;
+        return { groups, sessions, activeId: nextActive };
       });
     },
   };

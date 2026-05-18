@@ -99,6 +99,31 @@ describe('archiveSession / unarchiveSession', () => {
     expect(h.state().activeId).toBe('s2');
   });
 
+  it('archive-then-unarchive on the only session restores activeId without orphan', () => {
+    // When the user archives the active session and immediately
+    // unarchives it, activeId should land back on that session — not
+    // sit at the empty-string fallback that archiveSession produced
+    // when there was no normal-group sibling to hand off to.
+    const h = harness({
+      sessions: [mkSession('s1', 'g-default')],
+      activeId: 's1',
+    });
+    h.get().archiveSession('s1');
+    // No normal-group sibling existed, so activeId fell back to ''.
+    expect(h.state().activeId).toBe('');
+    h.get().unarchiveSession('s1');
+    const s = h.state();
+    expect(s.activeId).toBe('s1');
+    // No orphan archive container left behind.
+    expect(
+      s.groups!.find((g) => g.kind === 'archive' && g.sourceGroupId === 'g-default')
+    ).toBeUndefined();
+    // Session is back in g-default, archivedAt cleared.
+    const s1 = s.sessions!.find((x) => x.id === 's1')!;
+    expect(s1.groupId).toBe('g-default');
+    expect(s1.archivedAt).toBeUndefined();
+  });
+
   it('archiveGroup merges an existing container into the flipped group', () => {
     const h = harness({
       sessions: [
@@ -122,10 +147,34 @@ describe('archiveSession / unarchiveSession', () => {
     expect(flipped.sourceGroupId).toBeUndefined();
     // Both sessions ended up in the flipped group.
     expect(s.sessions!.every((x) => x.groupId === 'g-default')).toBe(true);
-    // The previously-archived session retains its archivedAt marker
-    // (cross-slice merge doesn't try to "un-mark" it — semantically
-    // it's still archived, just in a flipped group rather than a container).
-    expect(typeof s.sessions!.find((x) => x.id === 's1')!.archivedAt).toBe('number');
+    // archivedAt MUST be cleared on the merged sessions: the invariant
+    // "archivedAt set ⇔ session lives in a container" only holds for
+    // the container path. Leaving the stamp on after merging into a
+    // flipped-archive original would mislabel the session after a later
+    // `unarchiveGroup` (flipped path only flips kind).
+    expect(s.sessions!.find((x) => x.id === 's1')!.archivedAt).toBeUndefined();
+  });
+
+  it('archive session → archive group → unarchive group leaves session fully normal', () => {
+    // Full repro of the bug fixed: without the `archivedAt` clear in the
+    // archiveGroup merge step, this round-trip leaves the session in a
+    // normal group but with a stale `archivedAt` stamp → SessionRow
+    // mislabels it as archived and "Unarchive" early-returns.
+    const h = harness({
+      sessions: [mkSession('s1', 'g-default'), mkSession('s2', 'g-default')],
+      activeId: 's2',
+    });
+    h.get().archiveSession('s1');
+    h.get().archiveGroup('g-default');
+    h.get().unarchiveGroup('g-default');
+    const s = h.state();
+    const s1 = s.sessions!.find((x) => x.id === 's1')!;
+    expect(s1.groupId).toBe('g-default');
+    expect(s1.archivedAt).toBeUndefined();
+    // The parent group is back to normal — SessionRow.isArchived will
+    // also reflect false (the row-level check reads archivedAt directly,
+    // which is the right signal here).
+    expect(s.groups!.find((g) => g.id === 'g-default')!.kind).toBe('normal');
   });
 
   it('archiveGroup with no container behaves as the original flip', () => {
