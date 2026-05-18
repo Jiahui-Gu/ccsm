@@ -59,10 +59,24 @@ export function SessionRow({
   const restoreSession = useStore((s) => s.restoreSession);
   const moveSession = useStore((s) => s.moveSession);
   const createGroup = useStore((s) => s.createGroup);
+  const archiveSession = useStore((s) => s.archiveSession);
+  const unarchiveSession = useStore((s) => s.unarchiveSession);
+  // The session is archived (lives in an archive container) iff its
+  // parent group has `kind === 'archive'`. We detect it via the prop
+  // `normalGroups` indirectly: archived sessions are rendered through
+  // the ArchivedSection, but the row component is the same — read the
+  // session's `archivedAt` as the durable marker (set by archiveSession,
+  // cleared by unarchiveSession).
+  const isArchived = session.archivedAt != null;
   const toast = useToast();
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: session.id,
-    data: { type: 'session', groupId: session.groupId }
+    data: { type: 'session', groupId: session.groupId },
+    // v1: archived sessions are non-draggable. They live inside the
+    // Archived viewer section, which intentionally has no drop targets.
+    // Disabling here prevents the drag-start gesture entirely so users
+    // get the right affordance feedback (no ghost overlay).
+    disabled: session.archivedAt != null,
   });
   const liRef = useRef<HTMLLIElement | null>(null);
   // Compose dnd-kit's ref with our own so we can call scrollIntoView when the
@@ -286,6 +300,13 @@ export function SessionRow({
           );
         })()}
         <ContextMenuSeparator />
+        <ContextMenuItem
+          onSelect={() =>
+            isArchived ? unarchiveSession(session.id) : archiveSession(session.id)
+          }
+        >
+          {isArchived ? t('sidebar.unarchiveSession') : t('sidebar.archiveSession')}
+        </ContextMenuItem>
         <ContextMenuItem danger onSelect={performDelete}>
           {t('common.delete')}
         </ContextMenuItem>
