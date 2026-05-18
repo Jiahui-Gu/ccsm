@@ -1,25 +1,42 @@
-# CCSM (Claude Code Session Manager)
+# CCSM — Claude Code Session Manager
 
-A desktop GUI for [Claude Code](https://docs.anthropic.com/claude/docs/claude-code) — manage multiple parallel agent sessions across repos with the visual density of a CLI and the interaction model of a native app.
+A desktop GUI for [Claude Code](https://docs.anthropic.com/claude/docs/claude-code). Run many `claude` sessions in parallel — grouped by task, not by repo — with the visual density of a CLI and the interaction model of a native app.
 
-<!-- TODO: screenshot here -->
+<p align="center">
+  <img src="docs/screenshots/readme/hero.png" alt="CCSM running multiple Claude Code sessions grouped by task" width="900" />
+</p>
 
-## Which repo do I want?
+[Download for Windows / macOS / Linux →](https://github.com/Jiahui-Gu/ccsm/releases)
 
-- **[Jiahui-Gu/ccsm](https://github.com/Jiahui-Gu/ccsm)** (this repo) — the **v0.2 desktop app** for Windows / macOS / Linux. Native Electron, local SQLite, talks to your local `claude` CLI. If you want to install and run CCSM on your machine, you're in the right place.
-- **[Jiahui-Gu/ccsm-web](https://github.com/Jiahui-Gu/ccsm-web)** — the **v0.3 cloud / web** track (work in progress). Browser-based, with an iOS companion. Separate codebase, separate roadmap.
+---
 
-The two tracks share the product idea but not the code. This README covers only the desktop app.
+## Why CCSM
 
-## What it is
+Claude Code is a powerful CLI, but the moment you're juggling 5+ live agents across different repos, terminal tabs stop scaling. CCSM keeps every session attached and addressable from one window, organised the way you actually think about work — by task.
 
-Claude Code is a powerful CLI, but switching between 5+ active sessions in different repos becomes tab-juggling. CCSM groups your sessions by task (not by repo) and gives them a sidebar — you stay in flow across multiple parallel conversations.
+### Group by task, not by repo
 
-- **Groups, not projects** — a group is your task; sessions inside it can live in different repos
-- **Native interactions** — drag to reorder, right-click context menus, keyboard shortcuts, inline rename
-- **CLI-grade information density** — block-based message rendering (`>` user, `●` assistant, `⏺` tool), collapsed tool calls, no chat-bubble fluff
-- **Permission prompts as UI** — answer Allow / Deny inline, see the tool input as structured data
-- **Two-state lifecycle** — `idle` / `waiting`; the sidebar breathes amber when an agent needs you, no manual status to maintain
+Sessions live inside user-defined groups. A group is a goal ("Refactor auth middleware", "v0.3 release prep"); sessions inside it can run in any cwd. Switch groups to context-switch your whole task, not one tab at a time.
+
+### Sessions stay alive across switches
+
+The PTY lives in the main process. Flipping between sessions is a buffer swap, not a respawn — no lost scrollback, no reconnect, no waiting for the welcome banner.
+
+### CLI-grade density, native polish
+
+Block-based message rendering (`>` user, `●` assistant, `⏺` tool), collapsed tool calls, monospace everywhere. No chat bubbles, no avatars, no wasted vertical space. But drag-to-reorder, right-click menus, keyboard shortcuts, inline rename and hover/focus states behave the way a native app should.
+
+### Permission prompts as UI
+
+When the agent needs Allow / Deny on a tool call, you see the tool name and structured input inline — not a wall of JSON. Answer in place, the session keeps streaming.
+
+### Status you don't have to maintain
+
+Two derived states: `idle` and `waiting`. The sidebar breathes amber when an agent needs you. No manual "in progress / done / blocked" flags to keep current.
+
+### Local, your credentials, your CLI
+
+CCSM makes zero HTTP calls to Anthropic. Every API request goes through your local `claude` binary using credentials the CLI already manages. The database is a local SQLite file; conversation history is read directly from `~/.claude/projects/`.
 
 ## Requirements
 
@@ -40,8 +57,8 @@ CCSM does **not** make any HTTP calls to Anthropic itself. All API traffic goes 
 
 ## Quickstart
 
-1. Click **+ New Group** in the sidebar to create a task bucket (or skip — CCSM auto-creates a default group on the first session).
-2. Click **+ New Session** inside a group. Pick a working directory (any repo). The session spawns `claude` in that cwd.
+1. Click **+ New group** in the sidebar to create a task bucket (or skip — CCSM auto-creates a default group on the first session).
+2. Click **+ New session** inside a group. Pick a working directory (any repo). The session spawns `claude` in that cwd.
 3. Type in the composer at the bottom. **Enter** to send, **Shift+Enter** for newline, **Esc** to cancel inline edits.
 4. When the agent requests a tool, a permission block appears at the tail of the conversation — Allow / Deny.
 5. Switch between sessions with the sidebar. Background sessions keep streaming and surface a breathing amber dot when they need you.
