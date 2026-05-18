@@ -38,31 +38,35 @@ async function main() {
     // leaves ~40% dead vertical space when no agent is running.
     await win.setViewportSize({ width: 1280, height: 800 }).catch(() => {});
 
-    // Force light theme. Default 'system' picks up dark on most dev boxes,
-    // and the marketing shot reads better on light: more contrast in the
-    // sidebar group headers, terminal pane background pops.
+    // Force dark theme. CCSM shell + terminal both dark reads as one
+    // cohesive surface; light shell + dark terminal looks like two apps.
     await win.evaluate(() => {
-      window.__ccsmStore.getState().setTheme('light');
+      window.__ccsmStore.getState().setTheme('dark');
     });
 
     // Stub the PTY bridge so the seeded sessions' auto-attach doesn't spawn
-    // claude. Renderer-side stub is best-effort — main process owns the pty,
-    // so we also keep activeId null at screenshot time (see below) to avoid
-    // any attach IPC firing in the first place.
+    // claude. Returning a fake-but-shaped attach response keeps usePtyAttach
+    // on the happy path (no error overlay), and onData/onExit return real
+    // no-op disposers so the listener setup doesn't throw.
     await win.evaluate(() => {
       const w = window;
       if (w.ccsmPty) {
         const noop = () => {};
-        const noopAsync = async () => ({ ok: true });
-        w.ccsmPty.attach = noopAsync;
+        const noopAsync = async () => undefined;
+        w.ccsmPty.attach = async () => ({ snapshot: '', cols: 140, rows: 34, pid: 0 });
         w.ccsmPty.detach = noopAsync;
-        w.ccsmPty.spawn = noopAsync;
+        w.ccsmPty.spawn = async (sid) => ({ ok: true, sid, pid: 0, cols: 140, rows: 34 });
         w.ccsmPty.input = noop;
-        w.ccsmPty.resize = noop;
+        w.ccsmPty.resize = noopAsync;
         w.ccsmPty.kill = noopAsync;
         w.ccsmPty.list = async () => [];
+        w.ccsmPty.getBufferSnapshot = async () => ({ snapshot: '', seq: 0 });
         w.ccsmPty.onData = () => noop;
         w.ccsmPty.onExit = () => noop;
+        if (w.ccsmPty.clipboard) {
+          w.ccsmPty.clipboard.writeText = noop;
+          w.ccsmPty.clipboard.readText = () => '';
+        }
       }
     });
 
@@ -81,13 +85,13 @@ async function main() {
     });
 
     const cwd = isolated.tempDir;
-    // Seed sessions directly via setState (bypassing createSession so no
-    // activeId is set → no usePtyAttach → no real claude spawn). The
-    // sidebar renders the seeded layout; the right pane is whatever the
-    // app shows when sessions exist but activeId is null (currently:
-    // `sessions[0]` is auto-selected so TerminalPane mounts but with a
-    // sid that main doesn't know about → attach fails into error state,
-    // which is acceptable for the hero — but we hide that overlay below).
+    // Seed sessions directly via setState. With ccsmPty fully stubbed the
+    // auto-attach to sessions[0] runs the happy path against the fake
+    // attach response — no real claude spawned, no error overlay. We
+    // then write a synthetic claude transcript directly into the visible
+    // xterm via `window.__ccsmTerm.write` so the hero shot demonstrates
+    // CCSM's CLI-grade message density (`>` user, `●` assistant, `⏺`
+    // collapsed tool) rather than the empty welcome banner.
     await win.evaluate((cwd) => {
       const st = window.__ccsmStore.getState();
       const [refactor, bug, release] = st.groups.map((g) => g.id);
@@ -96,6 +100,9 @@ async function main() {
         name,
         cwd,
         groupId,
+        agentType: 'claude-code',
+        state: 'idle',
+        model: 'claude-opus-4-7',
         createdAt: Date.now(),
         updatedAt: Date.now(),
       });
@@ -107,21 +114,93 @@ async function main() {
         mk('Update README', release),
         mk('Cut v0.3.0 tag', release),
       ];
-      window.__ccsmStore.setState({ sessions, activeId: null });
+      window.__ccsmStore.setState({ sessions, activeId: sessions[0].id });
     }, cwd);
-    await new Promise((r) => setTimeout(r, 1500));
+    // Wait past the attach effect + post-attach fit + snapshot replay so
+    // the script-injected transcript isn't clobbered by a late replay.
+    await new Promise((r) => setTimeout(r, 2500));
 
     // Hide any "Attaching…" / error overlay sitting on top of xterm so
-    // the right pane reads as a clean empty terminal in the hero shot.
+    // the right pane reads as a clean terminal in the hero shot.
     await win.evaluate(() => {
       document
         .querySelectorAll('[class*="z-10"][class*="absolute"]')
         .forEach((el) => ((el).style.display = 'none'));
     });
-    await new Promise((r) => setTimeout(r, 200));
+
+    // Nudge the viewport so the product's ResizeObserver fires fit() with
+    // the real, fully-laid-out container width. The initial attach can fit
+    // before the container settles, leaving xterm at PTY-spawn cols on a
+    // wider pane. After this fires, the post-resize snapshot replay runs
+    // against our (stubbed-empty) buffer — so we MUST inject the transcript
+    // AFTER the replay drains, otherwise it gets reset away.
+    // Nudge the viewport wider then back to the final size to force
+    // ResizeObserver -> fit() against a fully-laid-out container. The
+    // final size is also the screenshot dimensions — win.screenshot()
+    // captures at the playwright emulated viewport, not the BrowserWindow
+    // size — so pick a height that matches the seeded transcript and
+    // leaves no black void below.
+    await win.setViewportSize({ width: 1400, height: 880 }).catch(() => {});
+    await new Promise((r) => setTimeout(r, 300));
+    await win.setViewportSize({ width: 1280, height: 780 }).catch(() => {});
+    await new Promise((r) => setTimeout(r, 600));
+
+    // Inject a synthetic claude transcript demonstrating CCSM's CLI
+    // information density. ANSI: \x1b[2m dim, \x1b[1m bold, \x1b[36m cyan,
+    // \x1b[32m green, \x1b[33m yellow, \x1b[0m reset.
+    await win.evaluate(() => {
+      const t = window.__ccsmTerm;
+      if (!t) return;
+      try { t.reset(); } catch { /* ignore */ }
+      const lines = [
+        '\x1b[2m╭─ Refactor auth middleware  ·  ~/repos/api  ·  claude-opus-4.7\x1b[0m',
+        '',
+        '\x1b[36m>\x1b[0m read the current auth middleware and tell me what it does',
+        '',
+        '\x1b[32m●\x1b[0m I\'ll start by locating the middleware and tracing how requests flow through it.',
+        '',
+        '\x1b[2m⏺ \x1b[0mGrep\x1b[2m(pattern: "authMiddleware|requireAuth", glob: "**/*.ts")  →  7 matches\x1b[0m',
+        '\x1b[2m⏺ \x1b[0mRead\x1b[2m(src/middleware/auth.ts, 1-180)\x1b[0m',
+        '\x1b[2m⏺ \x1b[0mRead\x1b[2m(src/middleware/session.ts, 1-95)\x1b[0m',
+        '',
+        '\x1b[32m●\x1b[0m The middleware does three things in sequence:',
+        '  \x1b[33m1.\x1b[0m Extracts the session token from the `sid` cookie (auth.ts:34)',
+        '  \x1b[33m2.\x1b[0m Looks it up in Redis with a 50ms timeout, falls back to Postgres on miss',
+        '  \x1b[33m3.\x1b[0m Attaches `req.user` and refreshes the token TTL if older than 12h',
+        '',
+        '  Notable: the Postgres fallback writes back to Redis async without awaiting,',
+        '  so the next request can still miss the cache. Likely the source of the',
+        '  duplicate-session-lookup spikes you saw in last week\'s dashboard.',
+        '',
+        '\x1b[36m>\x1b[0m good catch. open a PR that awaits the redis writeback and adds a metric',
+        '',
+        '\x1b[32m●\x1b[0m On it. Minimal change — one await + one counter — plus a regression test.',
+        '',
+        '\x1b[2m⏺ \x1b[0mEdit\x1b[2m(src/middleware/auth.ts)  +3 -1\x1b[0m',
+        '\x1b[2m⏺ \x1b[0mEdit\x1b[2m(src/metrics/auth.ts)  +6 -0\x1b[0m',
+        '\x1b[2m⏺ \x1b[0mWrite\x1b[2m(src/middleware/__tests__/auth.cache.test.ts)\x1b[0m',
+        '\x1b[2m⏺ \x1b[0mBash\x1b[2m(npm test -- auth.cache)  →  ✓ 4 passed (220ms)\x1b[0m',
+        '',
+        '\x1b[32m●\x1b[0m Tests pass. Ready to push and open the PR — target `working` or branch',
+        '  off `release/0.42`?',
+        '',
+        '\x1b[36m>\x1b[0m working, and tag @ops for review since this touches the hot path',
+        '',
+        '\x1b[32m●\x1b[0m Pushing to `working` and opening the PR with @ops as reviewer.',
+        '',
+        '\x1b[2m⏺ \x1b[0mBash\x1b[2m(git push -u origin auth-cache-await)  →  branch published\x1b[0m',
+        '',
+        '\x1b[33m⏵\x1b[0m \x1b[1mBash\x1b[0m wants to run \x1b[36mgh pr create --title "auth: await redis writeback" --reviewer ops --base working\x1b[0m',
+        '  \x1b[2mAllow once  ·  Allow always  ·  Reject\x1b[0m',
+        '',
+      ];
+      for (const line of lines) t.write(line + '\r\n');
+      try { t.scrollToTop(); } catch { /* ignore */ }
+    });
+    await new Promise((r) => setTimeout(r, 1200));
 
     const hero = path.join(OUT_DIR, 'hero.png');
-    await win.screenshot({ path: hero, fullPage: false });
+    await win.screenshot({ path: hero, clip: { x: 0, y: 0, width: 1280, height: 480 } });
     console.log(`saved ${hero}`);
   } finally {
     try { await electronApp.close(); } catch { /* ignore */ }
