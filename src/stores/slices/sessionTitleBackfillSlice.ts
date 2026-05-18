@@ -15,6 +15,10 @@
 // `sessionRuntimeSlice` (split per Task #736 / PR #754 review).
 
 import { partitionSessionsForBackfill, BACKFILL_DEFAULT_NAMES } from '../lib/sessionPartition';
+import {
+  getPendingManualRename,
+  clearPendingManualRename,
+} from '../lib/pendingManualRenames';
 import type { RootStore, SetFn, GetFn } from './types';
 
 export type SessionTitleBackfillSlice = Pick<
@@ -28,6 +32,18 @@ export function createSessionTitleBackfillSlice(
 ): SessionTitleBackfillSlice {
   return {
     _applyExternalTitle: (sid, title) => {
+      // Suppress auto-summary writes while a manual rename is awaiting SDK
+      // writeback confirmation. The watcher can race the JSONL rewrite and
+      // fire `title-changed` with the pre-rename summary; without this
+      // guard the user's name flicks back. Clear the guard once we observe
+      // an external title equal to the desired name — that proves the
+      // round-trip landed and future external changes (e.g. claude
+      // `/title`) should apply normally.
+      const desired = getPendingManualRename(sid);
+      if (desired !== undefined) {
+        if (title !== desired) return;
+        clearPendingManualRename(sid);
+      }
       set((s) => {
         const idx = s.sessions.findIndex((x) => x.id === sid);
         if (idx === -1) return s;

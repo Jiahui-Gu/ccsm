@@ -17,6 +17,10 @@
 import type { Group, Session } from '../../types';
 import { hydrateDrafts as _unused, deleteDrafts, snapshotDraft, restoreDraft } from '../drafts';
 import { resolvePreferredGroup } from '../lib/preferredGroupResolver';
+import {
+  setPendingManualRename,
+  clearPendingManualRename,
+} from '../lib/pendingManualRenames';
 import { defaultGroupName } from './groupsSlice';
 import type {
   CreateSessionOptions,
@@ -204,6 +208,12 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
 
     renameSession: async (id, name) => {
       const session = get().sessions.find((x) => x.id === id);
+      // Mark this sid as "manual rename pending SDK confirmation" before
+      // the local mutation. _applyExternalTitle reads this map to drop
+      // stale auto-summary patches that would otherwise overwrite the
+      // user's chosen name between the JSONL rewrite and the next
+      // titleEmitter tick.
+      setPendingManualRename(id, name);
       set((s) => ({
         sessions: s.sessions.map((x) => (x.id === id ? { ...x, name } : x)),
       }));
@@ -218,7 +228,12 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
               };
             }).ccsmSessionTitles
           : undefined;
-      if (!bridge) return;
+      if (!bridge) {
+        // No bridge (jsdom/tests) — clear the guard so the slice doesn't
+        // permanently swallow future external titles for this sid.
+        clearPendingManualRename(id);
+        return;
+      }
 
       const dir = session?.cwd;
       try {
@@ -228,11 +243,25 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
           await bridge.enqueuePending(id, name, dir);
           return;
         }
+        // sdk_threw: the JSONL rewrite failed. Queue a pending rename so
+        // the flusher retries when the JSONL is next observed; without
+        // this the renderer name and the JSONL summary stay split-brained
+        // and the watcher will eventually clobber the user's choice.
         console.error(
           `[rename:writeback-failed] sid=${id} message=${result.message ?? '(no message)'}`
         );
+        try {
+          await bridge.enqueuePending(id, name, dir);
+        } catch (enqErr) {
+          console.error(`[rename:writeback-failed] enqueue sid=${id}`, enqErr);
+        }
       } catch (err) {
         console.error(`[rename:writeback-failed] ipc sid=${id}`, err);
+        try {
+          await bridge.enqueuePending(id, name, dir);
+        } catch (enqErr) {
+          console.error(`[rename:writeback-failed] enqueue sid=${id}`, enqErr);
+        }
       }
     },
 
@@ -335,6 +364,7 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
         return patch;
       });
       deleteDrafts([id]);
+      clearPendingManualRename(id);
       try {
         void window.ccsmPty?.kill(id).catch(() => {});
       } catch {
