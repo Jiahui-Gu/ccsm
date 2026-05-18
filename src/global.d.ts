@@ -104,6 +104,24 @@ declare global {
         onMaximizedChanged: (handler: (max: boolean) => void) => () => void;
         onBeforeHide: (handler: (info: { durationMs: number }) => void) => () => void;
         onAfterShow: (handler: () => void) => () => void;
+        onAskCloseAction: (
+          handler: (payload: {
+            requestId: string;
+            labels: {
+              message: string;
+              detail: string;
+              tray: string;
+              quit: string;
+              cancel: string;
+              dontAskAgain: string;
+            };
+          }) => void
+        ) => () => void;
+        resolveCloseAction: (payload: {
+          requestId: string;
+          choice: 'tray' | 'quit' | 'cancel';
+          dontAskAgain: boolean;
+        }) => void;
         platform: 'aix' | 'android' | 'darwin' | 'freebsd' | 'haiku' | 'linux' | 'openbsd' | 'sunos' | 'win32' | 'cygwin' | 'netbsd';
       };
     };

@@ -15,7 +15,7 @@ vi.mock('electron', () => {
   return { Menu };
 });
 
-import { installContextMenu, isAllowedNavigation } from '../createWindow';
+import { installContextMenu, isAllowedNavigation, decideCloseAction } from '../createWindow';
 
 interface ContextMenuParams {
   selectionText: string;
@@ -182,5 +182,61 @@ describe('isAllowedNavigation (#804 risk #7)', () => {
   it('blocks other protocols (javascript:, data:)', () => {
     expect(isAllowedNavigation('javascript:alert(1)', '4100')).toBe(false);
     expect(isAllowedNavigation('data:text/html,<script>x</script>', '4100')).toBe(false);
+  });
+});
+
+// #1253: the in-app close dialog routes the user's choice back to main as
+// `{choice, dontAskAgain}`. `decideCloseAction` is the pure mapping
+// from that response → {action, persist}. Locked semantics:
+//   * 'cancel' NEVER persists, even when dontAskAgain is checked —
+//     cancelling must never trap the user into a pref they can't undo.
+//   * 'tray' / 'quit' + dontAskAgain → persist that choice as the new
+//     close-action preference.
+describe('decideCloseAction (#1253)', () => {
+  it('tray + dontAskAgain off → tray action, no persist', () => {
+    expect(decideCloseAction({ choice: 'tray', dontAskAgain: false })).toEqual({
+      action: 'tray',
+      persist: null,
+    });
+  });
+
+  it('tray + dontAskAgain on → tray action, persist tray', () => {
+    expect(decideCloseAction({ choice: 'tray', dontAskAgain: true })).toEqual({
+      action: 'tray',
+      persist: 'tray',
+    });
+  });
+
+  it('quit + dontAskAgain off → quit action, no persist', () => {
+    expect(decideCloseAction({ choice: 'quit', dontAskAgain: false })).toEqual({
+      action: 'quit',
+      persist: null,
+    });
+  });
+
+  it('quit + dontAskAgain on → quit action, persist quit', () => {
+    expect(decideCloseAction({ choice: 'quit', dontAskAgain: true })).toEqual({
+      action: 'quit',
+      persist: 'quit',
+    });
+  });
+
+  it('cancel + dontAskAgain off → cancel action, no persist', () => {
+    expect(decideCloseAction({ choice: 'cancel', dontAskAgain: false })).toEqual({
+      action: 'cancel',
+      persist: null,
+    });
+  });
+
+  it('cancel + dontAskAgain ON → cancel action, STILL no persist', () => {
+    // The "never trap the user" rule. A user who hits Cancel and ticks
+    // the box at the same time has given contradictory signals; we
+    // discard the tick. Persisting 'cancel' would be meaningless anyway
+    // (no such close-pref value), but the broader policy also forbids
+    // persisting any pref on the cancel path.
+    expect(decideCloseAction({ choice: 'cancel', dontAskAgain: true })).toEqual({
+      action: 'cancel',
+      persist: null,
+    });
   });
 });

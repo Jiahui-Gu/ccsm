@@ -162,6 +162,65 @@ const api = {
       ipcRenderer.on('window:afterShow', wrap);
       return () => ipcRenderer.removeListener('window:afterShow', wrap);
     },
+    /**
+     * Main fires `window:askCloseAction` when the user clicks the window X
+     * (or Ctrl+W / menu Close) AND their close-action preference is 'ask'.
+     * Renderer opens the in-app CloseActionDialog with the supplied labels
+     * (translated on main, passed through to keep the renderer i18n catalog
+     * free of duplicate strings) and the request id, then calls
+     * `resolveCloseAction` with the user's choice. Replaces the native
+     * `dialog.showMessageBox` window (#1253).
+     *
+     * If no resolveCloseAction call arrives within 10s, main falls back to
+     * hide-to-tray without persisting a pref. See `CLOSE_ASK_TIMEOUT_MS`.
+     */
+    onAskCloseAction: (
+      handler: (payload: {
+        requestId: string;
+        labels: {
+          message: string;
+          detail: string;
+          tray: string;
+          quit: string;
+          cancel: string;
+          dontAskAgain: string;
+        };
+      }) => void,
+    ): (() => void) => {
+      const wrap = (
+        _e: IpcRendererEvent,
+        payload: {
+          requestId: string;
+          labels: {
+            message: string;
+            detail: string;
+            tray: string;
+            quit: string;
+            cancel: string;
+            dontAskAgain: string;
+          };
+        },
+      ) => handler(payload);
+      ipcRenderer.on('window:askCloseAction', wrap);
+      return () => ipcRenderer.removeListener('window:askCloseAction', wrap);
+    },
+    /**
+     * Renderer's reply to the latest `window:askCloseAction` ping. The
+     * requestId pairs the reply with main's in-flight ask so a stale
+     * reply from a previous (timed-out) ask is ignored. `'cancel'` never
+     * persists, even when `dontAskAgain` is true — see
+     * `decideCloseAction` in electron/window/createWindow.ts.
+     *
+     * Uses `send` (one-way) rather than `invoke` because main does not
+     * need to ack; main acts on the choice unilaterally.
+     */
+    resolveCloseAction: (payload: {
+      requestId: string;
+      choice: 'tray' | 'quit' | 'cancel';
+      dontAskAgain: boolean;
+    }): void => {
+      ipcRenderer.send('window:resolveCloseAction', payload);
+    },
     platform: process.platform
   },
 };

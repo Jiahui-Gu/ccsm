@@ -25,16 +25,18 @@ import {
   BrowserWindow,
   Menu,
   app,
-  dialog,
   type MenuItemConstructorOptions,
+  type IpcMain,
 } from 'electron';
 import * as path from 'path';
+import { randomUUID } from 'crypto';
 import { buildAppIcon } from '../branding/icon';
 import {
   type CloseAction,
   getCloseAction,
   setCloseAction,
 } from '../prefs/closeAction';
+import { tCloseDialog } from '../i18n';
 
 export interface CreateWindowDeps {
   /** True iff we should load the webpack-dev-server URL instead of the
@@ -53,6 +55,11 @@ export interface CreateWindowDeps {
   /** Flip `isQuitting` to true when the user picks "quit" in the
    *  close-action dialog or sets the persisted preference to 'quit'. */
   setIsQuitting: (v: boolean) => void;
+  /** Shared `ipcMain`. createWindow registers the `window:resolveCloseAction`
+   *  handler here so the renderer's in-app close dialog can route its
+   *  choice back to the window that asked. Same instance the rest of
+   *  electron/ipc/* uses. */
+  ipcMain: IpcMain;
 }
 
 // Pure decider for the `will-navigate` allowlist (#804 risk #7). Allows the
@@ -98,6 +105,51 @@ export function installContextMenu(win: BrowserWindow): void {
     menu.popup({ window: win });
   });
 }
+
+// Pure decider for the close-action dialog response. Given the user's
+// choice + dontAskAgain checkbox, returns:
+//   - `action`: what main should DO right now ('tray' | 'quit' | 'cancel').
+//   - `persist`: which preference (if any) to persist via setCloseAction.
+//
+// Locked semantics (#1253):
+//   * cancel NEVER persists, even when dontAskAgain is checked. Persisting
+//     'cancel' is meaningless (there's no 'cancel' close-pref), and we
+//     refuse to trap the user — if they cancel + tick the box, treat the
+//     tick as discarded.
+//   * tray/quit + dontAskAgain → persist that choice as the new pref.
+//   * tray/quit alone → no persistence; act once.
+// Pure so it can be unit-tested without booting Electron.
+export type CloseDialogChoice = 'tray' | 'quit' | 'cancel';
+
+export interface CloseDialogResponse {
+  choice: CloseDialogChoice;
+  dontAskAgain: boolean;
+}
+
+export interface CloseDialogDecision {
+  action: CloseDialogChoice;
+  persist: CloseAction | null;
+}
+
+export function decideCloseAction(
+  response: CloseDialogResponse,
+): CloseDialogDecision {
+  if (response.choice === 'cancel') {
+    return { action: 'cancel', persist: null };
+  }
+  return {
+    action: response.choice,
+    persist: response.dontAskAgain ? response.choice : null,
+  };
+}
+
+// Default fallback when the renderer never responds to a
+// `window:askCloseAction` request (renderer hung, dialog crashed, IPC
+// dropped). Locked to 'tray' on every platform: it's the non-destructive
+// option (user can quit explicitly via tray menu) and matches the macOS
+// default. Never persists. 10s window matches generous human reaction
+// time without leaving the close X feeling completely dead.
+export const CLOSE_ASK_TIMEOUT_MS = 10_000;
 
 export function createWindow(deps: CreateWindowDeps): BrowserWindow {
   // E2E hidden mode: when CCSM_E2E_HIDDEN=1 the window is created
@@ -268,9 +320,11 @@ export function createWindow(deps: CreateWindowDeps): BrowserWindow {
   //   'quit' → don't preventDefault; let the window close, fall through to
   //            window-all-closed → before-quit → app exit.
   //   'tray' → preventDefault + fade-to-hide (the original behaviour).
-  //   'ask'  → preventDefault + native dialog with a "Don't ask again"
-  //            checkbox; on confirm we persist the choice via setCloseAction
-  //            so the next click goes straight to that branch.
+  //   'ask'  → preventDefault + in-app modal (rendered by the renderer's
+  //            CloseActionDialog) over IPC. The user picks tray / quit /
+  //            cancel + optional "Don't ask again"; renderer answers via
+  //            `window:resolveCloseAction`. Replaces the ugly native
+  //            `dialog.showMessageBox` (#1253).
   // The `isQuitting` short-circuit at the top stays so explicit quit paths
   // (tray menu Quit, app.before-quit safety net, electron-builder updater)
   // bypass everything.
@@ -298,6 +352,54 @@ export function createWindow(deps: CreateWindowDeps): BrowserWindow {
       win.hide();
     }, HIDE_FADE_MS);
   };
+
+  // In-flight close-ask request. While a request is pending, subsequent
+  // `win.on('close')` fires are coalesced — we don't open a second dialog
+  // on top of the first. Cleared on resolve / timeout / window destroy.
+  let pendingAsk: {
+    requestId: string;
+    timer: NodeJS.Timeout;
+  } | null = null;
+
+  // Apply the renderer's decision (or the timeout fallback). Centralised
+  // so the IPC handler and the timeout path share one branching tree.
+  const applyCloseDecision = (response: CloseDialogResponse) => {
+    const decision = decideCloseAction(response);
+    if (decision.persist) setCloseAction(decision.persist);
+    if (decision.action === 'tray') {
+      fadeThenHide();
+      return;
+    }
+    if (decision.action === 'quit') {
+      deps.setIsQuitting(true);
+      app.quit();
+      return;
+    }
+    // 'cancel' — nothing to do. The window stays open because
+    // `e.preventDefault()` already ran.
+  };
+
+  // Renderer reply handler. Registered once per window; the requestId in
+  // the payload pairs it with the in-flight request so stale replies from
+  // a previous (timed-out) ask are ignored.
+  const resolveHandler = (
+    _e: unknown,
+    payload: { requestId: string; choice: CloseDialogChoice; dontAskAgain: boolean },
+  ) => {
+    if (!pendingAsk || pendingAsk.requestId !== payload.requestId) return;
+    clearTimeout(pendingAsk.timer);
+    pendingAsk = null;
+    applyCloseDecision({ choice: payload.choice, dontAskAgain: payload.dontAskAgain });
+  };
+  deps.ipcMain.on('window:resolveCloseAction', resolveHandler);
+  win.on('closed', () => {
+    deps.ipcMain.removeListener('window:resolveCloseAction', resolveHandler);
+    if (pendingAsk) {
+      clearTimeout(pendingAsk.timer);
+      pendingAsk = null;
+    }
+  });
+
   win.on('close', (e) => {
     if (deps.getIsQuitting()) return;
     const pref = getCloseAction();
@@ -310,41 +412,47 @@ export function createWindow(deps: CreateWindowDeps): BrowserWindow {
       fadeThenHide();
       return;
     }
-    // pref === 'ask': prompt once. Showing the dialog is async, but
-    // preventDefault has already kept the window alive; we run the dialog
-    // and act on the user's choice in the resolved promise.
-    void (async () => {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const i18n = require('../i18n') as typeof import('../i18n');
-      let result: { response: number; checkboxChecked: boolean };
-      try {
-        result = await dialog.showMessageBox(win, {
-          type: 'question',
-          buttons: [i18n.tCloseDialog('tray'), i18n.tCloseDialog('quit')],
-          defaultId: 0,
-          cancelId: 0,
-          message: i18n.tCloseDialog('message'),
-          detail: i18n.tCloseDialog('detail'),
-          checkboxLabel: i18n.tCloseDialog('dontAskAgain'),
-          checkboxChecked: false,
+    // pref === 'ask': open the in-app dialog over IPC. If a request is
+    // already in flight, coalesce — don't stack dialogs.
+    if (pendingAsk) return;
+    const requestId = randomUUID();
+    const timer = setTimeout(() => {
+      if (!pendingAsk || pendingAsk.requestId !== requestId) return;
+      pendingAsk = null;
+      console.warn(
+        '[main] close-action dialog timed out; falling back to tray',
+      );
+      applyCloseDecision({ choice: 'tray', dontAskAgain: false });
+    }, CLOSE_ASK_TIMEOUT_MS);
+    pendingAsk = { requestId, timer };
+    try {
+      if (!win.webContents.isDestroyed()) {
+        win.webContents.send('window:askCloseAction', {
+          requestId,
+          labels: {
+            message: tCloseDialog('message'),
+            detail: tCloseDialog('detail'),
+            tray: tCloseDialog('tray'),
+            quit: tCloseDialog('quit'),
+            cancel: tCloseDialog('cancel'),
+            dontAskAgain: tCloseDialog('dontAskAgain'),
+          },
         });
-      } catch (err) {
-        console.warn(
-          '[main] close-action dialog failed; falling back to tray',
-          err,
-        );
-        fadeThenHide();
-        return;
-      }
-      const choice: CloseAction = result.response === 0 ? 'tray' : 'quit';
-      if (result.checkboxChecked) setCloseAction(choice);
-      if (choice === 'tray') {
-        fadeThenHide();
       } else {
-        deps.setIsQuitting(true);
-        app.quit();
+        // Renderer is gone — fall straight to tray with no persistence.
+        clearTimeout(timer);
+        pendingAsk = null;
+        applyCloseDecision({ choice: 'tray', dontAskAgain: false });
       }
-    })();
+    } catch (err) {
+      clearTimeout(timer);
+      pendingAsk = null;
+      console.warn(
+        '[main] close-action dialog send failed; falling back to tray',
+        err,
+      );
+      applyCloseDecision({ choice: 'tray', dontAskAgain: false });
+    }
   });
 
   // After the window is shown again (tray click, dock click on macOS) the
