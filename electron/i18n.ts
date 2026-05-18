@@ -41,6 +41,7 @@ type CloseDialogCatalog = {
   detail: string;
   tray: string;
   quit: string;
+  cancel: string;
   dontAskAgain: string;
 };
 
@@ -133,6 +134,7 @@ const closeDialogCatalogs: Record<SupportedLanguage, CloseDialogCatalog> = {
       'Minimize to tray keeps ccsm running so notifications and background sessions stay active.',
     tray: 'Minimize to tray',
     quit: 'Quit',
+    cancel: 'Cancel',
     dontAskAgain: "Don't ask again"
   },
   zh: {
@@ -141,6 +143,7 @@ const closeDialogCatalogs: Record<SupportedLanguage, CloseDialogCatalog> = {
       '最小化到托盘会让 ccsm 继续运行，通知和后台会话保持活跃。',
     tray: '最小化到托盘',
     quit: '退出',
+    cancel: '取消',
     dontAskAgain: '不再询问'
   }
 };

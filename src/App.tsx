@@ -12,6 +12,11 @@ import { ImportDialog } from './components/ImportDialog';
 import { ShortcutOverlay } from './components/ShortcutOverlay';
 import { DragRegion, WindowControls } from './components/WindowControls';
 import { InstallerCorruptBanner } from './components/InstallerCorruptBanner';
+import {
+  CloseActionDialog,
+  type CloseActionLabels,
+  type CloseDialogChoice,
+} from './components/CloseActionDialog';
 import { useStore } from './stores/store';
 import { initI18n } from './i18n';
 import { useTranslation } from './i18n/useTranslation';
@@ -94,6 +99,31 @@ export default function App() {
   const [paletteOpen, setPaletteOpen] = React.useState(false);
   const [importOpen, setImportOpen] = React.useState(false);
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
+
+  // In-app close dialog (#1253): main emits `window:askCloseAction`
+  // when the user clicks the X with pref='ask'. We open
+  // CloseActionDialog, then reply via `resolveCloseAction`. Labels come
+  // from the IPC payload (translated on main) so the renderer i18n
+  // catalog doesn't duplicate the strings.
+  const [closeAsk, setCloseAsk] = React.useState<{
+    open: boolean;
+    requestId: string;
+    labels: CloseActionLabels;
+  } | null>(null);
+  useEffect(() => {
+    const bridge = window.ccsm?.window;
+    if (!bridge?.onAskCloseAction) return;
+    return bridge.onAskCloseAction((payload) => {
+      // Coalesce: if a dialog is already open, ignore the new request.
+      // Main has its own pending-ask gate so this is belt-and-suspenders,
+      // but if it ever drifts the user shouldn't see two stacked dialogs.
+      setCloseAsk((prev) =>
+        prev?.open
+          ? prev
+          : { open: true, requestId: payload.requestId, labels: payload.labels }
+      );
+    });
+  }, []);
 
   // ---- Extracted effect hooks (Task #732 Phase B + Task #758 Phase C) ----
   // Theme application — reactive to user choice + (when system) OS scheme.
@@ -308,12 +338,40 @@ export default function App() {
   // blank white window during sqlite hydration. See AppSkeleton (#584).
   // The first-run/empty CTA branch below is reserved for when we're
   // CERTAIN there are no persisted sessions (i.e. hydrated === true).
+  //
+  // Both return branches mount <CloseActionDialog/> because Ctrl+W / menu
+  // Close can fire during the hydrate window — we still need to answer
+  // main with SOME choice so its pending-ask gate clears.
+  const handleCloseResolve = React.useCallback(
+    (result: { choice: CloseDialogChoice; dontAskAgain: boolean }) => {
+      const ask = closeAsk;
+      if (!ask) return;
+      window.ccsm?.window?.resolveCloseAction?.({
+        requestId: ask.requestId,
+        choice: result.choice,
+        dontAskAgain: result.dontAskAgain,
+      });
+    },
+    [closeAsk]
+  );
+  const closeActionDialog = (
+    <CloseActionDialog
+      open={!!closeAsk?.open}
+      onOpenChange={(next) => {
+        setCloseAsk((prev) => (prev ? { ...prev, open: next } : prev));
+      }}
+      labels={closeAsk?.labels ?? null}
+      onResolve={handleCloseResolve}
+    />
+  );
+
   if (!active && !hydrated) {
     return (
       <TooltipProvider delayDuration={400} skipDelayDuration={100}>
         <ToastProvider>
           <AppEffectsBridge />
           <AppSkeleton />
+          {closeActionDialog}
         </ToastProvider>
       </TooltipProvider>
     );
@@ -387,6 +445,7 @@ export default function App() {
           onFocusGroup={focusGroup}
         />
         <ShortcutOverlay open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+        {closeActionDialog}
       </ToastProvider>
     </TooltipProvider>
   );
