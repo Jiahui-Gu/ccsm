@@ -142,6 +142,37 @@ export async function dndDrag(win, sourceSelector, targetSelector, opts = {}) {
       elapsed += heartbeatMs;
     }
   }
+  // Final pointermove at target center, RIGHT before pointerup. dnd-kit's
+  // `over` is computed on each pointermove via collision detection; after
+  // `settleMs` (and/or the holdMs loop) layout can shift — the DragOverlay
+  // mounts, framer-motion drives row exit transitions, sticky-header sentinels
+  // move — and the last `over` snapshot may be stale. Without this re-fire,
+  // pointerup can resolve with `over === null` (drop ignored) or `over === <a
+  // neighbor row>` (session lands in the wrong group). This was the root cause
+  // of the ubuntu-latest harness-dnd Case-1 regression observed 2026-05-18:
+  // s1 left g1 (drop fired) but did not land in g2 (over snapshot pointed at
+  // a neighbor when pointerup ran). win/mac were tolerant; ubuntu under xvfb
+  // is slower and consistently caught the stale-over window.
+  await win.evaluate(
+    ({ tx, ty }) =>
+      document.dispatchEvent(
+        new PointerEvent('pointermove', {
+          clientX: tx,
+          clientY: ty,
+          bubbles: true,
+          pointerType: 'mouse',
+          pointerId: 1,
+          isPrimary: true
+        })
+      ),
+    { tx, ty }
+  );
+  // Yield two animation frames so dnd-kit's collision detection (which runs
+  // inside its rAF-throttled measuring loop) commits the fresh `over` before
+  // we fire pointerup.
+  await win.evaluate(
+    () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
+  );
   await win.evaluate(
     ({ tx, ty }) =>
       document.dispatchEvent(
