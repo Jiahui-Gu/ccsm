@@ -66,6 +66,8 @@ export default [
         PointerEvent: 'readonly',
         FocusEvent: 'readonly',
         DragEvent: 'readonly',
+        ClipboardEvent: 'readonly',
+        DataTransfer: 'readonly',
         File: 'readonly',
         FileList: 'readonly',
         FileReader: 'readonly',

@@ -38,6 +38,18 @@ export function applyAppMenuLocale(): void {
   // around).
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const i18n = require('../i18n') as typeof import('../i18n');
+  // Paste is intentionally OMITTED from this menu. Electron's `role: 'paste'`
+  // resolves the Ctrl/Cmd+V accelerator by calling `webContents.paste()`,
+  // which only works against a focused contentEditable/textarea via the
+  // OS-level paste pathway. For the terminal pane, focus may sit on the
+  // xterm helper textarea, the screen canvas, or the host wrapper, and the
+  // OS-paste path is a no-op (or worse, silently inserts into the helper
+  // textarea instead of the PTY). The terminal pane installs its own
+  // capture-phase Ctrl/Cmd+V handler that routes through `ccsmPty.input` —
+  // see `src/terminal/xtermSingleton.ts`. Letting the menu accelerator
+  // through means it never reaches DOM keydown at all (the menu consumes
+  // it first); removing the menu entry lets the keydown propagate
+  // normally to the renderer.
   const accelMenu = Menu.buildFromTemplate([
     {
       label: i18n.tMenu('edit'),
@@ -47,7 +59,6 @@ export function applyAppMenuLocale(): void {
         { type: 'separator' },
         { role: 'cut' },
         { role: 'copy' },
-        { role: 'paste' },
         { role: 'selectAll' },
       ],
     },

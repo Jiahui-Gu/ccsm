@@ -4,6 +4,13 @@ A desktop GUI for [Claude Code](https://docs.anthropic.com/claude/docs/claude-co
 
 <!-- TODO: screenshot here -->
 
+## Which repo do I want?
+
+- **[Jiahui-Gu/ccsm](https://github.com/Jiahui-Gu/ccsm)** (this repo) — the **v0.2 desktop app** for Windows / macOS / Linux. Native Electron, local SQLite, talks to your local `claude` CLI. If you want to install and run CCSM on your machine, you're in the right place.
+- **[Jiahui-Gu/ccsm-web](https://github.com/Jiahui-Gu/ccsm-web)** — the **v0.3 cloud / web** track (work in progress). Browser-based, with an iOS companion. Separate codebase, separate roadmap.
+
+The two tracks share the product idea but not the code. This README covers only the desktop app.
+
 ## What it is
 
 Claude Code is a powerful CLI, but switching between 5+ active sessions in different repos becomes tab-juggling. CCSM groups your sessions by task (not by repo) and gives them a sidebar — you stay in flow across multiple parallel conversations.
@@ -20,7 +27,6 @@ Claude Code is a powerful CLI, but switching between 5+ active sessions in diffe
   - Install: `npm i -g @anthropic-ai/claude-code` (or your platform package manager)
   - First-time login: run `claude` once to complete OAuth (or set `ANTHROPIC_API_KEY` in your environment)
   - **If `claude` works in your terminal, CCSM will work. If it doesn't, CCSM won't either.**
-  - Override the binary location with `CCSM_CLAUDE_BIN=/path/to/claude` if needed.
 - **OS**: Windows 10+, macOS 11+ (Big Sur), or Linux (glibc 2.17+)
 - **Disk**: ~200 MB
 
@@ -141,9 +147,31 @@ pwsh scripts/setup-aumid.ps1
 Without this, the Adaptive Toast pipeline silently no-ops in dev mode and
 CCSM falls back to plain Electron notifications.
 
+## Stack
+
+- **Electron** (main + renderer) with TypeScript throughout
+- **React 18** for the renderer UI, bundled by **webpack 5**
+- **xterm.js** + `node-pty` for the embedded terminal that hosts each `claude` session
+- **better-sqlite3** for the local database (groups, sessions, ordering, preferences)
+- **electron-builder** for packaging (NSIS / dmg / AppImage / deb / rpm)
+- **vitest** for unit + integration tests, **playwright** for e2e
+
+See `package.json` for exact versions.
+
 ## Status
 
-This is **MVP**. The author uses it daily as a personal driver. Public release pending.
+Public releases are cut from `working` via tagged builds (see Release flow below). The author uses CCSM daily as a personal driver; expect rough edges and breaking-ish updates between minor versions.
+
+## Release flow
+
+For maintainers:
+
+1. Merge PRs into the `working` branch (the default branch). CI on every PR runs lint + typecheck + test + e2e on all three OSes.
+2. Bump `version` in `package.json` and land that bump on `working`.
+3. Tag the commit `vX.Y.Z` and push the tag. `.github/workflows/release.yml` picks it up and runs the cross-platform build matrix (Windows NSIS installer, macOS dmg + zip for x64 and arm64, Linux AppImage / deb / rpm).
+4. The workflow uploads the artifacts to a **draft** GitHub Release with auto-generated notes. Review the draft, edit notes if needed, then **publish** it manually.
+
+The `workflow_dispatch` trigger exists for dry-run builds; it stops after uploading workflow artifacts and does not touch the Releases tab. Signing secrets (`CSC_LINK` / `CSC_KEY_PASSWORD` for Windows + macOS, plus Apple notarization creds for mac) are optional — builds proceed unsigned with a CI warning if they're absent.
 
 ## License
 

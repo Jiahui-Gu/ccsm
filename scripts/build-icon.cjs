@@ -15,7 +15,9 @@
 //
 // Output:
 //   build/icon.ico  — multi-res Windows icon (16/24/32/48/64/128/256), Vista+ PNG entries
-//   build/icon.png  — 256x256 PNG, used by electron-builder for Linux targets
+//   build/icon.png  — 1024x1024 PNG, used by electron-builder for Linux and
+//                     mac targets (mac requires >=512x512; 1024 lets builder
+//                     downsample cleanly for all per-target sizes)
 //
 // The render function is intentionally duplicated from electron/main.ts
 // buildTrayIcon (and from scripts/screenshot-512-tray.cjs). Three callers, one
@@ -121,11 +123,13 @@ app.whenReady().then(() => {
   writeFileSync(icoPath, ico);
   console.log(`wrote ${icoPath} (${ico.length} bytes, ${entries.length} resolutions: ${SIZES.join('/')})`);
 
-  // 256x256 PNG for Linux (and as a generic fallback). electron-builder will
-  // synthesize per-target sizes from this one source on Linux.
+  // 1024x1024 PNG for Linux + mac (and as a generic fallback). mac target in
+  // electron-builder rejects icons < 512x512; rendering procedurally at 1024
+  // is lossless and lets electron-builder synthesize per-target sizes cleanly.
   const pngPath = path.join(OUT_DIR, 'icon.png');
-  writeFileSync(pngPath, entries[entries.length - 1].png);
-  console.log(`wrote ${pngPath} (${entries[entries.length - 1].png.length} bytes, 256x256)`);
+  const pngBuf = renderCMark(1024).toPNG();
+  writeFileSync(pngPath, pngBuf);
+  console.log(`wrote ${pngPath} (${pngBuf.length} bytes, 1024x1024)`);
 
   app.quit();
 });
