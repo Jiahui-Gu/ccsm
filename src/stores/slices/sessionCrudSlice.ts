@@ -32,6 +32,28 @@ import type {
 
 void _unused;
 
+// Shared wrapper for the three writeback-failure branches in `renameSession`
+// (no_jsonl, sdk_threw, ipc-catch). All three need to push the manual rename
+// into the main-process pending queue so the flusher retries later — and all
+// three need to swallow + log any IPC error so a failed enqueue doesn't crash
+// the renderer mid-rename. Inlined helper (not its own module) because it
+// only has one caller and reads `bridge` from the local closure shape.
+type RenameBridge = {
+  enqueuePending: (sid: string, title: string, dir?: string) => Promise<void>;
+};
+async function tryEnqueuePending(
+  bridge: RenameBridge,
+  id: string,
+  name: string,
+  dir: string | undefined
+): Promise<void> {
+  try {
+    await bridge.enqueuePending(id, name, dir);
+  } catch (enqErr) {
+    console.error(`[rename:writeback-failed] enqueue sid=${id}`, enqErr);
+  }
+}
+
 function nextId(prefix: string): string {
   // Prefer crypto.randomUUID — collision-resistant across rapid in-tick
   // creation. Keep the `prefix-` shape so existing logs / DOM ids stay
@@ -242,7 +264,7 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
         const result = await bridge.rename(id, name, dir);
         if (result.ok) return;
         if (result.reason === 'no_jsonl') {
-          await bridge.enqueuePending(id, name, dir);
+          await tryEnqueuePending(bridge, id, name, dir);
           return;
         }
         // sdk_threw: the JSONL rewrite failed. Queue a pending rename so
@@ -252,18 +274,10 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
         console.error(
           `[rename:writeback-failed] sid=${id} message=${result.message ?? '(no message)'}`
         );
-        try {
-          await bridge.enqueuePending(id, name, dir);
-        } catch (enqErr) {
-          console.error(`[rename:writeback-failed] enqueue sid=${id}`, enqErr);
-        }
+        await tryEnqueuePending(bridge, id, name, dir);
       } catch (err) {
         console.error(`[rename:writeback-failed] ipc sid=${id}`, err);
-        try {
-          await bridge.enqueuePending(id, name, dir);
-        } catch (enqErr) {
-          console.error(`[rename:writeback-failed] enqueue sid=${id}`, enqErr);
-        }
+        await tryEnqueuePending(bridge, id, name, dir);
       }
     },
 
