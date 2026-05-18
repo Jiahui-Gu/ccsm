@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createSessionTitleBackfillSlice } from '../../../src/stores/slices/sessionTitleBackfillSlice';
+import {
+  setPendingManualRename,
+  _resetPendingManualRenamesForTests,
+} from '../../../src/stores/lib/pendingManualRenames';
 import type { RootStore } from '../../../src/stores/slices/types';
 import type { Session } from '../../../src/types';
 
@@ -40,9 +44,11 @@ function mkSession(id: string, groupId: string, extra: Partial<Session> = {}): S
 describe('sessionTitleBackfillSlice', () => {
   beforeEach(() => {
     (window as unknown as { ccsmSessionTitles?: unknown }).ccsmSessionTitles = undefined;
+    _resetPendingManualRenamesForTests();
   });
   afterEach(() => {
     (window as unknown as { ccsmSessionTitles?: unknown }).ccsmSessionTitles = undefined;
+    _resetPendingManualRenamesForTests();
   });
 
   it('_applyExternalTitle patches matching session, no-op for unknowns', () => {
@@ -69,5 +75,30 @@ describe('sessionTitleBackfillSlice', () => {
     await h.titles._backfillTitles();
     // No bridge -> name remains the default placeholder.
     expect(h.state().sessions[0].name).toBe('New session');
+  });
+
+  it('_applyExternalTitle drops stale auto-summary while a manual rename is pending', () => {
+    // User just renamed sid 'a' to 'My label'; the titleEmitter races a
+    // stale summary 'Old summary' before the JSONL rewrite lands. Without
+    // the pending-manual-rename guard the user's name flicks back.
+    const h = harness({
+      sessions: [mkSession('a', 'g1', { name: 'My label' })],
+    });
+    setPendingManualRename('a', 'My label');
+    h.titles._applyExternalTitle('a', 'Old summary');
+    expect(h.state().sessions[0].name).toBe('My label');
+  });
+
+  it('_applyExternalTitle clears the guard and applies once the SDK round-trips', () => {
+    const h = harness({
+      sessions: [mkSession('a', 'g1', { name: 'My label' })],
+    });
+    setPendingManualRename('a', 'My label');
+    // First the JSONL rewrite lands: external title matches desired -> guard clears.
+    h.titles._applyExternalTitle('a', 'My label');
+    expect(h.state().sessions[0].name).toBe('My label');
+    // Later the user (or claude `/title`) legitimately changes it again.
+    h.titles._applyExternalTitle('a', 'Renamed by claude');
+    expect(h.state().sessions[0].name).toBe('Renamed by claude');
   });
 });
