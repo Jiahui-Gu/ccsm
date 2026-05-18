@@ -235,7 +235,8 @@ const en = {
     retryButton: 'Retry',
     exitedClean: 'claude exited (you typed /exit or claude returned). Click Retry to start a new conversation in this session.',
     exitedCrash: 'claude crashed ({{detail}}). This is not a ccsm bug — the underlying claude CLI exited unexpectedly. Your conversation is saved on disk; click Retry to resume.',
-    exitedRetry: 'Retry'
+    exitedRetry: 'Retry',
+    scrollToBottom: 'Scroll to bottom'
   },
   chat: {
     cwdChipNoneLabel: '(none)',
