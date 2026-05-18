@@ -1,5 +1,18 @@
 name: daily promote + release
 
+# IMPORTANT — bootstrap caveat:
+#   GitHub schedules cron workflows from the DEFAULT branch (main) only.
+#   When this file is modified on `working`, the new version does NOT
+#   start running on cron until it lands on `main`. To bootstrap a change
+#   here:
+#     1. Land the change on `working` (normal PR flow).
+#     2. Manually trigger one run from the Actions tab or via
+#        `gh workflow run daily-promote-release.yml -R <owner>/<repo>`.
+#        That run will open + merge the promote PR, putting this file's
+#        new version on `main`, after which cron picks it up automatically.
+#   Skipping step 2 means cron continues running the OLD file from `main`
+#   until something else promotes `working → main`.
+#
 # Nightly automation: fast-forward working → main (via a real PR so
 # `check-source` runs), then tag the version in package.json on main if
 # that tag doesn't already exist. The tag push triggers release.yml.
@@ -334,6 +347,7 @@ jobs:
         if: steps.blockers.outputs.blocked == 'false' && steps.skip.outputs.skip == 'false'
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           # Sync local main to remote.
@@ -352,9 +366,10 @@ jobs:
           fi
 
           # Create an annotated tag object via API on the main SHA.
+          tag_message=$(printf 'Release %s\n\nPromoted by %s\n' "$tag" "$RUN_URL")
           tag_obj=$(gh api -X POST "repos/$OWNER/$REPO/git/tags" \
             -f tag="$tag" \
-            -f message="Release $tag" \
+            -f message="$tag_message" \
             -f object="$main_sha" \
             -f type=commit \
             --jq '.sha')
