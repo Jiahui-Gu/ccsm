@@ -29,6 +29,12 @@ let fit: FitAddon | null = null;
 let activeSid: string | null = null;
 let unsubscribeData: (() => void) | null = null;
 let inputDisposable: { dispose: () => void } | null = null;
+// Handoff flag between the Ctrl/Cmd+V keydown hook and the capture-phase
+// `paste` listener. Module-level (not closed over `ensureTerminal`) so a
+// keydown that was attached against an earlier Terminal instance still
+// suppresses the native paste event reaching the current host element.
+// See the paste-path block inside `ensureTerminal` for details.
+let keyboardPasteHandled = false;
 // L4 PR-D (#866): callback installed by `usePtyAttach` once it has wired the
 // snapshot/dedupe-by-seq flow. Invoked by `useTerminalResize` AFTER pushing
 // a new size to the headless mirror so the visible xterm can re-render
@@ -162,42 +168,67 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
 
   term.open(host);
 
-  // v0.2.2 paste fix: host-level capture-phase paste listener.
+  // Single canonical paste path.
   //
-  // Background: PR #1243 removed a custom Ctrl+V handler that was sending
-  // pastes twice (once via direct pty.write, once via xterm's built-in
-  // textarea paste → onData pipeline). The fix correctly delegates to
-  // xterm's built-in pipeline — BUT that pipeline only fires when the
-  // browser dispatches the native `paste` event to xterm's hidden helper
-  // textarea, which requires that textarea to have focus. In practice
-  // users frequently click on the surrounding host wrapper / sidebar /
-  // anywhere that drains focus from the helper textarea, so the native
-  // paste event lands on `host` (or an ancestor) and xterm never sees
-  // it → 0 pastes (v0.2.1 user report).
+  // xterm.js exposes two competing entry points for paste:
+  //   (1) an `attachCustomKeyEventHandler` keydown hook
+  //   (2) a built-in `paste` DOM-event pipeline (`handlePasteEvent` →
+  //       `coreService.triggerDataEvent` → `onData`), wired to BOTH
+  //       `this.textarea` and `this.element`.
   //
-  // Fix: install a capture-phase paste listener on the host element
-  // itself and route the clipboard text through `term.paste(text)`. This
-  //   - preserves the single canonical data path (term.paste →
-  //     prepareTextForTerminal → onData → usePtyAttach → pty.write), so
-  //     bracketed-paste wrapping and CR/LF normalization stay intact;
-  //   - does NOT depend on which descendant of host owns focus;
-  //   - uses capture phase + stopPropagation so xterm's own textarea /
-  //     element paste listeners cannot also fire on the same event
-  //     (prevents regression to the v0.2.0 double-paste bug);
-  //   - preventDefault keeps the browser from inserting the pasted text
-  //     into any contenteditable / input that might be focused inside
-  //     the host subtree.
-  host.addEventListener(
-    'paste',
-    (ev) => {
-      const text = ev.clipboardData?.getData('text/plain');
-      if (!text) return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      term?.paste(text);
-    },
-    true,
-  );
+  // Electron adds a third: `role: 'paste'` in any application menu
+  // resolves Ctrl/Cmd+V via `webContents.paste()` (OS-level), which
+  // bypasses the DOM entirely. (We've removed that role from the
+  // hidden accelerator menu in `electron/lifecycle/appLifecycle.ts`,
+  // but it can still arrive from the right-click context menu.)
+  //
+  // Letting two of these fire concurrently is what caused v0.2.0's
+  // double-paste; disabling the keydown hook (v0.2.1) instead left
+  // paste depending on which descendant of host happened to be
+  // focused, manifesting as zero pastes when focus was on the screen
+  // canvas. Both failure modes have the same root cause: we were
+  // riding xterm's internals instead of owning the user intent.
+  //
+  // Fix: own the user intent. Treat the terminal pane as a single
+  // atomic unit, like a native CLI terminal. Every "user wants to
+  // paste" signal — Ctrl/Cmd+V keydown, Ctrl/Cmd+Shift+V keydown,
+  // bracketed `paste` DOM events — converges on one call:
+  //
+  //   ccsmPty.input(activeSid, clipboard.readText())
+  //
+  // Implementation: install a capture-phase `paste` listener on the
+  // host wrapper that swallows xterm's built-in pipeline before it
+  // can call `triggerDataEvent`, and route Ctrl/Cmd+V via the
+  // keydown hook below (returning `false` to also stop xterm from
+  // translating the keystroke into a 0x16 SYN byte).
+  //
+  // The capture listener also routes `paste` events that did NOT
+  // originate from our keydown hook (right-click → Paste, Shift+Insert,
+  // OS-level `webContents.paste()` via context menu) into the same
+  // canonical sink, so every paste source converges.
+  //
+  // Subtlety: when the user types Ctrl+V, the keydown hook reads the
+  // clipboard and injects synchronously. Some browsers / Electron
+  // versions then dispatch a native `paste` event a moment later;
+  // the keydown handler sets `keyboardPasteHandled` so this listener
+  // discards that follow-up event and we paste exactly once.
+  const onPasteCapture = (e: ClipboardEvent): void => {
+    e.stopImmediatePropagation();
+    e.preventDefault();
+    if (keyboardPasteHandled) {
+      keyboardPasteHandled = false;
+      return;
+    }
+    const text = e.clipboardData?.getData('text/plain');
+    if (text && activeSid) {
+      try {
+        window.ccsmPty.input(activeSid, text);
+      } catch {
+        // best-effort — write can fail if PTY isn't attached.
+      }
+    }
+  };
+  host.addEventListener('paste', onPasteCapture, { capture: true });
 
   // ttyd-style: auto-copy on selection change. Works in alt-screen apps
   // (claude/Ink) when user holds Shift to bypass mouse tracking and
@@ -216,23 +247,37 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
     }
   });
 
-  // Copy keyboard shortcuts (Windows Terminal style):
-  //   Ctrl+C        → if selection, copy; else fall through to SIGINT
-  //   Ctrl+Shift+C  → explicit always-copy
-  //
-  // Paste is intentionally NOT handled here. xterm.js has a built-in paste
-  // pipeline (textarea `paste` event → `term.paste()` → `onData` → main
-  // process `pty.write`) which is already wired by `usePtyAttach`. A
-  // previous custom Ctrl+V / Ctrl+Shift+V handler here ran in addition to
-  // the built-in pipeline — returning `false` only suppresses xterm's
-  // keydown→data dispatch, not the browser's native `paste` clipboard
-  // event — so every paste was sent twice. Delegating to xterm's built-in
-  // pipeline gives us a single, canonical paste path.
+  const pasteFromClipboard = (): void => {
+    keyboardPasteHandled = true;
+    // Reset the flag on a macrotask (NOT a microtask). The browser dispatches
+    // the follow-up native `paste` event after our keydown handler returns
+    // but before the next task tick — microtasks fire BEFORE the native
+    // paste, leaving the flag false when the capture listener runs and
+    // causing a second inject (the v0.2.0 double-paste comes back). A
+    // setTimeout 0 task lands AFTER the native paste dispatch, so the
+    // capture listener sees the flag and suppresses.
+    setTimeout(() => { keyboardPasteHandled = false; }, 0);
+    try {
+      const text = window.ccsmPty?.clipboard?.readText();
+      if (text && activeSid) window.ccsmPty.input(activeSid, text);
+    } catch {
+      // best-effort — clipboard read can fail under permission edge cases.
+    }
+  };
+
+  // Copy/paste keyboard shortcuts (Windows Terminal style):
+  //   Ctrl+C  → if selection, copy; else fall through to SIGINT
+  //   Ctrl+V  → paste (single canonical path, see above)
+  //   Ctrl+Shift+C / Ctrl+Shift+V → explicit always-clipboard
+  // On macOS the same handler matches Cmd via `metaKey`.
   term.attachCustomKeyEventHandler((ev) => {
     if (ev.type !== 'keydown') return true;
+    const mod = ev.ctrlKey || ev.metaKey;
+    if (!mod || ev.altKey) return true;
     const isC = ev.key === 'C' || ev.key === 'c';
+    const isV = ev.key === 'V' || ev.key === 'v';
 
-    if (ev.ctrlKey && !ev.shiftKey && !ev.altKey && isC) {
+    if (!ev.shiftKey && isC) {
       const sel = term?.getSelection();
       if (sel) {
         try {
@@ -244,7 +289,11 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
       }
       return true;
     }
-    if (ev.ctrlKey && ev.shiftKey && isC) {
+    if (!ev.shiftKey && isV) {
+      pasteFromClipboard();
+      return false;
+    }
+    if (ev.shiftKey && isC) {
       const sel = term?.getSelection();
       if (sel) {
         try {
@@ -253,6 +302,10 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
           // ignore clipboard failures — selection still highlights.
         }
       }
+      return false;
+    }
+    if (ev.shiftKey && isV) {
+      pasteFromClipboard();
       return false;
     }
     return true;
@@ -282,6 +335,7 @@ export function __resetSingletonForTests(): void {
   unsubscribeData = null;
   inputDisposable = null;
   snapshotReplay = null;
+  keyboardPasteHandled = false;
   if (typeof window !== 'undefined') {
     delete window.__ccsmTerm;
   }
