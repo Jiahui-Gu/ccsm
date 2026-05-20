@@ -143,7 +143,6 @@ export function registerPtyIpc(ipcMain: IpcMain, deps: PtyIpcDeps): void {
       if (cur) cur.attached.delete(wc.id);
     });
     return {
-      snapshot: entry.serialize.serialize(),
       cols: entry.cols,
       rows: entry.rows,
       pid: entry.pty.pid,

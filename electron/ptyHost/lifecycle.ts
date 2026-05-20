@@ -30,7 +30,13 @@ export interface PtySessionInfo {
 }
 
 export interface AttachResult {
-  snapshot: string;
+  // #888 follow-up: the legacy `snapshot` field was removed. The renderer
+  // already paints from `getBufferSnapshot` (PR-B contract) and discarded
+  // the attach-time snapshot, so serializing the (potentially 10K-line)
+  // headless buffer here was pure waste — it produced 1 of 2-3 main-process
+  // serialize calls per attach. The visible-buffer paint pipeline is
+  // unchanged: attach registers the wc; the renderer drives the buffered-
+  // listener + getBufferSnapshot + drain sequence.
   cols: number;
   rows: number;
   pid: number;
@@ -67,10 +73,10 @@ export function attach(sessions: Map<string, Entry>, sid: string): AttachResult 
   const entry = sessions.get(sid);
   if (!entry) return null;
   // Caller registers their webContents via the IPC handler (see
-  // registerPtyHostIpc) — the bare API only returns the snapshot. Renderer
-  // tests can use this without an IPC round-trip.
+  // registerPtyHostIpc) — the bare API only returns the entry geometry.
+  // The visible-buffer paint goes through `getBufferSnapshot` (PR-B);
+  // we deliberately do NOT serialize the headless buffer here.
   return {
-    snapshot: entry.serialize.serialize(),
     cols: entry.cols,
     rows: entry.rows,
     pid: entry.pty.pid,

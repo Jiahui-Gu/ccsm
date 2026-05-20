@@ -355,12 +355,13 @@ describe('pty:attach', () => {
     expect(ipc.handlers.get('pty:attach')!({ sender: makeWc(1) }, 'sid')).toBeNull();
   });
 
-  it('registers the sender wc into the entry.attached map and returns AttachResult', () => {
+  it('registers the sender wc into the entry.attached map and returns AttachResult (no snapshot — #888 follow-up)', () => {
     const ipc = makeFakeIpc();
     const attached = new Map<number, unknown>();
+    const serializeSpy = vi.fn(() => 'paint');
     const entry = {
       pty: { pid: 42 },
-      serialize: { serialize: () => 'paint' },
+      serialize: { serialize: serializeSpy },
       cols: 80,
       rows: 24,
       attached,
@@ -373,8 +374,12 @@ describe('pty:attach', () => {
     registerPtyIpc(ipc as any, deps);
     const wc = makeWc(7);
     const res = ipc.handlers.get('pty:attach')!({ sender: wc }, 'sid');
-    expect(res).toEqual({ snapshot: 'paint', cols: 80, rows: 24, pid: 42 });
+    expect(res).toEqual({ cols: 80, rows: 24, pid: 42 });
     expect(attached.get(7)).toBe(wc);
+    // #888 follow-up: pty:attach MUST NOT serialize the headless buffer.
+    // The renderer paints via getBufferSnapshot (PR-B); this serialize was
+    // a wasted multi-K-line call on every attach.
+    expect(serializeSpy).not.toHaveBeenCalled();
   });
 
   it('the wc destroyed handler removes it from entry.attached', () => {
