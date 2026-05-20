@@ -65,6 +65,7 @@ import {
 } from './sessionTitles';
 import { loadNotifyEnabled, subscribeNotifyEnabledInvalidation } from './prefs/notifyEnabled';
 import { subscribeCrashReportingInvalidation } from './prefs/crashReporting';
+import { subscribeScrollbackInvalidation } from './prefs/scrollback';
 import { BadgeController } from './badgeController';
 import { registerDbIpc } from './ipc/dbIpc';
 import { registerSystemIpc } from './ipc/systemIpc';
@@ -188,6 +189,7 @@ app.whenReady().then(() => {
   // See `tech-debt-12-functional-core.md` leak #5 / Task #818.
   subscribeCrashReportingInvalidation();
   subscribeNotifyEnabledInvalidation();
+  subscribeScrollbackInvalidation();
   // Order is significant for systemIpc: it seeds the active i18n language
   // from the OS locale, so any subsequent producer that calls i18n.t()
   // sees the correct active language.

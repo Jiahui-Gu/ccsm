@@ -11,7 +11,27 @@
 //
 // Out of scope (PR-B/E): visible xterm replay, IPC wire format, detach/reattach.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+
+// `lifecycle.getBufferSnapshot` now consults the user's scrollbackLines
+// preference (electron/prefs/scrollback) on every call so the cap honors
+// live setting changes. The prefs module imports `../db`, which calls
+// Electron's `app.getPath()` on first use — fatal in pure-node tests.
+// Stub the prefs module to a fixed cap so the lifecycle path stays
+// hermetic. Each individual test that wants to assert "the cap is
+// passed to serialize" overrides this via vi.mocked(...) below.
+let _stubbedCap = 1500;
+vi.mock('../../prefs/scrollback', () => ({
+  loadScrollbackLines: () => _stubbedCap,
+  DEFAULT_SCROLLBACK_LINES: 1500,
+  MIN_SCROLLBACK_LINES: 100,
+  MAX_SCROLLBACK_LINES: 50000,
+  SCROLLBACK_KEY: 'scrollbackLines',
+  parseScrollbackLines: (v: unknown) => (typeof v === 'number' ? v : 1500),
+  invalidateScrollbackCache: () => {},
+  subscribeScrollbackInvalidation: () => () => {},
+}));
+
 import { Terminal as HeadlessTerminal } from '@xterm/headless';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import { SCROLLBACK } from '../entryFactory';
@@ -33,14 +53,24 @@ function makeRealHeadless(): { term: HeadlessTerminal; serialize: SerializeAddon
   return { term, serialize };
 }
 
-// Build a fake Entry that just exposes a `serialize.serialize()` returning
-// the supplied string. Other Entry fields are stubbed because
-// getBufferSnapshot only reads `entry.serialize` and `entry.seq`.
-function fakeEntry(snapshot: string, seq: number = 0): Entry {
+// Build a fake Entry that just exposes a `serialize.serialize(opts?)` echoing
+// back whatever string the test supplied. The `optsCapture` array (when
+// passed) records every options arg the lifecycle layer hands through, so
+// tests can assert the user-configured cap reaches SerializeAddon.
+function fakeEntry(
+  snapshot: string,
+  seq: number = 0,
+  optsCapture?: unknown[],
+): Entry {
   return {
     pty: { pid: 0 } as Entry['pty'],
     headless: {} as Entry['headless'],
-    serialize: { serialize: () => snapshot } as unknown as Entry['serialize'],
+    serialize: {
+      serialize: (opts?: unknown) => {
+        if (optsCapture) optsCapture.push(opts);
+        return snapshot;
+      },
+    } as unknown as Entry['serialize'],
     attached: new Map(),
     cols: 80,
     rows: 24,
@@ -50,8 +80,8 @@ function fakeEntry(snapshot: string, seq: number = 0): Entry {
 }
 
 describe('headless authoritative buffer (PR-A real wiring)', () => {
-  it('SCROLLBACK is bumped to 10000 lines for L4', () => {
-    expect(SCROLLBACK).toBe(10000);
+  it('SCROLLBACK default cap is 1500 lines', () => {
+    expect(SCROLLBACK).toBe(1500);
   });
 
   it('headless buffer accumulates writes across chunks', async () => {
@@ -64,11 +94,11 @@ describe('headless authoritative buffer (PR-A real wiring)', () => {
     expect(snap).toContain('second line');
   });
 
-  it('scrollback cap of 10000 truncates the OLDEST lines once exceeded', async () => {
+  it('scrollback cap of SCROLLBACK truncates the OLDEST lines once exceeded', async () => {
     const { term, serialize } = makeRealHeadless();
-    // Write 10500 distinct lines. After the cap, the first ~500 + the 24
-    // visible rows offset should be gone.
-    const TOTAL = 10500;
+    // Write more lines than the cap. After the cap, the oldest lines
+    // should be evicted while the newest survive.
+    const TOTAL = SCROLLBACK + 500;
     let buf = '';
     for (let i = 0; i < TOTAL; i++) buf += `LINE${i}\r\n`;
     await new Promise<void>((r) => term.write(buf, r));
@@ -77,7 +107,6 @@ describe('headless authoritative buffer (PR-A real wiring)', () => {
     expect(snap).toContain(`LINE${TOTAL - 1}`);
     // The very first line MUST have been evicted (well under the cap window).
     expect(snap).not.toContain('LINE0\n');
-    expect(snap).not.toContain('LINE100\n');
     // A line comfortably inside the surviving cap window must still be present.
     expect(snap).toContain(`LINE${TOTAL - 100}`);
   });
@@ -150,5 +179,62 @@ describe('lifecycle.getBufferSnapshot (PR-A async chunking + PR-B seq capture)',
     // Expect at least the number of inter-chunk yields - 1; in practice
     // we should see >= 3 immediates fire alongside 4 internal yields.
     expect(immediateFired).toBeGreaterThanOrEqual(3);
+  });
+
+  it('passes the user-configured scrollback cap as serialize options', async () => {
+    const sessions = new Map<string, Entry>();
+    const optsCapture: unknown[] = [];
+    sessions.set('s4', fakeEntry('payload', 7, optsCapture));
+    _stubbedCap = 1500;
+    await getBufferSnapshot(sessions, 's4');
+    expect(optsCapture).toHaveLength(1);
+    expect(optsCapture[0]).toEqual({ scrollback: 1500 });
+  });
+
+  it('honors a changed scrollback cap on subsequent calls (live setting)', async () => {
+    const sessions = new Map<string, Entry>();
+    const optsCapture: unknown[] = [];
+    sessions.set('s5', fakeEntry('payload', 0, optsCapture));
+    _stubbedCap = 200;
+    await getBufferSnapshot(sessions, 's5');
+    _stubbedCap = 9000;
+    await getBufferSnapshot(sessions, 's5');
+    expect(optsCapture).toEqual([{ scrollback: 200 }, { scrollback: 9000 }]);
+  });
+
+  it('returns at most `cap` lines when serialize honors the option (real addon, real cap)', async () => {
+    // End-to-end check against the real SerializeAddon: a buffer with
+    // many more rows than the cap should yield a snapshot whose line
+    // count is bounded by the cap (plus some constant for terminal
+    // mode/style prefixes).
+    _stubbedCap = 500;
+    const { term, serialize } = makeRealHeadless();
+    const TOTAL = 3000;
+    let buf = '';
+    for (let i = 0; i < TOTAL; i++) buf += `L${i}\r\n`;
+    await new Promise<void>((r) => term.write(buf, r));
+
+    const sessions = new Map<string, Entry>();
+    // Wire the real entry's serialize so getBufferSnapshot calls the
+    // real addon with our cap.
+    sessions.set('real', {
+      pty: { pid: 0 } as Entry['pty'],
+      headless: term as unknown as Entry['headless'],
+      serialize: serialize as unknown as Entry['serialize'],
+      attached: new Map(),
+      cols: 80,
+      rows: 24,
+      cwd: '/tmp',
+      seq: 0,
+    } as Entry);
+    const result = await getBufferSnapshot(sessions, 'real');
+    // Sanity: the newest line must survive.
+    expect(result.snapshot).toContain(`L${TOTAL - 1}`);
+    // The cap must have evicted lines well outside the bottom 500
+    // — anything older than ~600 lines from the bottom should be gone.
+    expect(result.snapshot).not.toContain(`L${TOTAL - 1000}`);
+    // Conservative line-count cap: 500 + a small overhead for ANSI
+    // escapes and trailing rows. We just assert "much less than TOTAL".
+    expect(result.snapshot.split('\n').length).toBeLessThan(700);
   });
 });

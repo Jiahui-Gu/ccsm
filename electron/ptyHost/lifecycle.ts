@@ -15,6 +15,7 @@ import { sessionWatcher } from '../sessionWatcher';
 import { killProcessSubtree } from './processKiller';
 import { DEFAULT_COLS, DEFAULT_ROWS, makeEntry } from './entryFactory';
 import type { Entry } from './entryFactory';
+import { loadScrollbackLines } from '../prefs/scrollback';
 
 export interface PtySessionInfo {
   sid: string;
@@ -152,14 +153,17 @@ export function get(sessions: Map<string, Entry>, sid: string): PtySessionInfo |
 // L4 PR-A (#861) + PR-B (#865): async, chunked snapshot of the headless
 // authoritative buffer, paired with the per-entry monotonic chunk seq.
 //
-// SerializeAddon.serialize() itself is synchronous and walks the entire
-// scrollback (cap 10000 lines). With the bumped cap the serialized string can
-// reach ~MBs for long sessions; concatenating + handing back the full string
-// in one tick would briefly block the main thread. We yield to the event loop
-// every CHUNK_LINES (~1000) lines via setImmediate so other I/O (IPC, JSONL
-// tail, OSC sniffer fanout) keeps making progress while a large snapshot is
-// being assembled. The returned value is still the FULL serialized string —
-// chunking is purely a yield strategy, not a streaming protocol.
+// SerializeAddon.serialize() itself is synchronous and walks the requested
+// rows from the bottom of the scrollback (cap configurable via the
+// `scrollbackLines` user preference, default 1500 — see
+// `electron/prefs/scrollback.ts`). With the bumped cap the serialized
+// string can still reach hundreds of KB; concatenating + handing back the
+// full string in one tick would briefly block the main thread. We yield
+// to the event loop every CHUNK_LINES (~1000) lines via setImmediate so
+// other I/O (IPC, JSONL tail, OSC sniffer fanout) keeps making progress
+// while a large snapshot is being assembled. The returned value is still
+// the FULL serialized string — chunking is purely a yield strategy, not
+// a streaming protocol.
 //
 // PR-B adds the `seq` field: captured ATOMICALLY with `serialize.serialize()`
 // (both happen synchronously, no chunk can arrive between them under Node's
@@ -189,7 +193,13 @@ export async function getBufferSnapshot(
   if (!entry) return { snapshot: '', seq: 0 };
   // Capture seq + serialized string atomically (both sync, no awaits).
   const seq = entry.seq;
-  const full = entry.serialize.serialize();
+  // PR-B contract: serialize captures whatever lives in the headless buffer
+  // at this instant, paired with `seq`. We bound the payload to the user's
+  // configured scrollback cap (last N rows from the bottom of the scrollback)
+  // so a long-running session doesn't return MB of lines on every attach.
+  // Cap honors the live setting (read fresh per call), so the user's
+  // change takes effect on the next attach without restarting the entry.
+  const full = entry.serialize.serialize({ scrollback: loadScrollbackLines() });
   if (!full) return { snapshot: '', seq };
   // Split on '\n' so we yield on a line boundary; preserves the original
   // separator on rejoin. setImmediate is available in Electron main (Node

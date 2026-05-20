@@ -12,6 +12,11 @@ import type {
   SetFn,
   GetFn,
 } from './types';
+import {
+  SCROLLBACK_LINES_DEFAULT,
+  SCROLLBACK_LINES_MAX,
+  SCROLLBACK_LINES_MIN,
+} from './types';
 
 /** Map the legacy `sm`/`md`/`lg` enum to the numeric pixel scale. The old
  * values kept only three stops (12/13/14); the new slider exposes 12–16.
@@ -37,6 +42,21 @@ export function sanitizeFontSizePx(raw: unknown): FontSizePx {
   const n = typeof raw === 'number' ? Math.round(raw) : NaN;
   if (n === 12 || n === 13 || n === 14 || n === 15 || n === 16) return n;
   return 14;
+}
+
+/** Clamp + integerize a raw scrollback value into the valid range. Mirrors
+ *  the main-side `parseScrollbackLines` so the renderer-mirrored value
+ *  always agrees with what the headless side reads from the same db row. */
+export function sanitizeScrollbackLines(raw: unknown): number {
+  let n: number;
+  if (typeof raw === 'number') n = raw;
+  else if (typeof raw === 'string' && raw.length > 0) n = Number(raw);
+  else return SCROLLBACK_LINES_DEFAULT;
+  if (!Number.isFinite(n)) return SCROLLBACK_LINES_DEFAULT;
+  n = Math.round(n);
+  if (n < SCROLLBACK_LINES_MIN) return SCROLLBACK_LINES_MIN;
+  if (n > SCROLLBACK_LINES_MAX) return SCROLLBACK_LINES_MAX;
+  return n;
 }
 
 export const SIDEBAR_WIDTH_DEFAULT = 260;
@@ -83,9 +103,11 @@ export type AppearanceSlice = Pick<
   | 'theme'
   | 'fontSize'
   | 'fontSizePx'
+  | 'scrollbackLines'
   | 'setTheme'
   | 'setFontSize'
   | 'setFontSizePx'
+  | 'setScrollbackLines'
   | 'setSidebarWidth'
   | 'resetSidebarWidth'
 >;
@@ -97,6 +119,7 @@ export function createAppearanceSlice(set: SetFn, _get: GetFn): AppearanceSlice 
     theme: 'system',
     fontSize: 'md',
     fontSizePx: 14,
+    scrollbackLines: SCROLLBACK_LINES_DEFAULT,
 
     // actions
     setTheme: (theme) => set({ theme }),
@@ -104,6 +127,8 @@ export function createAppearanceSlice(set: SetFn, _get: GetFn): AppearanceSlice 
       set({ fontSize, fontSizePx: legacyFontSizeToPx(fontSize) }),
     setFontSizePx: (fontSizePx) =>
       set({ fontSizePx, fontSize: pxToLegacyFontSize(fontSizePx) }),
+    setScrollbackLines: (n) =>
+      set({ scrollbackLines: sanitizeScrollbackLines(n) }),
     setSidebarWidth: (px) => set({ sidebarWidth: sanitizeSidebarWidth(px) }),
     resetSidebarWidth: () => set({ sidebarWidth: SIDEBAR_WIDTH_DEFAULT }),
   };

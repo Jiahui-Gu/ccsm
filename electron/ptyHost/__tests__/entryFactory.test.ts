@@ -51,6 +51,11 @@ vi.mock('node-pty', () => ({
 
 vi.mock('@xterm/headless', () => ({
   Terminal: class {
+    constructor(opts?: unknown) {
+      // Record constructor opts so tests can pin scrollback wiring.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (globalThis as any).__pf_lastHeadlessOpts = opts;
+    }
     // Mirror @xterm/headless's `write(data, callback?)` signature so tests
     // can exercise PR-C backpressure (we count pending writes by deferring
     // the callback until the test fires it).
@@ -99,6 +104,17 @@ vi.mock('../cwdResolver', () => ({
 
 vi.mock('../dataFanout', () => ({
   emitPtyData: (sid: string, chunk: string) => bus().emitData(sid, chunk),
+}));
+
+// The user-configured scrollback cap is now read at headless construction
+// time. Stub the prefs module so tests don't hit the SQLite-backed
+// loadState path; tests that care about the cap value flip
+// `globalThis.__pf_scrollback` directly.
+vi.mock('../../prefs/scrollback', () => ({
+  loadScrollbackLines: () =>
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (((globalThis as any).__pf_scrollback as number | undefined) ?? 1500),
+  DEFAULT_SCROLLBACK_LINES: 1500,
 }));
 
 import { makeEntry } from '../entryFactory';
@@ -200,6 +216,28 @@ describe('entryFactory.makeEntry', () => {
     expect(e.rows).toBe(40);
     expect(e.cwd).toBe('/work');
     expect(e.attached.size).toBe(0);
+  });
+
+  it('passes the user-configured scrollback cap into the headless Terminal constructor', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).__pf_scrollback = 2500;
+    makeEntry('sid-SCROLL', '/work', '/bin/claude', 80, 24, { onExit: vi.fn() });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const opts = (globalThis as any).__pf_lastHeadlessOpts as
+      | { scrollback?: number }
+      | undefined;
+    expect(opts?.scrollback).toBe(2500);
+  });
+
+  it('falls back to the default cap when the prefs module returns the default', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    delete (globalThis as any).__pf_scrollback;
+    makeEntry('sid-DEFAULT', '/work', '/bin/claude', 80, 24, { onExit: vi.fn() });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const opts = (globalThis as any).__pf_lastHeadlessOpts as
+      | { scrollback?: number }
+      | undefined;
+    expect(opts?.scrollback).toBe(1500);
   });
 });
 
