@@ -16,7 +16,10 @@ export interface PtySessionInfo {
 }
 
 export interface AttachResult {
-  snapshot: string;
+  // #888 follow-up: `snapshot` removed — the visible-buffer paint pipeline
+  // goes through `getBufferSnapshot` (PR-B). The attach handler used to
+  // serialize the headless buffer here but the renderer always discarded
+  // the result, so we were paying a multi-K-line serialize for nothing.
   cols: number;
   rows: number;
   pid: number;

@@ -153,7 +153,7 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
         // session's cwd) and re-attach. Subsequent attaches reuse the
         // existing pty (spawnPtySession is idempotent on sid).
         let res = (await pty.attach(sessionId)) as
-          | { snapshot: string; cols: number; rows: number; pid: number }
+          | { cols: number; rows: number; pid: number }
           | null;
         if (!res) {
           const spawnResult = (await pty.spawn(sessionId, cwd ?? '')) as
@@ -165,16 +165,15 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
             throw new Error(reason);
           }
           res = (await pty.attach(sessionId)) as
-            | { snapshot: string; cols: number; rows: number; pid: number }
+            | { cols: number; rows: number; pid: number }
             | null;
           if (!res) throw new Error('attach_failed_after_spawn');
         }
-        // L4 PR-B (#865): we no longer use `res.snapshot`. The legacy
-        // attach-time snapshot is a sync race with the live `pty:data`
-        // fanout: by the time the IPC return value reaches the renderer,
-        // additional chunks may have been broadcast that are NOT yet in
-        // the snapshot, leading to either lost data or duplicated bytes
-        // depending on which we wrote first. The new flow is:
+        // L4 PR-B (#865) + #888 follow-up: the visible-buffer paint is driven
+        // by `getBufferSnapshot` below. The legacy attach-time snapshot
+        // field has been removed entirely from AttachResult (it was always
+        // discarded here and the main-process serialize was a wasted
+        // multi-K-line call on every attach). Flow remains:
         //   1. attach     → registers our webContents in the entry's
         //                   `attached` map (server now broadcasts to us).
         //   2. subscribe  → install a `pty.onData` listener that BUFFERS
@@ -346,19 +345,26 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
         const sid4 = getActiveSid();
         if (fit && t4 && sid4) {
           try {
-            // Gate the post-attach resize+replay on a real size delta (#888).
-            // PR-D contract: initial attach paints the snapshot ONCE from
-            // getBufferSnapshot — no second write. Only when the visible
-            // viewport differs from the spawn-time PTY dimensions (the real
-            // #852 case: headless 120x30 vs visible NxM) do we push the new
-            // size to the backend and replay the reflowed snapshot. Stable
-            // container = no-op; size delta = fire once.
-            const oldCols = t4.cols;
-            const oldRows = t4.rows;
+            // Gate the post-attach resize+replay on a REAL backend-resize
+            // need (#888 + follow-up). The previous gate compared post-fit
+            // term dims against PRE-fit term dims — but those pre-fit dims
+            // had just been overwritten to the PTY spawn size by the
+            // `t2.resize(cols, rows)` above, so the gate almost always saw
+            // a delta and fired a redundant `pty.resize` + snapshot replay
+            // (an extra main-process serialize + a `term.reset()` + full
+            // re-write of the visible buffer — the dominant attach cost on
+            // sessions with multi-K-line scrollback).
+            //
+            // The correct question is: does the container size match the
+            // current PTY size? After `fit.fit()` the term dims reflect the
+            // container; if those equal the PTY's `cols/rows` no backend
+            // resize is needed and we can skip the replay too. STRICT gate:
+            // only skip on exact match — the replay path still fires on
+            // real deltas (the #852 alt-screen-blank case).
             fit.fit();
             const newCols = t4.cols;
             const newRows = t4.rows;
-            if (newCols !== oldCols || newRows !== oldRows) {
+            if (newCols !== cols || newRows !== rows) {
               const resizePromise = window.ccsmPty.resize(sid4, newCols, newRows);
               const p = resizePromise && typeof (resizePromise as Promise<void>).then === 'function'
                 ? (resizePromise as Promise<void>)
