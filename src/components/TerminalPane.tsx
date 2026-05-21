@@ -4,6 +4,8 @@ import { useTranslation } from '../i18n/useTranslation';
 import { useXtermSingleton } from '../terminal/useXtermSingleton';
 import { useTerminalResize } from '../terminal/useTerminalResize';
 import { usePtyAttach, type PtyAttachState } from '../terminal/usePtyAttach';
+import { useAtBottom } from '../terminal/useAtBottom';
+import { ScrollToBottomButton } from './ScrollToBottomButton';
 
 // TerminalPane is the host shell for the singleton xterm view. The three
 // concerns it used to mash together — singleton bring-up, PTY lifecycle,
@@ -30,6 +32,7 @@ export function TerminalPane({ sessionId, cwd }: Props) {
   useXtermSingleton(hostRef);
   useTerminalResize(hostRef);
   const { state, onRetry } = usePtyAttach(sessionId, cwd);
+  const { atBottom, scrollToBottom } = useAtBottom(sessionId);
 
   return (
     <div
@@ -39,6 +42,12 @@ export function TerminalPane({ sessionId, cwd }: Props) {
     >
       <div ref={hostRef} className="absolute inset-0" />
       <Overlay state={state} onRetry={onRetry} t={t} />
+      {/* Hide the jump-to-bottom affordance while an overlay (attaching /
+          error / exit) is up — those cover the viewport and the button
+          would be meaningless. */}
+      {state.kind === 'ready' ? (
+        <ScrollToBottomButton visible={!atBottom} onClick={scrollToBottom} />
+      ) : null}
     </div>
   );
 }

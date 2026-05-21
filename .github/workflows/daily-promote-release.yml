@@ -1,0 +1,382 @@
+name: daily promote + release
+
+# IMPORTANT — bootstrap caveat:
+#   GitHub schedules cron workflows from the DEFAULT branch (main) only.
+#   When this file is modified on `working`, the new version does NOT
+#   start running on cron until it lands on `main`. To bootstrap a change
+#   here:
+#     1. Land the change on `working` (normal PR flow).
+#     2. Manually trigger one run from the Actions tab or via
+#        `gh workflow run daily-promote-release.yml -R <owner>/<repo>`.
+#        That run will open + merge the promote PR, putting this file's
+#        new version on `main`, after which cron picks it up automatically.
+#   Skipping step 2 means cron continues running the OLD file from `main`
+#   until something else promotes `working → main`.
+#
+# Nightly automation: fast-forward working → main (via a real PR so
+# `check-source` runs), then tag the version in package.json on main if
+# that tag doesn't already exist. The tag push triggers release.yml.
+#
+# Design notes (locked decisions):
+#   1. We never invent a version. The tag is always `v$(package.json.version)`.
+#      Bumping package.json on `working` is the explicit "I want to release"
+#      signal. If the tag already exists, the workflow is a no-op for the
+#      release step.
+#   2. main has branch protection requiring the `check-source` status, which
+#      only fires on PRs from `working`. So we open a real PR and merge it
+#      via API. GitHub does NOT trigger required checks on PRs opened by
+#      GITHUB_TOKEN, so a `RELEASE_TOKEN` PAT is required in practice.
+#   3. CI workflows (ci.yml, e2e.yml) only trigger on `pull_request`, so the
+#      merge commit on `working` / `main` never has check-runs directly
+#      attached. We walk back via /commits/{sha}/pulls to find the PR that
+#      produced each tip and gate on that PR head SHA's check-runs.
+#
+# To disable temporarily: comment out the `schedule:` block below. Manual
+# runs still work via `workflow_dispatch`.
+#
+# To skip a single nightly: include `[skip-release]` in the working HEAD
+# commit message. Gates still run; promote + tag are skipped.
+
+on:
+  schedule:
+    # 18:00 UTC = 02:00 Beijing
+    - cron: '0 18 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: daily-promote-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: read
+  checks: read
+  statuses: read
+
+jobs:
+  promote-and-release:
+    name: promote working → main + tag
+    runs-on: ubuntu-latest
+    env:
+      OWNER: ${{ github.repository_owner }}
+      REPO: ${{ github.event.repository.name }}
+      # Prefer RELEASE_TOKEN (PAT) so the auto-opened PR fires required
+      # checks. Fall back to GITHUB_TOKEN for the read-only gates.
+      GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # We need RELEASE_TOKEN here too so the tag push later triggers
+          # release.yml (tags pushed by GITHUB_TOKEN don't trigger workflows).
+          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Verify RELEASE_TOKEN is configured
+        run: |
+          if [ -z "${{ secrets.RELEASE_TOKEN }}" ]; then
+            echo "::error title=RELEASE_TOKEN missing::This workflow requires a PAT named RELEASE_TOKEN. GITHUB_TOKEN cannot trigger required checks on auto-opened PRs, and tags pushed with GITHUB_TOKEN do not trigger release.yml. Create a fine-grained PAT with: contents:write + pull-requests:write on this repo, store as RELEASE_TOKEN secret."
+            exit 1
+          fi
+          echo "RELEASE_TOKEN present" >> "$GITHUB_STEP_SUMMARY"
+
+      # ---------------------------------------------------------------
+      # Gate 1: blocker labels
+      # ---------------------------------------------------------------
+      - name: Gate — blocker labels
+        id: blockers
+        run: |
+          set -euo pipefail
+          issues=$(gh issue list --repo "$OWNER/$REPO" --label blocker --state open --json number,title)
+          prs=$(gh pr list    --repo "$OWNER/$REPO" --label blocker --state open --json number,title)
+          n_issues=$(echo "$issues" | jq 'length')
+          n_prs=$(echo    "$prs"    | jq 'length')
+          total=$((n_issues + n_prs))
+          if [ "$total" -gt 0 ]; then
+            echo "blocked=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Gate: blockers — BLOCKED";
+              echo "$total open item(s) labeled \`blocker\`. Skipping run.";
+              echo '```json';
+              echo "issues: $issues";
+              echo "prs:    $prs";
+              echo '```';
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "blocked by $total items, skipping"
+          else
+            echo "blocked=false" >> "$GITHUB_OUTPUT"
+            echo "### Gate: blockers — OK (0 open)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # All subsequent steps short-circuit when blocked. We use a per-step
+      # `if:` rather than `exit 0` so the run is visibly green-skip, not
+      # green-noop-but-claimed-done.
+
+      # ---------------------------------------------------------------
+      # Resolve tips
+      # ---------------------------------------------------------------
+      - name: Resolve working + main tips
+        id: tips
+        if: steps.blockers.outputs.blocked == 'false'
+        run: |
+          set -euo pipefail
+          working_sha=$(gh api "repos/$OWNER/$REPO/git/refs/heads/working" --jq '.object.sha')
+          main_sha=$(   gh api "repos/$OWNER/$REPO/git/refs/heads/main"    --jq '.object.sha')
+          echo "working_sha=$working_sha" >> "$GITHUB_OUTPUT"
+          echo "main_sha=$main_sha"       >> "$GITHUB_OUTPUT"
+          {
+            echo "### Tips";
+            echo "- working: \`$working_sha\`";
+            echo "- main:    \`$main_sha\`";
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ---------------------------------------------------------------
+      # Gates 2 + 3: CI green on working + main (via PR walkback)
+      # ---------------------------------------------------------------
+      # check_ci_via_pr.sh logic, inlined:
+      #   1. Look up PR(s) associated with the given commit SHA.
+      #   2. If none → fail loud ("no associated PR, refusing to promote").
+      #   3. Take the first (most recent) PR's head.sha and inspect its
+      #      check-runs. Pass iff every check-run conclusion is in
+      #      {success, neutral, skipped}. Anything else (failure, cancelled,
+      #      timed_out, action_required, stale, or status != completed) →
+      #      fail this gate.
+      - name: Gate — CI green on working tip
+        if: steps.blockers.outputs.blocked == 'false'
+        env:
+          SHA: ${{ steps.tips.outputs.working_sha }}
+          LABEL: working
+        run: |
+          set -euo pipefail
+          bash .github/workflows/scripts/check-ci-via-pr.sh "$SHA" "$LABEL"
+
+      - name: Gate — CI green on main tip
+        if: steps.blockers.outputs.blocked == 'false'
+        env:
+          SHA: ${{ steps.tips.outputs.main_sha }}
+          LABEL: main
+        run: |
+          set -euo pipefail
+          bash .github/workflows/scripts/check-ci-via-pr.sh "$SHA" "$LABEL"
+
+      # ---------------------------------------------------------------
+      # Skip-release detection
+      # ---------------------------------------------------------------
+      - name: Detect [skip-release] on working HEAD
+        id: skip
+        if: steps.blockers.outputs.blocked == 'false'
+        env:
+          SHA: ${{ steps.tips.outputs.working_sha }}
+        run: |
+          set -euo pipefail
+          msg=$(gh api "repos/$OWNER/$REPO/commits/$SHA" --jq '.commit.message')
+          if echo "$msg" | grep -qF '[skip-release]'; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "### Skip-release flag detected on working HEAD — promote + tag will be skipped." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ---------------------------------------------------------------
+      # Decide whether promote is needed
+      # ---------------------------------------------------------------
+      - name: Compare working vs main
+        id: cmp
+        if: steps.blockers.outputs.blocked == 'false' && steps.skip.outputs.skip == 'false'
+        env:
+          WORKING_SHA: ${{ steps.tips.outputs.working_sha }}
+          MAIN_SHA:    ${{ steps.tips.outputs.main_sha }}
+        run: |
+          set -euo pipefail
+          if [ "$WORKING_SHA" = "$MAIN_SHA" ]; then
+            echo "need_promote=false" >> "$GITHUB_OUTPUT"
+            echo "### Promote: not needed (working == main)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "need_promote=true" >> "$GITHUB_OUTPUT"
+            echo "### Promote: needed" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # ---------------------------------------------------------------
+      # Promote: open PR, wait for check-source, merge
+      # ---------------------------------------------------------------
+      - name: Open promote PR (working → main)
+        id: open_pr
+        if: steps.blockers.outputs.blocked == 'false' && steps.skip.outputs.skip == 'false' && steps.cmp.outputs.need_promote == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          WORKING_SHA: ${{ steps.tips.outputs.working_sha }}
+          MAIN_SHA:    ${{ steps.tips.outputs.main_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # Reuse an existing open PR working→main if present, else create.
+          existing=$(gh pr list --repo "$OWNER/$REPO" --base main --head working --state open --json number,url --jq '.[0]')
+          if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+            n=$(echo "$existing" | jq -r '.number')
+            url=$(echo "$existing" | jq -r '.url')
+            echo "Reusing existing PR #$n"
+          else
+            commits=$(git log --oneline "$MAIN_SHA..$WORKING_SHA" | head -50)
+            body_file=$(mktemp)
+            {
+              echo "Automated nightly promote.";
+              echo "";
+              echo "- Run: $RUN_URL";
+              echo "- working tip: \`$WORKING_SHA\`";
+              echo "- main tip:    \`$MAIN_SHA\`";
+              echo "";
+              echo "### Commits being promoted";
+              echo '```';
+              echo "$commits";
+              echo '```';
+            } > "$body_file"
+            url=$(gh pr create \
+              --repo "$OWNER/$REPO" \
+              --base main \
+              --head working \
+              --title "chore: promote working → main" \
+              --body-file "$body_file")
+            n=$(basename "$url")
+            echo "Opened PR #$n"
+          fi
+          echo "pr_number=$n"  >> "$GITHUB_OUTPUT"
+          echo "pr_url=$url"   >> "$GITHUB_OUTPUT"
+          echo "### Promote PR: [#$n]($url)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Wait for check-source on promote PR
+        if: steps.blockers.outputs.blocked == 'false' && steps.skip.outputs.skip == 'false' && steps.cmp.outputs.need_promote == 'true'
+        env:
+          PR_NUMBER: ${{ steps.open_pr.outputs.pr_number }}
+          TIMEOUT_SECONDS: '1200'  # 20 min
+        run: |
+          set -euo pipefail
+          # Get the PR head SHA, then poll its check-runs for "check-source".
+          head_sha=$(gh api "repos/$OWNER/$REPO/pulls/$PR_NUMBER" --jq '.head.sha')
+          echo "PR #$PR_NUMBER head: $head_sha"
+          deadline=$(( $(date +%s) + TIMEOUT_SECONDS ))
+          while :; do
+            run=$(gh api "repos/$OWNER/$REPO/commits/$head_sha/check-runs?check_name=check-source" \
+              --jq '.check_runs[0] | {status, conclusion}')
+            status=$(echo "$run" | jq -r '.status // empty')
+            conclusion=$(echo "$run" | jq -r '.conclusion // empty')
+            echo "check-source: status=$status conclusion=$conclusion"
+            if [ "$status" = "completed" ]; then
+              case "$conclusion" in
+                success|neutral|skipped)
+                  echo "### check-source: PASS ($conclusion)" >> "$GITHUB_STEP_SUMMARY"
+                  exit 0
+                  ;;
+                *)
+                  echo "::error::check-source completed with conclusion=$conclusion"
+                  exit 1
+                  ;;
+              esac
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::Timed out waiting for check-source after ${TIMEOUT_SECONDS}s"
+              exit 1
+            fi
+            sleep 20
+          done
+
+      - name: Merge promote PR
+        id: merge_pr
+        if: steps.blockers.outputs.blocked == 'false' && steps.skip.outputs.skip == 'false' && steps.cmp.outputs.need_promote == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          PR_NUMBER: ${{ steps.open_pr.outputs.pr_number }}
+        run: |
+          set -euo pipefail
+          # Use --merge (true merge commit) per locked decision: preserve
+          # commit history. This matches the existing manual flow (see
+          # recent PR #1251 "release: catch main up").
+          gh pr merge "$PR_NUMBER" --repo "$OWNER/$REPO" --merge
+          new_main=$(gh api "repos/$OWNER/$REPO/git/refs/heads/main" --jq '.object.sha')
+          echo "new_main=$new_main" >> "$GITHUB_OUTPUT"
+          echo "### Merged: main is now \`$new_main\`" >> "$GITHUB_STEP_SUMMARY"
+
+      # ---------------------------------------------------------------
+      # Re-check CI on the new main tip (the merge commit itself has no
+      # checks, so walkback applies the same way).
+      # ---------------------------------------------------------------
+      - name: Wait + re-check CI on new main
+        if: steps.blockers.outputs.blocked == 'false' && steps.skip.outputs.skip == 'false' && steps.cmp.outputs.need_promote == 'true'
+        env:
+          NEW_MAIN: ${{ steps.merge_pr.outputs.new_main }}
+          TIMEOUT_SECONDS: '1800'  # 30 min
+        run: |
+          set -euo pipefail
+          deadline=$(( $(date +%s) + TIMEOUT_SECONDS ))
+          while :; do
+            # Find PR for this merge commit.
+            pr_head=$(gh api "repos/$OWNER/$REPO/commits/$NEW_MAIN/pulls" --jq '.[0].head.sha // empty')
+            if [ -z "$pr_head" ]; then
+              echo "PR association not yet indexed; waiting..."
+            else
+              # Pull all check-runs; require all completed and all in {success,neutral,skipped}.
+              runs=$(gh api --paginate "repos/$OWNER/$REPO/commits/$pr_head/check-runs" --jq '.check_runs[] | {name, status, conclusion}')
+              if [ -z "$runs" ]; then
+                echo "No check-runs yet on $pr_head; waiting..."
+              else
+                pending=$(echo "$runs" | jq -s '[.[] | select(.status != "completed")] | length')
+                bad=$(    echo "$runs" | jq -s '[.[] | select(.status == "completed") | select(.conclusion as $c | ["success","neutral","skipped"] | index($c) | not)] | length')
+                if [ "$bad" -gt 0 ]; then
+                  echo "::error::main CI has $bad failed check(s) on $pr_head"
+                  echo "$runs" | jq -s '.[] | select(.conclusion as $c | ["success","neutral","skipped"] | index($c) | not)'
+                  exit 1
+                fi
+                if [ "$pending" -eq 0 ]; then
+                  echo "### main CI: all checks green on \`$pr_head\`" >> "$GITHUB_STEP_SUMMARY"
+                  exit 0
+                fi
+                echo "$pending check(s) still pending; waiting..."
+              fi
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::Timed out waiting for main CI after ${TIMEOUT_SECONDS}s"
+              exit 1
+            fi
+            sleep 30
+          done
+
+      # ---------------------------------------------------------------
+      # Release: tag v<package.json.version> on main if missing
+      # ---------------------------------------------------------------
+      - name: Tag release if package.json version is new
+        if: steps.blockers.outputs.blocked == 'false' && steps.skip.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # Sync local main to remote.
+          git fetch origin main --tags --quiet
+          main_sha=$(gh api "repos/$OWNER/$REPO/git/refs/heads/main" --jq '.object.sha')
+          version=$(git show "$main_sha:package.json" | jq -r '.version')
+          tag="v$version"
+          echo "main: $main_sha  package.json.version: $version  tag: $tag"
+
+          if gh api "repos/$OWNER/$REPO/git/ref/tags/$tag" >/dev/null 2>&1; then
+            {
+              echo "### Release: nothing to release";
+              echo "Tag \`$tag\` already exists. Bump \`package.json\` on \`working\` to cut a new release.";
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # Create an annotated tag object via API on the main SHA.
+          tag_message=$(printf 'Release %s\n\nPromoted by %s\n' "$tag" "$RUN_URL")
+          tag_obj=$(gh api -X POST "repos/$OWNER/$REPO/git/tags" \
+            -f tag="$tag" \
+            -f message="$tag_message" \
+            -f object="$main_sha" \
+            -f type=commit \
+            --jq '.sha')
+          gh api -X POST "repos/$OWNER/$REPO/git/refs" \
+            -f ref="refs/tags/$tag" \
+            -f sha="$tag_obj" >/dev/null
+          {
+            echo "### Release: tagged \`$tag\` on \`$main_sha\`";
+            echo "release.yml will run next.";
+          } >> "$GITHUB_STEP_SUMMARY"

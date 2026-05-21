@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { useStore } from '../src/stores/store';
+import { _resetPendingManualRenamesForTests } from '../src/stores/lib/pendingManualRenames';
 import type { Session } from '../src/types';
 
 // Covers the three outcomes of `renameSession` SDK writeback wired in PR2:
@@ -50,6 +51,7 @@ describe('store.renameSession (SDK writeback)', () => {
   beforeEach(() => {
     // Wipe sessions from prior cases so id collisions can't pollute.
     useStore.setState({ sessions: [] });
+    _resetPendingManualRenamesForTests();
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
   });
@@ -59,6 +61,7 @@ describe('store.renameSession (SDK writeback)', () => {
     warnSpy.mockRestore();
     errorSpy.mockRestore();
     useStore.setState({ sessions: [] });
+    _resetPendingManualRenamesForTests();
   });
 
   it('ok: local name updated, no enqueue', async () => {
@@ -93,7 +96,7 @@ describe('store.renameSession (SDK writeback)', () => {
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
-  it('sdk_threw: local name updated, no enqueue, error logged', async () => {
+  it('sdk_threw: local name updated, enqueuePending retried, error logged', async () => {
     const { enqueuePending } = installBridge(async () => ({
       ok: false,
       reason: 'sdk_threw',
@@ -105,10 +108,18 @@ describe('store.renameSession (SDK writeback)', () => {
 
     const after = useStore.getState().sessions.find((s) => s.id === 'sid-threw');
     expect(after?.name).toBe('attempted');
-    expect(enqueuePending).not.toHaveBeenCalled();
-    // sdk_threw escalates to console.error (not warn) so dogfood actually
-    // sees writeback regressions instead of silently shipping a UI-vs-JSONL
-    // split-brain (eval #647 root cause).
+    // sdk_threw now enqueues a pending rename so the flusher can retry
+    // the JSONL writeback — otherwise the renderer name and JSONL summary
+    // stay split-brained and the watcher will overwrite the user's choice
+    // on the next tick (eval #647 root cause).
+    expect(enqueuePending).toHaveBeenCalledTimes(1);
+    expect(enqueuePending).toHaveBeenCalledWith(
+      'sid-threw',
+      'attempted',
+      '/tmp/proj-threw'
+    );
+    // sdk_threw still escalates to console.error so dogfood sees writeback
+    // regressions instead of silently shipping a UI-vs-JSONL split-brain.
     expect(warnSpy).not.toHaveBeenCalled();
     expect(errorSpy).toHaveBeenCalledTimes(1);
     expect(String(errorSpy.mock.calls[0][0])).toContain('sid-threw');

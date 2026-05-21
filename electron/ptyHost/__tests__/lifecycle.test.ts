@@ -203,21 +203,24 @@ describe('lifecycle.attach and detach', () => {
     expect(L.attach(new Map() as any, 'ghost')).toBeNull();
   });
 
-  it('attach returns snapshot/cols/rows/pid pulled from the entry', () => {
+  it('attach returns cols/rows/pid pulled from the entry (no snapshot — #888 follow-up)', () => {
     const sessions = new Map<string, FakeEntry>();
+    const serializeSpy = vi.fn(() => 'painted');
     sessions.set('s', makeFakeEntry({
       cols: 99,
       rows: 33,
       pty: { pid: 55, write: vi.fn(), resize: vi.fn(), kill: vi.fn() },
-      serialize: { serialize: () => 'painted' },
+      serialize: { serialize: serializeSpy },
     }));
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(L.attach(sessions as any, 's')).toEqual({
-      snapshot: 'painted',
       cols: 99,
       rows: 33,
       pid: 55,
     });
+    // #888 follow-up: attach MUST NOT serialize the headless buffer —
+    // the renderer drives the paint via getBufferSnapshot (PR-B).
+    expect(serializeSpy).not.toHaveBeenCalled();
   });
 
   it('detach is a no-op at the lifecycle layer (per-webContents cleanup is IPC concern)', () => {

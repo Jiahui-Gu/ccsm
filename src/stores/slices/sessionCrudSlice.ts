@@ -17,6 +17,10 @@
 import type { Group, Session } from '../../types';
 import { hydrateDrafts as _unused, deleteDrafts, snapshotDraft, restoreDraft } from '../drafts';
 import { resolvePreferredGroup } from '../lib/preferredGroupResolver';
+import {
+  setPendingManualRename,
+  clearPendingManualRename,
+} from '../lib/pendingManualRenames';
 import { defaultGroupName } from './groupsSlice';
 import type {
   CreateSessionOptions,
@@ -27,6 +31,28 @@ import type {
 } from './types';
 
 void _unused;
+
+// Shared wrapper for the three writeback-failure branches in `renameSession`
+// (no_jsonl, sdk_threw, ipc-catch). All three need to push the manual rename
+// into the main-process pending queue so the flusher retries later — and all
+// three need to swallow + log any IPC error so a failed enqueue doesn't crash
+// the renderer mid-rename. Inlined helper (not its own module) because it
+// only has one caller and reads `bridge` from the local closure shape.
+type RenameBridge = {
+  enqueuePending: (sid: string, title: string, dir?: string) => Promise<void>;
+};
+async function tryEnqueuePending(
+  bridge: RenameBridge,
+  id: string,
+  name: string,
+  dir: string | undefined
+): Promise<void> {
+  try {
+    await bridge.enqueuePending(id, name, dir);
+  } catch (enqErr) {
+    console.error(`[rename:writeback-failed] enqueue sid=${id}`, enqErr);
+  }
+}
 
 function nextId(prefix: string): string {
   // Prefer crypto.randomUUID — collision-resistant across rapid in-tick
@@ -116,6 +142,8 @@ export type SessionCrudSlice = Pick<
   | 'moveSession'
   | 'changeCwd'
   | 'setSessionModel'
+  | 'archiveSession'
+  | 'unarchiveSession'
 >;
 
 export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice {
@@ -204,6 +232,12 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
 
     renameSession: async (id, name) => {
       const session = get().sessions.find((x) => x.id === id);
+      // Mark this sid as "manual rename pending SDK confirmation" before
+      // the local mutation. _applyExternalTitle reads this map to drop
+      // stale auto-summary patches that would otherwise overwrite the
+      // user's chosen name between the JSONL rewrite and the next
+      // titleEmitter tick.
+      setPendingManualRename(id, name);
       set((s) => ({
         sessions: s.sessions.map((x) => (x.id === id ? { ...x, name } : x)),
       }));
@@ -218,21 +252,32 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
               };
             }).ccsmSessionTitles
           : undefined;
-      if (!bridge) return;
+      if (!bridge) {
+        // No bridge (jsdom/tests) — clear the guard so the slice doesn't
+        // permanently swallow future external titles for this sid.
+        clearPendingManualRename(id);
+        return;
+      }
 
       const dir = session?.cwd;
       try {
         const result = await bridge.rename(id, name, dir);
         if (result.ok) return;
         if (result.reason === 'no_jsonl') {
-          await bridge.enqueuePending(id, name, dir);
+          await tryEnqueuePending(bridge, id, name, dir);
           return;
         }
+        // sdk_threw: the JSONL rewrite failed. Queue a pending rename so
+        // the flusher retries when the JSONL is next observed; without
+        // this the renderer name and the JSONL summary stay split-brained
+        // and the watcher will eventually clobber the user's choice.
         console.error(
           `[rename:writeback-failed] sid=${id} message=${result.message ?? '(no message)'}`
         );
+        await tryEnqueuePending(bridge, id, name, dir);
       } catch (err) {
         console.error(`[rename:writeback-failed] ipc sid=${id}`, err);
+        await tryEnqueuePending(bridge, id, name, dir);
       }
     },
 
@@ -335,6 +380,7 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
         return patch;
       });
       deleteDrafts([id]);
+      clearPendingManualRename(id);
       try {
         void window.ccsmPty?.kill(id).catch(() => {});
       } catch {
@@ -415,6 +461,108 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
       set((s) => ({
         sessions: s.sessions.map((x) => (x.id === sessionId ? { ...x, model } : x)),
       }));
+    },
+
+    archiveSession: (sessionId) => {
+      // Single-session archive: find-or-create an archive container
+      // keyed by the session's current source group, then move the
+      // session into the container and stamp `archivedAt`. PTY keeps
+      // running. The source group is left intact even if it empties —
+      // archive is not delete; the empty group is still a valid drop
+      // target for new sessions.
+      const cur = get();
+      const session = cur.sessions.find((x) => x.id === sessionId);
+      if (!session) return;
+      // Already archived (either in a flipped-archive group or a
+      // container) — no-op.
+      const currentGroup = cur.groups.find((g) => g.id === session.groupId);
+      if (!currentGroup || currentGroup.kind !== 'normal') return;
+      const sourceGroupId = session.groupId;
+      const existing = cur.groups.find(
+        (g) => g.kind === 'archive' && g.sourceGroupId === sourceGroupId
+      );
+      const containerId = existing ? existing.id : nextId('g');
+      const now = Date.now();
+      set((s) => {
+        const groups = existing
+          ? s.groups
+          : [
+              ...s.groups,
+              {
+                id: containerId,
+                name: currentGroup.name,
+                nameKey: currentGroup.nameKey,
+                collapsed: false,
+                kind: 'archive' as const,
+                sourceGroupId,
+              },
+            ];
+        // Direct `groupId` mutation here (instead of routing through
+        // `moveSession`) is intentional: `moveSession` rejects any
+        // non-`normal` target by design (it's the DnD move path for
+        // user-driven reordering, which must never land in archived
+        // territory). Archive flows are the one legitimate way to
+        // move a session into an archive-kind group.
+        const sessions = s.sessions.map((x) =>
+          x.id === sessionId
+            ? { ...x, groupId: containerId, archivedAt: now }
+            : x
+        );
+        // If the archived session was active, hand activeId off to the
+        // next normal-group session (mirrors deleteSession's fallback
+        // behavior). Otherwise keep current activeId.
+        let nextActive = s.activeId;
+        if (s.activeId === sessionId) {
+          const fallback = sessions.find(
+            (x) =>
+              x.id !== sessionId &&
+              groups.find((g) => g.id === x.groupId)?.kind === 'normal'
+          );
+          nextActive = fallback?.id ?? '';
+        }
+        return { groups, sessions, activeId: nextActive };
+      });
+    },
+
+    unarchiveSession: (sessionId) => {
+      // Clear `archivedAt`, move back to original source group if it
+      // still exists and is normal — otherwise fall back to g-default.
+      // If the archive container empties after the move, delete it.
+      // If the user has no active session (e.g. they just archived the
+      // active one and then immediately unarchived it), restore activeId
+      // to the unarchived session — completing the round-trip without
+      // an orphaned empty-active-state.
+      const store = get();
+      const session = store.sessions.find((x) => x.id === sessionId);
+      if (!session) return;
+      const containerId = session.groupId;
+      const container = store.groups.find((g) => g.id === containerId);
+      // Only act on sessions that live inside an archive container —
+      // sessions inside flipped-kind original groups are unarchived by
+      // unarchiving the whole group.
+      if (!container || container.kind !== 'archive' || !container.sourceGroupId) {
+        return;
+      }
+      const origin = store.groups.find(
+        (g) => g.id === container.sourceGroupId && g.kind === 'normal'
+      );
+      const targetGroupId = origin ? origin.id : 'g-default';
+      set((s) => {
+        const sessions = s.sessions.map((x) => {
+          if (x.id !== sessionId) return x;
+          const { archivedAt: _drop, ...rest } = x;
+          void _drop;
+          return { ...rest, groupId: targetGroupId };
+        });
+        const remainingInContainer = sessions.some(
+          (x) => x.groupId === containerId
+        );
+        const groups = remainingInContainer
+          ? s.groups
+          : s.groups.filter((g) => g.id !== containerId);
+        const nextActive = s.activeId === '' ? sessionId : s.activeId;
+        return { groups, sessions, activeId: nextActive };
+      });
     },
   };
 }

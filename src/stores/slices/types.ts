@@ -104,6 +104,8 @@ export type Actions = {
   ) => void;
   changeCwd: (cwd: string) => void;
   setSessionModel: (sessionId: string, model: ModelId) => void;
+  archiveSession: (sessionId: string) => void;
+  unarchiveSession: (sessionId: string) => void;
 
   // appearance
   setTheme: (theme: Theme) => void;

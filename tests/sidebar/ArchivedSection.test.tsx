@@ -1,5 +1,5 @@
 // RTL coverage for <ArchivedSection /> — the bottom-of-sidebar block that
-// folds away the user's archived groups. The component owns its own
+// folds away the user's archived. The component owns its own
 // open/closed state (folded by default per #553), so the toggle is a pure
 // React-state interaction we can drive entirely through fireEvent.
 //
@@ -52,11 +52,11 @@ describe('<ArchivedSection />', () => {
 
   it('renders header with translated label and the archived group count', () => {
     const { getByText, getByRole } = renderArchived({ archivedGroups: [g, g2] });
-    expect(getByText(/archived groups/i)).toBeInTheDocument();
+    expect(getByText(/archived/i)).toBeInTheDocument();
     // The numeric count appears next to the label.
     expect(getByText('2')).toBeInTheDocument();
     // Folded by default per #553.
-    expect(getByRole('button', { name: /archived groups/i }).getAttribute('aria-expanded')).toBe('false');
+    expect(getByRole('button', { name: /archived/i }).getAttribute('aria-expanded')).toBe('false');
   });
 
   it('keeps the archived group rows hidden while folded', () => {
@@ -94,13 +94,13 @@ describe('<ArchivedSection />', () => {
       sessions: sess,
     });
 
-    const toggle = getByRole('button', { name: /archived groups/i });
+    const toggle = getByRole('button', { name: /archived/i });
     fireEvent.click(toggle);
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
 
     // The list <nav> is mounted now.
     expect(container.querySelector('nav')).not.toBeNull();
-    // Both archived groups render as GroupRows.
+    // Both archived render as GroupRows.
     expect(getByText('Archived A')).toBeInTheDocument();
     expect(getByText('Archived B')).toBeInTheDocument();
     // The session belonging to a1 reaches it; the unrelated one is filtered out.
@@ -110,7 +110,7 @@ describe('<ArchivedSection />', () => {
 
   it('toggles back to folded on a second click', () => {
     const { getByRole, container } = renderArchived({ archivedGroups: [g] });
-    const toggle = getByRole('button', { name: /archived groups/i });
+    const toggle = getByRole('button', { name: /archived/i });
     fireEvent.click(toggle);
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     expect(container.querySelector('nav')).not.toBeNull();
@@ -124,11 +124,11 @@ describe('<ArchivedSection />', () => {
     expect(getByTestId('sidebar-divider-archived')).toBeInTheDocument();
   });
 
-  it('shows zero count and stays foldable when the user has no archived groups', () => {
+  it('shows zero count and stays foldable when the user has no archived', () => {
     const { getByText, getByRole } = renderArchived({ archivedGroups: [] });
     expect(getByText('0')).toBeInTheDocument();
     // Toggle still works; expanded state simply produces an empty nav.
-    const toggle = getByRole('button', { name: /archived groups/i });
+    const toggle = getByRole('button', { name: /archived/i });
     fireEvent.click(toggle);
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
   });

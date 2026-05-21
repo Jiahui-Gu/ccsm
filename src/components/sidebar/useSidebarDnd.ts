@@ -48,6 +48,13 @@ export function useSidebarDnd({ groups, normalGroups, sessions, onMoveSession }:
     if (!over || active.id === over.id) return;
     const activeId = String(active.id);
     const overId = String(over.id);
+    // v1: archived sessions are non-draggable (useSortable.disabled), but
+    // defend here in case a future change re-enables the gesture without
+    // adding a destination. Refuse to move an archived row anywhere via
+    // DnD — the only legal path out of the Archived section is the
+    // context-menu unarchive action.
+    const activeSession = sessions.find((s) => s.id === activeId);
+    if (activeSession?.archivedAt != null) return;
     const headerGroupId = parseHeaderDroppable(overId);
     if (headerGroupId) {
       // J14: reject drops onto archived (or otherwise non-normal) group

@@ -92,6 +92,23 @@ async function caseDnd({ win, log }) {
     'li[data-session-id="s1"]',
     '[data-group-header-id="g2"]'
   );
+  // Wait for the React commit after onDragEnd → moveSession → store update →
+  // sidebar re-render to actually land s1's <li> inside g2's <ul>. A bare
+  // snapshot here races the commit on slower runners (ubuntu-latest under
+  // xvfb) — pointerup returned, but the DOM hasn't been re-keyed yet.
+  await win.waitForFunction(
+    () => {
+      const inG1 = !!document
+        .querySelector('ul[data-group-id="g1"]')
+        ?.querySelector('li[data-session-id="s1"]');
+      const inG2 = !!document
+        .querySelector('ul[data-group-id="g2"]')
+        ?.querySelector('li[data-session-id="s1"]');
+      return !inG1 && inG2;
+    },
+    null,
+    { timeout: 2000 }
+  ).catch(() => {});
   if (await groupContains('g1', 's1')) throw new Error('s1 still in g1 after drag to g2 header');
   if (!(await groupContains('g2', 's1'))) throw new Error('s1 did not land in g2 after cross-group drag');
 

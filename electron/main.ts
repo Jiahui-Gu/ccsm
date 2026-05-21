@@ -142,6 +142,7 @@ function createWindow(): BrowserWindow {
     setIsQuitting: (v) => {
       isQuitting = v;
     },
+    ipcMain,
   });
 }
 

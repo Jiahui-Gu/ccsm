@@ -44,6 +44,12 @@ export interface Session {
   // (returns `errorCode: 'CWD_MISSING'` so InputBar can prompt the user
   // to repick via the StatusBar cwd chip).
   cwdMissing?: boolean;
+  // Set (epoch ms) when an individual session is archived via
+  // `archiveSession`. Cleared by `unarchiveSession`. Absent for sessions
+  // that live in a fully-archived (flipped-kind) group — those are
+  // identified by `Group.kind === 'archive'` on the parent group, not
+  // by a per-session flag. See `src/stores/slices/sessionCrudSlice.ts`.
+  archivedAt?: number;
 }
 
 export interface Group {
@@ -60,6 +66,15 @@ export interface Group {
    * string at creation time as a fallback for any non-i18n surface.
    */
   nameKey?: string;
+  /**
+   * Only set on **archive containers** — auto-created `kind: 'archive'`
+   * groups that hold sessions archived individually from a normal source
+   * group. Stores the source group's id so future single-session archives
+   * can find the right container (one container per source group), and so
+   * `unarchiveSession` knows where to send the session back to. NOT set
+   * on groups that became archives by flipping `kind` (full-group archive).
+   */
+  sourceGroupId?: string;
 }
 
 export interface QuestionOption {

@@ -169,12 +169,67 @@ export function createGroupsSlice(set: SetFn, get: GetFn): GroupsSlice {
     },
 
     archiveGroup: (id) => {
-      set((s) => ({
-        groups: s.groups.map((g) => (g.id === id ? { ...g, kind: 'archive' } : g)),
-      }));
+      // If there's an existing archive *container* (auto-created from
+      // individually-archived sessions) whose `sourceGroupId === id`,
+      // merge its sessions into THIS group first, then delete the
+      // container, then flip kind. This keeps a single archived entry
+      // for the source group regardless of whether the user archived
+      // sessions one-by-one before archiving the whole group.
+      set((s) => {
+        const target = s.groups.find((g) => g.id === id);
+        if (!target || target.kind !== 'normal') return s;
+        const container = s.groups.find(
+          (g) => g.kind === 'archive' && g.sourceGroupId === id
+        );
+        let nextGroups = s.groups;
+        let nextSessions = s.sessions;
+        if (container) {
+          // Clear `archivedAt` on the merged sessions. The invariant
+          // `session.archivedAt set ⇔ session lives in a container` only
+          // holds for the container path — after merging into a flipped-
+          // archive original, the per-session stamp must come off or a
+          // future `unarchiveGroup` (flipped path, which only flips kind)
+          // leaves stranded `archivedAt` on sessions that now sit in a
+          // normal group, mislabeling them in SessionRow.
+          nextSessions = s.sessions.map((x) => {
+            if (x.groupId !== container.id) return x;
+            const { archivedAt: _drop, ...rest } = x;
+            void _drop;
+            return { ...rest, groupId: id };
+          });
+          nextGroups = s.groups.filter((g) => g.id !== container.id);
+        }
+        nextGroups = nextGroups.map((g) =>
+          g.id === id ? { ...g, kind: 'archive' as const } : g
+        );
+        return { groups: nextGroups, sessions: nextSessions };
+      });
     },
 
     unarchiveGroup: (id) => {
+      // Two flavors of archive-kind groups:
+      //   1. Flipped originals (no `sourceGroupId`): just flip kind back.
+      //   2. Archive containers (`sourceGroupId` set): unarchive each
+      //      member session individually (clears `archivedAt`, moves
+      //      back to the source group or `g-default`), then delete the
+      //      now-empty container. We do NOT flip the container's kind
+      //      because the container itself should not survive — its only
+      //      purpose was to hold archived sessions.
+      const store = get();
+      const target = store.groups.find((g) => g.id === id);
+      if (!target || target.kind !== 'archive') return;
+      if (target.sourceGroupId) {
+        const memberIds = store.sessions
+          .filter((x) => x.groupId === id)
+          .map((x) => x.id);
+        for (const sid of memberIds) {
+          store.unarchiveSession(sid);
+        }
+        // unarchiveSession already deletes the container when it empties,
+        // but defend in case the container started empty.
+        set((s) => ({ groups: s.groups.filter((g) => g.id !== id) }));
+        return;
+      }
       set((s) => ({
         groups: s.groups.map((g) => (g.id === id ? { ...g, kind: 'normal' } : g)),
       }));
