@@ -9,15 +9,31 @@
 // ...args)` directly.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 interface RegistrarBus {
   resolveClaude: ReturnType<typeof vi.fn>;
   watcherListeners: Map<string, Array<(evt: unknown) => void>>;
+  // Task #42 — per-test overrides for the clipboard image stub. We keep
+  // these in the bus so vi.mock (hoisted) can reference them lazily
+  // without dragging state across tests.
+  clipboardReadImage: () => { isEmpty: () => boolean; toPNG: () => Buffer };
+  userDataDir: string;
 }
 function bus(): RegistrarBus {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (globalThis as any).__irBus as RegistrarBus;
 }
+
+// Task #42 — registrar now imports `app` and `clipboard` from electron at
+// module load. Provide a thin stub; per-test behaviour is steered via the
+// bus accessors so the mock factory itself stays static.
+vi.mock('electron', () => ({
+  app: { getPath: (_k: string) => bus().userDataDir },
+  clipboard: { readImage: () => bus().clipboardReadImage() },
+}));
 
 vi.mock('../claudeResolver', () => ({
   resolveClaude: (opts?: unknown) => bus().resolveClaude(opts),
@@ -99,6 +115,10 @@ beforeEach(() => {
   (globalThis as any).__irBus = {
     resolveClaude: vi.fn(),
     watcherListeners: new Map<string, Array<(evt: unknown) => void>>(),
+    // Default to an empty clipboard so the channel returns null cleanly
+    // for tests that don't touch the image branch.
+    clipboardReadImage: () => ({ isEmpty: () => true, toPNG: () => Buffer.alloc(0) }),
+    userDataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-ipcregistrar-')),
   } satisfies RegistrarBus;
 });
 
@@ -111,7 +131,7 @@ afterEach(() => {
 // ─── handler registration shape ───────────────────────────────────────────
 
 describe('registerPtyIpc handler registration', () => {
-  it('registers all nine pty:* channels (8 legacy + getBufferSnapshot)', () => {
+  it('registers all ten pty:* channels (8 legacy + getBufferSnapshot + saveClipboardImage)', () => {
     const ipc = makeFakeIpc();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, makeDeps());
@@ -126,6 +146,7 @@ describe('registerPtyIpc handler registration', () => {
         'pty:kill',
         'pty:list',
         'pty:resize',
+        'pty:saveClipboardImage',
         'pty:spawn',
       ].sort(),
     );
@@ -472,6 +493,58 @@ describe('pty:checkClaudeAvailable', () => {
     for (const call of bus().resolveClaude.mock.calls) {
       expect(call[0]).toEqual({ force: false });
     }
+  });
+});
+
+// ─── pty:saveClipboardImage (Task #42) ────────────────────────────────────
+
+describe('pty:saveClipboardImage', () => {
+  it('writes PNG buffer under <userData>/clipboard-images/ and returns the absolute path', async () => {
+    const ipc = makeFakeIpc();
+    const pngBuf = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    bus().clipboardReadImage = () => ({ isEmpty: () => false, toPNG: () => pngBuf });
+    registerPtyIpc(ipc as unknown as Electron.IpcMain, makeDeps());
+    const out = (await ipc.handlers.get('pty:saveClipboardImage')!({})) as string;
+    expect(typeof out).toBe('string');
+    expect(path.isAbsolute(out)).toBe(true);
+    expect(out.startsWith(path.join(bus().userDataDir, 'clipboard-images'))).toBe(true);
+    expect(path.basename(out)).toMatch(/^\d{8}-\d{6}(-\d{3})?\.png$/);
+    expect(fs.readFileSync(out).equals(pngBuf)).toBe(true);
+  });
+
+  it('returns null and writes nothing when clipboard image is empty', async () => {
+    const ipc = makeFakeIpc();
+    // Default bus stub returns isEmpty=true.
+    registerPtyIpc(ipc as unknown as Electron.IpcMain, makeDeps());
+    const out = await ipc.handlers.get('pty:saveClipboardImage')!({});
+    expect(out).toBeNull();
+    const dir = path.join(bus().userDataDir, 'clipboard-images');
+    // mkdir not even attempted on the empty path; dir should not exist.
+    expect(fs.existsSync(dir)).toBe(false);
+  });
+
+  it('appends -001 suffix when the base timestamp file already exists (collision)', async () => {
+    const ipc = makeFakeIpc();
+    const pngBuf = Buffer.from([1, 2, 3, 4]);
+    bus().clipboardReadImage = () => ({ isEmpty: () => false, toPNG: () => pngBuf });
+
+    // Freeze Date so first and second invocations produce the same base.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 4, 22, 10, 11, 12));
+
+    registerPtyIpc(ipc as unknown as Electron.IpcMain, makeDeps());
+
+    const first = (await ipc.handlers.get('pty:saveClipboardImage')!({})) as string;
+    expect(path.basename(first)).toBe('20260522-101112.png');
+
+    const second = (await ipc.handlers.get('pty:saveClipboardImage')!({})) as string;
+    expect(path.basename(second)).toBe('20260522-101112-001.png');
+
+    // Both files must exist with the expected content.
+    expect(fs.readFileSync(first).equals(pngBuf)).toBe(true);
+    expect(fs.readFileSync(second).equals(pngBuf)).toBe(true);
+
+    vi.useRealTimers();
   });
 });
 

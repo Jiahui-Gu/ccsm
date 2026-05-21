@@ -64,6 +64,11 @@ const ccsmPty = {
     readText: (): string => clipboard.readText(),
     writeText: (text: string): void => clipboard.writeText(text),
   },
+  // Task #42 — main-process IPC because clipboard.readImage() PNG encoding
+  // and the userData write both need the main side; renderer also doesn't
+  // get app.getPath('userData').
+  saveClipboardImage: (): Promise<string | null> =>
+    ipcRenderer.invoke('pty:saveClipboardImage'),
   checkClaudeAvailable: (opts?: { force?: boolean }): Promise<CheckClaudeAvailableResult> =>
     ipcRenderer.invoke('pty:checkClaudeAvailable', opts ?? {}),
 };
