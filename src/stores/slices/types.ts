@@ -17,6 +17,14 @@ export type Theme = 'system' | 'light' | 'dark';
 export type FontSize = 'sm' | 'md' | 'lg';
 export type FontSizePx = 12 | 13 | 14 | 15 | 16;
 
+/** Terminal scrollback line cap. Single user-facing knob for both the
+ *  visible xterm (next-launch effect) and the headless authoritative buffer
+ *  in main (next-spawn effect). Range enforced by `sanitizeScrollbackLines`
+ *  (mirrors the main-side `parseScrollbackLines`). */
+export const SCROLLBACK_LINES_DEFAULT = 1500;
+export const SCROLLBACK_LINES_MIN = 100;
+export const SCROLLBACK_LINES_MAX = 50000;
+
 export type EndpointKind =
   | 'anthropic'
   | 'openai-compat'
@@ -61,6 +69,7 @@ export type State = {
   theme: Theme;
   fontSize: FontSize;
   fontSizePx: FontSizePx;
+  scrollbackLines: number;
   flashStates: Record<string, boolean>;
   hydrated: boolean;
   installerCorrupt: boolean;
@@ -111,6 +120,7 @@ export type Actions = {
   setTheme: (theme: Theme) => void;
   setFontSize: (size: FontSize) => void;
   setFontSizePx: (px: FontSizePx) => void;
+  setScrollbackLines: (n: number) => void;
   setSidebarWidth: (px: number) => void;
   resetSidebarWidth: () => void;
 

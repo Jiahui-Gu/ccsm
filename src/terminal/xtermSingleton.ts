@@ -4,6 +4,8 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { ClipboardAddon } from '@xterm/addon-clipboard';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { CanvasAddon } from '@xterm/addon-canvas';
+import { useStore } from '../stores/store';
+import { SCROLLBACK_LINES_DEFAULT } from '../stores/slices/types';
 
 // Module-scope singleton state for the renderer's xterm view.
 //
@@ -111,12 +113,22 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
     return term;
   }
 
+  // The scrollback cap is read ONCE at construction. Changing the user
+  // setting after the singleton exists does not retroactively resize the
+  // visible buffer (xterm.js doesn't expose a mutable scrollback setter),
+  // so the SettingsDialog helper text says "applies on next launch". Read
+  // synchronously from the zustand store, which `hydrateStore()` populates
+  // from db:load before TerminalPane mounts (App.tsx gates on `hydrated`).
+  // Falls back to the default constant if the store somehow isn't ready
+  // yet (e.g. test mounts that bypass hydrate).
+  const scrollback =
+    useStore.getState().scrollbackLines ?? SCROLLBACK_LINES_DEFAULT;
   term = new Terminal({
     fontFamily: 'Cascadia Mono, Consolas, "Courier New", monospace',
     fontSize: 13,
     cursorBlink: true,
     allowProposedApi: true,
-    scrollback: 5000,
+    scrollback,
     theme: { background: '#000000' },
   });
   fit = new FitAddon();

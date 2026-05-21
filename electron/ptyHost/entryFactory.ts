@@ -33,14 +33,21 @@ import {
 } from './jsonlResolver';
 import { resolveSpawnCwd } from './cwdResolver';
 import { emitPtyData } from './dataFanout';
+import { loadScrollbackLines } from '../prefs/scrollback';
 
 export const DEFAULT_COLS = 120;
 export const DEFAULT_ROWS = 30;
-// L4 PR-A (#861): scrollback bumped from 5000 -> 10000 lines so the headless
-// terminal becomes a session-level authoritative buffer suitable for serving
-// re-attach replays, not just the live screen. 10000 was 80/20-decided by the
-// owner; bump only here and in any future replay-budget calculation.
-export const SCROLLBACK = 10000;
+// User-facing scrollback cap defaults to 1500 lines (see
+// `electron/prefs/scrollback.ts`). The headless mirror's per-entry buffer
+// is sized at construction time from `loadScrollbackLines()`; this constant
+// is the static fallback used when the prefs read fails (e.g. db init race)
+// and is kept exported for tests that bypass the prefs path.
+//
+// History: PR #861 bumped to 10000 to back re-attach replay; user-driven
+// research showed 10000 was unnecessarily generous for typical usage and
+// caused multi-megabyte snapshot serializes on every attach. Lowered as
+// part of the user-facing scrollback knob landing in this PR.
+export const SCROLLBACK = 1500;
 
 // L4 PR-C (#863): when the visible xterm cannot keep up with PTY output the
 // headless mirror's `write(data, cb)` callback is invoked asynchronously.
@@ -248,7 +255,11 @@ export function makeEntry(
   const headless = new HeadlessTerminal({
     cols,
     rows,
-    scrollback: SCROLLBACK,
+    // Read the user-configured cap at construction time. Existing entries
+    // keep their already-sized buffer when the user changes the setting
+    // — only newly-spawned sessions pick up the new value, matching the
+    // "applies on next attach" UX contract documented in SettingsDialog.
+    scrollback: loadScrollbackLines(),
     allowProposedApi: true,
   });
   const serialize = new SerializeAddon();

@@ -60,6 +60,12 @@ vi.mock('../entryFactory', () => ({
   makeEntry: (...args: unknown[]) => bus().makeEntry(...args),
 }));
 
+// scrollback prefs transitively import `electron` (via `../db` → `app`).
+// We don't exercise scrollback caps in these lifecycle tests — stub it.
+vi.mock('../../prefs/scrollback', () => ({
+  loadScrollbackLines: () => 1500,
+}));
+
 import * as L from '../lifecycle';
 
 function makeFakeEntry(over: Partial<FakeEntry> = {}): FakeEntry {
