@@ -45,6 +45,7 @@ import { useXtermSingleton } from '../../src/terminal/useXtermSingleton';
 import {
   __resetSingletonForTests,
   getTerm,
+  pasteIntoActivePty,
   setActiveSid,
   terminalCopy,
   terminalPaste,
@@ -443,6 +444,41 @@ describe('useXtermSingleton', () => {
       await Promise.resolve();
       expect(inputSpy).toHaveBeenCalledTimes(1);
       expect(inputSpy).toHaveBeenCalledWith('sid-rc', 'pasted-text');
+    });
+
+    // N1 race fix (reviewer): `saveClipboardImage` is an async IPC hop;
+    // if the user switches sessions while it's in flight, the injected
+    // text / image-path MUST land in the session that was active at
+    // paste-intent time, NOT whichever session happens to be active
+    // when the promise resolves. `pasteIntoActivePty` snapshots
+    // `activeSid` at entry to enforce this. Drive the helper directly
+    // (rather than through `terminalPaste`) so the timing is precise.
+    it('pasteIntoActivePty binds the target sid at intent time, not at promise-resolution time', async () => {
+      // Defer the resolution of saveClipboardImage until we explicitly
+      // resolve it — gives us a clean window to flip activeSid mid-flight.
+      let resolveImage: (v: string | null) => void = () => {};
+      const pending = new Promise<string | null>((r) => { resolveImage = r; });
+      (window as unknown as { ccsmPty: { saveClipboardImage: ReturnType<typeof vi.fn> } })
+        .ccsmPty.saveClipboardImage = vi.fn().mockReturnValue(pending);
+
+      setActiveSid('sid-original');
+      const pasted = pasteIntoActivePty('typed-into-original');
+
+      // Simulate the user switching sessions while we wait on the IPC.
+      setActiveSid('sid-different');
+
+      // Resolve the IPC with no image so we exercise the text-fallback
+      // branch (the more dangerous one — image path comes from main and
+      // is obviously global, but the text fallback could plausibly look
+      // session-scoped if you squint at the old code).
+      resolveImage(null);
+      await pasted;
+
+      // MUST go to the sid that was active when paste was invoked, not
+      // the sid that's active now.
+      expect(inputSpy).toHaveBeenCalledTimes(1);
+      expect(inputSpy).toHaveBeenCalledWith('sid-original', 'typed-into-original');
+      expect(inputSpy).not.toHaveBeenCalledWith('sid-different', 'typed-into-original');
     });
 
     it('Ctrl+A invokes term.selectAll() and returns false to stop SOH translation', () => {

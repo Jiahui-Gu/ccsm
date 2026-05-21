@@ -118,17 +118,25 @@ export function setSnapshotReplay(fn: (() => Promise<void>) | null): void {
  * via `void`.
  */
 export async function pasteIntoActivePty(fallbackText: string | undefined): Promise<void> {
-  if (!activeSid) return;
+  // N1 race fix (reviewer): snapshot `activeSid` BEFORE the async IPC hop.
+  // `saveClipboardImage` round-trips to main; the user can switch sessions
+  // during that window. Without this snapshot, the saved image path (or
+  // fallback text) would land in whichever session happens to be active
+  // when the promise resolves — i.e. the wrong one. Bind the target sid
+  // at intent time so the inject always goes to the session the user was
+  // looking at when they hit paste.
+  const sid = activeSid;
+  if (!sid) return;
   try {
     const imagePath = await window.ccsmPty?.saveClipboardImage?.();
     if (imagePath) {
-      window.ccsmPty.input(activeSid, imagePath);
+      window.ccsmPty.input(sid, imagePath);
       return;
     }
   } catch {
     // best-effort — fall through to text paste on IPC failure.
   }
-  if (fallbackText) window.ccsmPty.input(activeSid, fallbackText);
+  if (fallbackText) window.ccsmPty.input(sid, fallbackText);
 }
 
 /**
