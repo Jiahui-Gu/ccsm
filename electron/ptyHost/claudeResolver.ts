@@ -41,9 +41,18 @@ import { spawn } from 'node:child_process';
 let cached: string | null | undefined; // undefined = never tried
 let inFlight: Promise<string | null> | null = null;
 
-function whereAsync(name: string): Promise<string | null> {
+// Hard cap on a single `where`/`which` invocation. A broken PATH, slow
+// shell startup, or AV interception can hang the lookup indefinitely;
+// without a timeout the whole resolveClaude promise never settles and
+// the IPC handler stays pending forever (renderer spinner stuck).
+const WHERE_TIMEOUT_MS = 5000;
+
+// Exported for the timeout unit test (asserts the rejection shape). Not
+// part of the module's public API — production callers go through
+// `resolveClaude`.
+export function whereAsync(name: string): Promise<string | null> {
   const cmd = process.platform === 'win32' ? 'where' : 'which';
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let stdout = '';
     let child: ReturnType<typeof spawn>;
     try {
@@ -52,11 +61,23 @@ function whereAsync(name: string): Promise<string | null> {
       resolve(null);
       return;
     }
+    const timer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {
+        /* ignore */
+      }
+      reject(new Error(`where_timeout: '${cmd} ${name}' did not complete in ${WHERE_TIMEOUT_MS}ms`));
+    }, WHERE_TIMEOUT_MS);
     child.stdout?.on('data', (b: Buffer) => {
       stdout += b.toString('utf8');
     });
-    child.on('error', () => resolve(null));
+    child.on('error', () => {
+      clearTimeout(timer);
+      resolve(null);
+    });
     child.on('exit', (code) => {
+      clearTimeout(timer);
       if (code !== 0) {
         resolve(null);
         return;
@@ -68,10 +89,20 @@ function whereAsync(name: string): Promise<string | null> {
 }
 
 async function doResolve(): Promise<string | null> {
-  if (process.platform === 'win32') {
-    return (await whereAsync('claude.cmd')) ?? (await whereAsync('claude'));
+  // Catch where_timeout at the boundary: collapse to null so the IPC
+  // contract stays the same (renderer surfaces ClaudeMissingGuide rather
+  // than seeing an unhandled rejection / silent fallback to undefined
+  // cwd). The warning lets diagnosis trace a hang back to a stuck
+  // `where`/`which` rather than a "claude not installed" misdiagnosis.
+  try {
+    if (process.platform === 'win32') {
+      return (await whereAsync('claude.cmd')) ?? (await whereAsync('claude'));
+    }
+    return await whereAsync('claude');
+  } catch (err) {
+    console.warn('[claudeResolver]', (err as Error).message);
+    return null;
   }
-  return whereAsync('claude');
 }
 
 export function resolveClaude({ force = false }: { force?: boolean } = {}): Promise<string | null> {
