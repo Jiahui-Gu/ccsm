@@ -142,6 +142,10 @@ export type SessionCrudSlice = Pick<
   | 'setSessionModel'
   | 'archiveSession'
   | 'unarchiveSession'
+  | 'pendingRenameId'
+  | 'pendingForkSource'
+  | 'copySession'
+  | 'consumePendingRename'
 >;
 
 export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice {
@@ -152,6 +156,8 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
     focusedGroupId: null,
     userHome: '',
     claudeSettingsDefaultModel: null,
+    pendingRenameId: null,
+    pendingForkSource: {},
 
     selectSession: (id) => {
       set((s) => ({
@@ -542,6 +548,60 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
         const nextActive = s.activeId === '' ? sessionId : s.activeId;
         return { groups, sessions, activeId: nextActive };
       });
+    },
+
+    copySession: (sourceId) => {
+      const cur = get();
+      const source = cur.sessions.find((x) => x.id === sourceId);
+      if (!source) return null;
+      const newId = newSessionId();
+      // Place the copy in the same group as the source. If the source lives
+      // in an archive container we still honor that — user can unarchive
+      // afterwards. cwd/model/groupId/agentType all sourced from the
+      // original; archivedAt is intentionally NOT carried over so a copy
+      // never inherits a stale archive timestamp.
+      const copy: Session = {
+        id: newId,
+        name: `${source.name} (copy)`,
+        state: 'idle',
+        cwd: source.cwd,
+        model: source.model,
+        groupId: source.groupId,
+        agentType: source.agentType,
+        // Inherit cwdMissing — the directory state is independent of which
+        // session points at it; if it's missing for the source it's missing
+        // for the copy too.
+        ...(source.cwdMissing ? { cwdMissing: true as const } : {}),
+      };
+      // Insert the copy directly after the source so the new row appears
+      // adjacent to its origin (matches Finder "Duplicate" behavior). The
+      // sidebar renders sessions in order; so list-position == sidebar
+      // position. activeId flips to the new id; pendingRenameId arms
+      // inline rename for the matching <SessionRow>; pendingForkSource
+      // carries the source's claude UUID so the very first `pty.spawn`
+      // for newId becomes a `--resume <src> --fork-session --session-id
+      // <new>` invocation in main.
+      set((s) => {
+        const idx = s.sessions.findIndex((x) => x.id === sourceId);
+        const insertAt = idx === -1 ? 0 : idx + 1;
+        const sessions = [
+          ...s.sessions.slice(0, insertAt),
+          copy,
+          ...s.sessions.slice(insertAt),
+        ];
+        return {
+          sessions,
+          activeId: newId,
+          focusedGroupId: null,
+          pendingRenameId: newId,
+          pendingForkSource: { ...s.pendingForkSource, [newId]: sourceId },
+        };
+      });
+      return newId;
+    },
+
+    consumePendingRename: (sessionId) => {
+      set((s) => (s.pendingRenameId === sessionId ? { pendingRenameId: null } : {}));
     },
   };
 }

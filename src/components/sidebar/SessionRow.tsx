@@ -65,6 +65,21 @@ function SessionRowImpl({
   const archiveSession = useStore((s) => s.archiveSession);
   const unarchiveSession = useStore((s) => s.unarchiveSession);
   const reloadSession = useStore((s) => s.reloadSession);
+  const copySession = useStore((s) => s.copySession);
+  // `copySession` arms `pendingRenameId` so the freshly-minted row enters
+  // inline rename without a follow-up click. Read the flag here and, when
+  // it matches this row's id, auto-toggle `renaming` on mount, then clear
+  // the flag so a re-mount (e.g. group collapse/expand) doesn't loop. We
+  // intentionally watch only the matching-id signal (boolean) — subscribing
+  // to the raw string would re-render every row on any pendingRenameId
+  // change, including unrelated copy operations.
+  const wantsRename = useStore((s) => s.pendingRenameId === session.id);
+  const consumePendingRename = useStore((s) => s.consumePendingRename);
+  useEffect(() => {
+    if (!wantsRename) return;
+    setRenaming(true);
+    consumePendingRename(session.id);
+  }, [wantsRename, session.id, consumePendingRename]);
   // The session is archived (lives in an archive container) iff its
   // parent group has `kind === 'archive'`. We detect it via the prop
   // `normalGroups` indirectly: archived sessions are rendered through
@@ -282,6 +297,7 @@ function SessionRowImpl({
         onCloseAutoFocus={(e) => e.preventDefault()}
       >
         <ContextMenuItem onSelect={() => setRenaming(true)}>{t('common.rename')}</ContextMenuItem>
+        <ContextMenuItem onSelect={() => copySession(session.id)}>{t('sidebar.copySession')}</ContextMenuItem>
         {(() => {
           // Exclude the session's current group from the destination list so
           // users can only move TO another group (#612). The submenu is

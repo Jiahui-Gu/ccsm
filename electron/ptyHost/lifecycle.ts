@@ -52,16 +52,33 @@ export function spawn(
   sid: string,
   cwd: string,
   claudePath: string,
-  opts?: { cols?: number; rows?: number; onCwdRedirect?: (newCwd: string) => void },
+  opts?: {
+    cols?: number;
+    rows?: number;
+    onCwdRedirect?: (newCwd: string) => void;
+    /** When set, spawn args include `--resume <forkSourceSid> --fork-session
+     *  --session-id <sid>` so the new session boots with the source's
+     *  transcript but writes a fresh JSONL keyed to `sid`. Threaded through
+     *  to `makeEntry` — see entryFactory.ts for the flag-picker. */
+    forkSourceSid?: string;
+  },
 ): PtySessionInfo {
   const existing = sessions.get(sid);
   if (existing) return infoFromEntry(sid, existing);
   const cols = opts?.cols ?? DEFAULT_COLS;
   const rows = opts?.rows ?? DEFAULT_ROWS;
-  const entry = makeEntry(sid, cwd, claudePath, cols, rows, {
-    onExit: (s) => { sessions.delete(s); },
-    onCwdRedirect: opts?.onCwdRedirect,
-  });
+  const entry = makeEntry(
+    sid,
+    cwd,
+    claudePath,
+    cols,
+    rows,
+    {
+      onExit: (s) => { sessions.delete(s); },
+      onCwdRedirect: opts?.onCwdRedirect,
+    },
+    opts?.forkSourceSid,
+  );
   sessions.set(sid, entry);
   return infoFromEntry(sid, entry);
 }

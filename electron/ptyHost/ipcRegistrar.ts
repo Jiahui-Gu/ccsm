@@ -31,7 +31,12 @@ export interface PtyIpcDeps {
     sid: string,
     cwd: string,
     claudePath: string,
-    opts?: { cols?: number; rows?: number; onCwdRedirect?: (newCwd: string) => void },
+    opts?: {
+      cols?: number;
+      rows?: number;
+      onCwdRedirect?: (newCwd: string) => void;
+      forkSourceSid?: string;
+    },
   ) => PtySessionInfo;
   inputPtySession: (sid: string, data: string) => void;
   resizePtySession: (sid: string, cols: number, rows: number) => void;
@@ -87,11 +92,19 @@ export function registerPtyIpc(ipcMain: IpcMain, deps: PtyIpcDeps): void {
 
   ipcMain.handle('pty:list', () => deps.listPtySessions());
 
-  ipcMain.handle('pty:spawn', async (_event, sid: string, cwd: string) => {
+  ipcMain.handle('pty:spawn', async (_event, sid: string, cwd: string, forkSourceSid?: string) => {
     const claudePath = await resolveClaude();
     if (!claudePath) {
       return { ok: false, error: 'claude_not_found' };
     }
+    // Defense-in-depth: only accept a string (and in the same shape as `sid`
+    // — `toClaudeSid` will throw on anything that doesn't pass `VALID_SID_RE`,
+    // so a malformed value here surfaces as `spawn_failed:` rather than
+    // landing as raw argv text). Anything else (number, object, array,
+    // undefined → rest-arg behavior) is dropped to undefined.
+    const fork = typeof forkSourceSid === 'string' && forkSourceSid.length > 0
+      ? forkSourceSid
+      : undefined;
     // L4 PR-F (#867): the renderer no longer forwards initial cols/rows.
     // The PTY launches at the lifecycle defaults (DEFAULT_COLS/ROWS) and
     // the renderer's post-attach `pty:resize` (with snapshot replay,
@@ -103,6 +116,7 @@ export function registerPtyIpc(ipcMain: IpcMain, deps: PtyIpcDeps): void {
     // redundant; it has been removed.
     try {
       const info = deps.spawnPtySession(sid, cwd, claudePath, {
+        forkSourceSid: fork,
         // Import-resume cwd-redirect (#603 reviewer Layer-1 fix). When the
         // copy helper relocates the JSONL into the spawn cwd's projectDir,
         // the renderer's `session.cwd` (still pointing at the original
