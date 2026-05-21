@@ -6,10 +6,41 @@
 // tangled with the IPC surface. The registrar owns no state of its own
 // beyond the one-shot `stateBridgeInstalled` guard.
 
-import type { BrowserWindow, IpcMain } from 'electron';
+import fs from 'node:fs';
+import path from 'node:path';
+import { app, clipboard, type BrowserWindow, type IpcMain } from 'electron';
 import { resolveClaude } from './claudeResolver';
 import { sessionWatcher } from '../sessionWatcher';
 import type { AttachResult, BufferSnapshot, PtySessionInfo } from './lifecycle';
+
+/**
+ * Task #42 — clipboard image auto-save. Filename format:
+ * `YYYYMMDD-HHMMSS[-NNN].png`. Local time (matches the user's Finder /
+ * Explorer column when they go looking for the file). The `-NNN` suffix
+ * is appended on same-second collisions; we cap retries at 999 so a
+ * runaway loop can't pin the main thread.
+ */
+function formatClipboardImageTimestamp(d: Date): string {
+  const pad = (n: number, w = 2): string => String(n).padStart(w, '0');
+  return (
+    `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-` +
+    `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+  );
+}
+
+/**
+ * Resolve a non-colliding filename inside `dir` for the given timestamp
+ * base. Uses sync existsSync because the loop must be atomic w.r.t. the
+ * subsequent write — interleaving another async tick here would race
+ * two paste-image calls landing the same second.
+ */
+function resolveClipboardImagePath(dir: string, base: string): string {
+  let file = path.join(dir, `${base}.png`);
+  for (let n = 1; n < 1000 && fs.existsSync(file); n++) {
+    file = path.join(dir, `${base}-${String(n).padStart(3, '0')}.png`);
+  }
+  return file;
+}
 
 interface SessionEntryHandle {
   pty: { pid: number };
@@ -208,5 +239,30 @@ export function registerPtyIpc(ipcMain: IpcMain, deps: PtyIpcDeps): void {
       typeof opts === 'object' && opts !== null && (opts as { force?: unknown }).force === true;
     const p = await resolveClaude({ force });
     return p ? { available: true as const, path: p } : { available: false as const };
+  });
+
+  // Task #42 — when the renderer detects a paste intent and the clipboard
+  // holds an image (e.g. user took a screenshot, dragged a PNG into the
+  // clipboard, or copied from a browser), drop it to disk under
+  // `<userData>/clipboard-images/` and return the absolute path so the
+  // renderer can inject the path into the active PTY. Claude reads files
+  // by path, so this is the canonical way to feed it a screenshot.
+  //
+  // Returns null when there is no image on the clipboard — renderer falls
+  // back to its normal text-paste path. We do NOT inspect text here, even
+  // when text is also present, because Windows readText() is unreliable
+  // when the clipboard holds an image (readImage().isEmpty() IS reliable).
+  // The renderer holds the text fallback synchronously before invoking us.
+  ipcMain.handle('pty:saveClipboardImage', async () => {
+    const img = clipboard.readImage();
+    if (img.isEmpty()) return null;
+    const buf = img.toPNG();
+    if (buf.length === 0) return null;
+    const dir = path.join(app.getPath('userData'), 'clipboard-images');
+    await fs.promises.mkdir(dir, { recursive: true });
+    const base = formatClipboardImageTimestamp(new Date());
+    const file = resolveClipboardImagePath(dir, base);
+    await fs.promises.writeFile(file, buf);
+    return file;
   });
 }

@@ -83,6 +83,14 @@ export interface CcsmPtyApi {
     readText(): string;
     writeText(text: string): void;
   };
+  /**
+   * Task #42 — if the clipboard holds an image, save it as a PNG under
+   * `<userData>/clipboard-images/YYYYMMDD-HHMMSS[-NNN].png` and return
+   * the absolute path (native separators). Returns null if no image is
+   * present. Used by the paste path to convert pasted screenshots into
+   * file paths that claude can read.
+   */
+  saveClipboardImage(): Promise<string | null>;
   checkClaudeAvailable(opts?: { force?: boolean }): Promise<CheckClaudeAvailableResult>;
 }
 

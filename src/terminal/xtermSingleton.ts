@@ -97,6 +97,49 @@ export function setSnapshotReplay(fn: (() => Promise<void>) | null): void {
 }
 
 /**
+ * Task #42 — image-first paste pipeline (shared by every paste path:
+ * capture-phase DOM event in `ensureTerminal`, Ctrl/Cmd+V keydown via
+ * `pasteFromClipboard`, right-click via `terminalPaste`).
+ *
+ * Why image-first: on Windows, `clipboard.readText()` is unreliable when
+ * the clipboard also holds an image (returns empty / stale text), but
+ * `readImage().isEmpty()` IS reliable. So we ask main "is there an image"
+ * first; if yes, main writes it under `<userData>/clipboard-images/` and
+ * returns the absolute path, which we inject into the PTY. Claude reads
+ * files by path, so this turns a pasted screenshot into "claude can see
+ * the screenshot" with no extra user steps.
+ *
+ * `fallbackText` is read by the caller synchronously (clipboardData for
+ * the capture-phase listener; `clipboard.readText()` for the keyboard /
+ * right-click paths) so the text survives the async hop to main.
+ *
+ * Returns the promise so callers that need to sequence after the paste
+ * (currently only tests) can await; production paste paths fire-and-forget
+ * via `void`.
+ */
+export async function pasteIntoActivePty(fallbackText: string | undefined): Promise<void> {
+  // N1 race fix (reviewer): snapshot `activeSid` BEFORE the async IPC hop.
+  // `saveClipboardImage` round-trips to main; the user can switch sessions
+  // during that window. Without this snapshot, the saved image path (or
+  // fallback text) would land in whichever session happens to be active
+  // when the promise resolves — i.e. the wrong one. Bind the target sid
+  // at intent time so the inject always goes to the session the user was
+  // looking at when they hit paste.
+  const sid = activeSid;
+  if (!sid) return;
+  try {
+    const imagePath = await window.ccsmPty?.saveClipboardImage?.();
+    if (imagePath) {
+      window.ccsmPty.input(sid, imagePath);
+      return;
+    }
+  } catch {
+    // best-effort — fall through to text paste on IPC failure.
+  }
+  if (fallbackText) window.ccsmPty.input(sid, fallbackText);
+}
+
+/**
  * Create (or re-attach) the singleton Terminal against `host`. Idempotent:
  * subsequent calls reuse the cached instance and only re-`open` if React
  * remounted into a different DOM node.
@@ -248,6 +291,10 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
   // versions then dispatch a native `paste` event a moment later;
   // the keydown handler sets `keyboardPasteHandled` so this listener
   // discards that follow-up event and we paste exactly once.
+  // Task #42 — image-first paste pipeline. See `pasteIntoActivePty` at
+  // module scope: every paste path (capture-phase DOM event, Ctrl/Cmd+V
+  // keydown, right-click `terminalPaste`) funnels through that helper so
+  // pasted screenshots auto-save and inject as a path.
   const onPasteCapture = (e: ClipboardEvent): void => {
     e.stopImmediatePropagation();
     e.preventDefault();
@@ -255,14 +302,10 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
       keyboardPasteHandled = false;
       return;
     }
-    const text = e.clipboardData?.getData('text/plain');
-    if (text && activeSid) {
-      try {
-        window.ccsmPty.input(activeSid, text);
-      } catch {
-        // best-effort — write can fail if PTY isn't attached.
-      }
-    }
+    // Read text synchronously: clipboardData is only valid during the
+    // event dispatch, so we can't await before reading it.
+    const text = e.clipboardData?.getData('text/plain') ?? '';
+    void pasteIntoActivePty(text || undefined);
   };
   host.addEventListener('paste', onPasteCapture, { capture: true });
 
@@ -293,12 +336,15 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
     // setTimeout 0 task lands AFTER the native paste dispatch, so the
     // capture listener sees the flag and suppresses.
     setTimeout(() => { keyboardPasteHandled = false; }, 0);
+    let text: string | undefined;
     try {
-      const text = window.ccsmPty?.clipboard?.readText();
-      if (text && activeSid) window.ccsmPty.input(activeSid, text);
+      text = window.ccsmPty?.clipboard?.readText() || undefined;
     } catch {
       // best-effort — clipboard read can fail under permission edge cases.
     }
+    // Task #42 — route through the image-first helper so a copied
+    // screenshot lands as a file path rather than empty text.
+    void pasteIntoActivePty(text);
   };
 
   // Copy/paste keyboard shortcuts (Windows Terminal style):
@@ -441,10 +487,13 @@ export function terminalPaste(): void {
   setTimeout(() => {
     keyboardPasteHandled = false;
   }, 0);
+  let text: string | undefined;
   try {
-    const text = window.ccsmPty?.clipboard?.readText();
-    if (text) window.ccsmPty.input(activeSid, text);
+    text = window.ccsmPty?.clipboard?.readText() || undefined;
   } catch {
     // best-effort — clipboard read can fail under permission edge cases.
   }
+  // Task #42 — route through the image-first helper so right-click on a
+  // copied screenshot lands as a file path rather than empty text.
+  void pasteIntoActivePty(text);
 }

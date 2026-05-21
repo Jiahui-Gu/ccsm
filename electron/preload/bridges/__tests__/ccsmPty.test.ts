@@ -75,6 +75,7 @@ describe('ccsmPty preload bridge', () => {
         'onData',
         'onExit',
         'resize',
+        'saveClipboardImage',
         'spawn',
       ].sort(),
     );
@@ -98,6 +99,8 @@ describe('ccsmPty preload bridge', () => {
     ['kill', 'pty:kill', ['s1']],
     ['get', 'pty:get', ['s1']],
     ['getBufferSnapshot', 'pty:getBufferSnapshot', ['s1']],
+    // Task #42 — clipboard image autosave channel.
+    ['saveClipboardImage', 'pty:saveClipboardImage', []],
   ])('forwards %s -> ipcRenderer.invoke("%s", ...)', async (m, chan, args) => {
     const api = lastApi();
     await (api[m] as (...a: unknown[]) => Promise<unknown>)(...args);

@@ -45,6 +45,7 @@ import { useXtermSingleton } from '../../src/terminal/useXtermSingleton';
 import {
   __resetSingletonForTests,
   getTerm,
+  pasteIntoActivePty,
   setActiveSid,
   terminalCopy,
   terminalPaste,
@@ -206,6 +207,10 @@ describe('useXtermSingleton', () => {
           readText: readTextSpy,
           writeText: vi.fn(),
         },
+        // Task #42 — default to "no image on clipboard" so existing
+        // text-paste assertions stay green; image-branch tests override
+        // per-case.
+        saveClipboardImage: vi.fn().mockResolvedValue(null),
       };
       // The hook receives a real DOM node so the capture-phase paste
       // listener it installs is exercised by real events.
@@ -233,26 +238,34 @@ describe('useXtermSingleton', () => {
       return evt;
     }
 
-    it('Ctrl+V keydown injects clipboard text exactly once', () => {
+    it('Ctrl+V keydown injects clipboard text exactly once', async () => {
       const handler = getKeyHandler();
       const ret = handler({ type: 'keydown', key: 'v', ctrlKey: true });
       expect(ret).toBe(false);
       expect(readTextSpy).toHaveBeenCalledTimes(1);
+      // Task #42 — paste now hops through `saveClipboardImage` first; the
+      // text injection lands on the microtask after that promise resolves.
+      await Promise.resolve();
+      await Promise.resolve();
       expect(inputSpy).toHaveBeenCalledTimes(1);
       expect(inputSpy).toHaveBeenCalledWith('sid-1', 'hello');
     });
 
-    it('Cmd+V keydown injects clipboard text exactly once (macOS)', () => {
+    it('Cmd+V keydown injects clipboard text exactly once (macOS)', async () => {
       const handler = getKeyHandler();
       const ret = handler({ type: 'keydown', key: 'v', metaKey: true });
       expect(ret).toBe(false);
+      await Promise.resolve();
+      await Promise.resolve();
       expect(inputSpy).toHaveBeenCalledTimes(1);
       expect(inputSpy).toHaveBeenCalledWith('sid-1', 'hello');
     });
 
-    it('keydown-driven paste suppresses the follow-up native paste event', () => {
+    it('keydown-driven paste suppresses the follow-up native paste event', async () => {
       const handler = getKeyHandler();
       handler({ type: 'keydown', key: 'v', ctrlKey: true });
+      await Promise.resolve();
+      await Promise.resolve();
       expect(inputSpy).toHaveBeenCalledTimes(1);
 
       // The browser's native paste event arrives after our synchronous
@@ -260,12 +273,16 @@ describe('useXtermSingleton', () => {
       // ccsmPty.input call.
       const evt = makePasteEvent('hello');
       host.dispatchEvent(evt);
+      await Promise.resolve();
+      await Promise.resolve();
       expect(inputSpy).toHaveBeenCalledTimes(1);
     });
 
-    it('right-click / context-menu paste (no preceding keydown) injects once', () => {
+    it('right-click / context-menu paste (no preceding keydown) injects once', async () => {
       const evt = makePasteEvent('world');
       host.dispatchEvent(evt);
+      await Promise.resolve();
+      await Promise.resolve();
       expect(inputSpy).toHaveBeenCalledTimes(1);
       expect(inputSpy).toHaveBeenCalledWith('sid-1', 'world');
       // xterm's built-in paste pipeline must not see the event.
@@ -277,6 +294,8 @@ describe('useXtermSingleton', () => {
       // Keyboard paste with NO follow-up native event (e.g. focus on
       // canvas — browser doesn't dispatch paste to non-editable nodes).
       handler({ type: 'keydown', key: 'v', ctrlKey: true });
+      await Promise.resolve();
+      await Promise.resolve();
       expect(inputSpy).toHaveBeenCalledTimes(1);
 
       // Wait for the macrotask that resets the flag. We use setTimeout 0
@@ -289,14 +308,18 @@ describe('useXtermSingleton', () => {
       // A later paste from a different source must still be delivered.
       const evt = makePasteEvent('later');
       host.dispatchEvent(evt);
+      await Promise.resolve();
+      await Promise.resolve();
       expect(inputSpy).toHaveBeenCalledTimes(2);
       expect(inputSpy).toHaveBeenLastCalledWith('sid-1', 'later');
     });
 
-    it('Ctrl+V is a no-op when no active session', () => {
+    it('Ctrl+V is a no-op when no active session', async () => {
       setActiveSid(null);
       const handler = getKeyHandler();
       handler({ type: 'keydown', key: 'v', ctrlKey: true });
+      await Promise.resolve();
+      await Promise.resolve();
       expect(inputSpy).not.toHaveBeenCalled();
     });
   });
@@ -324,6 +347,9 @@ describe('useXtermSingleton', () => {
           readText: readTextSpy,
           writeText: writeTextSpy,
         },
+        // Task #42 — default to "no image"; image-branch test overrides
+        // per-case to assert the path-injection branch.
+        saveClipboardImage: vi.fn().mockResolvedValue(null),
       };
       host = document.createElement('div');
       document.body.appendChild(host);
@@ -355,14 +381,19 @@ describe('useXtermSingleton', () => {
       expect(clearSelectionSpy).not.toHaveBeenCalled();
     });
 
-    it('terminalPaste reads clipboard and routes through ccsmPty.input', () => {
+    it('terminalPaste reads clipboard and routes through ccsmPty.input', async () => {
       terminalPaste();
+      // Async hop via saveClipboardImage; flush microtasks before assert.
+      await Promise.resolve();
+      await Promise.resolve();
       expect(readTextSpy).toHaveBeenCalledTimes(1);
       expect(inputSpy).toHaveBeenCalledWith('sid-rc', 'pasted-text');
     });
 
-    it('terminalPaste arms the keyboardPasteHandled flag so a follow-up native paste is suppressed', () => {
+    it('terminalPaste arms the keyboardPasteHandled flag so a follow-up native paste is suppressed', async () => {
       terminalPaste();
+      await Promise.resolve();
+      await Promise.resolve();
       expect(inputSpy).toHaveBeenCalledTimes(1);
       // Synthetic native paste from a different source — must be dropped
       // because terminalPaste just armed the flag.
@@ -371,13 +402,83 @@ describe('useXtermSingleton', () => {
         value: { getData: () => 'should-be-dropped' },
       });
       host.dispatchEvent(evt);
+      await Promise.resolve();
+      await Promise.resolve();
       expect(inputSpy).toHaveBeenCalledTimes(1);
     });
 
-    it('terminalPaste is a no-op when no active session', () => {
+    it('terminalPaste is a no-op when no active session', async () => {
       setActiveSid(null);
       terminalPaste();
+      await Promise.resolve();
+      await Promise.resolve();
       expect(inputSpy).not.toHaveBeenCalled();
+    });
+
+    // Task #42 — image-first paste branch. When `saveClipboardImage`
+    // returns a saved-file path, we MUST inject that path (not the
+    // fallback text) so claude reads the screenshot via the file path.
+    it('terminalPaste injects the saved image path when clipboard holds an image', async () => {
+      const fakePath = 'C:\\Users\\me\\AppData\\Roaming\\CCSM\\clipboard-images\\20260522-100000.png';
+      (window as unknown as { ccsmPty: { saveClipboardImage: ReturnType<typeof vi.fn> } })
+        .ccsmPty.saveClipboardImage = vi.fn().mockResolvedValue(fakePath);
+      terminalPaste();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(inputSpy).toHaveBeenCalledTimes(1);
+      expect(inputSpy).toHaveBeenCalledWith('sid-rc', fakePath);
+      // The synchronously-read text MUST NOT be injected; the image branch
+      // wins.
+      expect(inputSpy).not.toHaveBeenCalledWith('sid-rc', 'pasted-text');
+    });
+
+    // Task #42 — text fallback. When `saveClipboardImage` returns null
+    // (no image on clipboard), the previously-read text is injected as
+    // the regular paste payload. Default beforeEach stub already returns
+    // null, but spell it out for documentation.
+    it('terminalPaste falls back to text injection when no image is on clipboard', async () => {
+      (window as unknown as { ccsmPty: { saveClipboardImage: ReturnType<typeof vi.fn> } })
+        .ccsmPty.saveClipboardImage = vi.fn().mockResolvedValue(null);
+      terminalPaste();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(inputSpy).toHaveBeenCalledTimes(1);
+      expect(inputSpy).toHaveBeenCalledWith('sid-rc', 'pasted-text');
+    });
+
+    // N1 race fix (reviewer): `saveClipboardImage` is an async IPC hop;
+    // if the user switches sessions while it's in flight, the injected
+    // text / image-path MUST land in the session that was active at
+    // paste-intent time, NOT whichever session happens to be active
+    // when the promise resolves. `pasteIntoActivePty` snapshots
+    // `activeSid` at entry to enforce this. Drive the helper directly
+    // (rather than through `terminalPaste`) so the timing is precise.
+    it('pasteIntoActivePty binds the target sid at intent time, not at promise-resolution time', async () => {
+      // Defer the resolution of saveClipboardImage until we explicitly
+      // resolve it — gives us a clean window to flip activeSid mid-flight.
+      let resolveImage: (v: string | null) => void = () => {};
+      const pending = new Promise<string | null>((r) => { resolveImage = r; });
+      (window as unknown as { ccsmPty: { saveClipboardImage: ReturnType<typeof vi.fn> } })
+        .ccsmPty.saveClipboardImage = vi.fn().mockReturnValue(pending);
+
+      setActiveSid('sid-original');
+      const pasted = pasteIntoActivePty('typed-into-original');
+
+      // Simulate the user switching sessions while we wait on the IPC.
+      setActiveSid('sid-different');
+
+      // Resolve the IPC with no image so we exercise the text-fallback
+      // branch (the more dangerous one — image path comes from main and
+      // is obviously global, but the text fallback could plausibly look
+      // session-scoped if you squint at the old code).
+      resolveImage(null);
+      await pasted;
+
+      // MUST go to the sid that was active when paste was invoked, not
+      // the sid that's active now.
+      expect(inputSpy).toHaveBeenCalledTimes(1);
+      expect(inputSpy).toHaveBeenCalledWith('sid-original', 'typed-into-original');
+      expect(inputSpy).not.toHaveBeenCalledWith('sid-different', 'typed-into-original');
     });
 
     it('Ctrl+A invokes term.selectAll() and returns false to stop SOH translation', () => {
