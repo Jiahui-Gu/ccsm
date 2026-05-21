@@ -87,8 +87,8 @@ export function registerPtyIpc(ipcMain: IpcMain, deps: PtyIpcDeps): void {
 
   ipcMain.handle('pty:list', () => deps.listPtySessions());
 
-  ipcMain.handle('pty:spawn', (_event, sid: string, cwd: string) => {
-    const claudePath = resolveClaude();
+  ipcMain.handle('pty:spawn', async (_event, sid: string, cwd: string) => {
+    const claudePath = await resolveClaude();
     if (!claudePath) {
       return { ok: false, error: 'claude_not_found' };
     }
@@ -182,10 +182,10 @@ export function registerPtyIpc(ipcMain: IpcMain, deps: PtyIpcDeps): void {
   // `force: true` bypasses the resolver's success-cache so the user can
   // install claude in another terminal and recover in-place via the
   // ClaudeMissingGuide "Re-check" button without restarting the app.
-  ipcMain.handle('pty:checkClaudeAvailable', (_event, opts: unknown) => {
+  ipcMain.handle('pty:checkClaudeAvailable', async (_event, opts: unknown) => {
     const force =
       typeof opts === 'object' && opts !== null && (opts as { force?: unknown }).force === true;
-    const p = resolveClaude({ force });
+    const p = await resolveClaude({ force });
     return p ? { available: true as const, path: p } : { available: false as const };
   });
 }

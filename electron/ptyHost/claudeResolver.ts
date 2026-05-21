@@ -26,35 +26,75 @@
 // bypass the cache (the renderer's "Re-check" button on ClaudeMissingGuide
 // uses this so the user can install claude in a separate terminal and
 // recover in-place without restarting the app).
+//
+// Async since #PERF: the original `spawnSync` blocked the main process
+// event loop for 50-200ms on Windows during cold start (first
+// `pty:checkClaudeAvailable` from App.tsx + first `pty:spawn`), causing
+// a visible "window hang" stutter. Both callers are `ipcMain.handle`
+// handlers that already await Promise returns, so flipping to async is
+// free at the call site. A module-level in-flight Promise dedups
+// concurrent first-callers so two simultaneous IPCs don't double-spawn
+// `where`.
 
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 
 let cached: string | null | undefined; // undefined = never tried
+let inFlight: Promise<string | null> | null = null;
 
-function tryWhere(name: string): string | null {
+function whereAsync(name: string): Promise<string | null> {
   const cmd = process.platform === 'win32' ? 'where' : 'which';
-  try {
-    const r = spawnSync(cmd, [name], { encoding: 'utf8', windowsHide: true });
-    if (r.status !== 0) return null;
-    const first = r.stdout.split(/\r?\n/).find((l) => l.trim().length > 0);
-    return first ? first.trim() : null;
-  } catch {
-    return null;
-  }
+  return new Promise((resolve) => {
+    let stdout = '';
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(cmd, [name], { windowsHide: true });
+    } catch {
+      resolve(null);
+      return;
+    }
+    child.stdout?.on('data', (b: Buffer) => {
+      stdout += b.toString('utf8');
+    });
+    child.on('error', () => resolve(null));
+    child.on('exit', (code) => {
+      if (code !== 0) {
+        resolve(null);
+        return;
+      }
+      const first = stdout.split(/\r?\n/).find((l) => l.trim().length > 0);
+      resolve(first ? first.trim() : null);
+    });
+  });
 }
 
-export function resolveClaude({ force = false }: { force?: boolean } = {}): string | null {
-  if (!force && cached !== undefined) return cached;
+async function doResolve(): Promise<string | null> {
   if (process.platform === 'win32') {
-    cached = tryWhere('claude.cmd') ?? tryWhere('claude');
-  } else {
-    cached = tryWhere('claude');
+    return (await whereAsync('claude.cmd')) ?? (await whereAsync('claude'));
   }
-  return cached;
+  return whereAsync('claude');
+}
+
+export function resolveClaude({ force = false }: { force?: boolean } = {}): Promise<string | null> {
+  if (!force && cached !== undefined) return Promise.resolve(cached);
+  // Concurrent-caller dedup: while the first lookup is in flight, hand
+  // the same Promise to every additional caller. Without this, an N-wide
+  // burst of `pty:checkClaudeAvailable` + `pty:spawn` on cold start
+  // would spawn N copies of `where` instead of one.
+  if (!force && inFlight) return inFlight;
+  inFlight = doResolve()
+    .then((result) => {
+      cached = result;
+      return result;
+    })
+    .finally(() => {
+      inFlight = null;
+    });
+  return inFlight;
 }
 
 // Test seam — used by harness-real-cli's ttyd cases to force a fresh
 // lookup between cases. Production code never invokes this.
 export function __resetClaudeResolverForTest(): void {
   cached = undefined;
+  inFlight = null;
 }
