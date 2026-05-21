@@ -167,22 +167,6 @@ export async function hydrateStore(): Promise<void> {
           claudeSettingsDefaultModel: typeof defaultModel === 'string' ? defaultModel : null,
         });
       }
-      // Seed `lastUsedCwd` from the ccsm-owned `userCwds` LRU so the very
-      // first `+` click after launch already lands in the user's most
-      // recent project. Without this, the first session of every boot
-      // would silently fall back to home and re-train the picker. Skip
-      // when the only entry is `userHome` — that's the empty-LRU sentinel
-      // (`getUserCwds()` always appends home), which means "no real
-      // pick", so we leave `lastUsedCwd` null and let createSession use
-      // userHome via the explicit fallback.
-      if (api?.userCwds?.get) {
-        const list = await api.userCwds.get().catch(() => [] as string[]);
-        const head = Array.isArray(list) && list.length > 0 ? list[0] : null;
-        const home = useStore.getState().userHome;
-        if (head && head !== home) {
-          useStore.setState({ lastUsedCwd: head });
-        }
-      }
     } catch {
       /* IPC unavailable — boot continues with empty defaults */
     }
