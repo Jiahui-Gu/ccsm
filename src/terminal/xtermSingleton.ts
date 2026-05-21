@@ -130,6 +130,24 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
     allowProposedApi: true,
     scrollback,
     theme: { background: '#000000' },
+    // Wheel-scroll tuning. xterm's `Viewport.getLinesScrolled` multiplies
+    // `event.deltaY` by `scrollSensitivity` BEFORE dividing by row height
+    // (~17px at our 13px font), so a Windows precision-mouse / touchpad
+    // notch reporting `deltaY` in the 100–400px range with the default
+    // sensitivity of 1 lands the user 6–25 lines down per notch — "a
+    // light flick scrolls to the middle of the page" (see #user-report
+    // 2026-05-21). 0.5 brings a ~120px notch back to ~3 lines, matching
+    // a native CLI terminal's feel without making intentional fast scrolls
+    // sluggish (the Alt modifier still gives 5x for long jumps).
+    //
+    // `fastScrollSensitivity` and `fastScrollModifier` are pinned to their
+    // current xterm defaults explicitly so an upstream default change can't
+    // resurface this bug; if a future xterm starts treating
+    // `fastScrollModifier: 'alt'` as default-fast, the runaway scroll
+    // returns silently.
+    scrollSensitivity: 0.5,
+    fastScrollSensitivity: 5,
+    fastScrollModifier: 'alt',
   });
   fit = new FitAddon();
   term.loadAddon(fit);
