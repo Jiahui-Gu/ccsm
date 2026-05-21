@@ -1,8 +1,26 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 import Database from 'better-sqlite3';
+
+// Wrap fs so the corruption-recovery test can pin that `electron/db.ts`
+// actually calls `unlinkSync` on the `-wal` / `-shm` sidecar paths.
+//
+// `vi.spyOn(fs, 'unlinkSync')` fails — the ESM namespace is frozen. The
+// `Module._cache` hack doesn't work either, because Vitest runs modules
+// inside its own loader (no shared CJS cache). The robust path is
+// `vi.mock('fs', …)` with `importActual`: every importer (test + production)
+// gets the same wrapper, which by default delegates to the real impl so
+// other tests' `mkdtempSync` / `writeFileSync` / etc. keep working. Tests
+// that need to assert the call shape override the wrapper.
+const unlinkSpy = vi.hoisted(() => ({ fn: undefined as unknown as ReturnType<typeof vi.fn> }));
+vi.mock('fs', async () => {
+  const actual = (await vi.importActual('fs')) as typeof import('fs');
+  const wrapped = vi.fn(actual.unlinkSync);
+  unlinkSpy.fn = wrapped;
+  return { ...actual, default: actual, unlinkSync: wrapped };
+});
 
 // `initDb` asks electron for the userData dir. Point it at a per-test tmp dir
 // so real app data isn't touched and each test gets a fresh database.
@@ -141,36 +159,80 @@ describe('db: legacy-table cleanup', () => {
 });
 
 describe('db: corruption recovery sidecar cleanup', () => {
-  it('removes leftover -wal / -shm sidecar files when backing up a corrupt main db', async () => {
+  it('calls fs.unlinkSync on the -wal and -shm sidecars during corruption recovery', async () => {
     const mod = await freshDb();
     mod.closeDb();
 
     const file = path.join(tmpDir, 'ccsm.db');
     // Garbage main file — quick_check will report corruption inside
-    // ensureHealthyDb.
+    // ensureHealthyDb and trigger the sidecar-cleanup branch.
     fs.writeFileSync(file, Buffer.from('not a sqlite database'));
-    // Stale WAL / SHM left over from a previous crashed process. If they
-    // survived into the rebuilt db, SQLite could try to replay a journal
-    // pointing at the renamed main file.
-    fs.writeFileSync(file + '-wal', Buffer.from('stale-wal-bytes-marker'));
-    fs.writeFileSync(file + '-shm', Buffer.from('stale-shm-bytes-marker'));
+
+    // The vi.mock('fs') wrapper above delegates to the real unlinkSync by
+    // default (vi.fn(actual.unlinkSync)). Just clear the call log before
+    // initDb so we only capture calls made during corruption recovery.
+    unlinkSpy.fn.mockClear();
 
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
-    expect(() => mod.initDb()).not.toThrow();
-    err.mockRestore();
+    try {
+      expect(() => mod.initDb()).not.toThrow();
+    } finally {
+      err.mockRestore();
+    }
 
-    // Assert the stale bytes are no longer present on disk — the rebuilt
-    // db's own WAL/SHM may exist after WAL-mode init, but they won't carry
-    // our stale marker text.
-    if (fs.existsSync(file + '-wal')) {
-      const walBytes = fs.readFileSync(file + '-wal');
-      expect(walBytes.includes(Buffer.from('stale-wal-bytes-marker'))).toBe(false);
-    }
-    if (fs.existsSync(file + '-shm')) {
-      const shmBytes = fs.readFileSync(file + '-shm');
-      expect(shmBytes.includes(Buffer.from('stale-shm-bytes-marker'))).toBe(false);
-    }
+    const paths = unlinkSpy.fn.mock.calls.map((c) => String(c[0]));
+    // Pinning the syscall, not the on-disk after-state. Reverse-verifies
+    // against deletion of the `for (const ext of ['-wal','-shm'])` cleanup
+    // loop in electron/db.ts.
+    expect(paths).toContain(file + '-wal');
+    expect(paths).toContain(file + '-shm');
   });
+
+  it('swallows ENOENT from sidecar unlinkSync (sidecars may not exist)', async () => {
+    // Common case: corrupt main file with no leftover sidecars. The unlink
+    // loop must tolerate ENOENT silently — otherwise corruption recovery
+    // would crash on the most common shape of the bug it's supposed to fix.
+    const mod = await freshDb();
+    mod.closeDb();
+
+    const file = path.join(tmpDir, 'ccsm.db');
+    fs.writeFileSync(file, Buffer.from('not a sqlite database'));
+
+    // Override the wrapper to throw ENOENT for sidecar paths; let other
+    // unlink calls (e.g. the unlink fallback in the backup-rename branch)
+    // proceed via the real implementation.
+    const realFs = (await vi.importActual('fs')) as typeof import('fs');
+    unlinkSpy.fn.mockImplementation((p: fs.PathLike) => {
+      const s = String(p);
+      if (s.endsWith('-wal') || s.endsWith('-shm')) {
+        const e = new Error('ENOENT') as NodeJS.ErrnoException;
+        e.code = 'ENOENT';
+        throw e;
+      }
+      return realFs.unlinkSync(p);
+    });
+
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(() => mod.initDb()).not.toThrow();
+    } finally {
+      err.mockRestore();
+    }
+
+    const attempted = unlinkSpy.fn.mock.calls.map((c) => String(c[0]));
+    expect(attempted).toContain(file + '-wal');
+    expect(attempted).toContain(file + '-shm');
+  });
+});
+
+afterEach(async () => {
+  // Restore the default delegate-to-real-fs behaviour after any test that
+  // overrode it via mockImplementation. mockReset would clear the default,
+  // breaking the first test in this describe; mockClear keeps the impl but
+  // wipes the call log.
+  const realFs = (await vi.importActual('fs')) as typeof import('fs');
+  unlinkSpy.fn.mockImplementation(realFs.unlinkSync);
+  unlinkSpy.fn.mockClear();
 });
 
 describe('db: __setDbForTests injection', () => {
