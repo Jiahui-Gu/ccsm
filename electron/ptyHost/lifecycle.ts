@@ -122,15 +122,89 @@ export function resize(
   }
 }
 
-export function kill(sessions: Map<string, Entry>, sid: string): boolean {
+// Max wait for pty.onExit to fire after kill() before we give up and resolve
+// the kill promise anyway. The renderer awaits `kill(sid)` before bumping
+// reloadNonce; if the pty is wedged we still want the renderer to fall through
+// to the spawn-on-null fallback rather than hanging the UI. 3s comfortably
+// covers ConPTY teardown + processKiller subtree walk on slow Windows boxes
+// while staying short enough that a stuck kill doesn't feel broken.
+export const KILL_EXIT_TIMEOUT_MS = 3000;
+
+// Dedupe re-entrant kills for the same sid (e.g. user spam-clicks Reload).
+// Keyed by `sessions` Map so multiple registries (tests) don't collide.
+const pendingKills: WeakMap<Map<string, Entry>, Map<string, Promise<boolean>>> =
+  new WeakMap();
+
+function getPendingKills(sessions: Map<string, Entry>): Map<string, Promise<boolean>> {
+  let m = pendingKills.get(sessions);
+  if (!m) {
+    m = new Map();
+    pendingKills.set(sessions, m);
+  }
+  return m;
+}
+
+export function kill(sessions: Map<string, Entry>, sid: string): Promise<boolean> {
+  const inflight = getPendingKills(sessions).get(sid);
+  if (inflight) return inflight;
+
   const entry = sessions.get(sid);
-  if (!entry) return false;
+  if (!entry) return Promise.resolve(false);
+
   // Capture pid BEFORE pty.kill() — the binding may zero it after kill.
   const pid = entry.pty.pid;
+
+  // Race fix (#1277 review): pty.kill() returns synchronously but the entry
+  // is removed from `sessions` only when the onExit pump in entryFactory
+  // fires (async). Without awaiting that, a renderer doing
+  // `await ccsmPty.kill(sid)` then re-attaching can land on the dying entry,
+  // skip the spawn-on-null fallback, and end up registered to a dead pty
+  // that immediately fires pty:exit → user sees a crash overlay. Hold the
+  // kill IPC open until either onExit fires (entry removed, headless
+  // disposed, watchers stopped) or KILL_EXIT_TIMEOUT_MS elapses.
+  //
+  // We register the promise in `pendingKills` BEFORE side effects so a
+  // concurrent caller dedupes correctly; we delete the slot inside `settle`
+  // AFTER `resolve()`. Order matters: with a sync `pty.kill()` mock that
+  // fires `onExit` immediately, settle runs inside the Promise executor,
+  // so the slot must already exist when settle fires (otherwise the slot
+  // delete is a no-op then a stale `set` re-inserts a resolved promise,
+  // and the next `kill()` for the same sid short-circuits forever).
+  let resolveOuter!: (v: boolean) => void;
+  const promise = new Promise<boolean>((r) => { resolveOuter = r; });
+  getPendingKills(sessions).set(sid, promise);
+
+  let settled = false;
+  let exitDisposable: { dispose(): void } | undefined;
+  const settle = (v: boolean) => {
+    if (settled) return;
+    settled = true;
+    // Best-effort dispose of the listener; if the binding's onExit already
+    // fired and disposed itself this is a no-op.
+    try { exitDisposable?.dispose(); } catch { /* ignore */ }
+    clearTimeout(timer);
+    // Free the dedup slot BEFORE resolving so anything `await kill()`s
+    // and immediately calls `kill()` again (e.g. spawn-on-null then
+    // user-driven reload) gets a fresh kill, not a no-op short-circuit.
+    if (getPendingKills(sessions).get(sid) === promise) {
+      getPendingKills(sessions).delete(sid);
+    }
+    resolveOuter(v);
+  };
+
+  try {
+    exitDisposable = entry.pty.onExit(() => settle(true));
+  } catch {
+    /* onExit registration failed (already-exited binding) — fall through;
+       the timeout will resolve us, and processKiller below still runs. */
+  }
+
+  const timer = setTimeout(() => settle(false), KILL_EXIT_TIMEOUT_MS);
+
   try {
     entry.pty.kill();
   } catch {
-    /* already dead */
+    /* already dead — onExit may or may not fire; timeout covers us */
   }
   // ConPTY's kill only terminates the cmd.exe / OpenConsole wrapper; on Windows
   // the claude.exe child (and its grandchildren) survive as orphans. On
@@ -141,7 +215,8 @@ export function kill(sessions: Map<string, Entry>, sid: string): boolean {
   // pty.kill that races with onExit can't leak the fs.watch handle.
   // sessionWatcher.stopWatching is idempotent.
   try { sessionWatcher.stopWatching(sid); } catch { /* never throws */ }
-  return true;
+
+  return promise;
 }
 
 export function get(sessions: Map<string, Entry>, sid: string): PtySessionInfo | null {
@@ -219,9 +294,12 @@ export async function getBufferSnapshot(
 }
 
 // Kill every running pty. Call from app `before-quit` so renderer-side
-// claude processes don't leak past Electron exit.
+// claude processes don't leak past Electron exit. Fire-and-forget — we don't
+// block app teardown on the per-pty onExit/timeout dance; the kill signal +
+// processKiller subtree walk dispatch synchronously inside `kill()` before
+// the awaited onExit, which is what actually reaps the children.
 export function killAll(sessions: Map<string, Entry>): void {
   for (const sid of [...sessions.keys()]) {
-    kill(sessions, sid);
+    void kill(sessions, sid);
   }
 }
