@@ -68,6 +68,27 @@ describe('useXtermSingleton', () => {
     expect(window.__ccsmTerm).toBe(getTerm());
   });
 
+  // Wheel-scroll tuning regression guard. xterm's `Viewport.getLinesScrolled`
+  // multiplies `event.deltaY` by `scrollSensitivity` before dividing by row
+  // height; without these explicit values, a Windows precision-mouse notch
+  // reporting `deltaY` ~120-400px lands the user 6-25 lines down per notch
+  // ("light flick scrolls to middle of page"). A future refactor that drops
+  // any of these three options silently resurrects the bug — pin them in a
+  // test so the constructor contract is enforced.
+  it('constructs Terminal with explicit wheel-scroll tuning', () => {
+    const host = document.createElement('div');
+    renderHook(() => useXtermSingleton({ current: host }));
+    expect(terminalCtor).toHaveBeenCalledTimes(1);
+    const opts = terminalCtor.mock.calls[0][0] as {
+      scrollSensitivity?: number;
+      fastScrollSensitivity?: number;
+      fastScrollModifier?: string;
+    };
+    expect(opts.scrollSensitivity).toBe(0.5);
+    expect(opts.fastScrollSensitivity).toBe(5);
+    expect(opts.fastScrollModifier).toBe('alt');
+  });
+
   it('reuses the singleton across remounts (does NOT recreate)', () => {
     const host = document.createElement('div');
     const ref = { current: host };
