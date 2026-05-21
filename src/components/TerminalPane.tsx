@@ -32,7 +32,10 @@ export function TerminalPane({ sessionId, cwd }: Props) {
   useXtermSingleton(hostRef);
   useTerminalResize(hostRef);
   const { state, onRetry } = usePtyAttach(sessionId, cwd);
-  const { atBottom, scrollToBottom } = useAtBottom(sessionId);
+  // `atBottom` is intentionally unused — the button is always visible while
+  // ready (see ScrollToBottomButton). We keep the hook subscribed so the
+  // detection logic (and its tests) stay live for future use.
+  const { scrollToBottom } = useAtBottom(sessionId);
 
   return (
     <div
@@ -44,9 +47,12 @@ export function TerminalPane({ sessionId, cwd }: Props) {
       <Overlay state={state} onRetry={onRetry} t={t} />
       {/* Hide the jump-to-bottom affordance while an overlay (attaching /
           error / exit) is up — those cover the viewport and the button
-          would be meaningless. */}
+          would be meaningless. While ready, the button is always visible:
+          clicking it when already at bottom is a no-op (xterm's
+          scrollToBottom is idempotent), and conditional visibility based
+          on the atBottom signal proved flaky in practice. */}
       {state.kind === 'ready' ? (
-        <ScrollToBottomButton visible={!atBottom} onClick={scrollToBottom} />
+        <ScrollToBottomButton onClick={scrollToBottom} />
       ) : null}
     </div>
   );
