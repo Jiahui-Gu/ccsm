@@ -64,6 +64,23 @@ jobs:
       # Prefer RELEASE_TOKEN (PAT) so the auto-opened PR fires required
       # checks. Fall back to GITHUB_TOKEN for the read-only gates.
       GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+      # Allowlist of CI check-run names that gates require to be green on
+      # the PR head SHA. Newline-separated so names with spaces work.
+      # CRITICAL: this list MUST exclude the names of any check-run this
+      # workflow itself registers (e.g. "promote working → main + tag"),
+      # otherwise the gate self-poisons — the in-progress / historical-
+      # failed runs of this workflow attach check-runs to the same PR head
+      # and would fail the gate. See: failing run 26205515547.
+      # When adding a new required CI check, append it here.
+      EXPECTED_CHECKS: |
+        e2e (macos-latest)
+        e2e (ubuntu-latest)
+        e2e (windows-latest)
+        lint + typecheck + test (macos-latest)
+        lint + typecheck + test (ubuntu-latest)
+        lint + typecheck + test (windows-latest)
+        no-silent-drops
+        check-source
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -307,6 +324,8 @@ jobs:
           TIMEOUT_SECONDS: '1800'  # 30 min
         run: |
           set -euo pipefail
+          # Render allowlist as JSON array for jq.
+          expected_json=$(printf '%s\n' "$EXPECTED_CHECKS" | jq -R . | jq -s '[.[] | select(length > 0)]')
           deadline=$(( $(date +%s) + TIMEOUT_SECONDS ))
           while :; do
             # Find PR for this merge commit.
@@ -314,24 +333,42 @@ jobs:
             if [ -z "$pr_head" ]; then
               echo "PR association not yet indexed; waiting..."
             else
-              # Pull all check-runs; require all completed and all in {success,neutral,skipped}.
-              runs=$(gh api --paginate "repos/$OWNER/$REPO/commits/$pr_head/check-runs" --jq '.check_runs[] | {name, status, conclusion}')
-              if [ -z "$runs" ]; then
-                echo "No check-runs yet on $pr_head; waiting..."
-              else
-                pending=$(echo "$runs" | jq -s '[.[] | select(.status != "completed")] | length')
-                bad=$(    echo "$runs" | jq -s '[.[] | select(.status == "completed") | select(.conclusion as $c | ["success","neutral","skipped"] | index($c) | not)] | length')
-                if [ "$bad" -gt 0 ]; then
-                  echo "::error::main CI has $bad failed check(s) on $pr_head"
-                  echo "$runs" | jq -s '.[] | select(.conclusion as $c | ["success","neutral","skipped"] | index($c) | not)'
-                  exit 1
-                fi
-                if [ "$pending" -eq 0 ]; then
-                  echo "### main CI: all checks green on \`$pr_head\`" >> "$GITHUB_STEP_SUMMARY"
-                  exit 0
-                fi
-                echo "$pending check(s) still pending; waiting..."
+              # Pull all check-runs, then filter to allowlist (ignore this
+              # workflow's own check-run + any other unrelated runs that
+              # happen to land on the same PR head SHA).
+              all=$(gh api --paginate "repos/$OWNER/$REPO/commits/$pr_head/check-runs" \
+                --jq '.check_runs[] | {name, status, conclusion, completed_at, id}' | jq -s '.')
+              # For each expected name pick the latest matching run (re-run dedup).
+              selected=$(jq -n --argjson runs "$all" --argjson expected "$expected_json" '
+                $expected
+                | map(. as $name
+                      | { name: $name,
+                          run: ( $runs
+                                 | map(select(.name == $name))
+                                 | sort_by([(.completed_at // ""), (.id // 0)])
+                                 | last ) })
+              ')
+              missing=$(echo "$selected" | jq '[.[] | select(.run == null) | .name]')
+              missing_count=$(echo "$missing" | jq 'length')
+              pending=$(echo "$selected" | jq '[.[] | select(.run != null) | select(.run.status != "completed")] | length')
+              bad=$(echo "$selected" | jq '
+                [ .[]
+                  | select(.run != null)
+                  | select(.run.status == "completed")
+                  | select(.run.conclusion as $c | (["success","neutral","skipped"] | index($c)) | not)
+                  | { name: .name, conclusion: .run.conclusion } ]
+              ')
+              bad_count=$(echo "$bad" | jq 'length')
+              if [ "$bad_count" -gt 0 ]; then
+                echo "::error::main CI has $bad_count failed required check(s) on $pr_head"
+                echo "$bad" | jq '.'
+                exit 1
               fi
+              if [ "$missing_count" -eq 0 ] && [ "$pending" -eq 0 ]; then
+                echo "### main CI: all required checks green on \`$pr_head\`" >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+              fi
+              echo "$pending pending, $missing_count missing required check(s); waiting..."
             fi
             if [ "$(date +%s)" -ge "$deadline" ]; then
               echo "::error::Timed out waiting for main CI after ${TIMEOUT_SECONDS}s"
