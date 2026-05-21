@@ -1,6 +1,7 @@
 import React from 'react';
 import { motion } from 'framer-motion';
 import { cn } from '../lib/cn';
+import { CLAUDE_CODE_AGENT_ID } from '../shared/agentIds';
 import type { AgentType, SessionState } from '../types';
 
 type Size = 'sm' | 'md';
@@ -76,7 +77,7 @@ export function AgentIcon({
     : state === 'waiting' || flashing
       ? 'waiting-or-flashing'
       : 'idle';
-  const inner = agentType === 'claude-code' ? <ClaudeAsterisk size={glyph} /> : null;
+  const inner = agentType === CLAUDE_CODE_AGENT_ID ? <ClaudeAsterisk size={glyph} /> : null;
   return (
     <motion.span
       data-agent-icon-state={state}

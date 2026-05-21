@@ -14,6 +14,7 @@
 // `sessionTitleBackfillSlice` (split per Task #736 / PR #754 review).
 
 import type { Group, Session } from '../../types';
+import { CLAUDE_CODE_AGENT_ID } from '../../shared/agentIds';
 import { hydrateDrafts as _unused, deleteDrafts, snapshotDraft, restoreDraft } from '../drafts';
 import { resolvePreferredGroup } from '../lib/preferredGroupResolver';
 import {
@@ -203,7 +204,7 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
         cwd: opts.cwd ?? defaultCwd,
         model: initialModel,
         groupId: targetGroupId,
-        agentType: 'claude-code',
+        agentType: CLAUDE_CODE_AGENT_ID,
       };
       const targetGroup = baseGroups.find((g) => g.id === targetGroupId);
       const nextGroups =
@@ -291,7 +292,7 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
         cwd,
         model: initialModel,
         groupId: ensured.groupId,
-        agentType: 'claude-code',
+        agentType: CLAUDE_CODE_AGENT_ID,
         resumeSessionId,
       };
       set({
