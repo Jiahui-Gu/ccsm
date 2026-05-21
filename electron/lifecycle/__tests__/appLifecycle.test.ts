@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 import type { App } from 'electron';
 
 // Mock electron — appLifecycle.ts top-level imports `Menu`, which would
@@ -18,7 +18,10 @@ vi.mock('electron', () => {
 // intercepts ESM `import`, NOT Node-native CJS require — and Node's CJS
 // resolver can't find the .ts source on its own. Patch the CJS require
 // to short-circuit any '../i18n' lookup with our deterministic stub.
-// Restored in afterAll-equivalent below if we ever need it.
+// MUST be restored in afterAll: vitest's default per-file isolation hides
+// the leak today, but if anyone flips to `pool: 'threads'` + `isolate: false`
+// an un-restored patch would bleed into sibling test files (e.g. anything
+// that itself does `require('../i18n')`) and surface as mysterious failures.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const Module = require('node:module') as typeof import('node:module');
 const ModuleProto = (Module as unknown as { prototype: { require: (id: string) => unknown } })
@@ -30,6 +33,10 @@ ModuleProto.require = function patchedRequire(this: NodeJS.Module, id: string) {
   }
   return originalRequire.call(this, id);
 };
+
+afterAll(() => {
+  ModuleProto.require = originalRequire;
+});
 
 import { Menu } from 'electron';
 import {
