@@ -51,9 +51,9 @@ describe('sessionTitleBackfillSlice', () => {
     _resetPendingManualRenamesForTests();
   });
 
-  it('_applyExternalTitle patches matching session, no-op for unknowns', () => {
+  it('_applyExternalTitle patches matching default-named session, no-op for unknowns', () => {
     const h = harness({
-      sessions: [mkSession('a', 'g1', { name: 'old' })],
+      sessions: [mkSession('a', 'g1', { name: 'New session' })],
     });
     h.titles._applyExternalTitle('a', 'new');
     expect(h.state().sessions[0].name).toBe('new');
@@ -66,6 +66,28 @@ describe('sessionTitleBackfillSlice', () => {
     const before = h.state().sessions;
     h.titles._applyExternalTitle('a', 'same');
     expect(h.state().sessions).toBe(before);
+  });
+
+  it('_applyExternalTitle is a no-op once the session has a non-default name', () => {
+    // claude TUI re-emits the OSC title every prompt; before the
+    // first-write-wins guard the session name flickered between turns.
+    // Only the default placeholder ('New session' / '新会话') is
+    // overwritable — anything else is treated as authoritative.
+    const h = harness({
+      sessions: [mkSession('a', 'g1', { name: 'first turn summary' })],
+    });
+    const before = h.state().sessions;
+    h.titles._applyExternalTitle('a', 'second turn rewrites the title');
+    expect(h.state().sessions).toBe(before);
+    expect(h.state().sessions[0].name).toBe('first turn summary');
+  });
+
+  it('_applyExternalTitle overwrites the legacy zh default placeholder', () => {
+    const h = harness({
+      sessions: [mkSession('a', 'g1', { name: '新会话' })],
+    });
+    h.titles._applyExternalTitle('a', 'auto-named');
+    expect(h.state().sessions[0].name).toBe('auto-named');
   });
 
   it('_backfillTitles is a no-op when no bridge is present', async () => {
@@ -89,7 +111,7 @@ describe('sessionTitleBackfillSlice', () => {
     expect(h.state().sessions[0].name).toBe('My label');
   });
 
-  it('_applyExternalTitle clears the guard and applies once the SDK round-trips', () => {
+  it('_applyExternalTitle clears the guard on round-trip then ignores later OSC titles', () => {
     const h = harness({
       sessions: [mkSession('a', 'g1', { name: 'My label' })],
     });
@@ -97,8 +119,10 @@ describe('sessionTitleBackfillSlice', () => {
     // First the JSONL rewrite lands: external title matches desired -> guard clears.
     h.titles._applyExternalTitle('a', 'My label');
     expect(h.state().sessions[0].name).toBe('My label');
-    // Later the user (or claude `/title`) legitimately changes it again.
+    // Later claude TUI re-emits the OSC title for a new prompt. The
+    // session already has a non-default name (user-renamed), so the
+    // first-write-wins guard drops the patch — the user's label sticks.
     h.titles._applyExternalTitle('a', 'Renamed by claude');
-    expect(h.state().sessions[0].name).toBe('Renamed by claude');
+    expect(h.state().sessions[0].name).toBe('My label');
   });
 });
