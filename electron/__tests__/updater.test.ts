@@ -201,7 +201,7 @@ describe('updater: IPC wiring', () => {
     expect(sendsFor('updates:status')).toContainEqual({ kind: 'error', message: 'boom' });
   });
 
-  it('updates:install calls quitAndInstall with visible installer + relaunch', async () => {
+  it('updates:install calls quitAndInstall silently + relaunch', async () => {
     // Defense-in-depth gate (#TBD): updates:install refuses unless
     // lastStatus is `downloaded`. Drive the broadcast first so the
     // handler can proceed.
@@ -211,7 +211,9 @@ describe('updater: IPC wiring', () => {
     expect(res).toEqual({ ok: true });
     // quitAndInstall is scheduled via setImmediate — flush it.
     await new Promise((r) => setImmediate(r));
-    expect(quitAndInstallCalls).toEqual([{ isSilent: false, isForceRunAfter: true }]);
+    // isSilent=true pairs with NSIS oneClick=true to give a VSCode-style
+    // restart-and-done UX — no installer wizard, no progress popup.
+    expect(quitAndInstallCalls).toEqual([{ isSilent: true, isForceRunAfter: true }]);
   });
 
   it('updates:install refuses when no download has completed', () => {
