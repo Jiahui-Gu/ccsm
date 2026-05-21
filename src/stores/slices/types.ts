@@ -74,7 +74,6 @@ export type State = {
   hydrated: boolean;
   installerCorrupt: boolean;
   openPopoverId: string | null;
-  lastUsedCwd: string | null;
   disconnectedSessions: Record<
     string,
     { kind: 'clean' | 'crashed'; code: number | null; signal: string | number | null; at: number }

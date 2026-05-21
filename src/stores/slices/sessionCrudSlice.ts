@@ -1,6 +1,5 @@
 // Session CRUD slice: create / import / delete / restore / move /
-// rename / changeCwd / setSessionModel + active selection + LRU cwd
-// seed.
+// rename / changeCwd / setSessionModel + active selection.
 //
 // `ensureUsableGroup` is colocated here because the only callers are
 // session creation/import — it picks (or synthesizes) a target group so
@@ -131,7 +130,6 @@ export type SessionCrudSlice = Pick<
   | 'focusedGroupId'
   | 'userHome'
   | 'claudeSettingsDefaultModel'
-  | 'lastUsedCwd'
   | 'selectSession'
   | 'focusGroup'
   | 'createSession'
@@ -154,7 +152,6 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
     focusedGroupId: null,
     userHome: '',
     claudeSettingsDefaultModel: null,
-    lastUsedCwd: null,
 
     selectSession: (id) => {
       set((s) => ({
@@ -180,7 +177,6 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
         activeId,
         userHome,
         claudeSettingsDefaultModel,
-        lastUsedCwd,
       } = get();
       const activeGroupId = sessions.find((s) => s.id === activeId)?.groupId;
       const preferred = resolvePreferredGroup(
@@ -193,7 +189,11 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
       const targetGroupId = ensured.groupId;
       const baseGroups = ensured.groups;
       const id = newSessionId();
-      const defaultCwd = lastUsedCwd ?? userHome ?? '';
+      // Default cwd is `os.homedir()` always — no fallback chain. Per
+      // PR #392 spec ("default cwd is home, no fallback chains"). The
+      // chevron popover next to the `+` covers the "open in another
+      // recent project" case so the default doesn't need to guess.
+      const defaultCwd = userHome ?? '';
       let initialModel = '';
       if (!initialModel) initialModel = claudeSettingsDefaultModel ?? '';
       const newSession: Session = {
@@ -219,14 +219,7 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
       const finalCwd = newSession.cwd;
       if (finalCwd && userHome && finalCwd !== userHome) {
         const api = window.ccsm;
-        void api?.userCwds?.push(finalCwd)
-          .then((list) => {
-            if (Array.isArray(list) && list.length > 0) {
-              set({ lastUsedCwd: list[0] ?? null });
-            }
-          })
-          .catch(() => {});
-        if (finalCwd !== lastUsedCwd) set({ lastUsedCwd: finalCwd });
+        void api?.userCwds?.push(finalCwd).catch(() => {});
       }
     },
 
@@ -310,14 +303,7 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
       const userHome = get().userHome;
       if (cwd && userHome && cwd !== userHome) {
         const api = window.ccsm;
-        void api?.userCwds?.push(cwd)
-          .then((list) => {
-            if (Array.isArray(list) && list.length > 0) {
-              set({ lastUsedCwd: list[0] ?? null });
-            }
-          })
-          .catch(() => {});
-        if (cwd !== get().lastUsedCwd) set({ lastUsedCwd: cwd });
+        void api?.userCwds?.push(cwd).catch(() => {});
       }
       return id;
     },
@@ -446,14 +432,7 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
       const userHome = get().userHome;
       if (cwd && cwd !== userHome) {
         const api = window.ccsm;
-        void api?.userCwds?.push(cwd)
-          .then((list) => {
-            if (Array.isArray(list) && list.length > 0) {
-              set({ lastUsedCwd: list[0] ?? null });
-            }
-          })
-          .catch(() => {});
-        if (cwd !== get().lastUsedCwd) set({ lastUsedCwd: cwd });
+        void api?.userCwds?.push(cwd).catch(() => {});
       }
     },
 
