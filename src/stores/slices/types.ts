@@ -70,6 +70,13 @@ export type State = {
     string,
     { kind: 'clean' | 'crashed'; code: number | null; signal: string | number | null; at: number }
   >;
+  /**
+   * Per-session counter bumped by `reloadSession()` to force the
+   * `usePtyAttach` effect to re-run for an unchanged sid (kill the
+   * current pty, then re-spawn via the existing spawn-on-null fallback).
+   * Not persisted — purely a transient nudge for the attach hook.
+   */
+  reloadNonce: Record<string, number>;
 };
 
 export type Actions = {
@@ -94,6 +101,13 @@ export type Actions = {
     payload: { code: number | null; signal: string | number | null }
   ) => void;
   _clearPtyExit: (sid: string) => void;
+  /**
+   * Right-click "Reload session" — kill the current pty and bump the
+   * per-session reload nonce so the `usePtyAttach` effect re-runs and
+   * spawns a fresh pty (via the existing spawn-on-null fallback).
+   * Used to pick up env / config changes that require a new claude process.
+   */
+  reloadSession: (sid: string) => Promise<void>;
   _backfillTitles: () => Promise<void>;
   deleteSession: (id: string) => SessionSnapshot | null;
   restoreSession: (snapshot: SessionSnapshot) => void;

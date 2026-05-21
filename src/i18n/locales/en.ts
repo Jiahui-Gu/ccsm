@@ -52,6 +52,8 @@ const en = {
     unarchiveGroup: 'Unarchive group',
     archiveSession: 'Archive',
     unarchiveSession: 'Unarchive',
+    reloadSession: 'Reload session',
+    reloadingSessionToast: 'Reloading "{{name}}"…',
     deleteGroupEllipsis: 'Delete group…',
     deleteGroup: 'Delete group',
     deleteGroupConfirmTitle: 'Delete "{{name}}"?',
