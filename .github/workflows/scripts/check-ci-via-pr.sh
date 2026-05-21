@@ -80,8 +80,14 @@ if [ -z "$runs" ]; then
 fi
 
 # Filter to allowlist, then for each expected name pick the latest
-# (completed_at desc, id desc) check-run. Result is a JSON array of
-# {name, run} pairs; run is null when nothing matched.
+# completed check-run when one exists, otherwise fall back to the
+# latest in-progress run. We sort by (status == "completed") first so
+# that completed runs land at the tail of the array (true > false in
+# jq sort_by ascending), guaranteeing that `last` prefers a completed
+# run over a stale in-progress rerun whose completed_at is still null.
+# Within the same status tier we keep the original (completed_at, id)
+# ordering. Result is a JSON array of {name, run} pairs; run is null
+# when nothing matched.
 all_runs_json=$(echo "$runs" | jq -s '.')
 selected=$(jq -n \
   --argjson runs "$all_runs_json" \
@@ -92,7 +98,7 @@ selected=$(jq -n \
         | { name: $name,
             run: ( $runs
                    | map(select(.name == $name))
-                   | sort_by([(.completed_at // ""), (.id // 0)])
+                   | sort_by([(.status == "completed"), (.completed_at // ""), (.id // 0)])
                    | last ) })
   ')
 
