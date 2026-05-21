@@ -304,6 +304,9 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
   // Copy/paste keyboard shortcuts (Windows Terminal style):
   //   Ctrl+C  → if selection, copy; else fall through to SIGINT
   //   Ctrl+V  → paste (single canonical path, see above)
+  //   Ctrl+A  → select-all (xterm has no built-in; we wire it here so the
+  //             keyboard offers parity with the previous native context
+  //             menu's "Select All" item)
   //   Ctrl+Shift+C / Ctrl+Shift+V → explicit always-clipboard
   // On macOS the same handler matches Cmd via `metaKey`.
   term.attachCustomKeyEventHandler((ev) => {
@@ -312,7 +315,21 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
     if (!mod || ev.altKey) return true;
     const isC = ev.key === 'C' || ev.key === 'c';
     const isV = ev.key === 'V' || ev.key === 'v';
+    const isA = ev.key === 'A' || ev.key === 'a';
 
+    if (!ev.shiftKey && isA) {
+      // Ctrl/Cmd+A → select-all. xterm has no built-in keybinding for
+      // this, and removing the native right-click "Select All" item (in
+      // favor of native CLI right-click behavior) leaves the user with
+      // no other entry point. Returning `false` keeps xterm from also
+      // translating the keystroke into a 0x01 SOH control byte.
+      try {
+        term?.selectAll();
+      } catch {
+        // ignore — best-effort.
+      }
+      return false;
+    }
     if (!ev.shiftKey && isC) {
       const sel = term?.getSelection();
       if (sel) {
@@ -374,5 +391,60 @@ export function __resetSingletonForTests(): void {
   keyboardPasteHandled = false;
   if (typeof window !== 'undefined') {
     delete window.__ccsmTerm;
+  }
+}
+
+/**
+ * Right-click handlers — called from `TerminalPane`'s `onContextMenu` to
+ * implement native CLI/terminal behavior (Windows Terminal / gnome-terminal
+ * style): right-click with selection copies + clears, right-click without
+ * selection pastes. No popover, ever.
+ *
+ * `terminalCopy` returns `true` iff a selection existed and was copied
+ * (caller uses this to choose between copy and paste branches without
+ * having to re-read `getSelection`). `clearSelection` happens here too so
+ * the user gets visual feedback that the copy landed.
+ *
+ * `terminalPaste` routes through the same canonical paste sink as the
+ * Ctrl+V keydown hook (see `pasteFromClipboard` block above) — sets the
+ * `keyboardPasteHandled` flag so the capture-phase paste listener
+ * suppresses any follow-up native paste event, reads clipboard via
+ * `ccsmPty.clipboard.readText()`, writes via `ccsmPty.input(activeSid)`.
+ *
+ * Both are no-ops when no Terminal exists yet (pane unmounted).
+ */
+export function terminalCopy(): boolean {
+  if (!term) return false;
+  const sel = term.getSelection();
+  if (!sel) return false;
+  try {
+    window.ccsmPty?.clipboard?.writeText(sel);
+  } catch {
+    // ignore — selection still highlights, user can ctrl+c retry.
+  }
+  try {
+    term.clearSelection();
+  } catch {
+    // ignore — visual feedback is best-effort.
+  }
+  return true;
+}
+
+export function terminalPaste(): void {
+  if (!term || !activeSid) return;
+  // Reuse the same handoff flag the keydown handler uses; the capture-phase
+  // paste listener installed in `ensureTerminal` checks it to suppress a
+  // duplicate inject from any browser-dispatched follow-up `paste` event.
+  // `setTimeout(0)` (NOT `queueMicrotask`) — see comment on
+  // `pasteFromClipboard` inside ensureTerminal.
+  keyboardPasteHandled = true;
+  setTimeout(() => {
+    keyboardPasteHandled = false;
+  }, 0);
+  try {
+    const text = window.ccsmPty?.clipboard?.readText();
+    if (text) window.ccsmPty.input(activeSid, text);
+  } catch {
+    // best-effort — clipboard read can fail under permission edge cases.
   }
 }

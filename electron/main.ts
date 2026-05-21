@@ -29,7 +29,7 @@ import { app, BrowserWindow, ipcMain, type Tray } from 'electron';
 import { initDb, closeDb } from './db';
 import { buildTrayIcon } from './branding/icon';
 import { initSentry } from './sentry/init';
-import { createWindow as createMainWindowFactory } from './window/createWindow';
+import { createWindow as createMainWindowFactory, installContextMenuSuppressIpc } from './window/createWindow';
 import { createTray, type TrayController } from './tray/createTray';
 
 // safety net — escaped main-proc rejections kill app on Node 20+ default
@@ -223,6 +223,13 @@ app.whenReady().then(() => {
   });
   registerWindowIpc({ ipcMain });
   registerUtilityIpc({ ipcMain });
+
+  // Process-wide IPC for the terminal pane's `onContextMenu` handler to
+  // ask main to skip the native context menu for one upcoming click.
+  // Registered here (alongside the other IPC handlers) rather than in
+  // `createWindow` because the channel is window-agnostic — see
+  // `installContextMenuSuppressIpc` in electron/window/createWindow.ts.
+  installContextMenuSuppressIpc(ipcMain);
 
   installUpdaterIpc();
 

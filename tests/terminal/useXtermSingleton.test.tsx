@@ -4,12 +4,15 @@ import { renderHook } from '@testing-library/react';
 // Mock xterm constructors BEFORE importing the hook so the singleton
 // uses the spies. Use vi.hoisted because vi.mock factories run before
 // any top-level `const`.
-const { openSpy, loadAddonSpy, onSelectionChangeSpy, attachCustomKeyEventHandlerSpy, terminalCtor, webLinksCtor } =
+const { openSpy, loadAddonSpy, onSelectionChangeSpy, attachCustomKeyEventHandlerSpy, getSelectionSpy, clearSelectionSpy, selectAllSpy, terminalCtor, webLinksCtor } =
   vi.hoisted(() => {
     const openSpy = vi.fn();
     const loadAddonSpy = vi.fn();
     const onSelectionChangeSpy = vi.fn();
     const attachCustomKeyEventHandlerSpy = vi.fn();
+    const getSelectionSpy = vi.fn(() => '');
+    const clearSelectionSpy = vi.fn();
+    const selectAllSpy = vi.fn();
     // vitest v3+ requires `function`/`class` (not arrow) for mocks invoked
     // with `new` — otherwise tinyspy throws "is not a constructor".
     const terminalCtor = vi.fn(function () {
@@ -18,6 +21,9 @@ const { openSpy, loadAddonSpy, onSelectionChangeSpy, attachCustomKeyEventHandler
         loadAddon: loadAddonSpy,
         onSelectionChange: onSelectionChangeSpy,
         attachCustomKeyEventHandler: attachCustomKeyEventHandlerSpy,
+        getSelection: getSelectionSpy,
+        clearSelection: clearSelectionSpy,
+        selectAll: selectAllSpy,
         unicode: { activeVersion: '6' },
         _core: { _parent: null },
       };
@@ -25,7 +31,7 @@ const { openSpy, loadAddonSpy, onSelectionChangeSpy, attachCustomKeyEventHandler
     const webLinksCtor = vi.fn(function () {
       return {};
     });
-    return { openSpy, loadAddonSpy, onSelectionChangeSpy, attachCustomKeyEventHandlerSpy, terminalCtor, webLinksCtor };
+    return { openSpy, loadAddonSpy, onSelectionChangeSpy, attachCustomKeyEventHandlerSpy, getSelectionSpy, clearSelectionSpy, selectAllSpy, terminalCtor, webLinksCtor };
   });
 
 vi.mock('@xterm/xterm', () => ({ Terminal: terminalCtor }));
@@ -40,6 +46,8 @@ import {
   __resetSingletonForTests,
   getTerm,
   setActiveSid,
+  terminalCopy,
+  terminalPaste,
 } from '../../src/terminal/xtermSingleton';
 
 describe('useXtermSingleton', () => {
@@ -290,6 +298,116 @@ describe('useXtermSingleton', () => {
       const handler = getKeyHandler();
       handler({ type: 'keydown', key: 'v', ctrlKey: true });
       expect(inputSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  // Task #41: right-click handlers + Ctrl+A select-all. The host div's
+  // onContextMenu in TerminalPane calls these directly; we exercise them
+  // standalone to pin contract independent of the React wiring (which
+  // tests/components/TerminalPane.test.tsx covers separately with mocked
+  // singleton). Plus the new Ctrl+A keybinding so the user retains a
+  // select-all path after the native menu's "Select All" item is no
+  // longer shown for the terminal pane.
+  describe('Task #41: terminalCopy / terminalPaste / Ctrl+A', () => {
+    let inputSpy: ReturnType<typeof vi.fn>;
+    let readTextSpy: ReturnType<typeof vi.fn>;
+    let writeTextSpy: ReturnType<typeof vi.fn>;
+    let host: HTMLDivElement;
+
+    beforeEach(() => {
+      inputSpy = vi.fn();
+      readTextSpy = vi.fn().mockReturnValue('pasted-text');
+      writeTextSpy = vi.fn();
+      (window as unknown as { ccsmPty: unknown }).ccsmPty = {
+        input: inputSpy,
+        clipboard: {
+          readText: readTextSpy,
+          writeText: writeTextSpy,
+        },
+      };
+      host = document.createElement('div');
+      document.body.appendChild(host);
+      renderHook(() => useXtermSingleton({ current: host }));
+      setActiveSid('sid-rc');
+      getSelectionSpy.mockReset().mockReturnValue('');
+      clearSelectionSpy.mockReset();
+      selectAllSpy.mockReset();
+    });
+
+    afterEach(() => {
+      document.body.removeChild(host);
+      delete (window as unknown as { ccsmPty?: unknown }).ccsmPty;
+    });
+
+    it('terminalCopy returns true + writes selection + clears it when selection exists', () => {
+      getSelectionSpy.mockReturnValue('selected-text');
+      const copied = terminalCopy();
+      expect(copied).toBe(true);
+      expect(writeTextSpy).toHaveBeenCalledWith('selected-text');
+      expect(clearSelectionSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('terminalCopy returns false + no clipboard write when selection is empty', () => {
+      getSelectionSpy.mockReturnValue('');
+      const copied = terminalCopy();
+      expect(copied).toBe(false);
+      expect(writeTextSpy).not.toHaveBeenCalled();
+      expect(clearSelectionSpy).not.toHaveBeenCalled();
+    });
+
+    it('terminalPaste reads clipboard and routes through ccsmPty.input', () => {
+      terminalPaste();
+      expect(readTextSpy).toHaveBeenCalledTimes(1);
+      expect(inputSpy).toHaveBeenCalledWith('sid-rc', 'pasted-text');
+    });
+
+    it('terminalPaste arms the keyboardPasteHandled flag so a follow-up native paste is suppressed', () => {
+      terminalPaste();
+      expect(inputSpy).toHaveBeenCalledTimes(1);
+      // Synthetic native paste from a different source — must be dropped
+      // because terminalPaste just armed the flag.
+      const evt = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+      Object.defineProperty(evt, 'clipboardData', {
+        value: { getData: () => 'should-be-dropped' },
+      });
+      host.dispatchEvent(evt);
+      expect(inputSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('terminalPaste is a no-op when no active session', () => {
+      setActiveSid(null);
+      terminalPaste();
+      expect(inputSpy).not.toHaveBeenCalled();
+    });
+
+    it('Ctrl+A invokes term.selectAll() and returns false to stop SOH translation', () => {
+      const handler = attachCustomKeyEventHandlerSpy.mock.calls[0][0];
+      const ret = handler({ type: 'keydown', key: 'a', ctrlKey: true });
+      expect(ret).toBe(false);
+      expect(selectAllSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('Cmd+A also invokes term.selectAll() (macOS)', () => {
+      const handler = attachCustomKeyEventHandlerSpy.mock.calls[0][0];
+      const ret = handler({ type: 'keydown', key: 'a', metaKey: true });
+      expect(ret).toBe(false);
+      expect(selectAllSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('Ctrl+Shift+A does NOT select-all (shift modifier reserved for other bindings)', () => {
+      const handler = attachCustomKeyEventHandlerSpy.mock.calls[0][0];
+      const ret = handler({ type: 'keydown', key: 'A', ctrlKey: true, shiftKey: true });
+      // Shift+A is not one of our explicit shifted bindings (only C/V are);
+      // returning true keeps xterm's default handling intact.
+      expect(ret).toBe(true);
+      expect(selectAllSpy).not.toHaveBeenCalled();
+    });
+
+    it('plain "a" keydown (no modifier) is left to xterm as normal input', () => {
+      const handler = attachCustomKeyEventHandlerSpy.mock.calls[0][0];
+      const ret = handler({ type: 'keydown', key: 'a' });
+      expect(ret).toBe(true);
+      expect(selectAllSpy).not.toHaveBeenCalled();
     });
   });
 });

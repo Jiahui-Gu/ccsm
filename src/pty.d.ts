@@ -85,6 +85,14 @@ export interface CcsmPtyApi {
 declare global {
   interface Window {
     ccsmPty: CcsmPtyApi;
+    ccsmShell?: {
+      /** Tell main to skip the very next native context-menu popup. Used
+       *  by TerminalPane's `onContextMenu` handler so right-click can
+       *  copy/paste inline without a popover racing on top. See
+       *  `electron/preload/bridges/ccsmShell.ts`. Optional because tests
+       *  / e2e probes may not install the bridge. */
+      suppressContextMenuOnce(): void;
+    };
     __ccsmTerm?: import('@xterm/xterm').Terminal;
   }
 }

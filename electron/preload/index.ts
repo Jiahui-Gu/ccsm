@@ -13,15 +13,18 @@ import { installCcsmPtyBridge } from './bridges/ccsmPty';
 import { installCcsmSessionBridge } from './bridges/ccsmSession';
 import { installCcsmNotifyBridge } from './bridges/ccsmNotify';
 import { installCcsmSessionTitlesBridge } from './bridges/ccsmSessionTitles';
+import { installCcsmShellBridge } from './bridges/ccsmShell';
 
 installCcsmCoreBridge();
 installCcsmPtyBridge();
 installCcsmSessionBridge();
 installCcsmNotifyBridge();
 installCcsmSessionTitlesBridge();
+installCcsmShellBridge();
 
 export type { CCSMAPI } from './bridges/ccsmCore';
 export type { CCSMPtyAPI } from './bridges/ccsmPty';
 export type { CCSMSessionAPI, SessionState } from './bridges/ccsmSession';
 export type { CCSMNotifyAPI } from './bridges/ccsmNotify';
 export type { CCSMSessionTitlesAPI } from './bridges/ccsmSessionTitles';
+export type { CCSMShellAPI } from './bridges/ccsmShell';
