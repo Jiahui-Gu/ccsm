@@ -38,7 +38,21 @@ const child = spawn(
   {
     cwd: repoRoot,
     stdio: 'inherit',
-    env: { ...process.env, CCSM_E2E_NO_SINGLE_INSTANCE: '1' },
+    env: {
+      ...process.env,
+      CCSM_E2E_NO_SINGLE_INSTANCE: '1',
+      // Dev-loop ergonomics (Task #11): closing the main window during
+      // `npm run dev` should fully quit the Electron app instead of
+      // going production tray-resident, so concurrently's `-k` reaps
+      // the sibling `dev:web` (webpack-dev-server on :4100). Without
+      // this, closing the window leaves the Electron main proc alive
+      // in the tray AND keeps webpack-dev-server holding port 4100 —
+      // every restart needed a manual taskkill. Scoped to this wrapper
+      // so manual `electron .` runs and e2e probes still get the real
+      // close-to-tray choreography. Read by
+      // `electron/window/createWindow.ts`.
+      CCSM_DEV_QUIT_ON_CLOSE: '1',
+    },
   },
 );
 

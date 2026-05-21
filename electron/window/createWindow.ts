@@ -402,6 +402,19 @@ export function createWindow(deps: CreateWindowDeps): BrowserWindow {
 
   win.on('close', (e) => {
     if (deps.getIsQuitting()) return;
+    // Dev-loop escape hatch (Task #11): `scripts/dev-electron.mjs` sets
+    // CCSM_DEV_QUIT_ON_CLOSE=1 so closing the window during `npm run dev`
+    // fully quits the app instead of going tray-resident. Without this,
+    // the Electron main proc lingered in the tray AND its sibling
+    // webpack-dev-server (concurrently `dev:web`, port 4100) kept
+    // running because concurrently's `-k` only reaps when one child
+    // exits — every restart needed a manual taskkill. Scoped to the dev
+    // wrapper's env so production, manual `electron .`, and e2e probes
+    // still get the real close-to-tray choreography below.
+    if (process.env.CCSM_DEV_QUIT_ON_CLOSE === '1') {
+      deps.setIsQuitting(true);
+      return;
+    }
     const pref = getCloseAction();
     if (pref === 'quit') {
       deps.setIsQuitting(true);
