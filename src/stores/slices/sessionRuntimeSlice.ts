@@ -23,11 +23,13 @@ export type SessionRuntimeSlice = Pick<
   RootStore,
   | 'flashStates'
   | 'disconnectedSessions'
+  | 'reloadNonce'
   | '_applySessionState'
   | '_setFlash'
   | '_applyCwdRedirect'
   | '_applyPtyExit'
   | '_clearPtyExit'
+  | 'reloadSession'
 >;
 
 export function createSessionRuntimeSlice(
@@ -39,6 +41,7 @@ export function createSessionRuntimeSlice(
     // initial state
     flashStates: {},
     disconnectedSessions: {},
+    reloadNonce: {},
 
     _applySessionState: (sid, state) => {
       set((s) => {
@@ -94,6 +97,37 @@ export function createSessionRuntimeSlice(
         const next = { ...s.disconnectedSessions };
         delete next[sid];
         return { disconnectedSessions: next };
+      });
+    },
+
+    reloadSession: async (sid) => {
+      // Kill the current pty (best-effort — it may already be exiting,
+      // in which case `kill` resolves with `ok: false` which we ignore).
+      // The renderer's preload bridge swallows IPC errors via `.catch()`
+      // pattern at other call sites; we mirror that here.
+      try {
+        await window.ccsmPty?.kill(sid);
+      } catch {
+        /* renderer started without preload (tests) — no-op */
+      }
+      // Drop any stale exit-classification entry from the previous pty
+      // so the sidebar red dot doesn't linger across the reload window
+      // (the new pty's attach effect will also clearPtyExit on success,
+      // but doing it eagerly here avoids a brief flash for crashed-then-
+      // reload-to-recover sequences).
+      set((s) => {
+        const nextDisc = s.disconnectedSessions[sid]
+          ? (() => {
+              const next = { ...s.disconnectedSessions };
+              delete next[sid];
+              return next;
+            })()
+          : s.disconnectedSessions;
+        const cur = s.reloadNonce[sid] ?? 0;
+        return {
+          disconnectedSessions: nextDisc,
+          reloadNonce: { ...s.reloadNonce, [sid]: cur + 1 },
+        };
       });
     },
   };

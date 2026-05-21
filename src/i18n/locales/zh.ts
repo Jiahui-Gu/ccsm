@@ -52,6 +52,8 @@ const zh: EnCatalog = {
     unarchiveGroup: '取消归档',
     archiveSession: '归档',
     unarchiveSession: '取消归档',
+    reloadSession: '重启会话',
+    reloadingSessionToast: '正在重启"{{name}}"…',
     deleteGroupEllipsis: '删除分组…',
     deleteGroup: '删除分组',
     deleteGroupConfirmTitle: '确认删除"{{name}}"？',

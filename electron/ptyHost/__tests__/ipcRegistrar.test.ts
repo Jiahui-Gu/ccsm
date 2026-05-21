@@ -87,7 +87,7 @@ function makeDeps(over: Partial<PtyIpcDeps> = {}): PtyIpcDeps {
     spawnPtySession: vi.fn(() => ({ sid: 's', pid: 1, cols: 80, rows: 24, cwd: '/' })),
     inputPtySession: vi.fn(),
     resizePtySession: vi.fn(),
-    killPtySession: vi.fn(() => true),
+    killPtySession: vi.fn(async () => true),
     getPtySession: vi.fn(() => null),
     getBufferSnapshot: vi.fn(async () => ({ snapshot: '', seq: 0 })),
     ...over,
@@ -181,12 +181,12 @@ describe('pty:input / resize / kill / get pass-through', () => {
     expect(deps.resizePtySession).toHaveBeenCalledWith('sid', 100, 30);
   });
 
-  it('kill returns the deps result', () => {
+  it('kill returns the deps result', async () => {
     const ipc = makeFakeIpc();
-    const deps = makeDeps({ killPtySession: vi.fn(() => false) });
+    const deps = makeDeps({ killPtySession: vi.fn(async () => false) });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
-    expect(ipc.handlers.get('pty:kill')!({}, 'sid')).toBe(false);
+    await expect(ipc.handlers.get('pty:kill')!({}, 'sid')).resolves.toBe(false);
     expect(deps.killPtySession).toHaveBeenCalledWith('sid');
   });
 

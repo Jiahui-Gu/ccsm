@@ -35,7 +35,7 @@ export interface PtyIpcDeps {
   ) => PtySessionInfo;
   inputPtySession: (sid: string, data: string) => void;
   resizePtySession: (sid: string, cols: number, rows: number) => void;
-  killPtySession: (sid: string) => boolean;
+  killPtySession: (sid: string) => Promise<boolean>;
   getPtySession: (sid: string) => PtySessionInfo | null;
   /** L4 PR-B (#865): async chunked snapshot + capture seq. Routed through
    *  the deps surface (rather than direct module import) so the registrar
@@ -163,7 +163,14 @@ export function registerPtyIpc(ipcMain: IpcMain, deps: PtyIpcDeps): void {
     deps.resizePtySession(sid, cols, rows);
   });
 
-  ipcMain.handle('pty:kill', (_event, sid: string) => deps.killPtySession(sid));
+  // Race fix (#1277 review): killPtySession returns a Promise that resolves
+  // only after pty.onExit fires (entry removed from sessions Map) or
+  // KILL_EXIT_TIMEOUT_MS elapses. ipcMain.handle awaits the return so the
+  // renderer's `await ccsmPty.kill(sid)` does NOT resolve until the entry
+  // is gone — a subsequent `pty:attach` is then guaranteed to see null and
+  // walk the spawn-on-null fallback rather than registering as a viewer of
+  // a dying pty.
+  ipcMain.handle('pty:kill', async (_event, sid: string) => deps.killPtySession(sid));
 
   ipcMain.handle('pty:get', (_event, sid: string) => deps.getPtySession(sid));
 

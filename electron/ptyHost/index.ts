@@ -81,7 +81,7 @@ export const inputPtySession = (sid: string, data: string): void =>
 export const resizePtySession = (sid: string, cols: number, rows: number): void =>
   L.resize(sessions, sid, cols, rows);
 
-export const killPtySession = (sid: string): boolean => L.kill(sessions, sid);
+export const killPtySession = (sid: string): Promise<boolean> => L.kill(sessions, sid);
 
 export const getPtySession = (sid: string): L.PtySessionInfo | null =>
   L.get(sessions, sid);

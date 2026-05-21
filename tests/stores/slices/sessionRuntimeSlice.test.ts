@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createSessionRuntimeSlice } from '../../../src/stores/slices/sessionRuntimeSlice';
 import type { RootStore } from '../../../src/stores/slices/types';
 import type { Session } from '../../../src/types';
@@ -113,5 +113,54 @@ describe('sessionRuntimeSlice', () => {
     // can short-circuit.
     expect(next[0]).toBe(a);
     expect(next[2]).toBe(c);
+  });
+
+  describe('reloadSession', () => {
+    let killSpy: ReturnType<typeof vi.fn>;
+    let prevPty: unknown;
+    beforeEach(() => {
+      killSpy = vi.fn().mockResolvedValue({ ok: true, killed: true });
+      prevPty = (window as unknown as { ccsmPty?: unknown }).ccsmPty;
+      (window as unknown as { ccsmPty: unknown }).ccsmPty = { kill: killSpy };
+    });
+    afterEach(() => {
+      (window as unknown as { ccsmPty: unknown }).ccsmPty = prevPty;
+    });
+
+    it('initial reloadNonce is empty', () => {
+      const h = harness();
+      expect(h.state().reloadNonce).toEqual({});
+    });
+
+    it('kills pty and bumps the per-session reloadNonce', async () => {
+      const h = harness({ sessions: [mkSession('a', 'g1')] });
+      await h.runtime.reloadSession('a');
+      expect(killSpy).toHaveBeenCalledWith('a');
+      expect(h.state().reloadNonce['a']).toBe(1);
+      await h.runtime.reloadSession('a');
+      expect(h.state().reloadNonce['a']).toBe(2);
+    });
+
+    it('clears any stale disconnect entry on reload', async () => {
+      const h = harness({ sessions: [mkSession('a', 'g1')] });
+      h.runtime._applyPtyExit('a', { code: 1, signal: null });
+      expect(h.state().disconnectedSessions['a'].kind).toBe('crashed');
+      await h.runtime.reloadSession('a');
+      expect(h.state().disconnectedSessions['a']).toBeUndefined();
+    });
+
+    it('swallows kill IPC errors so the nonce still bumps', async () => {
+      killSpy.mockRejectedValueOnce(new Error('not running'));
+      const h = harness({ sessions: [mkSession('a', 'g1')] });
+      await h.runtime.reloadSession('a');
+      expect(h.state().reloadNonce['a']).toBe(1);
+    });
+
+    it('tolerates ccsmPty being undefined (test env)', async () => {
+      (window as unknown as { ccsmPty: unknown }).ccsmPty = undefined;
+      const h = harness({ sessions: [mkSession('a', 'g1')] });
+      await h.runtime.reloadSession('a');
+      expect(h.state().reloadNonce['a']).toBe(1);
+    });
   });
 });
