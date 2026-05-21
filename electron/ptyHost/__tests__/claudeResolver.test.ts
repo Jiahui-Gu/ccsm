@@ -25,6 +25,8 @@ interface SpawnFakeBus {
   results: Map<string, { status: number; stdout: string }>;
   calls: SpawnCall[];
   shouldThrow: boolean;
+  hang: boolean;
+  killed: number;
 }
 function bus(): SpawnFakeBus {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -40,9 +42,17 @@ vi.mock('node:child_process', () => {
     const r = b.results.get(key) ?? { status: 1, stdout: '' };
     const child = new EventEmitter() as EventEmitter & {
       stdout: Readable;
+      kill: () => void;
     };
     const stdout = new Readable({ read() {} });
     child.stdout = stdout;
+    child.kill = () => {
+      b.killed += 1;
+    };
+    // When `hang` is set, simulate a stuck `where`/`which`: never push
+    // data, never emit exit. The resolver's timeout is the only way the
+    // promise can settle. Used by the where_timeout test.
+    if (b.hang) return child;
     // Push data on next microtask so the resolver's `'data'` listener
     // (attached synchronously after spawn returns) receives it. Emit
     // `exit` on the FOLLOWING tick — after the readable has drained the
@@ -62,7 +72,7 @@ vi.mock('node:child_process', () => {
 });
 
 // Import AFTER vi.mock so the resolver picks up the mocked spawn.
-import { __resetClaudeResolverForTest, resolveClaude } from '../claudeResolver';
+import { __resetClaudeResolverForTest, resolveClaude, whereAsync } from '../claudeResolver';
 
 const ORIGINAL_PLATFORM = process.platform;
 
@@ -76,6 +86,8 @@ beforeEach(() => {
     results: new Map(),
     calls: [],
     shouldThrow: false,
+    hang: false,
+    killed: 0,
   } satisfies SpawnFakeBus;
   __resetClaudeResolverForTest();
 });
@@ -189,5 +201,43 @@ describe('resolveClaude caching', () => {
     expect(a).toBe('/bin/claude');
     expect(b).toBe('/bin/claude');
     expect(bus().calls).toHaveLength(1);
+  });
+});
+
+describe('whereAsync timeout', () => {
+  // Pins the 5s hard cap on a single `where`/`which` invocation. A
+  // broken PATH / slow shell / AV interception used to hang the lookup
+  // forever; without rejection the IPC handler stays pending and the
+  // renderer's spinner never resolves.
+  beforeEach(() => {
+    setPlatform('linux');
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('rejects with where_timeout error after 5s when the child never exits', async () => {
+    bus().hang = true;
+    const promise = whereAsync('claude');
+    // Attach catch synchronously so an early rejection isn't unhandled.
+    const settled = promise.catch((e: Error) => e);
+    await vi.advanceTimersByTimeAsync(5000);
+    const err = await settled;
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/^where_timeout: /);
+    expect((err as Error).message).toContain('5000ms');
+    // Resolver must kill the stuck child so the FD/handle isn't leaked.
+    expect(bus().killed).toBe(1);
+  });
+
+  it('resolveClaude collapses where_timeout to null (UI shows ClaudeMissingGuide, not undefined cwd)', async () => {
+    bus().hang = true;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const promise = resolveClaude();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(await promise).toBeNull();
+    expect(warn).toHaveBeenCalledWith('[claudeResolver]', expect.stringMatching(/^where_timeout:/));
+    warn.mockRestore();
   });
 });
