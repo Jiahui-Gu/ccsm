@@ -210,11 +210,32 @@ export function makeEntry(
   cols: number,
   rows: number,
   deps: MakeEntryDeps,
+  forkSourceSid?: string,
 ): Entry {
   const claudeSid = toClaudeSid(sid);
   const sourceJsonl = findJsonlForSid(claudeSid);
-  const flag = sourceJsonl ? '--resume' : '--session-id';
-  const args = [flag, claudeSid];
+
+  // `--fork-session` path: the renderer is creating a new session that should
+  // boot with another (source) session's full transcript context but write to
+  // its own JSONL. Claude CLI handles the duplication natively — we hand it
+  // BOTH the source sid (`--resume`) AND the desired new sid (`--session-id`)
+  // along with `--fork-session`, and it copies the transcript on first write.
+  // The new sid's JSONL DOES NOT EXIST YET (since we just minted it in the
+  // renderer), so the normal `findJsonlForSid` branch below would route us
+  // into a `--session-id`-only spawn that reuses the bare new id — losing
+  // the parent context. Handle fork explicitly first, before the resume/
+  // session-id picker; once the fork finishes the first turn, the new JSONL
+  // exists and any subsequent re-spawn (e.g. user kills + retries) will fall
+  // through `findJsonlForSid` → `--resume` like any other ccsm-tracked
+  // session, no special-casing needed downstream.
+  let args: string[];
+  if (forkSourceSid && !sourceJsonl) {
+    const sourceClaudeSid = toClaudeSid(forkSourceSid);
+    args = ['--resume', sourceClaudeSid, '--fork-session', '--session-id', claudeSid];
+  } else {
+    const flag = sourceJsonl ? '--resume' : '--session-id';
+    args = [flag, claudeSid];
+  }
 
   const spawnCwd = resolveSpawnCwd(cwd);
 

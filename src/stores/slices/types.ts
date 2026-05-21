@@ -85,6 +85,19 @@ export type State = {
    * Not persisted — purely a transient nudge for the attach hook.
    */
   reloadNonce: Record<string, number>;
+  /** Transient UI signal: when a session is freshly copied (`copySession`),
+   *  this holds its id so the matching `<SessionRow>` mounts directly into
+   *  inline-rename mode. Cleared by the row after it consumes the flag, or
+   *  by any subsequent `selectSession` to a different id. */
+  pendingRenameId: string | null;
+  /** Map newSid → source ccsm sid for sessions created via `copySession`.
+   *  `usePtyAttach` reads it on the very first `pty.spawn` for a given sid
+   *  and threads the source through to main so the spawn args become
+   *  `--resume <srcUuid> --fork-session --session-id <newUuid>`. The entry
+   *  is cleared the moment the spawn IPC is dispatched so subsequent
+   *  re-attach / Retry paths fall back to the normal `--session-id` flow
+   *  (the JSONL exists by then so `--resume` will pick it up). */
+  pendingForkSource: Record<string, string>;
 };
 
 export type Actions = {
@@ -128,6 +141,18 @@ export type Actions = {
   setSessionModel: (sessionId: string, model: ModelId) => void;
   archiveSession: (sessionId: string) => void;
   unarchiveSession: (sessionId: string) => void;
+  /** Right-click "Copy session" — fork a session in place. Creates a new
+   *  Session row with the source's group/cwd/model, name `<source> (copy)`,
+   *  selects it, sets `pendingRenameId` so the new row enters inline rename,
+   *  and registers the source in `pendingForkSource` so the renderer's
+   *  `pty.spawn(newSid, …)` IPC carries `forkSourceSid` and main spawns
+   *  `claude --resume <srcUuid> --fork-session --session-id <newUuid>` —
+   *  i.e. the new session boots with the source's full transcript context
+   *  but writes to its own JSONL. Returns the new session id (or null when
+   *  the source isn't found). */
+  copySession: (sourceId: string) => string | null;
+  /** Clear `pendingRenameId` once a SessionRow has consumed it. */
+  consumePendingRename: (sessionId: string) => void;
 
   // appearance
   setTheme: (theme: Theme) => void;

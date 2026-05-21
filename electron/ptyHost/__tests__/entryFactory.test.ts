@@ -239,6 +239,57 @@ describe('entryFactory.makeEntry', () => {
       | undefined;
     expect(opts?.scrollback).toBe(1500);
   });
+
+  // Right-click "Copy session" path: when the renderer mints a fresh sid
+  // (no JSONL on disk yet) AND passes a `forkSourceSid`, makeEntry must
+  // spawn `claude --resume <src> --fork-session --session-id <new>` so the
+  // CLI duplicates the source's transcript natively. The bare new-session
+  // path (`['--session-id', sid]`) would lose the source context entirely.
+  it('forks via --resume + --fork-session + --session-id when forkSourceSid is set and no JSONL exists', () => {
+    bus().sourceJsonl = null;
+    makeEntry(
+      'sid-NEW',
+      '/work',
+      '/bin/claude',
+      80,
+      24,
+      { onExit: vi.fn() },
+      'sid-SOURCE',
+    );
+    const args = bus().ptySpawn.mock.calls[0][1] as string[];
+    expect(args).toEqual([
+      '--resume',
+      'sid-SOURCE',
+      '--fork-session',
+      '--session-id',
+      'sid-NEW',
+    ]);
+    // No import-resume copy expected — sourceJsonl is null so the existing
+    // `ensureResumeJsonlAtSpawnCwd` branch is skipped (correct: claude
+    // CLI handles the transcript copy itself with --fork-session).
+    expect(bus().ensureJsonl).not.toHaveBeenCalled();
+  });
+
+  // Defensive: once the forked session has booted at least once, its own
+  // JSONL exists at `<newSid>.jsonl`. A re-spawn (Retry, app relaunch)
+  // must NOT re-issue --fork-session — that would copy the transcript a
+  // SECOND time. Falling through to the normal `--resume <new>` path is
+  // the right behavior. We model this by setting sourceJsonl truthy
+  // (i.e. findJsonlForSid found the new sid's jsonl).
+  it('skips --fork-session and resumes the new sid directly when the new sid already has a JSONL', () => {
+    bus().sourceJsonl = '/proj/sid-NEW.jsonl';
+    makeEntry(
+      'sid-NEW',
+      '/work',
+      '/bin/claude',
+      80,
+      24,
+      { onExit: vi.fn() },
+      'sid-SOURCE',
+    );
+    const args = bus().ptySpawn.mock.calls[0][1] as string[];
+    expect(args).toEqual(['--resume', 'sid-NEW']);
+  });
 });
 
 // L4 PR-C (#863): the onData handler is now an extracted, named

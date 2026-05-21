@@ -54,6 +54,7 @@ const en = {
     unarchiveSession: 'Unarchive',
     reloadSession: 'Reload session',
     reloadingSessionToast: 'Reloading "{{name}}"…',
+    copySession: 'Copy session',
     deleteGroupEllipsis: 'Delete group…',
     deleteGroup: 'Delete group',
     deleteGroupConfirmTitle: 'Delete "{{name}}"?',

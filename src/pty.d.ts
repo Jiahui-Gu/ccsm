@@ -64,7 +64,11 @@ export type CheckClaudeAvailableResult =
 
 export interface CcsmPtyApi {
   list(): Promise<PtySessionInfo[]>;
-  spawn(sid: string, cwd: string): Promise<SpawnResult>;
+  /** When `forkSourceSid` is set, main spawns
+   *  `claude --resume <forkSourceSid> --fork-session --session-id <sid>` so the
+   *  new pty boots with the source session's full transcript context but
+   *  writes to its own JSONL. Used by the right-click "Copy session" flow. */
+  spawn(sid: string, cwd: string, forkSourceSid?: string): Promise<SpawnResult>;
   attach(sid: string): Promise<AttachResult | null>;
   detach(sid: string): Promise<void>;
   input(sid: string, data: string): Promise<void>;
