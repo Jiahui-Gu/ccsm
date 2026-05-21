@@ -1,3 +1,5 @@
+import { CLAUDE_CODE_AGENT_ID } from './shared/agentIds';
+
 // Renderer-side UI display state for `Session.state` — a 2-state model
 // derived from the 3-state IPC vocabulary. The mapping CLI/IPC →
 // renderer lives in `src/agent/lifecycle.ts:mapState`:
@@ -14,7 +16,10 @@ export type SessionState = 'idle' | 'waiting';
 
 // MVP scope is single-agent. Keeping this as a discriminated string lets us
 // add 'codex' / 'gemini' later without touching call sites that just key off it.
-export type AgentType = 'claude-code';
+//
+// The wire value is owned by `src/shared/agentIds.ts` (cross-boundary so
+// main + renderer + DB-migration code agree on the persisted string).
+export type AgentType = typeof CLAUDE_CODE_AGENT_ID;
 
 export interface Session {
   id: string;
