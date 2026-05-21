@@ -112,10 +112,15 @@ vi.mock('../../branding/icon', () => ({
 
 import {
   installContextMenu,
+  installContextMenuSuppressIpc,
   isAllowedNavigation,
+  isContextMenuSuppressed,
+  recordContextMenuSuppression,
   decideCloseAction,
   createWindow,
   CLOSE_ASK_TIMEOUT_MS,
+  __resetContextMenuSuppressionForTests,
+  __resetSuppressIpcForTests,
   type CreateWindowDeps,
 } from '../createWindow';
 
@@ -153,6 +158,7 @@ function makeFakeWindow() {
 describe('installContextMenu', () => {
   beforeEach(() => {
     popupCalls.length = 0;
+    __resetContextMenuSuppressionForTests();
   });
 
   it('registers a single context-menu listener on the window webContents', () => {
@@ -244,6 +250,173 @@ describe('installContextMenu', () => {
     const items = popupCalls[0].items as Array<Record<string, unknown>>;
     const paste = items.find((i) => i.role === 'paste');
     expect(paste?.enabled).toBe(false);
+  });
+
+  // ─── Task #41: terminal pane's one-shot suppression ──────────────────
+  // The terminal pane handles right-click inline (copy-on-selection /
+  // paste-on-empty, no popover). Electron fires `context-menu` on the
+  // WebContents regardless of renderer `preventDefault()`, so the pane
+  // sends `shell:suppressContextMenuOnce` immediately before its
+  // onContextMenu returns; main records a short deadline and the
+  // listener installed here consults it.
+
+  it('suppresses native menu when within suppression deadline (Task #41)', () => {
+    const fake = makeFakeWindow();
+    installContextMenu(fake.win);
+    recordContextMenuSuppression(Date.now());
+    fake.fire({
+      selectionText: 'something',
+      isEditable: false,
+      editFlags: {
+        canCut: false,
+        canCopy: true,
+        canPaste: false,
+        canSelectAll: true,
+      },
+    });
+    expect(popupCalls).toHaveLength(0);
+  });
+
+  it('the suppression is one-shot: a second right-click gets the menu', () => {
+    const fake = makeFakeWindow();
+    installContextMenu(fake.win);
+    recordContextMenuSuppression(Date.now());
+    // First click suppressed.
+    fake.fire({
+      selectionText: '',
+      isEditable: false,
+      editFlags: { canCut: false, canCopy: false, canPaste: false, canSelectAll: true },
+    });
+    // Second click — no new suppression sent — must produce a popup.
+    fake.fire({
+      selectionText: 'second',
+      isEditable: false,
+      editFlags: { canCut: false, canCopy: true, canPaste: false, canSelectAll: true },
+    });
+    expect(popupCalls).toHaveLength(1);
+  });
+
+  it('an expired suppression deadline does not block the menu', () => {
+    const fake = makeFakeWindow();
+    installContextMenu(fake.win);
+    // Record a suppression "200ms in the past" by mutating Date.now via a
+    // narrow spy — keeps the test independent of vi.useFakeTimers (which
+    // the parent describe does not enable).
+    const realNow = Date.now;
+    const stableNow = realNow();
+    Date.now = () => stableNow - 200;
+    try {
+      recordContextMenuSuppression(Date.now());
+    } finally {
+      Date.now = realNow;
+    }
+    // Now-now is 200ms past the recorded deadline — listener should
+    // proceed to popup as normal.
+    fake.fire({
+      selectionText: 'hello',
+      isEditable: false,
+      editFlags: { canCut: false, canCopy: true, canPaste: false, canSelectAll: true },
+    });
+    expect(popupCalls).toHaveLength(1);
+  });
+});
+
+// ─── Task #41: pure suppression decider + IPC wiring ────────────────────
+// Pure helpers + the IPC registration so the suppression mechanism can be
+// driven without mounting an Electron window. The deadline math is a
+// strict `<` (not `<=`) so a request recorded at T=1000 with a 100ms
+// window suppresses everything up to T=1099 inclusive and allows T=1100.
+
+describe('isContextMenuSuppressed (Task #41)', () => {
+  it('returns true when now is before the deadline', () => {
+    expect(isContextMenuSuppressed(1000, 999)).toBe(true);
+  });
+
+  it('returns false at the deadline boundary', () => {
+    expect(isContextMenuSuppressed(1000, 1000)).toBe(false);
+  });
+
+  it('returns false after the deadline', () => {
+    expect(isContextMenuSuppressed(1000, 1001)).toBe(false);
+  });
+
+  it('returns false for the default uninitialised deadline of 0', () => {
+    expect(isContextMenuSuppressed(0, 12345)).toBe(false);
+  });
+});
+
+describe('recordContextMenuSuppression (Task #41)', () => {
+  beforeEach(() => {
+    __resetContextMenuSuppressionForTests();
+  });
+
+  it('records a deadline 100ms after the supplied now', () => {
+    const deadline = recordContextMenuSuppression(1000);
+    expect(deadline).toBe(1100);
+  });
+
+  it('later calls extend (overwrite) the deadline, never shrink it relative to live now', () => {
+    expect(recordContextMenuSuppression(1000)).toBe(1100);
+    // A second call at T=1050 sets the deadline to 1150. This is the
+    // intended "renew the one-shot" behavior — a fresh request always
+    // pushes the deadline forward.
+    expect(recordContextMenuSuppression(1050)).toBe(1150);
+  });
+});
+
+describe('installContextMenuSuppressIpc (Task #41)', () => {
+  beforeEach(() => {
+    __resetSuppressIpcForTests();
+    __resetContextMenuSuppressionForTests();
+    popupCalls.length = 0;
+  });
+
+  it('registers exactly one listener on shell:suppressContextMenuOnce', () => {
+    const handlers = new Map<string, (...args: unknown[]) => void>();
+    const ipcMain = {
+      on: vi.fn((ch: string, cb: (...args: unknown[]) => void) => {
+        handlers.set(ch, cb);
+      }),
+    } as unknown as import('electron').IpcMain;
+    installContextMenuSuppressIpc(ipcMain);
+    expect(handlers.has('shell:suppressContextMenuOnce')).toBe(true);
+  });
+
+  it('the registered handler arms a suppression that blocks the next menu', () => {
+    const handlers = new Map<string, (...args: unknown[]) => void>();
+    const ipcMain = {
+      on: vi.fn((ch: string, cb: (...args: unknown[]) => void) => {
+        handlers.set(ch, cb);
+      }),
+    } as unknown as import('electron').IpcMain;
+    installContextMenuSuppressIpc(ipcMain);
+    const fake = makeFakeWindow();
+    installContextMenu(fake.win);
+    // No suppression yet — popup fires.
+    fake.fire({
+      selectionText: 'a',
+      isEditable: false,
+      editFlags: { canCut: false, canCopy: true, canPaste: false, canSelectAll: true },
+    });
+    expect(popupCalls).toHaveLength(1);
+    // Renderer asks to suppress; next popup is swallowed.
+    handlers.get('shell:suppressContextMenuOnce')!();
+    fake.fire({
+      selectionText: 'b',
+      isEditable: false,
+      editFlags: { canCut: false, canCopy: true, canPaste: false, canSelectAll: true },
+    });
+    expect(popupCalls).toHaveLength(1);
+  });
+
+  it('is idempotent — repeated installs do not double-register', () => {
+    const handlers: string[] = [];
+    const ipcMain = {
+      on: vi.fn((ch: string) => handlers.push(ch)),
+    } as unknown as import('electron').IpcMain;
+    installContextMenuSuppressIpc(ipcMain);
+    installContextMenuSuppressIpc(ipcMain);
+    expect(handlers.filter((c) => c === 'shell:suppressContextMenuOnce')).toHaveLength(1);
   });
 });
 

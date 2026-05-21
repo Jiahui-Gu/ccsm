@@ -1,10 +1,11 @@
-import { useRef } from 'react';
+import { useCallback, useRef, type MouseEvent } from 'react';
 import '@xterm/xterm/css/xterm.css';
 import { useTranslation } from '../i18n/useTranslation';
 import { useXtermSingleton } from '../terminal/useXtermSingleton';
 import { useTerminalResize } from '../terminal/useTerminalResize';
 import { usePtyAttach, type PtyAttachState } from '../terminal/usePtyAttach';
 import { useAtBottom } from '../terminal/useAtBottom';
+import { terminalCopy, terminalPaste } from '../terminal/xtermSingleton';
 import { ScrollToBottomButton } from './ScrollToBottomButton';
 
 // TerminalPane is the host shell for the singleton xterm view. The three
@@ -37,11 +38,34 @@ export function TerminalPane({ sessionId, cwd }: Props) {
   // detection logic (and its tests) stay live for future use.
   const { scrollToBottom } = useAtBottom(sessionId);
 
+  // Native CLI / terminal-emulator right-click behavior. Mirrors Windows
+  // Terminal / gnome-terminal: right-click with selection → copy (+ clear
+  // for visual feedback); right-click with no selection → paste. No
+  // popover, ever. The native context menu installed in
+  // `electron/window/createWindow.ts` would race on top by default —
+  // `ccsmShell.suppressContextMenuOnce()` tells main to skip the next
+  // popup for this WebContents (DOM `preventDefault()` alone does NOT
+  // cancel Electron's main-process `context-menu` event). Optional chain
+  // on the bridge because tests / e2e probes may not install it.
+  const onContextMenu = useCallback((e: MouseEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    try {
+      window.ccsmShell?.suppressContextMenuOnce();
+    } catch {
+      // best-effort — falling through to inline copy/paste still works,
+      // user just sees the native menu race briefly.
+    }
+    const copied = terminalCopy();
+    if (!copied) terminalPaste();
+  }, []);
+
   return (
     <div
       className="relative flex-1 w-full h-full bg-black ring-1 ring-inset ring-white/5"
       data-terminal-host
       data-active-sid={sessionId}
+      onContextMenu={onContextMenu}
     >
       <div ref={hostRef} className="absolute inset-0" />
       <Overlay state={state} onRetry={onRetry} t={t} />

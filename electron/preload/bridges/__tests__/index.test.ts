@@ -13,6 +13,7 @@ const {
   installSession,
   installNotify,
   installSessionTitles,
+  installShell,
   sentryLoaded,
 } = vi.hoisted(() => ({
   installCore: vi.fn(),
@@ -20,6 +21,7 @@ const {
   installSession: vi.fn(),
   installNotify: vi.fn(),
   installSessionTitles: vi.fn(),
+  installShell: vi.fn(),
   sentryLoaded: vi.fn(),
 }));
 
@@ -38,6 +40,9 @@ vi.mock('../ccsmNotify', () => ({
 vi.mock('../ccsmSessionTitles', () => ({
   installCcsmSessionTitlesBridge: installSessionTitles,
 }));
+vi.mock('../ccsmShell', () => ({
+  installCcsmShellBridge: installShell,
+}));
 
 describe('preload/index entry point', () => {
   it('loads sentry/preload and invokes every install function exactly once', async () => {
@@ -49,5 +54,6 @@ describe('preload/index entry point', () => {
     expect(installSession).toHaveBeenCalledTimes(1);
     expect(installNotify).toHaveBeenCalledTimes(1);
     expect(installSessionTitles).toHaveBeenCalledTimes(1);
+    expect(installShell).toHaveBeenCalledTimes(1);
   });
 });
