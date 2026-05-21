@@ -55,6 +55,36 @@ export function Sidebar({ onCreateSession, onCreateSessionWithCwd, onOpenSetting
   // re-renders triggered by unrelated store mutations.
   const normal = useMemo(() => groups.filter((g) => g.kind === 'normal'), [groups]);
   const archived = useMemo(() => groups.filter((g) => g.kind === 'archive'), [groups]);
+  // Perf: bucket sessions by groupId ONCE per `sessions` ref change instead
+  // of calling `sessions.filter(s => s.groupId === g.id)` inline per GroupRow
+  // per render. The inline filter produced a fresh array reference for every
+  // GroupRow on every parent render, defeating React.memo on GroupRow /
+  // SessionRow and causing the entire sidebar tree (dnd-kit + framer-motion)
+  // to re-render whenever any session toggled state (e.g. waiting<->idle on
+  // every JSONL stream chunk). The store-side mutators
+  // (`_applySessionState`, `_applyExternalTitle`, `_applyCwdRedirect`,
+  // `sessionCrudSlice.*`) all preserve untouched session refs via per-element
+  // map / slice, so as long as we don't break that here, each GroupRow's
+  // `sessions` prop ref stays stable when its own bucket didn't change.
+  const sessionsByGroup = useMemo(() => {
+    const map = new Map<string, Session[]>();
+    for (const s of sessions) {
+      let bucket = map.get(s.groupId);
+      if (!bucket) {
+        bucket = [];
+        map.set(s.groupId, bucket);
+      }
+      bucket.push(s);
+    }
+    return map;
+  }, [sessions]);
+  // Shared empty-array sentinel so the "group with no sessions" common case
+  // is also fully ref-stable across renders.
+  const emptySessions = useMemo<Session[]>(() => [], []);
+  const getSessionsForGroup = React.useCallback(
+    (gid: string): Session[] => sessionsByGroup.get(gid) ?? emptySessions,
+    [sessionsByGroup, emptySessions]
+  );
   // J2: track the most recently created group so its <GroupRow> mounts in
   // inline-rename mode. Cleared after the next render cycle so toggling rename
   // off (or remounting) doesn't accidentally re-trigger it.
@@ -220,13 +250,13 @@ export function Sidebar({ onCreateSession, onCreateSessionWithCwd, onOpenSetting
               <GroupRow
                 key={g.id}
                 group={g}
-                sessions={sessions.filter((s) => s.groupId === g.id)}
+                sessions={getSessionsForGroup(g.id)}
                 activeSessionId={activeSessionId}
                 focused={focusedGroupId === g.id}
                 anyGroupFocused={focusedGroupId !== null}
                 autoRename={justCreatedGroupId === g.id}
                 onSelectSession={onSelectSession}
-                onFocus={() => onFocusGroup(g.id)}
+                onFocusGroup={onFocusGroup}
                 normalGroups={normal}
               />
             ))}
@@ -237,7 +267,7 @@ export function Sidebar({ onCreateSession, onCreateSessionWithCwd, onOpenSetting
           <ArchivedSection
             archivedGroups={archived}
             normalGroups={normal}
-            sessions={sessions}
+            getSessionsForGroup={getSessionsForGroup}
             activeSessionId={activeSessionId}
             focusedGroupId={focusedGroupId}
             onSelectSession={onSelectSession}

@@ -19,24 +19,42 @@ interface SessionLike {
  * `sessionNamesFromRenderer` map doesn't grow unbounded across the app
  * lifetime as sessions are created and deleted (#613, follow-up to #509).
  *
+ * Perf: the effect's dep is `sessions`, whose array reference changes on
+ * every session-runtime store patch (state toggle, title backfill, cwd
+ * redirect, etc.) — including hot paths like waiting<->idle on JSONL
+ * chunks. Without per-sid diffing we'd fire one IPC per session per chunk
+ * even though no name changed. The `prevNamesRef` map below makes the
+ * common case (no name changed) a free pass — IPC fires only for the
+ * actual delta (added sid, renamed sid, deleted sid).
+ *
  * Extracted from App.tsx for SRP under Task #758 Phase C.
  */
 export function useSessionNameBridge(sessions: ReadonlyArray<SessionLike>): void {
-  const prevSidsRef = useRef<Set<string>>(new Set());
+  const prevNamesRef = useRef<Map<string, string | null>>(new Map());
   useEffect(() => {
     type Bridge = { setName: (sid: string, name: string | null) => void };
     const bridge = (window as unknown as { ccsmSession?: Bridge }).ccsmSession;
     if (!bridge || typeof bridge.setName !== 'function') return;
-    const currentSids = new Set<string>();
+    const prev = prevNamesRef.current;
+    const next = new Map<string, string | null>();
     for (const sess of sessions) {
-      bridge.setName(sess.id, sess.name ?? null);
-      currentSids.add(sess.id);
+      const name = sess.name ?? null;
+      next.set(sess.id, name);
+      // Only IPC when the name (per sid) actually changed — covers mount
+      // (sid absent from prev) and rename (sid present, name differs).
+      // Pure state-toggle store updates re-run this effect with every
+      // sess.name unchanged, so we short-circuit those without any IPC.
+      if (!prev.has(sess.id) || prev.get(sess.id) !== name) {
+        bridge.setName(sess.id, name);
+      }
     }
-    for (const staleSid of prevSidsRef.current) {
-      if (!currentSids.has(staleSid)) {
+    // Clear any sid that disappeared since the previous render so main's
+    // map doesn't leak across the app lifetime.
+    for (const [staleSid] of prev) {
+      if (!next.has(staleSid)) {
         bridge.setName(staleSid, null);
       }
     }
-    prevSidsRef.current = currentSids;
+    prevNamesRef.current = next;
   }, [sessions]);
 }

@@ -30,7 +30,7 @@ describe('<GroupRow /> (extracted)', () => {
             focused={false}
             anyGroupFocused={false}
             onSelectSession={() => {}}
-            onFocus={() => {}}
+            onFocusGroup={() => {}}
             normalGroups={[group]}
           />
         </DndContext>
