@@ -4,9 +4,14 @@
 //
 // Owned actions:
 //   `_applyExternalTitle` — patch a session's `name` from an external
-//      source (SDK title bridge IPC, or `_backfillTitles` below). Stable
-//      no-op if the name already matches so we don't churn the persisted
-//      snapshot or trigger unnecessary re-renders.
+//      source (SDK title bridge IPC, or `_backfillTitles` below).
+//      First-write-wins: only overwrites the default placeholder
+//      (`'New session'` etc.). Once a session has a real name (auto
+//      from the first turn's OSC title, backfilled summary, or user
+//      rename) subsequent external titles are dropped — claude TUI
+//      rewrites the window title every prompt, so without this guard
+//      the session name flickers turn-to-turn. Stable no-op if the
+//      name already matches.
 //   `_backfillTitles` — one-shot post-hydrate pass that pulls
 //      per-project summaries from the SDK and renames any sessions still
 //      stuck on a default name (`'New session'` etc.).
@@ -37,8 +42,7 @@ export function createSessionTitleBackfillSlice(
       // fire `title-changed` with the pre-rename summary; without this
       // guard the user's name flicks back. Clear the guard once we observe
       // an external title equal to the desired name — that proves the
-      // round-trip landed and future external changes (e.g. claude
-      // `/title`) should apply normally.
+      // round-trip landed.
       const desired = getPendingManualRename(sid);
       if (desired !== undefined) {
         if (title !== desired) return;
@@ -47,7 +51,18 @@ export function createSessionTitleBackfillSlice(
       set((s) => {
         const idx = s.sessions.findIndex((x) => x.id === sid);
         if (idx === -1) return s;
-        if (s.sessions[idx]!.name === title) return s;
+        const cur = s.sessions[idx]!.name;
+        if (cur === title) return s;
+        // First-write-wins on auto naming. The OSC title sniffer in
+        // ptyHost emits a fresh title every time the user types a new
+        // prompt (claude TUI rewrites the window title each turn);
+        // before this guard the session name flickered between turns
+        // and any user rename downstream of the initial backfill could
+        // be clobbered by the next turn. Only allow external titles to
+        // overwrite the *default* placeholder; once the row carries a
+        // real name (auto-named on the first turn, or user-renamed via
+        // `renameSession`) external titles are dropped.
+        if (!BACKFILL_DEFAULT_NAMES.has(cur)) return s;
         const next = s.sessions.slice();
         next[idx] = { ...next[idx]!, name: title };
         return { ...s, sessions: next };
