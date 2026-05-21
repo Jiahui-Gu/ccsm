@@ -104,6 +104,14 @@ describe('ccsmPty preload bridge', () => {
     expect(invokeSpy).toHaveBeenCalledWith(chan, ...args);
   });
 
+  it('spawn with forkSourceSid forwards 3 args to pty:spawn', async () => {
+    const api = lastApi();
+    await (
+      api.spawn as (sid: string, cwd: string, forkSourceSid?: string) => Promise<unknown>
+    )('s1', '/cwd', 'source-sid');
+    expect(invokeSpy).toHaveBeenCalledWith('pty:spawn', 's1', '/cwd', 'source-sid');
+  });
+
   it('checkClaudeAvailable defaults its opts to {}', async () => {
     const api = lastApi();
     await (api.checkClaudeAvailable as (o?: unknown) => Promise<unknown>)();
