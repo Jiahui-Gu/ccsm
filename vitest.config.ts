@@ -30,17 +30,33 @@ export default defineConfig({
         'tests/**',
         'scripts/**',
         'dist/**',
+        // Procedural / bootstrap files (Task #43) — pure wiring with no
+        // branching logic, not meaningfully unit-testable. Covered by e2e
+        // smoke + manual dogfood. Excluding lifts headline `lines` from
+        // ~79% to ~83.6% on the same suite. See PR body for justification.
+        'electron/main.ts',
+        'electron/testHooks.ts',
+        'electron/db-validate.ts',
+        'electron/agent/read-default-model.ts',
+        'electron/branding/icon.ts',
+        'electron/sentry/init.ts',
+        'electron/tray/createTray.ts',
+        'electron/ipc/*Ipc.ts',
+        'electron/notify/badge.ts',
+        'src/index.tsx',
+        'src/components/ScrollToBottomButton.tsx',
       ],
-      // Initial roll-out — start lenient. Adjusted to current actuals
-      // (see PR #802 body for measured numbers). Bump in follow-up tasks
-      // as suites grow. Thresholds are NOT enforced in CI yet — the CI
-      // job runs `npm run coverage` to produce lcov.info as an artifact
-      // but does not fail on threshold misses for this initial roll-out.
+      // Task #43 — gate is now enforced in CI. Thresholds set ~5pp below
+      // measured post-exclusion baseline (lines ~83.6%, statements ~81%,
+      // functions ~81%, branches ~73%) so normal week-to-week churn
+      // doesn't flake the gate, while regressions of >5pp are caught.
+      // Raise these as suites grow; never lower without a written
+      // justification in the PR body.
       thresholds: {
-        lines: 60,
-        functions: 60,
-        branches: 50,
-        statements: 60,
+        lines: 78,
+        functions: 76,
+        branches: 68,
+        statements: 76,
       },
     },
   },
