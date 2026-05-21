@@ -5,10 +5,17 @@
 // and the failure-mode contract (returns null when both lookups fail — never
 // the literal string "claude" — so the IPC channel can surface a clean
 // `available: false` for the renderer's ClaudeMissingGuide).
+//
+// Resolver is async (#PERF: original spawnSync blocked the main process
+// event loop on Windows cold start). Tests await each call and the
+// `spawn` mock returns an EventEmitter-like child whose stdout pushes
+// scripted bytes then emits `exit` with a scripted code on the next tick.
 
+import { EventEmitter } from 'node:events';
+import { Readable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// Hoisted module-level state the spawnSync mock reads. Tests rewrite
+// Hoisted module-level state the spawn mock reads. Tests rewrite
 // `__bus` between cases; the mock factory captures `globalThis` lazily.
 interface SpawnCall {
   cmd: string;
@@ -25,22 +32,36 @@ function bus(): SpawnFakeBus {
 }
 
 vi.mock('node:child_process', () => {
-  const spawnSync = (cmd: string, args: readonly string[]) => {
+  const spawn = (cmd: string, args: readonly string[]) => {
     const b = bus();
     b.calls.push({ cmd, args });
-    if (b.shouldThrow) throw new Error('spawnSync EPERM');
+    if (b.shouldThrow) throw new Error('spawn EPERM');
     const key = `${cmd} ${args.join(' ')}`;
-    const r = b.results.get(key);
-    if (r) return { status: r.status, stdout: r.stdout, stderr: '' };
-    return { status: 1, stdout: '', stderr: '' };
+    const r = b.results.get(key) ?? { status: 1, stdout: '' };
+    const child = new EventEmitter() as EventEmitter & {
+      stdout: Readable;
+    };
+    const stdout = new Readable({ read() {} });
+    child.stdout = stdout;
+    // Push data on next microtask so the resolver's `'data'` listener
+    // (attached synchronously after spawn returns) receives it. Emit
+    // `exit` on the FOLLOWING tick — after the readable has drained the
+    // pushed buffer to the listener — so the resolver doesn't snapshot
+    // an empty stdout buffer before the data event fires.
+    queueMicrotask(() => {
+      if (r.stdout) stdout.push(Buffer.from(r.stdout, 'utf8'));
+      stdout.push(null);
+      setImmediate(() => child.emit('exit', r.status));
+    });
+    return child;
   };
   return {
-    default: { spawnSync },
-    spawnSync,
+    default: { spawn },
+    spawn,
   };
 });
 
-// Import AFTER vi.mock so the resolver picks up the mocked spawnSync.
+// Import AFTER vi.mock so the resolver picks up the mocked spawn.
 import { __resetClaudeResolverForTest, resolveClaude } from '../claudeResolver';
 
 const ORIGINAL_PLATFORM = process.platform;
@@ -70,93 +91,103 @@ afterEach(() => {
 describe('resolveClaude on Windows', () => {
   beforeEach(() => setPlatform('win32'));
 
-  it('returns the path from `where claude.cmd` when present', () => {
+  it('returns the path from `where claude.cmd` when present', async () => {
     bus().results.set('where claude.cmd', {
       status: 0,
       stdout: 'C:\\Users\\u\\AppData\\Roaming\\npm\\claude.cmd\r\n',
     });
-    expect(resolveClaude()).toBe('C:\\Users\\u\\AppData\\Roaming\\npm\\claude.cmd');
+    expect(await resolveClaude()).toBe('C:\\Users\\u\\AppData\\Roaming\\npm\\claude.cmd');
     expect(bus().calls.map((c) => c.args[0])).toEqual(['claude.cmd']);
   });
 
-  it('falls back to `where claude` when claude.cmd lookup fails', () => {
+  it('falls back to `where claude` when claude.cmd lookup fails', async () => {
     bus().results.set('where claude.cmd', { status: 1, stdout: '' });
     bus().results.set('where claude', {
       status: 0,
       stdout: 'C:\\tools\\claude\n',
     });
-    expect(resolveClaude()).toBe('C:\\tools\\claude');
+    expect(await resolveClaude()).toBe('C:\\tools\\claude');
     expect(bus().calls.map((c) => c.args[0])).toEqual(['claude.cmd', 'claude']);
   });
 
-  it('returns null (never the literal "claude") when both lookups fail', () => {
-    expect(resolveClaude()).toBeNull();
+  it('returns null (never the literal "claude") when both lookups fail', async () => {
+    expect(await resolveClaude()).toBeNull();
     expect(bus().calls).toHaveLength(2);
   });
 
-  it('takes the FIRST line of multi-line where output (PATH may have dupes)', () => {
+  it('takes the FIRST line of multi-line where output (PATH may have dupes)', async () => {
     bus().results.set('where claude.cmd', {
       status: 0,
       stdout: 'C:\\first\\claude.cmd\r\nC:\\second\\claude.cmd\r\n',
     });
-    expect(resolveClaude()).toBe('C:\\first\\claude.cmd');
+    expect(await resolveClaude()).toBe('C:\\first\\claude.cmd');
   });
 
-  it('treats blank-stdout success as not-found (status==0 but no path)', () => {
+  it('treats blank-stdout success as not-found (status==0 but no path)', async () => {
     bus().results.set('where claude.cmd', { status: 0, stdout: '\r\n  \r\n' });
     bus().results.set('where claude', { status: 0, stdout: 'C:\\fallback\\claude' });
-    expect(resolveClaude()).toBe('C:\\fallback\\claude');
+    expect(await resolveClaude()).toBe('C:\\fallback\\claude');
   });
 });
 
 describe('resolveClaude on POSIX', () => {
   beforeEach(() => setPlatform('linux'));
 
-  it('uses `which claude` (single lookup)', () => {
+  it('uses `which claude` (single lookup)', async () => {
     bus().results.set('which claude', { status: 0, stdout: '/usr/local/bin/claude\n' });
-    expect(resolveClaude()).toBe('/usr/local/bin/claude');
+    expect(await resolveClaude()).toBe('/usr/local/bin/claude');
     expect(bus().calls).toEqual([{ cmd: 'which', args: ['claude'] }]);
   });
 
-  it('returns null when `which claude` fails', () => {
-    expect(resolveClaude()).toBeNull();
+  it('returns null when `which claude` fails', async () => {
+    expect(await resolveClaude()).toBeNull();
     expect(bus().calls).toHaveLength(1);
   });
 
-  it('returns null when spawnSync itself throws', () => {
+  it('returns null when spawn itself throws', async () => {
     bus().shouldThrow = true;
-    expect(resolveClaude()).toBeNull();
+    expect(await resolveClaude()).toBeNull();
   });
 });
 
 describe('resolveClaude caching', () => {
   beforeEach(() => setPlatform('linux'));
 
-  it('caches the resolved path — second call does not re-spawn', () => {
+  it('caches the resolved path — second call does not re-spawn', async () => {
     bus().results.set('which claude', { status: 0, stdout: '/bin/claude\n' });
-    expect(resolveClaude()).toBe('/bin/claude');
-    expect(resolveClaude()).toBe('/bin/claude');
+    expect(await resolveClaude()).toBe('/bin/claude');
+    expect(await resolveClaude()).toBe('/bin/claude');
     expect(bus().calls).toHaveLength(1);
   });
 
-  it('caches the null result — second call does not re-spawn', () => {
-    expect(resolveClaude()).toBeNull();
-    expect(resolveClaude()).toBeNull();
+  it('caches the null result — second call does not re-spawn', async () => {
+    expect(await resolveClaude()).toBeNull();
+    expect(await resolveClaude()).toBeNull();
     expect(bus().calls).toHaveLength(1);
   });
 
-  it('force:true bypasses the cache (re-check button on ClaudeMissingGuide)', () => {
-    expect(resolveClaude()).toBeNull();
+  it('force:true bypasses the cache (re-check button on ClaudeMissingGuide)', async () => {
+    expect(await resolveClaude()).toBeNull();
     bus().results.set('which claude', { status: 0, stdout: '/bin/claude\n' });
-    expect(resolveClaude({ force: true })).toBe('/bin/claude');
+    expect(await resolveClaude({ force: true })).toBe('/bin/claude');
     expect(bus().calls).toHaveLength(2);
   });
 
-  it('__resetClaudeResolverForTest clears the cache', () => {
+  it('__resetClaudeResolverForTest clears the cache', async () => {
     bus().results.set('which claude', { status: 0, stdout: '/bin/claude\n' });
-    expect(resolveClaude()).toBe('/bin/claude');
+    expect(await resolveClaude()).toBe('/bin/claude');
     __resetClaudeResolverForTest();
     bus().results.clear();
-    expect(resolveClaude()).toBeNull();
+    expect(await resolveClaude()).toBeNull();
+  });
+
+  it('dedups concurrent first-callers into a single in-flight spawn', async () => {
+    bus().results.set('which claude', { status: 0, stdout: '/bin/claude\n' });
+    // Fire two callers BEFORE awaiting — both should share the same
+    // in-flight Promise rather than each spawning their own `where`.
+    const [a, b] = await Promise.all([resolveClaude(), resolveClaude()]);
+    expect(a).toBe('/bin/claude');
+    expect(b).toBe('/bin/claude');
+    expect(bus().calls).toHaveLength(1);
   });
 });
