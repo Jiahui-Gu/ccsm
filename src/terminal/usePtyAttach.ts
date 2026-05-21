@@ -60,6 +60,11 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
   const requestedSidRef = useRef<string>(sessionId);
   // Bumped by Retry to force the attach effect to re-run for the same sid.
   const [attachNonce, setAttachNonce] = useState(0);
+  // Right-click "Reload session" — the slice action `reloadSession` kills
+  // the pty and bumps this nonce, which we read here so the attach effect
+  // re-runs and walks the spawn-on-null fallback for a fresh pty. Same
+  // re-attach semantics as Retry, just with an external trigger.
+  const reloadNonce = useStore((s) => s.reloadNonce?.[sessionId] ?? 0);
 
   // Attach effect: on sessionId change (or Retry), detach the previous
   // session, reset the terminal, attach the new one, and wire data flow.
@@ -442,7 +447,10 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
       }
     };
     // attachNonce is intentional: bumping it re-runs the attach for Retry.
-  }, [sessionId, attachNonce, cwd]);
+    // reloadNonce is intentional: bumping it (via `reloadSession` after a
+    // pty.kill) re-runs the attach so the spawn-on-null fallback brings
+    // up a fresh pty for the same sid (env / config refresh).
+  }, [sessionId, attachNonce, reloadNonce, cwd]);
 
   // pty:exit subscription for the active session → flip to exit state with
   // a classification (clean vs crashed) shared with the store via

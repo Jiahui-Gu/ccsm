@@ -64,6 +64,7 @@ function SessionRowImpl({
   const createGroup = useStore((s) => s.createGroup);
   const archiveSession = useStore((s) => s.archiveSession);
   const unarchiveSession = useStore((s) => s.unarchiveSession);
+  const reloadSession = useStore((s) => s.reloadSession);
   // The session is archived (lives in an archive container) iff its
   // parent group has `kind === 'archive'`. We detect it via the prop
   // `normalGroups` indirectly: archived sessions are rendered through
@@ -115,6 +116,18 @@ function SessionRowImpl({
         action: { label: t('common.undo'), onClick: () => restoreSession(snap) }
       });
     }
+  };
+  // J7: right-click "Reload session" — kills the current pty and lets the
+  // attach effect re-spawn it (env / config refresh). No confirm: the
+  // operation is non-destructive (claude resumes the same transcript via
+  // the JSONL resolver) and the toast gives the user feedback during the
+  // ~1-2s blank window between kill and re-attach.
+  const performReload = () => {
+    void reloadSession(session.id);
+    toast.push({
+      kind: 'info',
+      title: t('sidebar.reloadingSessionToast', { name: session.name }),
+    });
   };
   return (
     <ContextMenu>
@@ -303,6 +316,9 @@ function SessionRowImpl({
           );
         })()}
         <ContextMenuSeparator />
+        <ContextMenuItem onSelect={performReload}>
+          {t('sidebar.reloadSession')}
+        </ContextMenuItem>
         <ContextMenuItem
           onSelect={() =>
             isArchived ? unarchiveSession(session.id) : archiveSession(session.id)
