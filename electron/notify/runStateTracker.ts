@@ -29,9 +29,48 @@
 //   * `forgetSid(sid)` clears every per-sid map entry in one shot
 //                      (mirrors pipeline.forgetSid for the state it owns).
 
-import type { Ctx, Decision, Event } from './notifyDecider';
+import { USER_INIT_MUTE_MS, type Ctx, type Decision, type Event } from './notifyDecider';
 
 export type TitleClassification = 'idle' | 'running' | 'waiting' | 'unknown';
+
+/**
+ * "Ring the last waiting" debounce window.
+ *
+ * Real-world burst pattern: a long agent task issues several quick
+ * permission / question prompts back-to-back (waiting → user answers in-app
+ * → running → waiting → …). Pre-debounce, each waiting fired its own toast,
+ * giving the user 3-5 OS notifications for a single task. Post-debounce,
+ * each waiting (re)starts a 8s timer; if the title flips back to running
+ * before 8s elapses (because the user answered in-app, or the CLI moved on
+ * on its own), the timer is cancelled and no toast fires. Only the FINAL,
+ * still-waiting prompt that has settled for 8s rings.
+ *
+ * Trade-off: a single long-waiting prompt is now delayed by 8s vs. fire-
+ * immediately. We accept the slight latency in exchange for the burst-
+ * collapse — toast spam is the louder complaint. Tune via PR if needed.
+ *
+ * The flash (sidebar halo) still fires IMMEDIATELY on each waiting — only
+ * the OS toast is debounced. The user gets instant in-app feedback;
+ * the OS-level interrupt is reserved for genuinely stuck waits.
+ */
+export const RING_DEBOUNCE_MS = 8_000;
+
+export interface RunStateTrackerOptions {
+  /** Override the debounce window (test only). Defaults to RING_DEBOUNCE_MS. */
+  ringDebounceMs?: number;
+  /** Wall-clock provider for deferred-toast fire-time re-evaluation. Defaults
+   *  to Date.now. Tests inject a mock to advance time deterministically. */
+  nowFn?: () => number;
+  /** setTimeout / clearTimeout overrides. Default to globalThis. Tests using
+   *  vi.useFakeTimers() can rely on the defaults, but explicit injection is
+   *  available if a test needs a hand-rolled scheduler. */
+  setTimeoutFn?: (cb: () => void, ms: number) => unknown;
+  clearTimeoutFn?: (handle: unknown) => void;
+  /** Sink callback for a deferred toast that survived the debounce window.
+   *  Receives a Decision with `toast:true, flash:false` (flash already fired
+   *  on the immediate path when the debounce started). */
+  onDeferredToast?: (decision: Decision) => void;
+}
 
 export interface RunStateTracker {
   /** Producer entry — feed a classified title for `sid` at `nowTs`.
@@ -48,6 +87,8 @@ export interface RunStateTracker {
   /** Mute `sid` until `untilTs` (use `Infinity` for sticky). Pass
    *  `null` to clear. */
   setMuted(sid: string, untilTs: number | null): void;
+  /** Cancel all pending deferred toasts (test / shutdown cleanup). */
+  dispose(): void;
   /** Test-only — read internal maps for assertion. */
   _internals(): {
     runStartTs: Map<string, number>;
@@ -56,17 +97,34 @@ export interface RunStateTracker {
     lastUserInputTs: Map<string, number>;
     focused: boolean;
     activeSid: string | null;
+    /** sids with an outstanding deferred-toast timer. */
+    pendingToastSids: string[];
   };
 }
 
 export function createRunStateTracker(
   decide: (event: Event, ctx: Ctx) => Decision | null,
+  options: RunStateTrackerOptions = {},
 ): RunStateTracker {
+  const ringDebounceMs = options.ringDebounceMs ?? RING_DEBOUNCE_MS;
+  const nowFn = options.nowFn ?? Date.now;
+  const setTimeoutFn =
+    options.setTimeoutFn ?? ((cb: () => void, ms: number) => setTimeout(cb, ms));
+  const clearTimeoutFn =
+    options.clearTimeoutFn ?? ((h: unknown) => clearTimeout(h as ReturnType<typeof setTimeout>));
+  const onDeferredToast = options.onDeferredToast;
+
   const runStartTs = new Map<string, number>();
   /** Map<sid, untilTs> — entry present + nowTs < untilTs ⇒ sid is muted. */
   const mutedSids = new Map<string, number>();
   const lastFiredTs = new Map<string, number>();
   const lastUserInputTs = new Map<string, number>();
+  /** Per-sid outstanding deferred-toast timer handle. Cancelled on:
+   *    - 'running' classification (task resumed → no ring)
+   *    - forgetSid (session teardown)
+   *    - dispose (pipeline / process shutdown)
+   *  Reset on each new waiting signal (debounce semantics — ring the LAST). */
+  const pendingToastTimers = new Map<string, unknown>();
   /**
    * Per-sid gate (Task #767): true once we have observed a 'running' title
    * for this sid in the current process lifetime. The decider's Rule 2
@@ -94,6 +152,51 @@ export function createRunStateTracker(
     return out;
   }
 
+  function isMutedNow(sid: string, nowTs: number): boolean {
+    const until = mutedSids.get(sid);
+    return until !== undefined && nowTs < until;
+  }
+
+  function cancelPendingToast(sid: string): void {
+    const t = pendingToastTimers.get(sid);
+    if (t !== undefined) {
+      clearTimeoutFn(t);
+      pendingToastTimers.delete(sid);
+    }
+  }
+
+  /**
+   * Schedule (or reset) the deferred-toast timer for `sid`.
+   *
+   * Each fresh waiting signal pushes the fire deadline out to NOW +
+   * ringDebounceMs. Burst-collapse: rapid running ↔ waiting flips never
+   * exhaust the timer; only sustained waiting does.
+   */
+  function schedulePendingToast(sid: string): void {
+    cancelPendingToast(sid);
+    const handle = setTimeoutFn(() => {
+      pendingToastTimers.delete(sid);
+      if (!onDeferredToast) return;
+      // Re-evaluate at fire-time. We deliberately do NOT re-run the full
+      // decider here — runStartTs has been cleared (so Rule 2 would fire
+      // flash-only and Rule 3 would never fire). Instead, re-check the
+      // two dynamic suppressors that may have flipped during the wait:
+      //   1. Rule 1 user-init mute (user touched this sid in last 60s)
+      //   2. Rule 7 per-sid mute
+      // Global mute is enforced one layer up in pipeline.ts (the pipeline
+      // never feeds idle through to the tracker when global mute is on, so
+      // a deferred fire on a globally-muted sid cannot happen unless the
+      // mute toggled on AFTER schedule — acceptable, pipeline owns it).
+      const fireTs = nowFn();
+      const lastInput = lastUserInputTs.get(sid);
+      if (lastInput !== undefined && fireTs - lastInput < USER_INIT_MUTE_MS) return;
+      if (isMutedNow(sid, fireTs)) return;
+      lastFiredTs.set(sid, fireTs);
+      onDeferredToast({ toast: true, flash: false, sid });
+    }, ringDebounceMs);
+    pendingToastTimers.set(sid, handle);
+  }
+
   return {
     onTitle(sid, classification, nowTs) {
       if (classification === 'unknown') return null;
@@ -101,6 +204,9 @@ export function createRunStateTracker(
       if (classification === 'running') {
         if (!runStartTs.has(sid)) runStartTs.set(sid, nowTs);
         hasObservedRunning.add(sid);
+        // Cancel any pending deferred toast — the task moved on, the user
+        // (or the CLI) already handled the previous waiting signal.
+        cancelPendingToast(sid);
         return null;
       }
 
@@ -129,16 +235,41 @@ export function createRunStateTracker(
         now: nowTs,
       };
       const event: Event = { type: 'osc-title', sid, title: 'waiting', ts: nowTs };
-      const decision = decide(event, ctx);
+      const immediate = decide(event, ctx);
 
       // Mirror pipeline behaviour: always clear runStartTs after a
       // non-running title so the next run starts a fresh elapsed clock.
       runStartTs.delete(sid);
 
-      if (decision !== null) {
-        lastFiredTs.set(sid, nowTs);
+      // Debounce-style "ring the LAST waiting": any waiting signal that
+      // would otherwise toast (re)starts the deferred-toast timer.
+      // We trigger the schedule when EITHER:
+      //   - decide() returned toast:true (the original "yes, toast" path), OR
+      //   - decide() returned null AND a deferred toast is already pending
+      //     (a follow-up waiting inside a burst — even if the immediate
+      //     decision was suppressed by 5s dedupe, we still want the timer
+      //     pushed out so the LAST waiting wins).
+      // We do NOT schedule when the sid is currently muted (no point
+      // firing later either — re-eval at fire-time would suppress anyway,
+      // and avoiding the timer keeps the pending-set tidy).
+      const shouldDefer =
+        !isMutedNow(sid, nowTs) &&
+        ((immediate !== null && immediate.toast) || pendingToastTimers.has(sid));
+      if (shouldDefer) {
+        schedulePendingToast(sid);
       }
-      return decision;
+
+      if (immediate !== null) {
+        lastFiredTs.set(sid, nowTs);
+        if (immediate.toast) {
+          // Strip the toast from the immediate fan-out — it will fire (or
+          // not) via the deferred path. Flash still fires immediately so
+          // the in-app halo is instant.
+          return { toast: false, flash: immediate.flash, sid };
+        }
+        return immediate;
+      }
+      return null;
     },
     forgetSid(sid) {
       runStartTs.delete(sid);
@@ -146,6 +277,7 @@ export function createRunStateTracker(
       lastFiredTs.delete(sid);
       lastUserInputTs.delete(sid);
       hasObservedRunning.delete(sid);
+      cancelPendingToast(sid);
     },
     setFocused(next) {
       focused = next;
@@ -160,6 +292,10 @@ export function createRunStateTracker(
       if (untilTs === null) mutedSids.delete(sid);
       else mutedSids.set(sid, untilTs);
     },
+    dispose() {
+      for (const handle of pendingToastTimers.values()) clearTimeoutFn(handle);
+      pendingToastTimers.clear();
+    },
     _internals() {
       return {
         runStartTs,
@@ -168,6 +304,7 @@ export function createRunStateTracker(
         lastUserInputTs,
         focused,
         activeSid,
+        pendingToastSids: Array.from(pendingToastTimers.keys()),
       };
     },
   };
