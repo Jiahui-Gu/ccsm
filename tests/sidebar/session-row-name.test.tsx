@@ -43,7 +43,7 @@ describe('<SessionRow /> renders store.name, not id (#788)', () => {
                 session={session}
                 active={false}
                 selected={false}
-                onSelect={() => {}}
+                onSelectSession={() => {}}
                 normalGroups={[group]}
               />
             </ul>

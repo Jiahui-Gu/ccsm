@@ -20,13 +20,27 @@ function renderArchived(props: {
   normalGroups?: Group[];
   sessions?: Session[];
 }) {
+  const sessions = props.sessions ?? [];
+  // Mirror the bucketing the parent <Sidebar> does so the component's new
+  // getSessionsForGroup API matches its production contract.
+  const byGroup = new Map<string, Session[]>();
+  for (const s of sessions) {
+    let bucket = byGroup.get(s.groupId);
+    if (!bucket) {
+      bucket = [];
+      byGroup.set(s.groupId, bucket);
+    }
+    bucket.push(s);
+  }
+  const EMPTY: Session[] = [];
+  const getSessionsForGroup = (gid: string) => byGroup.get(gid) ?? EMPTY;
   return render(
     <ToastProvider>
       <DndContext>
         <ArchivedSection
           archivedGroups={props.archivedGroups}
           normalGroups={props.normalGroups ?? []}
-          sessions={props.sessions ?? []}
+          getSessionsForGroup={getSessionsForGroup}
           activeSessionId=""
           focusedGroupId={null}
           onSelectSession={() => {}}

@@ -54,7 +54,7 @@ describe('<SessionRow /> selection dot — only on active row (#784)', () => {
                   session={s}
                   active={s.id === activeId}
                   selected={s.id === activeId}
-                  onSelect={() => {}}
+                  onSelectSession={() => {}}
                   normalGroups={[group]}
                 />
               ))}
