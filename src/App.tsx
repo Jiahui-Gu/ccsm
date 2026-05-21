@@ -85,6 +85,12 @@ export default function App() {
   // persisted snapshot lands.
   const hydrated = useStore((s) => s.hydrated);
 
+  // Hold these as direct Zustand action refs (not inline arrows) so the
+  // Sidebar -> GroupRow / SessionRow / ArchivedSection React.memo chain
+  // stays effective — any inline `() => store.selectSession(id)` here
+  // would generate a new function identity per render and force every
+  // memoized row to re-render on every state tick (e.g. JSONL chunks
+  // toggling a single session's waiting<->idle). See PR #1269.
   const selectSession = useStore((s) => s.selectSession);
   const focusGroup = useStore((s) => s.focusGroup);
   const applyExternalTitle = useStore((s) => s._applyExternalTitle);

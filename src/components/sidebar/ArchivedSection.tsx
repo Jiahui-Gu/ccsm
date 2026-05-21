@@ -20,7 +20,7 @@ import { GroupRow } from './GroupRow';
 // built once per `sessions` ref change, so each archived GroupRow's
 // `sessions` prop ref stays stable when its own bucket didn't change —
 // preserving React.memo on GroupRow / SessionRow.
-export function ArchivedSection({
+function ArchivedSectionImpl({
   archivedGroups,
   normalGroups,
   getSessionsForGroup,
@@ -85,3 +85,13 @@ export function ArchivedSection({
     </>
   );
 }
+
+// Memoize for symmetry with GroupRow / SessionRow so a Sidebar re-render
+// driven by an unrelated store mutation (e.g. a session state toggle on a
+// non-archived row) doesn't re-render the archived block. All props are
+// ref-stable upstream: `archivedGroups` / `normalGroups` come from
+// useMemo'd partitions of `groups`, `getSessionsForGroup` is useCallback'd,
+// `activeSessionId` / `focusedGroupId` are primitives, and
+// `onSelectSession` / `onFocusGroup` are direct Zustand action refs passed
+// through App.tsx unchanged. See PR #1269.
+export const ArchivedSection = React.memo(ArchivedSectionImpl);
