@@ -84,7 +84,17 @@ export function installNotifyPipeline(opts: NotifyPipelineOptions): NotifyPipeli
     onNotified: opts.onNotified,
   });
   const flash = createFlashSink({ getMainWindow: opts.getMainWindow });
-  const tracker = createRunStateTracker(decide);
+  // Deferred-toast wiring (Task: "ring the last waiting"). The tracker
+  // strips toast:true from its synchronous return and instead schedules a
+  // RING_DEBOUNCE_MS timer per sid; on timer fire (no 'running' arrived
+  // in the meantime), it calls back here to ring exactly once. The
+  // `onNotified` badge bump still fires via toastSink.apply, so unread
+  // counts stay consistent regardless of which path the toast took.
+  const tracker = createRunStateTracker(decide, {
+    onDeferredToast: (decision) => {
+      toast.apply(decision);
+    },
+  });
 
   // Diagnostics for e2e probes — counts what each layer sees so we can tell
   // whether failure is "no PTY data", "no OSC titles", "titles seen but
@@ -207,6 +217,11 @@ export function installNotifyPipeline(opts: NotifyPipelineOptions): NotifyPipeli
       // pipeline disposal — visible as a slow-growing handle count in
       // long-running tests / HMR reloads.
       flash.dispose();
+      // Cancel any outstanding deferred-toast timers held by the tracker.
+      // Same leak class as flashSink timers — without this, a still-pending
+      // ring would fire after the pipeline (and its sinks) are torn down,
+      // attempting to toast against a destroyed BrowserWindow.
+      tracker.dispose();
     },
     _internals() {
       return { ctx: projectCtx(), sniffer, tracker, toast, flash, diag };
