@@ -446,6 +446,67 @@ describe('lifecycle.kill', () => {
     vi.useRealTimers();
   });
 
+  it('evicts the zombie entry on timeout so subsequent attach returns null (spawn-on-null unblocked)', async () => {
+    // #1277 follow-up: when KILL_EXIT_TIMEOUT_MS fires, kill() resolves false
+    // but the entry was still in the map — a subsequent pty:attach would
+    // return the zombie and bypass the spawn-on-null fallback, leaving the
+    // renderer registered on a dead pty (crash overlay → manual Retry).
+    // Fix: force SIGKILL + delete from map on timeout.
+    vi.useFakeTimers();
+    const sessions = new Map<string, FakeEntry>();
+    const entry = makeFakeEntry();
+    entry.pty.pid = 500;
+    // Track SIGKILL escalation — pty.kill called twice (first signal-less in
+    // production code, second with 'SIGKILL' on timeout).
+    entry.pty.kill = vi.fn();
+    sessions.set('s', entry);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const p = L.kill(sessions as any, 's');
+
+    // Cross the timeout — SIGKILL escalation + zombie eviction.
+    await vi.advanceTimersByTimeAsync(L.KILL_EXIT_TIMEOUT_MS + 10);
+    await expect(p).resolves.toBe(false);
+
+    // SIGKILL escalation attempted on the wedged pty.
+    expect(entry.pty.kill).toHaveBeenCalledWith('SIGKILL');
+    // Zombie removed from registry — attach now returns null, letting the
+    // renderer's reloadNonce → spawn-on-null fallback create a fresh PTY.
+    expect(sessions.has('s')).toBe(false);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(L.attach(sessions as any, 's')).toBeNull();
+    vi.useRealTimers();
+  });
+
+  it('swallows SIGKILL throws on timeout (still evicts the zombie + logs)', async () => {
+    // On Windows node-pty emulates signals; SIGKILL may throw. The timeout
+    // path must still delete the entry from the map (else the zombie blocks
+    // spawn-on-null forever) and must not propagate the throw.
+    vi.useFakeTimers();
+    const sessions = new Map<string, FakeEntry>();
+    const entry = makeFakeEntry();
+    entry.pty.pid = 600;
+    let calls = 0;
+    entry.pty.kill = vi.fn((signal?: string) => {
+      calls += 1;
+      // First call (signal-less production kill) succeeds; SIGKILL throws.
+      if (signal === 'SIGKILL') throw new Error('signal not supported');
+    });
+    sessions.set('s', entry);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const p = L.kill(sessions as any, 's');
+    await vi.advanceTimersByTimeAsync(L.KILL_EXIT_TIMEOUT_MS + 10);
+    await expect(p).resolves.toBe(false);
+
+    expect(calls).toBe(2); // initial kill + SIGKILL escalation
+    expect(sessions.has('s')).toBe(false);
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('SIGKILL also failed'),
+    );
+    vi.useRealTimers();
+  });
+
   it('dedupes concurrent kills for the same sid — second call shares the first promise', async () => {
     const sessions = new Map<string, FakeEntry>();
     const entry = makeFakeEntry();

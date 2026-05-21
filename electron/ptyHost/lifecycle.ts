@@ -216,7 +216,29 @@ export function kill(sessions: Map<string, Entry>, sid: string): Promise<boolean
        the timeout will resolve us, and processKiller below still runs. */
   }
 
-  const timer = setTimeout(() => settle(false), KILL_EXIT_TIMEOUT_MS);
+  const timer = setTimeout(() => {
+    // Wedged-pty zombie cleanup (#1277 follow-up): the 3s timeout fired
+    // before onExit, which means the cleanup pump in entryFactory never
+    // ran and `sessions` still holds this sid. If we just resolved here a
+    // subsequent `pty:attach` from the renderer's reloadNonce bump would
+    // return the zombie entry, skip the spawn-on-null fallback, and
+    // register the viewer on a dead pty → crash overlay, manual Retry.
+    //
+    // Force-evict the entry so attach returns null and the renderer gets
+    // a transparent fresh PTY. The process is still live (kill signal
+    // was sent but the OS never reaped it); attempt SIGKILL as a last
+    // resort. On Windows node-pty emulates signals so SIGKILL may be a
+    // no-op — at minimum we've logged the leak so it's visible.
+    try {
+      entry.pty.kill('SIGKILL');
+    } catch (e) {
+      console.warn(
+        `[ptyHost] kill ${sid} wedged: SIGKILL also failed (${e instanceof Error ? e.message : String(e)}); pid ${pid} may leak`,
+      );
+    }
+    if (sessions.get(sid) === entry) sessions.delete(sid);
+    settle(false);
+  }, KILL_EXIT_TIMEOUT_MS);
 
   try {
     entry.pty.kill();
