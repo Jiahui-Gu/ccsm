@@ -33,7 +33,7 @@ export default defineConfig({
         // Procedural / bootstrap files (Task #43) — pure wiring with no
         // branching logic, not meaningfully unit-testable. Covered by e2e
         // smoke + manual dogfood. Excluding lifts headline `lines` from
-        // ~79% to ~83.6% on the same suite. See PR body for justification.
+        // ~79% to ~87.1% on the same suite. See PR body for justification.
         'electron/main.ts',
         'electron/testHooks.ts',
         'electron/db-validate.ts',
@@ -41,15 +41,16 @@ export default defineConfig({
         'electron/branding/icon.ts',
         'electron/sentry/init.ts',
         'electron/tray/createTray.ts',
-        'electron/ipc/*Ipc.ts',
+        'electron/ipc/systemIpc.ts',
+        'electron/ipc/windowIpc.ts',
         'electron/notify/badge.ts',
         'src/index.tsx',
         'src/components/ScrollToBottomButton.tsx',
       ],
-      // Task #43 — gate is now enforced in CI. Thresholds set ~5pp below
-      // measured post-exclusion baseline (lines ~83.6%, statements ~81%,
-      // functions ~81%, branches ~73%) so normal week-to-week churn
-      // doesn't flake the gate, while regressions of >5pp are caught.
+      // Task #43 — gate is now enforced in CI. Thresholds set ~8pp below
+      // measured post-exclusion baseline (lines 87.08%, statements 84.60%,
+      // functions 84.52%, branches 76.28%) so normal week-to-week churn
+      // doesn't flake the gate, while regressions of >8pp are caught.
       // Raise these as suites grow; never lower without a written
       // justification in the PR body.
       thresholds: {
