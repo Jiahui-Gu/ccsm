@@ -185,13 +185,26 @@ export function dispatchPtyChunk(sid: string, entry: Entry, chunk: string): void
 
   // Sink 2: visible-xterm IPC fanout. Best-effort per attached webContents
   // — a destroyed sender or an IPC throw must not wedge the PTY pump.
-  for (const wc of entry.attached.values()) {
-    if (!wc.isDestroyed()) {
-      try {
-        wc.send('pty:data', { sid, chunk, seq });
-      } catch {
-        /* renderer gone — best effort */
-      }
+  //
+  // Also actively prune destroyed entries as we iterate. The primary
+  // cleanup path is the `wc.once('destroyed')` handler registered in
+  // `ipcRegistrar` (attach IPC), but if that ever races or fails the
+  // entry would otherwise leak until the entire session is killed —
+  // costing iteration time on every chunk and pinning the WebContents
+  // meta alive across renderer churn (window reopens, dev hot-reloads).
+  // Deleting from a Map during iteration is safe: the iterator only
+  // visits live entries at the time of each `next()`. This is defense
+  // in depth; the `entry.attached.size` check above (backpressure-warn
+  // suppression) also stays accurate as dead entries are evicted.
+  for (const [id, wc] of entry.attached) {
+    if (wc.isDestroyed()) {
+      entry.attached.delete(id);
+      continue;
+    }
+    try {
+      wc.send('pty:data', { sid, chunk, seq });
+    } catch {
+      /* renderer gone — best effort */
     }
   }
 

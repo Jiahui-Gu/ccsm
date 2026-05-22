@@ -424,4 +424,30 @@ describe('entryFactory.dispatchPtyChunk', () => {
     expect(bus().headlessWrite).toHaveBeenCalledWith('x', expect.any(Function));
     expect(entry.seq).toBe(1);
   });
+
+  it('prunes destroyed webContents from entry.attached during fanout (defense-in-depth vs ipcRegistrar destroy handler)', async () => {
+    const mod = await import('../entryFactory');
+    const entry = mod.makeEntry('sid-PRUNE', '/work', '/bin/claude', 80, 24, { onExit: vi.fn() });
+    const dead = { isDestroyed: () => true, send: vi.fn() };
+    const alive = { isDestroyed: () => false, send: vi.fn() };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    entry.attached.set(1, dead as any);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    entry.attached.set(2, alive as any);
+    expect(entry.attached.size).toBe(2);
+
+    mod.dispatchPtyChunk('sid-PRUNE', entry, 'y');
+
+    // Live wc received the chunk.
+    expect(alive.send).toHaveBeenCalledTimes(1);
+    // Destroyed wc was evicted from the Map — leak fix.
+    expect(entry.attached.size).toBe(1);
+    expect(entry.attached.has(1)).toBe(false);
+    expect(entry.attached.has(2)).toBe(true);
+
+    // Subsequent chunks no longer visit the dead entry.
+    mod.dispatchPtyChunk('sid-PRUNE', entry, 'z');
+    expect(dead.send).not.toHaveBeenCalled();
+    expect(alive.send).toHaveBeenCalledTimes(2);
+  });
 });
