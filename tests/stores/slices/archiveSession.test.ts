@@ -264,6 +264,54 @@ describe('archiveSession / unarchiveSession', () => {
     expect(s.groups!.find((g) => g.id === containerId)).toBeUndefined();
   });
 
+  it('unarchiveSession synthesizes a normal group when source AND all other normal groups are gone', () => {
+    // P1 bug repro: if the user has deleted g-default plus every other
+    // normal group (only the archive container remains), the old code
+    // fell back to the literal id 'g-default' which doesn't exist in
+    // state.groups → Sidebar filters out the session (groupId points at
+    // a non-existent group) so the row is persisted but invisible with
+    // no UI recovery path. Fix routes through ensureUsableGroup, which
+    // synthesizes a kind:'normal' group on demand (matches the
+    // createSession/importSession fallback contract).
+    const h = harness({
+      groups: [{ id: 'g-default', name: 'Sessions', collapsed: false, kind: 'normal' }],
+      sessions: [mkSession('s1', 'g-default')],
+      activeId: 's1',
+    });
+    h.get().archiveSession('s1');
+    // g-default still exists but is empty; delete it. s1 lives in the
+    // archive container now, so deleting g-default doesn't cascade to s1.
+    const containerId = h.state().groups!.find(
+      (g) => g.kind === 'archive' && g.sourceGroupId === 'g-default'
+    )!.id;
+    h.get().deleteGroup('g-default');
+    const afterDelete = h.state();
+    // Sanity: no normal groups left, only the archive container.
+    expect(
+      afterDelete.groups!.filter((g) => g.kind === 'normal').length
+    ).toBe(0);
+    expect(afterDelete.groups!.find((g) => g.id === containerId)).toBeDefined();
+    expect(afterDelete.sessions!.find((x) => x.id === 's1')).toBeDefined();
+
+    h.get().unarchiveSession('s1');
+    const s = h.state();
+    const s1 = s.sessions!.find((x) => x.id === 's1')!;
+    // A new normal group must exist.
+    const normalGroups = s.groups!.filter((g) => g.kind === 'normal');
+    expect(normalGroups.length).toBe(1);
+    const synth = normalGroups[0]!;
+    // Session points at the new group (NOT the dead 'g-default' literal).
+    expect(s1.groupId).toBe(synth.id);
+    expect(s1.groupId).not.toBe('g-default');
+    // Sidebar visibility contract: the session's groupId resolves to an
+    // existing group in state.groups (this is the predicate Sidebar uses
+    // when filtering rows; failure here = invisible session).
+    expect(s.groups!.find((g) => g.id === s1.groupId)).toBeDefined();
+    expect(s1.archivedAt).toBeUndefined();
+    // Empty archive container cleaned up.
+    expect(s.groups!.find((g) => g.id === containerId)).toBeUndefined();
+  });
+
   it('unarchiveGroup on a container bulk-unarchives all members', () => {
     const h = harness({
       sessions: [
