@@ -4,7 +4,7 @@ import { renderHook } from '@testing-library/react';
 // Mock xterm constructors BEFORE importing the hook so the singleton
 // uses the spies. Use vi.hoisted because vi.mock factories run before
 // any top-level `const`.
-const { openSpy, loadAddonSpy, onSelectionChangeSpy, attachCustomKeyEventHandlerSpy, getSelectionSpy, clearSelectionSpy, selectAllSpy, terminalCtor, webLinksCtor } =
+const { openSpy, loadAddonSpy, onSelectionChangeSpy, attachCustomKeyEventHandlerSpy, getSelectionSpy, clearSelectionSpy, selectAllSpy, terminalModes, terminalCtor, webLinksCtor } =
   vi.hoisted(() => {
     const openSpy = vi.fn();
     const loadAddonSpy = vi.fn();
@@ -13,6 +13,12 @@ const { openSpy, loadAddonSpy, onSelectionChangeSpy, attachCustomKeyEventHandler
     const getSelectionSpy = vi.fn(() => '');
     const clearSelectionSpy = vi.fn();
     const selectAllSpy = vi.fn();
+    // Mutable IModes-shaped object so paste tests can flip
+    // `bracketedPasteMode` to simulate claude having sent
+    // `\x1b[?2004h`. xterm.js exposes this as a readonly getter in prod,
+    // but the singleton reads it as a plain property — a plain object
+    // matches the access pattern.
+    const terminalModes: { bracketedPasteMode: boolean } = { bracketedPasteMode: false };
     // vitest v3+ requires `function`/`class` (not arrow) for mocks invoked
     // with `new` — otherwise tinyspy throws "is not a constructor".
     const terminalCtor = vi.fn(function () {
@@ -25,13 +31,14 @@ const { openSpy, loadAddonSpy, onSelectionChangeSpy, attachCustomKeyEventHandler
         clearSelection: clearSelectionSpy,
         selectAll: selectAllSpy,
         unicode: { activeVersion: '6' },
+        modes: terminalModes,
         _core: { _parent: null },
       };
     });
     const webLinksCtor = vi.fn(function () {
       return {};
     });
-    return { openSpy, loadAddonSpy, onSelectionChangeSpy, attachCustomKeyEventHandlerSpy, getSelectionSpy, clearSelectionSpy, selectAllSpy, terminalCtor, webLinksCtor };
+    return { openSpy, loadAddonSpy, onSelectionChangeSpy, attachCustomKeyEventHandlerSpy, getSelectionSpy, clearSelectionSpy, selectAllSpy, terminalModes, terminalCtor, webLinksCtor };
   });
 
 vi.mock('@xterm/xterm', () => ({ Terminal: terminalCtor }));
@@ -358,6 +365,8 @@ describe('useXtermSingleton', () => {
       getSelectionSpy.mockReset().mockReturnValue('');
       clearSelectionSpy.mockReset();
       selectAllSpy.mockReset();
+      // Default to bracketed-paste OFF; the wrap-active test flips it on.
+      terminalModes.bracketedPasteMode = false;
     });
 
     afterEach(() => {
@@ -479,6 +488,72 @@ describe('useXtermSingleton', () => {
       expect(inputSpy).toHaveBeenCalledTimes(1);
       expect(inputSpy).toHaveBeenCalledWith('sid-original', 'typed-into-original');
       expect(inputSpy).not.toHaveBeenCalledWith('sid-different', 'typed-into-original');
+    });
+
+    // Paste bug #1 (CRLF): Windows clipboards (notepad, browsers) hand
+    // back `\r\n`. PTYs / claude treat each `\r` as submit, so a
+    // multi-line Windows paste would fire the prompt after line 1 and
+    // splatter the rest into fresh prompts. Normalize CRLF → LF (and
+    // lone CR → LF for ancient-Mac paste) BEFORE writing to the PTY.
+    it('pasteIntoActivePty normalizes CRLF to LF before injecting (Windows clipboard)', async () => {
+      terminalModes.bracketedPasteMode = false;
+      await pasteIntoActivePty('line1\r\nline2\r\nline3');
+      expect(inputSpy).toHaveBeenCalledTimes(1);
+      expect(inputSpy).toHaveBeenCalledWith('sid-rc', 'line1\nline2\nline3');
+    });
+
+    it('pasteIntoActivePty normalizes lone CR to LF (old-Mac line endings)', async () => {
+      terminalModes.bracketedPasteMode = false;
+      await pasteIntoActivePty('a\rb\rc');
+      expect(inputSpy).toHaveBeenCalledTimes(1);
+      expect(inputSpy).toHaveBeenCalledWith('sid-rc', 'a\nb\nc');
+    });
+
+    // Paste bug #2 (bracketed paste): when claude's Ink TUI has sent
+    // `\x1b[?2004h` (DECSET 2004), the terminal MUST wrap pasted text in
+    // `\x1b[200~ ... \x1b[201~` so the app distinguishes paste from
+    // typing. Without this: embedded `\n` submits prematurely,
+    // embedded `\x03` SIGINTs claude, embedded ANSI escapes are
+    // interpreted as terminal commands.
+    it('pasteIntoActivePty wraps in bracketed-paste markers when mode is active', async () => {
+      terminalModes.bracketedPasteMode = true;
+      await pasteIntoActivePty('multi\nline\ntext');
+      expect(inputSpy).toHaveBeenCalledTimes(1);
+      expect(inputSpy).toHaveBeenCalledWith('sid-rc', '\x1b[200~multi\nline\ntext\x1b[201~');
+    });
+
+    // Belt-and-braces: when mode is OFF the payload is bare (no
+    // wrapping markers). Guards against accidentally always-wrapping,
+    // which would spew literal `\x1b[200~` characters into shells that
+    // never enable bracketed paste (e.g. cmd.exe).
+    it('pasteIntoActivePty does NOT wrap when bracketed-paste mode is inactive', async () => {
+      terminalModes.bracketedPasteMode = false;
+      await pasteIntoActivePty('plain text');
+      expect(inputSpy).toHaveBeenCalledTimes(1);
+      expect(inputSpy).toHaveBeenCalledWith('sid-rc', 'plain text');
+    });
+
+    // Composition: CRLF normalization happens FIRST, then bracketed
+    // wrap, so a Windows-clipboard multi-line paste into claude lands
+    // as a single atomic paste with LF separators.
+    it('pasteIntoActivePty normalizes CRLF then wraps when bracketed mode active', async () => {
+      terminalModes.bracketedPasteMode = true;
+      await pasteIntoActivePty('a\r\nb\r\nc');
+      expect(inputSpy).toHaveBeenCalledTimes(1);
+      expect(inputSpy).toHaveBeenCalledWith('sid-rc', '\x1b[200~a\nb\nc\x1b[201~');
+    });
+
+    // Image-path branch goes through the same preparation so claude
+    // receives the path as one atomic paste, not as keystrokes that
+    // could collide with TUI keybindings while the path streams in.
+    it('image-path branch is bracketed-wrapped when paste mode is active', async () => {
+      terminalModes.bracketedPasteMode = true;
+      const fakePath = 'C:\\Users\\me\\AppData\\Roaming\\CCSM\\clipboard-images\\foo.png';
+      (window as unknown as { ccsmPty: { saveClipboardImage: ReturnType<typeof vi.fn> } })
+        .ccsmPty.saveClipboardImage = vi.fn().mockResolvedValue(fakePath);
+      await pasteIntoActivePty(undefined);
+      expect(inputSpy).toHaveBeenCalledTimes(1);
+      expect(inputSpy).toHaveBeenCalledWith('sid-rc', `\x1b[200~${fakePath}\x1b[201~`);
     });
 
     it('Ctrl+A invokes term.selectAll() and returns false to stop SOH translation', () => {
