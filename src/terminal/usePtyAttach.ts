@@ -299,6 +299,22 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
         }
         buffered.length = 0;
 
+        // Attach-time invariant: end at bottom. xterm normally follows live
+        // output, but a `term.reset()` + `term.write(snapshot)` sequence
+        // does NOT guarantee viewportY ends at baseY (a wheel event landing
+        // in the middle of the snapshot write, or a scrollback truncation
+        // when the snapshot exceeds the configured cap, leaves the viewport
+        // stranded). Pin it explicitly — the user's mental model on session
+        // attach is "I'm caught up at the prompt".
+        const tAfterSnap = getTerm();
+        if (tAfterSnap) {
+          try {
+            tAfterSnap.scrollToBottom();
+          } catch {
+            // best-effort — scroll API rarely fails, ignore.
+          }
+        }
+
         // L4 PR-D (#866): install the snapshot-replay handler used by
         // `useTerminalResize` after a SIGWINCH. The handler re-runs
         // steps 2-5 against the now-reflowed headless buffer:
@@ -319,7 +335,22 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
         // consistent with the listener installed at attach time — the
         // listener always reads `snapSeq` lazily so flipping it back
         // to null re-engages buffering.
-        setSnapshotReplay(async () => {
+        //
+        // Concurrency: two replay drivers exist — the post-attach fit
+        // gate below, and the ResizeObserver in `useTerminalResize`.
+        // They can fire close in time (post-attach gate + a layout
+        // settle that triggers the RO). Letting both run concurrently
+        // means two `reset()` + `write(snapshot)` pairs interleave;
+        // the second `reset()` can land mid-write of the first replay,
+        // and the visible viewport ends stranded (typically at the top
+        // — the user's "attach lands at scroll top" report). Coalesce
+        // overlapping calls: if a replay is in flight, mark a pending
+        // bit and return; the in-flight replay re-runs once more after
+        // it finishes. Only the latest snapshot matters — older
+        // pending requests are subsumed by the next fetch.
+        let replayInFlight = false;
+        let replayPending = false;
+        const runReplay = async (): Promise<void> => {
           if (cancelled || requestedSidRef.current !== sessionId) return;
           // Re-engage buffering — listener checks `snapSeq === null`.
           snapSeq = null;
@@ -361,6 +392,40 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
             writeAndScrollToBottom(tDrain2);
           }
           buffered.length = 0;
+          // After a replay the visible buffer was reset and rewritten
+          // from scratch. xterm's default "follow live output" is not
+          // re-engaged by `write` alone if the user-scroll latch was
+          // set, and `reset()` doesn't clear that latch reliably either.
+          // Pin viewport to bottom so the user sees the prompt — same
+          // invariant as the attach-time snapshot write above.
+          const tBottom = getTerm();
+          if (tBottom) {
+            try {
+              tBottom.scrollToBottom();
+            } catch {
+              // best-effort.
+            }
+          }
+        };
+        setSnapshotReplay(async () => {
+          if (replayInFlight) {
+            replayPending = true;
+            return;
+          }
+          replayInFlight = true;
+          try {
+            await runReplay();
+            // Drain any request that arrived while we were running.
+            // Loop (not a single re-run) because a third request could
+            // arrive during the drain run.
+            while (replayPending && !cancelled && requestedSidRef.current === sessionId) {
+              replayPending = false;
+              await runReplay();
+            }
+          } finally {
+            replayInFlight = false;
+            replayPending = false;
+          }
         });
 
         const t3 = getTerm();
