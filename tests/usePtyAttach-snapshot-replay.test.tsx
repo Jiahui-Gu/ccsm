@@ -77,6 +77,13 @@ function installMockTerminal(): void {
     proposeDimensions: () => ({ cols: 80, rows: 24 }),
     fit: () => {},
   } as unknown as ReturnType<typeof singleton.getFit>);
+  // writeOrBuffer (IME buffering wrapper) normally forwards to the
+  // module-internal `term` instance which we don't construct in this
+  // test. Route it through the same mock write sink so live-chunk paths
+  // (post-snapshot) keep populating M.writes.
+  vi.spyOn(singleton, 'writeOrBuffer').mockImplementation((chunk: string) => {
+    if (chunk !== '') M.writes.push(chunk);
+  });
 }
 
 function installCcsmPty(): void {
