@@ -71,6 +71,30 @@ describe('groupsSlice', () => {
     expect(h.state().groups.find((g) => g.id === 'g-default')!.name).toBe('Renamed');
   });
 
+  it('renameGroup clears nameKey so the user-typed name wins over i18n', () => {
+    // Default bootstrap group carries `nameKey: 'sidebar.defaultGroupName'`
+    // which the sidebar prefers over `name` for rendering. After a user
+    // rename we must drop `nameKey` so their text actually shows up.
+    const h = harness();
+    const before = h.state().groups.find((g) => g.id === 'g-default')!;
+    expect(before.nameKey).toBe('sidebar.defaultGroupName');
+
+    h.slice.renameGroup('g-default', 'My sessions');
+
+    const after = h.state().groups.find((g) => g.id === 'g-default')!;
+    expect(after.name).toBe('My sessions');
+    expect(after.nameKey).toBeUndefined();
+  });
+
+  it('renameGroup is a no-op on groups without nameKey (regression)', () => {
+    const h = harness();
+    const id = h.slice.createGroup('Original');
+    h.slice.renameGroup(id, 'Updated');
+    const g = h.state().groups.find((x) => x.id === id)!;
+    expect(g.name).toBe('Updated');
+    expect(g.nameKey).toBeUndefined();
+  });
+
   it('archiveGroup / unarchiveGroup flips kind', () => {
     const h = harness();
     h.slice.archiveGroup('g-default');
