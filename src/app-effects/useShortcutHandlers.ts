@@ -35,17 +35,25 @@ export interface ShortcutHandlersDeps {
   togglePalette: () => void;
   /** Open the settings dialog. Bound to Ctrl+,. */
   openSettings: () => void;
+  /**
+   * Create a new sidebar group and focus it. Bound to Ctrl+Shift+N.
+   * Mirrors Sidebar's "+" button (handleNewGroup) so the keyboard path
+   * lands on the same row a click would. Suppressed while a text input,
+   * textarea, or contenteditable surface has focus so the chord can't
+   * fire mid-typing.
+   */
+  createNewGroup: () => void;
 }
 
 /**
  * Composite hook that installs all global keyboard shortcuts handled at
  * the App level. Combines what was previously a single inline `keydown`
- * listener in App.tsx covering: Ctrl+/, "?", Ctrl+F, Ctrl+,.
+ * listener in App.tsx covering: Ctrl+/, "?", Ctrl+F, Ctrl+,, Ctrl+Shift+N.
  *
  * Extracted for SRP under Task #724.
  */
 export function useShortcutHandlers(deps: ShortcutHandlersDeps): void {
-  const { toggleShortcuts, togglePalette, openSettings } = deps;
+  const { toggleShortcuts, togglePalette, openSettings, createNewGroup } = deps;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
@@ -68,9 +76,18 @@ export function useShortcutHandlers(deps: ShortcutHandlersDeps): void {
       } else if (e.key === ',') {
         e.preventDefault();
         openSettings();
+      } else if (k === 'n' && e.shiftKey) {
+        // Ctrl/⌘ + Shift + N — create a new sidebar group. Both
+        // ShortcutOverlay and CommandPalette advertise this chord; without
+        // this branch the hint pointed at a no-op. Editable-target gate
+        // mirrors the "?" branch so typing "N" in the InputBar with Shift
+        // held (a capital N) can't spawn groups behind the user.
+        if (isEditableTarget(e.target)) return;
+        e.preventDefault();
+        createNewGroup();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [toggleShortcuts, togglePalette, openSettings]);
+  }, [toggleShortcuts, togglePalette, openSettings, createNewGroup]);
 }

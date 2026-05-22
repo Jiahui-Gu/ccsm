@@ -15,11 +15,13 @@ describe('useShortcutHandlers', () => {
   let toggleShortcuts: ReturnType<typeof vi.fn>;
   let togglePalette: ReturnType<typeof vi.fn>;
   let openSettings: ReturnType<typeof vi.fn>;
+  let createNewGroup: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     toggleShortcuts = vi.fn();
     togglePalette = vi.fn();
     openSettings = vi.fn();
+    createNewGroup = vi.fn();
   });
 
   function mount() {
@@ -28,6 +30,7 @@ describe('useShortcutHandlers', () => {
         toggleShortcuts,
         togglePalette,
         openSettings,
+        createNewGroup,
       })
     );
   }
@@ -50,6 +53,7 @@ describe('useShortcutHandlers', () => {
     expect(togglePalette).not.toHaveBeenCalled();
     expect(toggleShortcuts).not.toHaveBeenCalled();
     expect(openSettings).not.toHaveBeenCalled();
+    expect(createNewGroup).not.toHaveBeenCalled();
   });
 
   it('Ctrl+, opens settings', () => {
@@ -83,6 +87,48 @@ describe('useShortcutHandlers', () => {
     expect(togglePalette).not.toHaveBeenCalled();
     expect(toggleShortcuts).not.toHaveBeenCalled();
     expect(openSettings).not.toHaveBeenCalled();
+    expect(createNewGroup).not.toHaveBeenCalled();
+  });
+
+  // ShortcutOverlay + CommandPalette advertise Ctrl+Shift+N for "New
+  // group"; the chord was previously unbound (silent no-op when the user
+  // followed the in-app hint). These cases lock the wiring in.
+  it('Ctrl+Shift+N creates a new group', () => {
+    mount();
+    dispatchKey({ key: 'N', ctrlKey: true, shiftKey: true });
+    expect(createNewGroup).toHaveBeenCalledTimes(1);
+  });
+
+  it('Cmd+Shift+N creates a new group (macOS modifier)', () => {
+    mount();
+    dispatchKey({ key: 'N', metaKey: true, shiftKey: true });
+    expect(createNewGroup).toHaveBeenCalledTimes(1);
+  });
+
+  it('Ctrl+N (without Shift) is NOT bound to createNewGroup', () => {
+    mount();
+    dispatchKey({ key: 'n', ctrlKey: true });
+    dispatchKey({ key: 'N', ctrlKey: true });
+    expect(createNewGroup).not.toHaveBeenCalled();
+  });
+
+  it('Ctrl+Shift+N is suppressed when an editable target has focus', () => {
+    mount();
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    dispatchKey({ key: 'N', ctrlKey: true, shiftKey: true, target: input });
+    expect(createNewGroup).not.toHaveBeenCalled();
+    document.body.removeChild(input);
+
+    const textarea = document.createElement('textarea');
+    document.body.appendChild(textarea);
+    dispatchKey({ key: 'N', ctrlKey: true, shiftKey: true, target: textarea });
+    expect(createNewGroup).not.toHaveBeenCalled();
+    document.body.removeChild(textarea);
+
+    // Note: contenteditable surfaces are also gated via `isContentEditable`
+    // in the editable check; not asserted here because jsdom doesn't
+    // propagate the `contentEditable` attribute to that getter reliably.
   });
 
   it('removes the keydown listener on unmount', () => {
