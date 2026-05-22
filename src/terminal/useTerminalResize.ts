@@ -17,6 +17,16 @@ import { getTerm, getFit, getActiveSid, getSnapshotReplay } from './xtermSinglet
  * is alt-screen and does not repaint on SIGWINCH unless input
  * arrives — same root cause as #852). PTY resize still propagates so
  * subsequent claude output is sized correctly.
+ *
+ * Scroll restoration: the replay handler unconditionally parks the
+ * viewport at the bottom (the right behaviour for attach, where the
+ * user just opened a session and expects to see the live tail). For
+ * a window/pane resize that's hostile — yanking a scrolled-up viewport
+ * back to the bottom on every drag of the splitter loses the user's
+ * reading position. So we snapshot the pre-resize `atBottom` state and
+ * the absolute viewportY BEFORE the backend resize, then after the
+ * replay either let the bottom-park stand (atBottom was true) or
+ * scroll back to the saved line.
  */
 export function useTerminalResize(hostRef: RefObject<HTMLDivElement | null>): void {
   useEffect(() => {
@@ -30,6 +40,21 @@ export function useTerminalResize(hostRef: RefObject<HTMLDivElement | null>): vo
         const fit = getFit();
         const activeSid = getActiveSid();
         if (!term || !fit || !activeSid) return;
+        // Capture the pre-resize scroll state. Same atBottom rule as
+        // `useAtBottom` (gap <= 1 row tolerance covers mid-frame
+        // rounding). We also save the absolute viewportY so we can
+        // restore the exact prior line — a pure boolean isn't enough.
+        let wasAtBottom = true;
+        let savedViewportY = 0;
+        try {
+          const buf = term.buffer.active;
+          wasAtBottom = buf.baseY - buf.viewportY <= 1;
+          savedViewportY = buf.viewportY;
+        } catch {
+          // best-effort — fall back to atBottom=true so the default
+          // behaviour matches the pre-fix code (always park at bottom).
+          wasAtBottom = true;
+        }
         try {
           fit.fit();
           const { cols, rows } = term;
@@ -49,6 +74,27 @@ export function useTerminalResize(hostRef: RefObject<HTMLDivElement | null>): vo
               : Promise.resolve();
             void p
               .then(() => replay())
+              .then(() => {
+                // The replay's drain parks the viewport at the bottom
+                // unconditionally (correct for attach). For resize we
+                // only want that when the user WAS at the bottom; if
+                // they were scrolled up, restore the saved viewportY.
+                // Rendezvous via empty-write callback so the restore
+                // lands AFTER all queued writes (live chunks arriving
+                // during the replay drain would otherwise advance
+                // baseY between our scrollToLine and the next frame).
+                if (wasAtBottom) return;
+                const t2 = getTerm();
+                if (!t2) return;
+                t2.write('', () => {
+                  try {
+                    t2.scrollToLine(savedViewportY);
+                  } catch {
+                    // best-effort — if the reflow shortened the buffer,
+                    // scrollToLine on an out-of-range index is a no-op.
+                  }
+                });
+              })
               .catch((e) => console.warn('[TerminalPane] resize replay failed', e));
           }
         } catch (e) {

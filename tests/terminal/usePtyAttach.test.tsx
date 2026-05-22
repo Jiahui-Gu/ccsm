@@ -2,7 +2,20 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 
 // Spy on the Terminal so usePtyAttach can call write/reset/resize/onData/focus.
-const writeSpy = vi.fn();
+// `write` accepts an optional callback (xterm's WriteBuffer drain rendezvous)
+// which `writeAndScrollToBottom` relies on — invoke it synchronously so the
+// scrollToBottom side-effect lands during the same act() flush. Tracks the
+// ORDER of write -> scrollToBottom calls via `callLog` for the scroll-after-
+// drain assertion.
+const callLog: string[] = [];
+const scrollToBottomSpy = vi.fn(() => {
+  callLog.push('scrollToBottom');
+});
+const scrollToLineSpy = vi.fn();
+const writeSpy = vi.fn((data: string, cb?: () => void) => {
+  callLog.push(`write:${data}`);
+  if (cb) cb();
+});
 const resetSpy = vi.fn();
 const resizeSpy = vi.fn();
 const focusSpy = vi.fn();
@@ -14,7 +27,10 @@ const fakeTerm = {
   reset: resetSpy,
   resize: resizeSpy,
   focus: focusSpy,
+  scrollToBottom: scrollToBottomSpy,
+  scrollToLine: scrollToLineSpy,
   onData: onDataSpy,
+  buffer: { active: { baseY: 0, viewportY: 0 } },
   cols: 80,
   rows: 24,
 };
@@ -47,6 +63,12 @@ vi.mock('../../src/terminal/xtermSingleton', async () => {
     getSnapshotReplay: vi.fn(() => snapReplay),
     setSnapshotReplay: vi.fn((fn: (() => Promise<void>) | null) => {
       snapReplay = fn;
+    }),
+    // Mirror the real helper: `term.write('', cb)` then `cb()` scrolls.
+    // The fake `write` invokes its cb synchronously, so this also runs
+    // the scroll spy synchronously — perfect for ordering assertions.
+    writeAndScrollToBottom: vi.fn((t: any) => {
+      t.write('', () => t.scrollToBottom());
     }),
     __resetSingletonForTests: vi.fn(() => {
       activeSid = null;
@@ -158,6 +180,9 @@ describe('usePtyAttach', () => {
     resetSpy.mockClear();
     resizeSpy.mockClear();
     focusSpy.mockClear();
+    scrollToBottomSpy.mockClear();
+    scrollToLineSpy.mockClear();
+    callLog.length = 0;
     onDataSpy.mockClear();
     inputDisposableDispose.mockClear();
     fitFitSpy.mockClear();
@@ -366,5 +391,70 @@ describe('usePtyAttach', () => {
       await flush();
     });
     expect(result.current.state).toMatchObject({ kind: 'exit', exitKind: 'crashed' });
+  });
+
+  // Regression: "attach a session, scrollbar lands at the top/middle of
+  // the transcript" reported by user. Root cause: xterm's `write` is
+  // queued via WriteBuffer; a synchronous scrollToBottom() after
+  // `write(snapshot)` runs before baseY catches up to the snapshot's
+  // line count, so the viewport stays parked at the post-`reset()` line
+  // 0. Fix: park the viewport via `write('', cb)` rendezvous so the
+  // scroll happens AFTER the WriteBuffer drains the snapshot.
+  it('scrolls to bottom AFTER the snapshot write drain rendezvous fires', async () => {
+    const { bridge } = makePtyBridge({ snapshot: { snapshot: 'snap-body', seq: 0 } });
+    (window as any).ccsmPty = bridge;
+
+    renderHook(() => usePtyAttach('sid-scroll', '/tmp'));
+    await flushAll();
+
+    // Snapshot was written.
+    expect(writeSpy).toHaveBeenCalledWith('snap-body');
+    // Scroll happened at least once.
+    expect(scrollToBottomSpy).toHaveBeenCalled();
+    // Crucial ordering: the rendezvous write('') landed BEFORE its cb
+    // fired the scroll — i.e. scroll-to-bottom is NOT synchronous with
+    // the snapshot write. With the fake's synchronous-callback `write`,
+    // we expect to see `write:snap-body`, then `write:` (rendezvous),
+    // then `scrollToBottom` in the log.
+    const snapIdx = callLog.indexOf('write:snap-body');
+    const rendezvousIdx = callLog.indexOf('write:', snapIdx + 1);
+    const scrollIdx = callLog.indexOf('scrollToBottom', rendezvousIdx);
+    expect(snapIdx).toBeGreaterThanOrEqual(0);
+    expect(rendezvousIdx).toBeGreaterThan(snapIdx);
+    expect(scrollIdx).toBeGreaterThan(rendezvousIdx);
+  });
+
+  // Same scroll-to-bottom contract for the snapshot-replay path (fired
+  // by the post-attach fit branch when the container size differs from
+  // the spawn dims, and by `useTerminalResize` after a SIGWINCH). Drives
+  // the replay via the post-attach fit's container-size delta and
+  // verifies a scroll happens after the replay's snapshot write drains.
+  it('replay path scrolls to bottom after its snapshot drain (post-attach fit branch)', async () => {
+    const { bridge, spies } = makePtyBridge({ snapshot: { snapshot: 'snap-A', seq: 0 } });
+    (window as any).ccsmPty = bridge;
+    // Force a size delta so the post-attach fit branch fires the replay.
+    fitFitSpy.mockImplementation(() => {
+      fakeTerm.cols = 134;
+      fakeTerm.rows = 51;
+    });
+    // Different snapshot string for the replay so we can grep the log
+    // independently of the initial attach snapshot.
+    spies.getBufferSnapshot.mockImplementationOnce(async () => ({ snapshot: 'snap-A', seq: 0 }));
+    spies.getBufferSnapshot.mockImplementationOnce(async () => ({ snapshot: 'replayed', seq: 1 }));
+
+    try {
+      renderHook(() => usePtyAttach('sid-replay', '/tmp'));
+      await flushAll();
+
+      expect(writeSpy).toHaveBeenCalledWith('replayed');
+      const replayIdx = callLog.lastIndexOf('write:replayed');
+      const scrollIdx = callLog.indexOf('scrollToBottom', replayIdx);
+      expect(replayIdx).toBeGreaterThanOrEqual(0);
+      expect(scrollIdx).toBeGreaterThan(replayIdx);
+    } finally {
+      fakeTerm.cols = 80;
+      fakeTerm.rows = 24;
+      fitFitSpy.mockReset();
+    }
   });
 });
