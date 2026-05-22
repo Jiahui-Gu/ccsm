@@ -12,6 +12,7 @@ import {
   setInputDisposable,
   setSnapshotReplay,
   getSnapshotReplay,
+  writeAndScrollToBottom,
 } from './xtermSingleton';
 
 export type PtyAttachState =
@@ -289,6 +290,12 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
           for (const b of buffered) {
             if (b.seq > snapSeq) tDrain.write(b.chunk);
           }
+          // Park the viewport at the bottom AFTER the WriteBuffer drains
+          // the snapshot + drained chunks (see writeAndScrollToBottom).
+          // Without this, attach lands the scrollbar at the top of the
+          // transcript because xterm.write is queued and a synchronous
+          // scrollToBottom() would run before baseY catches up.
+          writeAndScrollToBottom(tDrain);
         }
         buffered.length = 0;
 
@@ -346,6 +353,12 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
             for (const b of buffered) {
               if (b.seq > snapSeq) tDrain2.write(b.chunk);
             }
+            // Same rationale as the initial-attach drain above: this
+            // replay path is fired by the post-attach fit branch below
+            // (and by `useTerminalResize` after a SIGWINCH). For the
+            // attach side we want unconditional scroll-to-bottom; the
+            // resize side gates separately on the user's prior atBottom.
+            writeAndScrollToBottom(tDrain2);
           }
           buffered.length = 0;
         });
@@ -403,6 +416,19 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
                 .then(() => {
                   const replay = getSnapshotReplay();
                   return replay ? replay() : undefined;
+                })
+                .then(() => {
+                  // Post-attach fit branch: even though the replay
+                  // handler itself scrolls to bottom after its drain,
+                  // we re-assert here as a defensive rendezvous. The
+                  // replay queues writes against the live xterm and
+                  // its internal scroll happens once THAT WriteBuffer
+                  // drains; an unrelated chunk that landed between the
+                  // fit and the replay (e.g. claude reacting to the
+                  // resize) could otherwise leave baseY advanced past
+                  // viewportY again. Cheap empty-write rendezvous.
+                  const tFit = getTerm();
+                  if (tFit) writeAndScrollToBottom(tFit);
                 })
                 .catch((e) => console.warn('[TerminalPane] post-attach replay failed', e));
             }
