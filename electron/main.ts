@@ -72,6 +72,8 @@ import { registerSystemIpc } from './ipc/systemIpc';
 import { registerSessionIpc } from './ipc/sessionIpc';
 import { registerWindowIpc } from './ipc/windowIpc';
 import { startMobileRemoteServer } from './remote/mobileRemoteServer';
+import { startMobileRemoteV2 } from './remote/mobileRemoteHostV2';
+import { registerDeviceFlowIpc } from './remote/deviceFlow';
 import {
   registerUtilityIpc,
   primeImportableCache,
@@ -125,6 +127,7 @@ let badgeManager: BadgeManager | null = null;
 let notifyPipeline: NotifyPipeline | null = null;
 let notifyPipelineDispose: (() => void) | null = null;
 let mobileRemoteServer: { close: () => void } | null = null;
+let mobileRemoteV2: { close: () => void } | null = null;
 const badgeController = new BadgeController(() => badgeManager);
 
 function getTrayBaseImage() {
@@ -255,6 +258,8 @@ app.whenReady().then(() => {
   );
 
   mobileRemoteServer = startMobileRemoteServer();
+  registerDeviceFlowIpc();
+  mobileRemoteV2 = startMobileRemoteV2();
 
   // ─────────────────────── notify pipeline (Phase C, #689) ───────────────
   // BadgeManager is bumped via `onNotified` to update the tray/dock badge.
@@ -333,6 +338,8 @@ registerLifecycleHandlers({
   disposeNotifyPipeline: () => {
     mobileRemoteServer?.close();
     mobileRemoteServer = null;
+    mobileRemoteV2?.close();
+    mobileRemoteV2 = null;
     notifyPipelineDispose?.();
   },
 });

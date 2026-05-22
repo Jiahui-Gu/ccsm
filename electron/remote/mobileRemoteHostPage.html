@@ -1,0 +1,106 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>CCSM Remote Host (hidden)</title>
+</head>
+<body>
+<script>
+// This page runs in a hidden BrowserWindow with sandbox=true; no nodeIntegration.
+// It uses fetch + WebSocket + RTCPeerConnection (renderer-side Web APIs) for the
+// V2 host transport. It communicates with the Electron main process via the
+// `ccsmRemoteV2` bridge exposed by the preload (see mobileRemoteHostPreload.ts).
+// If the preload isn't wired, the page logs and exits silently.
+const bridge = window.ccsmRemoteV2;
+if (!bridge) {
+  console.error('[remote-v2-host] preload bridge missing; aborting');
+} else {
+  const params = new URLSearchParams(location.search);
+  const origin = params.get('origin');
+  const room = params.get('room');
+  const jwt = params.get('jwt');
+  const wsUrl = origin.replace(/^http/, 'ws') + '/ws/' + encodeURIComponent(room) + '?role=host&token=' + encodeURIComponent(jwt);
+
+  let ws = null;
+  let pc = null;
+  let dc = null;
+  let backoffMs = 1000;
+
+  function connect() {
+    ws = new WebSocket(wsUrl);
+    ws.onopen = () => { console.log('[remote-v2-host] ws open'); backoffMs = 1000; };
+    ws.onclose = () => { console.log('[remote-v2-host] ws close; reconnect in', backoffMs); setTimeout(connect, backoffMs); backoffMs = Math.min(backoffMs * 2, 30000); cleanupPc(); };
+    ws.onerror = (e) => { console.warn('[remote-v2-host] ws error', e); };
+    ws.onmessage = onSignal;
+  }
+
+  async function onSignal(ev) {
+    let m;
+    try { m = JSON.parse(ev.data); } catch { return; }
+    if (m.type === 'hello') {
+      console.log('[remote-v2-host] hello; peerPresent=', m.peerPresent);
+      return;
+    }
+    if (m.type === 'peer-joined') {
+      // Reset any prior pc — new peer means a fresh offer is coming.
+      cleanupPc();
+      return;
+    }
+    if (m.type === 'peer-left') { cleanupPc(); return; }
+    if (m.type === 'offer') {
+      cleanupPc();
+      pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.cloudflare.com:3478' }] });
+      pc.onicecandidate = (e) => {
+        if (e.candidate && ws && ws.readyState === 1) {
+          ws.send(JSON.stringify({ type: 'ice', candidate: e.candidate }));
+        }
+      };
+      pc.onconnectionstatechange = () => {
+        console.log('[remote-v2-host] pc state:', pc.connectionState);
+        if (pc.connectionState === 'failed' || pc.connectionState === 'closed') cleanupPc();
+      };
+      pc.ondatachannel = (e) => {
+        dc = e.channel;
+        dc.onopen = () => console.log('[remote-v2-host] dc open');
+        dc.onclose = () => { dc = null; console.log('[remote-v2-host] dc closed'); };
+        dc.onmessage = (ev2) => {
+          let msg;
+          try { msg = JSON.parse(ev2.data); } catch { return; }
+          bridge.send(msg);
+        };
+      };
+      await pc.setRemoteDescription({ type: 'offer', sdp: m.sdp });
+      const ans = await pc.createAnswer();
+      await pc.setLocalDescription(ans);
+      ws.send(JSON.stringify({ type: 'answer', sdp: ans.sdp }));
+      return;
+    }
+    if (m.type === 'ice' && m.candidate) {
+      try { await pc.addIceCandidate(m.candidate); } catch (e) { console.warn('addIceCandidate', e); }
+      return;
+    }
+  }
+
+  function cleanupPc() {
+    if (dc) { try { dc.close(); } catch {} dc = null; }
+    if (pc) { try { pc.close(); } catch {} pc = null; }
+  }
+
+  // Main → DataChannel forwarder (sessions.list / session.snapshot / pty.data).
+  bridge.onSend((msg) => {
+    if (dc && dc.readyState === 'open') {
+      try { dc.send(JSON.stringify(msg)); } catch {}
+    }
+  });
+  // pty.data fan-in from main.
+  bridge.onPtyData(({ sid, chunk }) => {
+    if (dc && dc.readyState === 'open') {
+      try { dc.send(JSON.stringify({ type: 'pty.data', sid, chunk })); } catch {}
+    }
+  });
+
+  connect();
+}
+</script>
+</body>
+</html>
