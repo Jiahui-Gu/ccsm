@@ -76,8 +76,12 @@ export interface LifecycleDeps {
   setIsQuitting: (v: boolean) => void;
   /** Best-effort reap of any live node-pty children spawned through
    *  ptyHost. Idempotent; critical on Windows where conpty can otherwise
-   *  leak the claude child past Electron quit. */
-  killAllPtySessions: () => void;
+   *  leak the claude child past Electron quit. Returns a Promise so the
+   *  before-quit handler can await the parallel `taskkill` fanout before
+   *  letting Electron tear down — previously the sync version froze the
+   *  quit UI for N × 200-2000ms while `spawnSync('taskkill', ...)` ran
+   *  serially per session. */
+  killAllPtySessions: () => Promise<void> | void;
   /** Tear down the notify pipeline + its app-level listeners (focus/blur,
    *  sessionWatcher 'unwatched') and any pending flash timers. Optional
    *  because `before-quit` may fire before the pipeline is constructed
@@ -105,20 +109,47 @@ export function registerLifecycleHandlers(deps: LifecycleDeps): void {
     disposeNotifyPipeline,
   } = deps;
 
-  app.on('before-quit', () => {
+  // Re-entry guard for the async before-quit dance below. Once we've
+  // dispatched the async cleanup we call `app.quit()` again, which re-fires
+  // `before-quit`; on that second pass we must let Electron proceed
+  // unmolested (no preventDefault, no double-cleanup) — otherwise we'd
+  // loop forever. The flag is in module scope rather than on the deps bag
+  // because it's purely an implementation detail of THIS handler.
+  let cleanupStarted = false;
+
+  app.on('before-quit', (event) => {
     setIsQuitting(true);
-    try {
-      killAllPtySessions();
-    } catch {
-      /* ignore — best-effort cleanup on quit */
+    if (cleanupStarted) {
+      // Second-pass quit after async cleanup resolved — let Electron exit.
+      return;
     }
-    if (disposeNotifyPipeline) {
+    cleanupStarted = true;
+
+    // Block the synchronous quit so we can wait for the parallel `taskkill`
+    // (Windows) / SIGTERM-SIGKILL (POSIX) fanout to settle. Without this,
+    // Electron tears down before `killAllPtySessions` finishes, leaving
+    // orphaned claude.exe children on Windows AND freezing the visible UI
+    // for N × 200-2000ms while the old sync `spawnSync('taskkill')` ran
+    // serially per session.
+    event.preventDefault();
+
+    const runCleanup = async () => {
       try {
-        disposeNotifyPipeline();
+        await killAllPtySessions();
       } catch {
         /* ignore — best-effort cleanup on quit */
       }
-    }
+      if (disposeNotifyPipeline) {
+        try {
+          disposeNotifyPipeline();
+        } catch {
+          /* ignore — best-effort cleanup on quit */
+        }
+      }
+      // Re-trigger quit; the re-entry guard above lets this pass through.
+      app.quit();
+    };
+    void runCleanup();
   });
 
   app.on('window-all-closed', () => {

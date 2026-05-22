@@ -50,25 +50,42 @@ type EventName = 'before-quit' | 'window-all-closed' | 'activate';
 interface FakeApp {
   on: ReturnType<typeof vi.fn>;
   quit: ReturnType<typeof vi.fn>;
-  /** invoke a registered listener for a given event */
-  fire: (event: EventName) => void;
+  /** invoke a registered listener for a given event; for `before-quit` we
+   *  pass an Event-like object with a `preventDefault` spy so tests can
+   *  assert the async-cleanup gate fired (and inspect re-quit re-entry). */
+  fire: (event: EventName, arg?: { preventDefault: () => void }) => void;
 }
 
 function createFakeApp(): FakeApp {
-  const handlers = new Map<EventName, () => void>();
-  const on = vi.fn((event: EventName, cb: () => void) => {
+  const handlers = new Map<EventName, (arg?: unknown) => void>();
+  const on = vi.fn((event: EventName, cb: (arg?: unknown) => void) => {
     handlers.set(event, cb);
   });
   const quit = vi.fn();
   return {
     on,
     quit,
-    fire: (event) => {
+    fire: (event, arg) => {
       const cb = handlers.get(event);
       if (!cb) throw new Error(`no handler registered for ${event}`);
-      cb();
+      cb(arg);
     },
   };
+}
+
+/** Build a fake Electron Event with a preventDefault spy. */
+function fakeEvent(): { preventDefault: ReturnType<typeof vi.fn> } {
+  return { preventDefault: vi.fn() };
+}
+
+/** Drain pending microtasks so awaited async work inside the before-quit
+ *  handler settles before assertions. We use multiple `await` cycles because
+ *  the handler chains `await killAllPtySessions()` → optional dispose →
+ *  `app.quit()`; one microtask tick isn't enough. */
+async function flushAsync(): Promise<void> {
+  for (let i = 0; i < 5; i++) {
+    await Promise.resolve();
+  }
 }
 
 function buildDeps(overrides: Partial<LifecycleDeps> = {}): {
@@ -76,6 +93,8 @@ function buildDeps(overrides: Partial<LifecycleDeps> = {}): {
   fakeApp: FakeApp;
   spies: {
     setIsQuitting: ReturnType<typeof vi.fn>;
+    // killAllPtySessions returns Promise<void> in production so the
+    // before-quit handler can await the parallel taskkill fanout.
     killAllPtySessions: ReturnType<typeof vi.fn>;
     closeDb: ReturnType<typeof vi.fn>;
     createWindow: ReturnType<typeof vi.fn>;
@@ -88,7 +107,7 @@ function buildDeps(overrides: Partial<LifecycleDeps> = {}): {
   const setIsQuitting = vi.fn((v: boolean) => {
     state.isQuitting = v;
   });
-  const killAllPtySessions = vi.fn();
+  const killAllPtySessions = vi.fn(() => Promise.resolve());
   const closeDb = vi.fn();
   const createWindow = vi.fn();
   const disposeNotifyPipeline = vi.fn();
@@ -171,51 +190,115 @@ describe('registerLifecycleHandlers', () => {
     it('flips isQuitting to true', () => {
       const { deps, fakeApp, spies, state } = buildDeps();
       registerLifecycleHandlers(deps);
-      fakeApp.fire('before-quit');
+      fakeApp.fire('before-quit', fakeEvent());
       expect(spies.setIsQuitting).toHaveBeenCalledWith(true);
       expect(state.isQuitting).toBe(true);
     });
 
-    it('reaps pty sessions', () => {
+    it('preventDefaults the sync quit so async cleanup can run before exit', () => {
+      const { deps, fakeApp } = buildDeps();
+      registerLifecycleHandlers(deps);
+      const ev = fakeEvent();
+      fakeApp.fire('before-quit', ev);
+      // First-pass before-quit MUST block Electron's sync teardown — otherwise
+      // the process exits before killAllPtySessions's parallel taskkill
+      // fanout has a chance to complete, leaving orphan claude.exe children
+      // on Windows and freezing the visible UI for N × taskkill latency.
+      expect(ev.preventDefault).toHaveBeenCalledTimes(1);
+    });
+
+    it('reaps pty sessions', async () => {
       const { deps, fakeApp, spies } = buildDeps();
       registerLifecycleHandlers(deps);
-      fakeApp.fire('before-quit');
+      fakeApp.fire('before-quit', fakeEvent());
+      await flushAsync();
       expect(spies.killAllPtySessions).toHaveBeenCalledTimes(1);
     });
 
-    it('disposes the notify pipeline when present', () => {
+    it('re-invokes app.quit() after async cleanup settles (second-pass exit)', async () => {
       const { deps, fakeApp, spies } = buildDeps();
       registerLifecycleHandlers(deps);
-      fakeApp.fire('before-quit');
+      fakeApp.fire('before-quit', fakeEvent());
+      // Sync: not yet — we're still awaiting killAllPtySessions().
+      expect(fakeApp.quit).not.toHaveBeenCalled();
+      await flushAsync();
+      // Async: cleanup done → handler re-fires quit so Electron exits cleanly.
+      expect(fakeApp.quit).toHaveBeenCalledTimes(1);
+      expect(spies.killAllPtySessions).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT loop forever — re-entry on the quit-driven before-quit is a pass-through', async () => {
+      const { deps, fakeApp, spies } = buildDeps();
+      registerLifecycleHandlers(deps);
+      // First-pass: starts cleanup, preventDefaults.
+      const ev1 = fakeEvent();
+      fakeApp.fire('before-quit', ev1);
+      await flushAsync();
+      expect(ev1.preventDefault).toHaveBeenCalledTimes(1);
+      expect(fakeApp.quit).toHaveBeenCalledTimes(1);
+      // Simulate Electron firing before-quit again from the internal
+      // `app.quit()` we just dispatched. Guard MUST let it through —
+      // no second preventDefault, no second cleanup.
+      const ev2 = fakeEvent();
+      fakeApp.fire('before-quit', ev2);
+      await flushAsync();
+      expect(ev2.preventDefault).not.toHaveBeenCalled();
+      expect(spies.killAllPtySessions).toHaveBeenCalledTimes(1);
+      // The pass-through doesn't re-invoke app.quit either (else infinite loop)
+      expect(fakeApp.quit).toHaveBeenCalledTimes(1);
+    });
+
+    it('disposes the notify pipeline when present', async () => {
+      const { deps, fakeApp, spies } = buildDeps();
+      registerLifecycleHandlers(deps);
+      fakeApp.fire('before-quit', fakeEvent());
+      await flushAsync();
       expect(spies.disposeNotifyPipeline).toHaveBeenCalledTimes(1);
     });
 
-    it('does not throw when disposeNotifyPipeline is omitted (early-failure path)', () => {
+    it('does not throw when disposeNotifyPipeline is omitted (early-failure path)', async () => {
       const { deps, fakeApp } = buildDeps({ disposeNotifyPipeline: undefined });
       registerLifecycleHandlers(deps);
-      expect(() => fakeApp.fire('before-quit')).not.toThrow();
+      expect(() => fakeApp.fire('before-quit', fakeEvent())).not.toThrow();
+      await expect(flushAsync()).resolves.toBeUndefined();
     });
 
-    it('swallows killAllPtySessions errors (best-effort cleanup)', () => {
+    it('swallows killAllPtySessions rejections (best-effort cleanup) and still proceeds to quit', async () => {
+      const { deps, fakeApp, spies } = buildDeps({
+        killAllPtySessions: vi.fn(() => Promise.reject(new Error('pty reap blew up'))),
+      });
+      registerLifecycleHandlers(deps);
+      fakeApp.fire('before-quit', fakeEvent());
+      await flushAsync();
+      // disposeNotifyPipeline still runs even if kill rejected
+      expect(spies.disposeNotifyPipeline).toHaveBeenCalledTimes(1);
+      // app.quit still re-fires so the process actually exits
+      expect(fakeApp.quit).toHaveBeenCalledTimes(1);
+    });
+
+    it('swallows synchronous killAllPtySessions throws too', async () => {
       const { deps, fakeApp, spies } = buildDeps({
         killAllPtySessions: vi.fn(() => {
-          throw new Error('pty reap blew up');
+          throw new Error('pty reap sync blew up');
         }),
       });
       registerLifecycleHandlers(deps);
-      expect(() => fakeApp.fire('before-quit')).not.toThrow();
-      // disposeNotifyPipeline still runs even if kill threw
+      expect(() => fakeApp.fire('before-quit', fakeEvent())).not.toThrow();
+      await flushAsync();
       expect(spies.disposeNotifyPipeline).toHaveBeenCalledTimes(1);
+      expect(fakeApp.quit).toHaveBeenCalledTimes(1);
     });
 
-    it('swallows disposeNotifyPipeline errors', () => {
+    it('swallows disposeNotifyPipeline errors', async () => {
       const { deps, fakeApp } = buildDeps({
         disposeNotifyPipeline: vi.fn(() => {
           throw new Error('dispose blew up');
         }),
       });
       registerLifecycleHandlers(deps);
-      expect(() => fakeApp.fire('before-quit')).not.toThrow();
+      expect(() => fakeApp.fire('before-quit', fakeEvent())).not.toThrow();
+      await flushAsync();
+      expect(fakeApp.quit).toHaveBeenCalledTimes(1);
     });
   });
 

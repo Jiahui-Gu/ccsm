@@ -248,14 +248,39 @@ export function kill(sessions: Map<string, Entry>, sid: string): Promise<boolean
   // ConPTY's kill only terminates the cmd.exe / OpenConsole wrapper; on Windows
   // the claude.exe child (and its grandchildren) survive as orphans. On
   // mac/linux the pgid may also have stragglers. Walk the tree via a
-  // platform-native call to guarantee a clean shutdown.
-  killProcessSubtree(pid);
+  // platform-native call to guarantee a clean shutdown. The dispatch itself
+  // is async (Windows uses `spawn` + 5s timeout, POSIX is fire-and-forget);
+  // we ensure the returned `kill()` promise waits for that walk to settle so
+  // `killAll` on `before-quit` can `Promise.all` and let N taskkills run in
+  // parallel rather than blocking the main thread serially.
+  const subtreePromise = killProcessSubtree(pid);
   // Belt-and-braces: also stop the watcher synchronously here so a
   // pty.kill that races with onExit can't leak the fs.watch handle.
   // sessionWatcher.stopWatching is idempotent.
   try { sessionWatcher.stopWatching(sid); } catch { /* never throws */ }
 
-  return promise;
+  // Resolve the outer promise only after BOTH the pty teardown and the
+  // subtree walk have settled. `promise` is the existing onExit/timeout
+  // race; combining via Promise.all keeps the boolean (true = clean exit,
+  // false = wedged) while gating on the platform-native cleanup.
+  const combined = Promise.all([promise, subtreePromise]).then(([clean]) => clean);
+  // Re-register the combined promise as the dedup slot so concurrent callers
+  // observe `===`-identity against what `kill()` returns (not the inner
+  // onExit promise). The slot is freed inside `settle()` by-value comparison
+  // against `promise`, so we must NOT keep the inner promise as the slot
+  // value — replace it here. (The `settle` cleanup still finds nothing to
+  // delete after this replace, which is fine: the inner `promise` resolving
+  // also triggers `combined` to settle, and pendingKills is cleared on the
+  // next `kill()` for the same sid via the slot-replace dance below.)
+  // To keep the slot drained on settle, swap the comparison key inside
+  // settle by also storing `combined` in pendingKills with a tombstone
+  // mechanism — simpler: just delete the slot when `combined` settles.
+  const map = getPendingKills(sessions);
+  map.set(sid, combined);
+  combined.finally(() => {
+    if (map.get(sid) === combined) map.delete(sid);
+  });
+  return combined;
 }
 
 export function get(sessions: Map<string, Entry>, sid: string): PtySessionInfo | null {
@@ -333,12 +358,16 @@ export async function getBufferSnapshot(
 }
 
 // Kill every running pty. Call from app `before-quit` so renderer-side
-// claude processes don't leak past Electron exit. Fire-and-forget — we don't
-// block app teardown on the per-pty onExit/timeout dance; the kill signal +
-// processKiller subtree walk dispatch synchronously inside `kill()` before
-// the awaited onExit, which is what actually reaps the children.
-export function killAll(sessions: Map<string, Entry>): void {
-  for (const sid of [...sessions.keys()]) {
-    void kill(sessions, sid);
-  }
+// claude processes don't leak past Electron exit. Returns a Promise that
+// resolves once every per-pty kill (including the platform-native subtree
+// walk) has settled, so the lifecycle handler can `e.preventDefault()` →
+// `await killAll(...)` → `app.quit()` and have the OS taskkill / SIGTERM
+// fanout actually complete before the process exits. Each `kill()` is
+// independently async, so `Promise.all` fans them out in parallel — the
+// previous sync `spawnSync('taskkill', ...)` serialized N × 200-2000ms
+// of main-thread blocking and froze the quit UI.
+export function killAll(sessions: Map<string, Entry>): Promise<void> {
+  const sids = [...sessions.keys()];
+  return Promise.all(sids.map((sid) => kill(sessions, sid).catch(() => false)))
+    .then(() => undefined);
 }

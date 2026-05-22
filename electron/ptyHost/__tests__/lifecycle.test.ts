@@ -43,7 +43,13 @@ function bus(): LifecycleBus {
 }
 
 vi.mock('../processKiller', () => ({
-  killProcessSubtree: (pid: number | undefined) => bus().killCalls.push(pid),
+  killProcessSubtree: (pid: number | undefined) => {
+    bus().killCalls.push(pid);
+    // Real impl returns Promise<void>; the lifecycle kill() awaits it via
+    // Promise.all so the outer kill resolves only after the subtree walk
+    // settles. Resolve synchronously here so test timing is unchanged.
+    return Promise.resolve();
+  },
 }));
 
 vi.mock('../../sessionWatcher', () => ({
