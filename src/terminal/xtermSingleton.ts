@@ -4,6 +4,8 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { ClipboardAddon } from '@xterm/addon-clipboard';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { CanvasAddon } from '@xterm/addon-canvas';
+import { useStore } from '../stores/store';
+import { SCROLLBACK_LINES_DEFAULT } from '../stores/slices/types';
 
 // Module-scope singleton state for the renderer's xterm view.
 //
@@ -95,6 +97,49 @@ export function setSnapshotReplay(fn: (() => Promise<void>) | null): void {
 }
 
 /**
+ * Task #42 — image-first paste pipeline (shared by every paste path:
+ * capture-phase DOM event in `ensureTerminal`, Ctrl/Cmd+V keydown via
+ * `pasteFromClipboard`, right-click via `terminalPaste`).
+ *
+ * Why image-first: on Windows, `clipboard.readText()` is unreliable when
+ * the clipboard also holds an image (returns empty / stale text), but
+ * `readImage().isEmpty()` IS reliable. So we ask main "is there an image"
+ * first; if yes, main writes it under `<userData>/clipboard-images/` and
+ * returns the absolute path, which we inject into the PTY. Claude reads
+ * files by path, so this turns a pasted screenshot into "claude can see
+ * the screenshot" with no extra user steps.
+ *
+ * `fallbackText` is read by the caller synchronously (clipboardData for
+ * the capture-phase listener; `clipboard.readText()` for the keyboard /
+ * right-click paths) so the text survives the async hop to main.
+ *
+ * Returns the promise so callers that need to sequence after the paste
+ * (currently only tests) can await; production paste paths fire-and-forget
+ * via `void`.
+ */
+export async function pasteIntoActivePty(fallbackText: string | undefined): Promise<void> {
+  // N1 race fix (reviewer): snapshot `activeSid` BEFORE the async IPC hop.
+  // `saveClipboardImage` round-trips to main; the user can switch sessions
+  // during that window. Without this snapshot, the saved image path (or
+  // fallback text) would land in whichever session happens to be active
+  // when the promise resolves — i.e. the wrong one. Bind the target sid
+  // at intent time so the inject always goes to the session the user was
+  // looking at when they hit paste.
+  const sid = activeSid;
+  if (!sid) return;
+  try {
+    const imagePath = await window.ccsmPty?.saveClipboardImage?.();
+    if (imagePath) {
+      window.ccsmPty.input(sid, imagePath);
+      return;
+    }
+  } catch {
+    // best-effort — fall through to text paste on IPC failure.
+  }
+  if (fallbackText) window.ccsmPty.input(sid, fallbackText);
+}
+
+/**
  * Create (or re-attach) the singleton Terminal against `host`. Idempotent:
  * subsequent calls reuse the cached instance and only re-`open` if React
  * remounted into a different DOM node.
@@ -111,13 +156,47 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
     return term;
   }
 
+  // The scrollback cap is read ONCE at construction. Changing the user
+  // setting after the singleton exists does not retroactively resize the
+  // visible buffer (xterm.js doesn't expose a mutable scrollback setter),
+  // so the SettingsDialog helper text says "applies on next launch". Read
+  // synchronously from the zustand store, which `hydrateStore()` populates
+  // from db:load before TerminalPane mounts (App.tsx gates on `hydrated`).
+  // Falls back to the default constant if the store somehow isn't ready
+  // yet (e.g. test mounts that bypass hydrate).
+  const scrollback =
+    useStore.getState().scrollbackLines ?? SCROLLBACK_LINES_DEFAULT;
   term = new Terminal({
     fontFamily: 'Cascadia Mono, Consolas, "Courier New", monospace',
     fontSize: 13,
     cursorBlink: true,
     allowProposedApi: true,
-    scrollback: 5000,
+    scrollback,
     theme: { background: '#000000' },
+    // Wheel-scroll tuning. xterm's `Viewport.getLinesScrolled` multiplies
+    // `event.deltaY` by `scrollSensitivity` BEFORE dividing by row height
+    // (~17px at our 13px font), so a Windows precision-mouse / touchpad
+    // notch reporting `deltaY` in the 100–400px range with the default
+    // sensitivity of 1 lands the user 6–25 lines down per notch — "a
+    // light flick scrolls to the middle of the page" reported in dogfood.
+    // 0.5 brings a ~120px notch back to ~3 lines, matching a native CLI
+    // terminal's feel without making intentional fast scrolls sluggish
+    // (the Alt modifier still gives 5x for long jumps).
+    //
+    // 0.5 is also safe for low-deltaY trackpads: xterm's Viewport keeps a
+    // `_wheelPartialScroll %= 1` accumulator (Viewport.ts:360-362) that
+    // carries the sub-row remainder across wheel events, so a trackpad
+    // emitting `deltaY` in the 4–10px range still scrolls smoothly — the
+    // partial line just lands on the next event instead of being dropped.
+    //
+    // `fastScrollSensitivity` and `fastScrollModifier` are pinned to their
+    // current xterm defaults explicitly — manager-pinned to defend against
+    // upstream default drift; if a future xterm starts treating
+    // `fastScrollModifier: 'alt'` as default-fast, the runaway scroll
+    // returns silently.
+    scrollSensitivity: 0.5,
+    fastScrollSensitivity: 5,
+    fastScrollModifier: 'alt',
   });
   fit = new FitAddon();
   term.loadAddon(fit);
@@ -212,6 +291,10 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
   // versions then dispatch a native `paste` event a moment later;
   // the keydown handler sets `keyboardPasteHandled` so this listener
   // discards that follow-up event and we paste exactly once.
+  // Task #42 — image-first paste pipeline. See `pasteIntoActivePty` at
+  // module scope: every paste path (capture-phase DOM event, Ctrl/Cmd+V
+  // keydown, right-click `terminalPaste`) funnels through that helper so
+  // pasted screenshots auto-save and inject as a path.
   const onPasteCapture = (e: ClipboardEvent): void => {
     e.stopImmediatePropagation();
     e.preventDefault();
@@ -219,14 +302,10 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
       keyboardPasteHandled = false;
       return;
     }
-    const text = e.clipboardData?.getData('text/plain');
-    if (text && activeSid) {
-      try {
-        window.ccsmPty.input(activeSid, text);
-      } catch {
-        // best-effort — write can fail if PTY isn't attached.
-      }
-    }
+    // Read text synchronously: clipboardData is only valid during the
+    // event dispatch, so we can't await before reading it.
+    const text = e.clipboardData?.getData('text/plain') ?? '';
+    void pasteIntoActivePty(text || undefined);
   };
   host.addEventListener('paste', onPasteCapture, { capture: true });
 
@@ -257,17 +336,23 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
     // setTimeout 0 task lands AFTER the native paste dispatch, so the
     // capture listener sees the flag and suppresses.
     setTimeout(() => { keyboardPasteHandled = false; }, 0);
+    let text: string | undefined;
     try {
-      const text = window.ccsmPty?.clipboard?.readText();
-      if (text && activeSid) window.ccsmPty.input(activeSid, text);
+      text = window.ccsmPty?.clipboard?.readText() || undefined;
     } catch {
       // best-effort — clipboard read can fail under permission edge cases.
     }
+    // Task #42 — route through the image-first helper so a copied
+    // screenshot lands as a file path rather than empty text.
+    void pasteIntoActivePty(text);
   };
 
   // Copy/paste keyboard shortcuts (Windows Terminal style):
   //   Ctrl+C  → if selection, copy; else fall through to SIGINT
   //   Ctrl+V  → paste (single canonical path, see above)
+  //   Ctrl+A  → select-all (xterm has no built-in; we wire it here so the
+  //             keyboard offers parity with the previous native context
+  //             menu's "Select All" item)
   //   Ctrl+Shift+C / Ctrl+Shift+V → explicit always-clipboard
   // On macOS the same handler matches Cmd via `metaKey`.
   term.attachCustomKeyEventHandler((ev) => {
@@ -276,7 +361,21 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
     if (!mod || ev.altKey) return true;
     const isC = ev.key === 'C' || ev.key === 'c';
     const isV = ev.key === 'V' || ev.key === 'v';
+    const isA = ev.key === 'A' || ev.key === 'a';
 
+    if (!ev.shiftKey && isA) {
+      // Ctrl/Cmd+A → select-all. xterm has no built-in keybinding for
+      // this, and removing the native right-click "Select All" item (in
+      // favor of native CLI right-click behavior) leaves the user with
+      // no other entry point. Returning `false` keeps xterm from also
+      // translating the keystroke into a 0x01 SOH control byte.
+      try {
+        term?.selectAll();
+      } catch {
+        // ignore — best-effort.
+      }
+      return false;
+    }
     if (!ev.shiftKey && isC) {
       const sel = term?.getSelection();
       if (sel) {
@@ -339,4 +438,62 @@ export function __resetSingletonForTests(): void {
   if (typeof window !== 'undefined') {
     delete window.__ccsmTerm;
   }
+}
+
+/**
+ * Right-click handlers — called from `TerminalPane`'s `onContextMenu` to
+ * implement native CLI/terminal behavior (Windows Terminal / gnome-terminal
+ * style): right-click with selection copies + clears, right-click without
+ * selection pastes. No popover, ever.
+ *
+ * `terminalCopy` returns `true` iff a selection existed and was copied
+ * (caller uses this to choose between copy and paste branches without
+ * having to re-read `getSelection`). `clearSelection` happens here too so
+ * the user gets visual feedback that the copy landed.
+ *
+ * `terminalPaste` routes through the same canonical paste sink as the
+ * Ctrl+V keydown hook (see `pasteFromClipboard` block above) — sets the
+ * `keyboardPasteHandled` flag so the capture-phase paste listener
+ * suppresses any follow-up native paste event, reads clipboard via
+ * `ccsmPty.clipboard.readText()`, writes via `ccsmPty.input(activeSid)`.
+ *
+ * Both are no-ops when no Terminal exists yet (pane unmounted).
+ */
+export function terminalCopy(): boolean {
+  if (!term) return false;
+  const sel = term.getSelection();
+  if (!sel) return false;
+  try {
+    window.ccsmPty?.clipboard?.writeText(sel);
+  } catch {
+    // ignore — selection still highlights, user can ctrl+c retry.
+  }
+  try {
+    term.clearSelection();
+  } catch {
+    // ignore — visual feedback is best-effort.
+  }
+  return true;
+}
+
+export function terminalPaste(): void {
+  if (!term || !activeSid) return;
+  // Reuse the same handoff flag the keydown handler uses; the capture-phase
+  // paste listener installed in `ensureTerminal` checks it to suppress a
+  // duplicate inject from any browser-dispatched follow-up `paste` event.
+  // `setTimeout(0)` (NOT `queueMicrotask`) — see comment on
+  // `pasteFromClipboard` inside ensureTerminal.
+  keyboardPasteHandled = true;
+  setTimeout(() => {
+    keyboardPasteHandled = false;
+  }, 0);
+  let text: string | undefined;
+  try {
+    text = window.ccsmPty?.clipboard?.readText() || undefined;
+  } catch {
+    // best-effort — clipboard read can fail under permission edge cases.
+  }
+  // Task #42 — route through the image-first helper so right-click on a
+  // copied screenshot lands as a file path rather than empty text.
+  void pasteIntoActivePty(text);
 }

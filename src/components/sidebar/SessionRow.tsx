@@ -24,17 +24,20 @@ import {
 } from '../../lib/motion';
 import type { Group, Session } from '../../types';
 
-export function SessionRow({
+function SessionRowImpl({
   session,
   active,
   selected,
-  onSelect,
+  onSelectSession,
   normalGroups
 }: {
   session: Session;
   active: boolean;
   selected: boolean;
-  onSelect: () => void;
+  /** Receives this row's session id. id-passing (vs. a pre-bound `() => void`)
+   *  keeps the prop reference stable across parent re-renders so React.memo
+   *  can short-circuit when only an unrelated session changed. */
+  onSelectSession: (id: string) => void;
   normalGroups: Group[];
 }) {
   const { t } = useTranslation();
@@ -61,6 +64,22 @@ export function SessionRow({
   const createGroup = useStore((s) => s.createGroup);
   const archiveSession = useStore((s) => s.archiveSession);
   const unarchiveSession = useStore((s) => s.unarchiveSession);
+  const reloadSession = useStore((s) => s.reloadSession);
+  const copySession = useStore((s) => s.copySession);
+  // `copySession` arms `pendingRenameId` so the freshly-minted row enters
+  // inline rename without a follow-up click. Read the flag here and, when
+  // it matches this row's id, auto-toggle `renaming` on mount, then clear
+  // the flag so a re-mount (e.g. group collapse/expand) doesn't loop. We
+  // intentionally watch only the matching-id signal (boolean) — subscribing
+  // to the raw string would re-render every row on any pendingRenameId
+  // change, including unrelated copy operations.
+  const wantsRename = useStore((s) => s.pendingRenameId === session.id);
+  const consumePendingRename = useStore((s) => s.consumePendingRename);
+  useEffect(() => {
+    if (!wantsRename) return;
+    setRenaming(true);
+    consumePendingRename(session.id);
+  }, [wantsRename, session.id, consumePendingRename]);
   // The session is archived (lives in an archive container) iff its
   // parent group has `kind === 'archive'`. We detect it via the prop
   // `normalGroups` indirectly: archived sessions are rendered through
@@ -113,6 +132,18 @@ export function SessionRow({
       });
     }
   };
+  // J7: right-click "Reload session" — kills the current pty and lets the
+  // attach effect re-spawn it (env / config refresh). No confirm: the
+  // operation is non-destructive (claude resumes the same transcript via
+  // the JSONL resolver) and the toast gives the user feedback during the
+  // ~1-2s blank window between kill and re-attach.
+  const performReload = () => {
+    void reloadSession(session.id);
+    toast.push({
+      kind: 'info',
+      title: t('sidebar.reloadingSessionToast', { name: session.name }),
+    });
+  };
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
@@ -134,12 +165,12 @@ export function SessionRow({
           aria-selected={selected}
           tabIndex={renaming ? -1 : selected ? 0 : -1}
           data-session-id={session.id}
-          onClick={onSelect}
+          onClick={() => onSelectSession(session.id)}
           onContextMenu={() => {
             // J4b: right-click selects the row first, matching standard GUI
             // behavior where the context menu acts on "this row" — and the
             // user expects "this row" to be visually highlighted.
-            onSelect();
+            onSelectSession(session.id);
           }}
           onKeyDown={(e) => {
             // Only handle keys when the <li> itself is the focused element.
@@ -157,7 +188,7 @@ export function SessionRow({
             }
             if (e.key === 'Enter' || e.key === ' ') {
               e.preventDefault();
-              onSelect();
+              onSelectSession(session.id);
             }
           }}
           title={
@@ -266,6 +297,7 @@ export function SessionRow({
         onCloseAutoFocus={(e) => e.preventDefault()}
       >
         <ContextMenuItem onSelect={() => setRenaming(true)}>{t('common.rename')}</ContextMenuItem>
+        <ContextMenuItem onSelect={() => copySession(session.id)}>{t('sidebar.copySession')}</ContextMenuItem>
         {(() => {
           // Exclude the session's current group from the destination list so
           // users can only move TO another group (#612). The submenu is
@@ -300,6 +332,9 @@ export function SessionRow({
           );
         })()}
         <ContextMenuSeparator />
+        <ContextMenuItem onSelect={performReload}>
+          {t('sidebar.reloadSession')}
+        </ContextMenuItem>
         <ContextMenuItem
           onSelect={() =>
             isArchived ? unarchiveSession(session.id) : archiveSession(session.id)
@@ -314,3 +349,15 @@ export function SessionRow({
     </ContextMenu>
   );
 }
+
+// Memoize so a parent re-render driven by another session's state toggle
+// (e.g. waiting<->idle on a JSONL chunk for a different row) does not
+// re-render this row. SessionRow is the hot row — it mounts dnd-kit's
+// useSortable + framer-motion's <motion.li>, so a churning re-render here
+// dominated the streaming-flicker cost flagged by the perf audit. Relies on
+// stable parent props: `session` ref-stable thanks to the store's per-element
+// patch (sessionRuntimeSlice / sessionTitleBackfillSlice / sessionCrudSlice
+// all use slice/map with per-id patch), `normalGroups` ref-stable via the
+// parent's useMemo, and `onSelectSession` ref-stable now that the parent
+// passes the id-accepting store action through unchanged.
+export const SessionRow = React.memo(SessionRowImpl);

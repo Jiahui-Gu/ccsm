@@ -31,9 +31,6 @@ async function seedRecent(win, p) {
   await win.evaluate(async (path_) => {
     const api = window.ccsm;
     if (api?.userCwds?.push) await api.userCwds.push(path_);
-    const list = await api.userCwds.get();
-    const head = Array.isArray(list) && list.length > 0 ? list[0] : null;
-    if (head) window.__ccsmStore.setState({ lastUsedCwd: head });
   }, p);
 }
 

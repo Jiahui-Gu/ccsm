@@ -15,6 +15,7 @@ import { sessionWatcher } from '../sessionWatcher';
 import { killProcessSubtree } from './processKiller';
 import { DEFAULT_COLS, DEFAULT_ROWS, makeEntry } from './entryFactory';
 import type { Entry } from './entryFactory';
+import { loadScrollbackLines } from '../prefs/scrollback';
 
 export interface PtySessionInfo {
   sid: string;
@@ -51,16 +52,33 @@ export function spawn(
   sid: string,
   cwd: string,
   claudePath: string,
-  opts?: { cols?: number; rows?: number; onCwdRedirect?: (newCwd: string) => void },
+  opts?: {
+    cols?: number;
+    rows?: number;
+    onCwdRedirect?: (newCwd: string) => void;
+    /** When set, spawn args include `--resume <forkSourceSid> --fork-session
+     *  --session-id <sid>` so the new session boots with the source's
+     *  transcript but writes a fresh JSONL keyed to `sid`. Threaded through
+     *  to `makeEntry` — see entryFactory.ts for the flag-picker. */
+    forkSourceSid?: string;
+  },
 ): PtySessionInfo {
   const existing = sessions.get(sid);
   if (existing) return infoFromEntry(sid, existing);
   const cols = opts?.cols ?? DEFAULT_COLS;
   const rows = opts?.rows ?? DEFAULT_ROWS;
-  const entry = makeEntry(sid, cwd, claudePath, cols, rows, {
-    onExit: (s) => { sessions.delete(s); },
-    onCwdRedirect: opts?.onCwdRedirect,
-  });
+  const entry = makeEntry(
+    sid,
+    cwd,
+    claudePath,
+    cols,
+    rows,
+    {
+      onExit: (s) => { sessions.delete(s); },
+      onCwdRedirect: opts?.onCwdRedirect,
+    },
+    opts?.forkSourceSid,
+  );
   sessions.set(sid, entry);
   return infoFromEntry(sid, entry);
 }
@@ -121,15 +139,111 @@ export function resize(
   }
 }
 
-export function kill(sessions: Map<string, Entry>, sid: string): boolean {
+// Max wait for pty.onExit to fire after kill() before we give up and resolve
+// the kill promise anyway. The renderer awaits `kill(sid)` before bumping
+// reloadNonce; if the pty is wedged we still want the renderer to fall through
+// to the spawn-on-null fallback rather than hanging the UI. 3s comfortably
+// covers ConPTY teardown + processKiller subtree walk on slow Windows boxes
+// while staying short enough that a stuck kill doesn't feel broken.
+export const KILL_EXIT_TIMEOUT_MS = 3000;
+
+// Dedupe re-entrant kills for the same sid (e.g. user spam-clicks Reload).
+// Keyed by `sessions` Map so multiple registries (tests) don't collide.
+const pendingKills: WeakMap<Map<string, Entry>, Map<string, Promise<boolean>>> =
+  new WeakMap();
+
+function getPendingKills(sessions: Map<string, Entry>): Map<string, Promise<boolean>> {
+  let m = pendingKills.get(sessions);
+  if (!m) {
+    m = new Map();
+    pendingKills.set(sessions, m);
+  }
+  return m;
+}
+
+export function kill(sessions: Map<string, Entry>, sid: string): Promise<boolean> {
+  const inflight = getPendingKills(sessions).get(sid);
+  if (inflight) return inflight;
+
   const entry = sessions.get(sid);
-  if (!entry) return false;
+  if (!entry) return Promise.resolve(false);
+
   // Capture pid BEFORE pty.kill() — the binding may zero it after kill.
   const pid = entry.pty.pid;
+
+  // Race fix (#1277 review): pty.kill() returns synchronously but the entry
+  // is removed from `sessions` only when the onExit pump in entryFactory
+  // fires (async). Without awaiting that, a renderer doing
+  // `await ccsmPty.kill(sid)` then re-attaching can land on the dying entry,
+  // skip the spawn-on-null fallback, and end up registered to a dead pty
+  // that immediately fires pty:exit → user sees a crash overlay. Hold the
+  // kill IPC open until either onExit fires (entry removed, headless
+  // disposed, watchers stopped) or KILL_EXIT_TIMEOUT_MS elapses.
+  //
+  // We register the promise in `pendingKills` BEFORE side effects so a
+  // concurrent caller dedupes correctly; we delete the slot inside `settle`
+  // AFTER `resolve()`. Order matters: with a sync `pty.kill()` mock that
+  // fires `onExit` immediately, settle runs inside the Promise executor,
+  // so the slot must already exist when settle fires (otherwise the slot
+  // delete is a no-op then a stale `set` re-inserts a resolved promise,
+  // and the next `kill()` for the same sid short-circuits forever).
+  let resolveOuter!: (v: boolean) => void;
+  const promise = new Promise<boolean>((r) => { resolveOuter = r; });
+  getPendingKills(sessions).set(sid, promise);
+
+  let settled = false;
+  let exitDisposable: { dispose(): void } | undefined;
+  const settle = (v: boolean) => {
+    if (settled) return;
+    settled = true;
+    // Best-effort dispose of the listener; if the binding's onExit already
+    // fired and disposed itself this is a no-op.
+    try { exitDisposable?.dispose(); } catch { /* ignore */ }
+    clearTimeout(timer);
+    // Free the dedup slot BEFORE resolving so anything `await kill()`s
+    // and immediately calls `kill()` again (e.g. spawn-on-null then
+    // user-driven reload) gets a fresh kill, not a no-op short-circuit.
+    if (getPendingKills(sessions).get(sid) === promise) {
+      getPendingKills(sessions).delete(sid);
+    }
+    resolveOuter(v);
+  };
+
+  try {
+    exitDisposable = entry.pty.onExit(() => settle(true));
+  } catch {
+    /* onExit registration failed (already-exited binding) — fall through;
+       the timeout will resolve us, and processKiller below still runs. */
+  }
+
+  const timer = setTimeout(() => {
+    // Wedged-pty zombie cleanup (#1277 follow-up): the 3s timeout fired
+    // before onExit, which means the cleanup pump in entryFactory never
+    // ran and `sessions` still holds this sid. If we just resolved here a
+    // subsequent `pty:attach` from the renderer's reloadNonce bump would
+    // return the zombie entry, skip the spawn-on-null fallback, and
+    // register the viewer on a dead pty → crash overlay, manual Retry.
+    //
+    // Force-evict the entry so attach returns null and the renderer gets
+    // a transparent fresh PTY. The process is still live (kill signal
+    // was sent but the OS never reaped it); attempt SIGKILL as a last
+    // resort. On Windows node-pty emulates signals so SIGKILL may be a
+    // no-op — at minimum we've logged the leak so it's visible.
+    try {
+      entry.pty.kill('SIGKILL');
+    } catch (e) {
+      console.warn(
+        `[ptyHost] kill ${sid} wedged: SIGKILL also failed (${e instanceof Error ? e.message : String(e)}); pid ${pid} may leak`,
+      );
+    }
+    if (sessions.get(sid) === entry) sessions.delete(sid);
+    settle(false);
+  }, KILL_EXIT_TIMEOUT_MS);
+
   try {
     entry.pty.kill();
   } catch {
-    /* already dead */
+    /* already dead — onExit may or may not fire; timeout covers us */
   }
   // ConPTY's kill only terminates the cmd.exe / OpenConsole wrapper; on Windows
   // the claude.exe child (and its grandchildren) survive as orphans. On
@@ -140,7 +254,8 @@ export function kill(sessions: Map<string, Entry>, sid: string): boolean {
   // pty.kill that races with onExit can't leak the fs.watch handle.
   // sessionWatcher.stopWatching is idempotent.
   try { sessionWatcher.stopWatching(sid); } catch { /* never throws */ }
-  return true;
+
+  return promise;
 }
 
 export function get(sessions: Map<string, Entry>, sid: string): PtySessionInfo | null {
@@ -152,14 +267,17 @@ export function get(sessions: Map<string, Entry>, sid: string): PtySessionInfo |
 // L4 PR-A (#861) + PR-B (#865): async, chunked snapshot of the headless
 // authoritative buffer, paired with the per-entry monotonic chunk seq.
 //
-// SerializeAddon.serialize() itself is synchronous and walks the entire
-// scrollback (cap 10000 lines). With the bumped cap the serialized string can
-// reach ~MBs for long sessions; concatenating + handing back the full string
-// in one tick would briefly block the main thread. We yield to the event loop
-// every CHUNK_LINES (~1000) lines via setImmediate so other I/O (IPC, JSONL
-// tail, OSC sniffer fanout) keeps making progress while a large snapshot is
-// being assembled. The returned value is still the FULL serialized string —
-// chunking is purely a yield strategy, not a streaming protocol.
+// SerializeAddon.serialize() itself is synchronous and walks the requested
+// rows from the bottom of the scrollback (cap configurable via the
+// `scrollbackLines` user preference, default 1500 — see
+// `electron/prefs/scrollback.ts`). With the bumped cap the serialized
+// string can still reach hundreds of KB; concatenating + handing back the
+// full string in one tick would briefly block the main thread. We yield
+// to the event loop every CHUNK_LINES (~1000) lines via setImmediate so
+// other I/O (IPC, JSONL tail, OSC sniffer fanout) keeps making progress
+// while a large snapshot is being assembled. The returned value is still
+// the FULL serialized string — chunking is purely a yield strategy, not
+// a streaming protocol.
 //
 // PR-B adds the `seq` field: captured ATOMICALLY with `serialize.serialize()`
 // (both happen synchronously, no chunk can arrive between them under Node's
@@ -189,7 +307,13 @@ export async function getBufferSnapshot(
   if (!entry) return { snapshot: '', seq: 0 };
   // Capture seq + serialized string atomically (both sync, no awaits).
   const seq = entry.seq;
-  const full = entry.serialize.serialize();
+  // PR-B contract: serialize captures whatever lives in the headless buffer
+  // at this instant, paired with `seq`. We bound the payload to the user's
+  // configured scrollback cap (last N rows from the bottom of the scrollback)
+  // so a long-running session doesn't return MB of lines on every attach.
+  // Cap honors the live setting (read fresh per call), so the user's
+  // change takes effect on the next attach without restarting the entry.
+  const full = entry.serialize.serialize({ scrollback: loadScrollbackLines() });
   if (!full) return { snapshot: '', seq };
   // Split on '\n' so we yield on a line boundary; preserves the original
   // separator on rejoin. setImmediate is available in Electron main (Node
@@ -209,9 +333,12 @@ export async function getBufferSnapshot(
 }
 
 // Kill every running pty. Call from app `before-quit` so renderer-side
-// claude processes don't leak past Electron exit.
+// claude processes don't leak past Electron exit. Fire-and-forget — we don't
+// block app teardown on the per-pty onExit/timeout dance; the kill signal +
+// processKiller subtree walk dispatch synchronously inside `kill()` before
+// the awaited onExit, which is what actually reaps the children.
 export function killAll(sessions: Map<string, Entry>): void {
   for (const sid of [...sessions.keys()]) {
-    kill(sessions, sid);
+    void kill(sessions, sid);
   }
 }

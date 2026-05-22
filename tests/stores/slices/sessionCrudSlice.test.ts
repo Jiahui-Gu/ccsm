@@ -57,7 +57,6 @@ describe('sessionCrudSlice', () => {
     expect(s.sessions).toEqual([]);
     expect(s.activeId).toBe('');
     expect(s.focusedGroupId).toBeNull();
-    expect(s.lastUsedCwd).toBeNull();
     expect(s.userHome).toBe('');
     expect(s.claudeSettingsDefaultModel).toBeNull();
   });
@@ -100,18 +99,18 @@ describe('sessionCrudSlice', () => {
     expect(h.state().sessions[0].groupId).toMatch(/^g-/);
   });
 
-  it('createSession defaults cwd to lastUsedCwd, then userHome', () => {
+  it('createSession defaults cwd to userHome (no fallback chain, per PR #392 spec)', () => {
     const h = harness({
       groups: defaultGroups,
-      lastUsedCwd: '/recent',
       userHome: '/home/u',
     });
     h.sessions.createSession(null);
-    expect(h.state().sessions[0].cwd).toBe('/recent');
+    expect(h.state().sessions[0].cwd).toBe('/home/u');
 
-    const h2 = harness({ groups: defaultGroups, userHome: '/home/u' });
+    // No userHome → empty string, never falls back to anything else.
+    const h2 = harness({ groups: defaultGroups });
     h2.sessions.createSession(null);
-    expect(h2.state().sessions[0].cwd).toBe('/home/u');
+    expect(h2.state().sessions[0].cwd).toBe('');
   });
 
   it('createSession seeds initial model from claudeSettingsDefaultModel', () => {
@@ -306,6 +305,78 @@ describe('sessionCrudSlice', () => {
       // Both maps are undefined on this harness; delete must not throw.
       expect(() => h.sessions.deleteSession('a')).not.toThrow();
       expect(h.state().sessions).toEqual([]);
+    });
+  });
+
+  describe('copySession', () => {
+    it('returns null when source does not exist', () => {
+      const h = harness({
+        sessions: [],
+        groups: [{ id: 'g1', name: 'g1', collapsed: false, kind: 'normal' }],
+      });
+      expect(h.sessions.copySession('nope')).toBeNull();
+    });
+
+    it('inserts a `<name> (copy)` row immediately after the source, inheriting cwd/model/group', () => {
+      const h = harness({
+        sessions: [
+          mkSession('a', 'g1', { name: 'before', cwd: '/x' }),
+          mkSession('src', 'g1', { name: 'fork me', cwd: '/picked', model: 'opus' }),
+          mkSession('z', 'g1', { name: 'after' }),
+        ],
+        groups: [{ id: 'g1', name: 'g1', collapsed: false, kind: 'normal' }],
+        pendingForkSource: {},
+      });
+      const newId = h.sessions.copySession('src');
+      expect(newId).toBeTruthy();
+      const ids = h.state().sessions.map((s) => s.id);
+      // Position: directly after `src`, NOT at top — preserves the user's
+      // mental model of "duplicate this row, right here".
+      expect(ids).toEqual(['a', 'src', newId!, 'z']);
+      const copy = h.state().sessions.find((s) => s.id === newId)!;
+      expect(copy.name).toBe('fork me (copy)');
+      expect(copy.cwd).toBe('/picked');
+      expect(copy.model).toBe('opus');
+      expect(copy.groupId).toBe('g1');
+      // The original is untouched — same name, same model.
+      expect(h.state().sessions.find((s) => s.id === 'src')!.name).toBe('fork me');
+    });
+
+    it('flips activeId to the new session, arms pendingRenameId, and registers pendingForkSource', () => {
+      const h = harness({
+        sessions: [mkSession('src', 'g1')],
+        groups: [{ id: 'g1', name: 'g1', collapsed: false, kind: 'normal' }],
+        activeId: 'src',
+        pendingForkSource: {},
+        pendingRenameId: null,
+      });
+      const newId = h.sessions.copySession('src')!;
+      expect(h.state().activeId).toBe(newId);
+      expect(h.state().pendingRenameId).toBe(newId);
+      expect(h.state().pendingForkSource).toEqual({ [newId]: 'src' });
+    });
+
+    it('does NOT carry archivedAt onto the copy (a fresh row is never archived in time)', () => {
+      const h = harness({
+        sessions: [mkSession('src', 'g1', { archivedAt: 12345 })],
+        groups: [{ id: 'g1', name: 'g1', collapsed: false, kind: 'normal' }],
+        pendingForkSource: {},
+      });
+      const newId = h.sessions.copySession('src')!;
+      const copy = h.state().sessions.find((s) => s.id === newId)!;
+      expect(copy.archivedAt).toBeUndefined();
+    });
+
+    it('consumePendingRename only clears when ids match (idempotent)', () => {
+      const h = harness({
+        sessions: [mkSession('a', 'g1')],
+        groups: [{ id: 'g1', name: 'g1', collapsed: false, kind: 'normal' }],
+        pendingRenameId: 'a',
+      });
+      h.sessions.consumePendingRename('b');
+      expect(h.state().pendingRenameId).toBe('a'); // mismatched id — no-op
+      h.sessions.consumePendingRename('a');
+      expect(h.state().pendingRenameId).toBeNull();
     });
   });
 });

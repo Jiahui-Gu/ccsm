@@ -52,6 +52,9 @@ const zh: EnCatalog = {
     unarchiveGroup: '取消归档',
     archiveSession: '归档',
     unarchiveSession: '取消归档',
+    reloadSession: '重启会话',
+    reloadingSessionToast: '正在重启"{{name}}"…',
+    copySession: '复制会话',
     deleteGroupEllipsis: '删除分组…',
     deleteGroup: '删除分组',
     deleteGroupConfirmTitle: '确认删除"{{name}}"？',
@@ -120,6 +123,12 @@ const zh: EnCatalog = {
       tray: '最小化到托盘',
       quit: '退出'
     },
+    scrollback: '终端回滚行数',
+    scrollbackHint:
+      '每个终端在回滚缓冲区中保留的行数。后台镜像缓冲区在下次接入时生效，可见终端在下次启动时生效。',
+    scrollbackUnit: '行',
+    scrollbackAriaLabel: '终端回滚行数',
+    scrollbackReset: '重置为默认值 ({{default}})',
     version: '版本',
     checkForUpdates: '检查更新',
     crashReporting: {

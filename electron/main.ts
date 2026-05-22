@@ -29,7 +29,7 @@ import { app, BrowserWindow, ipcMain, type Tray } from 'electron';
 import { initDb, closeDb } from './db';
 import { buildTrayIcon } from './branding/icon';
 import { initSentry } from './sentry/init';
-import { createWindow as createMainWindowFactory } from './window/createWindow';
+import { createWindow as createMainWindowFactory, installContextMenuSuppressIpc } from './window/createWindow';
 import { createTray, type TrayController } from './tray/createTray';
 
 // safety net — escaped main-proc rejections kill app on Node 20+ default
@@ -65,11 +65,13 @@ import {
 } from './sessionTitles';
 import { loadNotifyEnabled, subscribeNotifyEnabledInvalidation } from './prefs/notifyEnabled';
 import { subscribeCrashReportingInvalidation } from './prefs/crashReporting';
+import { subscribeScrollbackInvalidation } from './prefs/scrollback';
 import { BadgeController } from './badgeController';
 import { registerDbIpc } from './ipc/dbIpc';
 import { registerSystemIpc } from './ipc/systemIpc';
 import { registerSessionIpc } from './ipc/sessionIpc';
 import { registerWindowIpc } from './ipc/windowIpc';
+import { startMobileRemoteServer } from './remote/mobileRemoteServer';
 import {
   registerUtilityIpc,
   primeImportableCache,
@@ -122,6 +124,7 @@ let isQuitting = false;
 let badgeManager: BadgeManager | null = null;
 let notifyPipeline: NotifyPipeline | null = null;
 let notifyPipelineDispose: (() => void) | null = null;
+let mobileRemoteServer: { close: () => void } | null = null;
 const badgeController = new BadgeController(() => badgeManager);
 
 function getTrayBaseImage() {
@@ -188,6 +191,7 @@ app.whenReady().then(() => {
   // See `tech-debt-12-functional-core.md` leak #5 / Task #818.
   subscribeCrashReportingInvalidation();
   subscribeNotifyEnabledInvalidation();
+  subscribeScrollbackInvalidation();
   // Order is significant for systemIpc: it seeds the active i18n language
   // from the OS locale, so any subsequent producer that calls i18n.t()
   // sees the correct active language.
@@ -222,6 +226,13 @@ app.whenReady().then(() => {
   registerWindowIpc({ ipcMain });
   registerUtilityIpc({ ipcMain });
 
+  // Process-wide IPC for the terminal pane's `onContextMenu` handler to
+  // ask main to skip the native context menu for one upcoming click.
+  // Registered here (alongside the other IPC handlers) rather than in
+  // `createWindow` because the channel is window-agnostic — see
+  // `installContextMenuSuppressIpc` in electron/window/createWindow.ts.
+  installContextMenuSuppressIpc(ipcMain);
+
   installUpdaterIpc();
 
   // Wire the sessionWatcher singleton's production callbacks. The watcher
@@ -242,6 +253,8 @@ app.whenReady().then(() => {
     ipcMain,
     () => BrowserWindow.getAllWindows()[0] ?? null,
   );
+
+  mobileRemoteServer = startMobileRemoteServer();
 
   // ─────────────────────── notify pipeline (Phase C, #689) ───────────────
   // BadgeManager is bumped via `onNotified` to update the tray/dock badge.
@@ -317,5 +330,9 @@ registerLifecycleHandlers({
     createWindow();
   },
   getWindowCount: () => BrowserWindow.getAllWindows().length,
-  disposeNotifyPipeline: () => notifyPipelineDispose?.(),
+  disposeNotifyPipeline: () => {
+    mobileRemoteServer?.close();
+    mobileRemoteServer = null;
+    notifyPipelineDispose?.();
+  },
 });

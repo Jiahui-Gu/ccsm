@@ -59,32 +59,43 @@ describe('installNotifyPipeline (Task #743 orchestrator)', () => {
   });
 
   it('running -> idle (unfocused) feeds a toast + flash via the sinks', () => {
-    const { win, sends } = makeStubWin();
-    const onNotified = vi.fn();
-    const pipeline = installNotifyPipeline({
-      getMainWindow: () => win as never,
-      isGlobalMutedFn: () => false,
-      getNameFn: () => 'Test',
-      onNotified,
-    });
-    pipeline.setFocused(false); // Rule 5
+    vi.useFakeTimers();
+    try {
+      const { win, sends } = makeStubWin();
+      const onNotified = vi.fn();
+      const pipeline = installNotifyPipeline({
+        getMainWindow: () => win as never,
+        isGlobalMutedFn: () => false,
+        getNameFn: () => 'Test',
+        onNotified,
+      });
+      pipeline.setFocused(false); // Rule 5
 
-    pipeline.feedChunk('s1', osc(RUNNING_TITLE));
-    pipeline.feedChunk('s1', osc(IDLE_TITLE));
+      pipeline.feedChunk('s1', osc(RUNNING_TITLE));
+      pipeline.feedChunk('s1', osc(IDLE_TITLE));
 
-    // Toast sink fired (test-hook impl writes to globalThis log).
-    const log = (globalThis as { __ccsmNotifyLog?: Array<{ sid: string }> }).__ccsmNotifyLog;
-    expect(log).toBeDefined();
-    expect(log!.length).toBe(1);
-    expect(log![0]!.sid).toBe('s1');
-    expect(onNotified).toHaveBeenCalledWith('s1');
+      // Flash sink fired immediately (sidebar halo is instant).
+      const flashSends = sends.filter((s) => s.channel === 'notify:flash');
+      expect(flashSends.length).toBe(1);
+      expect(flashSends[0]!.payload).toEqual({ sid: 's1', on: true });
 
-    // Flash sink fired notify:flash IPC.
-    const flashSends = sends.filter((s) => s.channel === 'notify:flash');
-    expect(flashSends.length).toBe(1);
-    expect(flashSends[0]!.payload).toEqual({ sid: 's1', on: true });
+      // Toast is DEBOUNCED — nothing yet.
+      const log0 = (globalThis as { __ccsmNotifyLog?: Array<{ sid: string }> }).__ccsmNotifyLog;
+      expect(log0 ?? []).toEqual([]);
+      expect(onNotified).not.toHaveBeenCalled();
 
-    pipeline.dispose();
+      // Advance past the ring-debounce window — toast fires.
+      vi.advanceTimersByTime(10_000);
+      const log = (globalThis as { __ccsmNotifyLog?: Array<{ sid: string }> }).__ccsmNotifyLog;
+      expect(log).toBeDefined();
+      expect(log!.length).toBe(1);
+      expect(log![0]!.sid).toBe('s1');
+      expect(onNotified).toHaveBeenCalledWith('s1');
+
+      pipeline.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('global mute short-circuits BEFORE the tracker runs (no decision, no fire)', () => {
@@ -143,25 +154,33 @@ describe('installNotifyPipeline (Task #743 orchestrator)', () => {
   });
 
   it('setMuted suppresses toast for the sid (Rule 7) but a different sid still fires', () => {
-    const { win } = makeStubWin();
-    const onNotified = vi.fn();
-    const pipeline = installNotifyPipeline({
-      getMainWindow: () => win as never,
-      isGlobalMutedFn: () => false,
-      onNotified,
-    });
-    pipeline.setFocused(false);
-    pipeline.setMuted('s1', true);
+    vi.useFakeTimers();
+    try {
+      const { win } = makeStubWin();
+      const onNotified = vi.fn();
+      const pipeline = installNotifyPipeline({
+        getMainWindow: () => win as never,
+        isGlobalMutedFn: () => false,
+        onNotified,
+      });
+      pipeline.setFocused(false);
+      pipeline.setMuted('s1', true);
 
-    pipeline.feedChunk('s1', osc(RUNNING_TITLE));
-    pipeline.feedChunk('s1', osc(IDLE_TITLE));
-    expect(onNotified).not.toHaveBeenCalledWith('s1');
+      pipeline.feedChunk('s1', osc(RUNNING_TITLE));
+      pipeline.feedChunk('s1', osc(IDLE_TITLE));
 
-    // A non-muted sid still fires through the same pipeline.
-    pipeline.feedChunk('s2', osc(RUNNING_TITLE));
-    pipeline.feedChunk('s2', osc(IDLE_TITLE));
-    expect(onNotified).toHaveBeenCalledWith('s2');
-    pipeline.dispose();
+      // A non-muted sid still fires through the same pipeline.
+      pipeline.feedChunk('s2', osc(RUNNING_TITLE));
+      pipeline.feedChunk('s2', osc(IDLE_TITLE));
+
+      // s2's toast is debounced — drain the timer.
+      vi.advanceTimersByTime(10_000);
+      expect(onNotified).not.toHaveBeenCalledWith('s1');
+      expect(onNotified).toHaveBeenCalledWith('s2');
+      pipeline.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('projectCtx surfaces tracker focused/active state for inspectors', () => {

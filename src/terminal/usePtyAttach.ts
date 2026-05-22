@@ -60,6 +60,11 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
   const requestedSidRef = useRef<string>(sessionId);
   // Bumped by Retry to force the attach effect to re-run for the same sid.
   const [attachNonce, setAttachNonce] = useState(0);
+  // Right-click "Reload session" — the slice action `reloadSession` kills
+  // the pty and bumps this nonce, which we read here so the attach effect
+  // re-runs and walks the spawn-on-null fallback for a fresh pty. Same
+  // re-attach semantics as Retry, just with an external trigger.
+  const reloadNonce = useStore((s) => s.reloadNonce?.[sessionId] ?? 0);
 
   // Attach effect: on sessionId change (or Retry), detach the previous
   // session, reset the terminal, attach the new one, and wire data flow.
@@ -156,9 +161,34 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
           | { cols: number; rows: number; pid: number }
           | null;
         if (!res) {
-          const spawnResult = (await pty.spawn(sessionId, cwd ?? '')) as
+          // Right-click "Copy session" → `copySession` registers the source
+          // sid in `pendingForkSource[newSid]`. Read it BEFORE we hand off
+          // to the spawn IPC; main turns it into `--resume <src>
+          // --fork-session --session-id <new>` so the new pty boots with
+          // the source's transcript context. Pass `undefined` for the
+          // common (non-fork) path so `pty.spawn`'s 3rd arg stays absent
+          // over the wire (matches the pre-fork IPC shape exactly when no
+          // copy is in flight).
+          const forkSourceSid =
+            useStore.getState().pendingForkSource[sessionId] ?? undefined;
+          const spawnResult = (await pty.spawn(sessionId, cwd ?? '', forkSourceSid)) as
             | { ok: true; sid: string; pid: number; cols: number; rows: number }
             | { ok: false; error: string };
+          // Clear the fork marker regardless of spawn outcome. On success
+          // the JSONL now exists, so any subsequent re-spawn (Retry, new
+          // session row mount) takes the normal `--resume` branch in
+          // `entryFactory`. On failure we don't want to re-fire `--fork-
+          // session` against a CLI that just rejected it — Retry should
+          // attempt a clean `--session-id` spawn so the user isn't stuck
+          // in a fork loop.
+          if (forkSourceSid) {
+            useStore.setState((s) => {
+              if (!s.pendingForkSource[sessionId]) return {};
+              const next = { ...s.pendingForkSource };
+              delete next[sessionId];
+              return { pendingForkSource: next };
+            });
+          }
           if (!spawnResult || spawnResult.ok === false) {
             const reason =
               spawnResult && spawnResult.ok === false ? spawnResult.error : 'spawn_failed';
@@ -442,7 +472,10 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
       }
     };
     // attachNonce is intentional: bumping it re-runs the attach for Retry.
-  }, [sessionId, attachNonce, cwd]);
+    // reloadNonce is intentional: bumping it (via `reloadSession` after a
+    // pty.kill) re-runs the attach so the spawn-on-null fallback brings
+    // up a fresh pty for the same sid (env / config refresh).
+  }, [sessionId, attachNonce, reloadNonce, cwd]);
 
   // pty:exit subscription for the active session → flip to exit state with
   // a classification (clean vs crashed) shared with the store via

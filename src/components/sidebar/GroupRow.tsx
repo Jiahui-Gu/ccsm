@@ -29,7 +29,7 @@ import type { Group, Session } from '../../types';
 import { headerDroppableId } from './dnd';
 import { SessionRow } from './SessionRow';
 
-export function GroupRow({
+function GroupRowImpl({
   group,
   sessions,
   activeSessionId,
@@ -37,7 +37,7 @@ export function GroupRow({
   anyGroupFocused,
   autoRename,
   onSelectSession,
-  onFocus,
+  onFocusGroup,
   normalGroups
 }: {
   group: Group;
@@ -50,7 +50,10 @@ export function GroupRow({
    *  group without an extra click. Cleared by the parent once consumed. */
   autoRename?: boolean;
   onSelectSession: (id: string) => void;
-  onFocus: () => void;
+  /** Receives this group's id when the row gets focus. id-passing (vs. a
+   *  pre-bound `() => void`) keeps the prop reference stable across parent
+   *  re-renders so React.memo can short-circuit unrelated GroupRows. */
+  onFocusGroup: (id: string) => void;
   /** Pre-filtered list of normal (non-archive) groups, hoisted to the parent
    *  Sidebar so we don't recompute per SessionRow per render. */
   normalGroups: Group[];
@@ -127,7 +130,7 @@ export function GroupRow({
             )}
             <button
               onClick={() => {
-                onFocus();
+                onFocusGroup(group.id);
                 if (!renaming) setGroupCollapsed(group.id, !collapsed);
               }}
               onKeyDown={(e) => {
@@ -256,7 +259,7 @@ export function GroupRow({
               session={s}
               active={s.id === activeSessionId}
               selected={!anyGroupFocused && s.id === activeSessionId}
-              onSelect={() => onSelectSession(s.id)}
+              onSelectSession={onSelectSession}
               normalGroups={normalGroups}
             />
           ))}
@@ -289,3 +292,11 @@ export function GroupRow({
     </div>
   );
 }
+
+// Memoize so a parent re-render driven by an unrelated store mutation (e.g.
+// another group's session toggling waiting<->idle on a JSONL chunk) doesn't
+// also re-render this group's body. Relies on the parent Sidebar handing us
+// a stable `sessions` array reference via its bucketed
+// `getSessionsForGroup` lookup — see Sidebar.tsx. Default shallow-equals is
+// correct here: every prop is either a primitive or a ref-stable object.
+export const GroupRow = React.memo(GroupRowImpl);

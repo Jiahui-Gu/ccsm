@@ -9,6 +9,7 @@ import {
   createAppearanceSlice,
   legacyFontSizeToPx,
   sanitizeFontSizePx,
+  sanitizeScrollbackLines,
   resolvePersistedSidebarWidth,
 } from './slices/appearanceSlice';
 import { createInstallerSlice } from './slices/installerSlice';
@@ -72,6 +73,19 @@ export async function hydrateStore(): Promise<void> {
   // an empty string that flashes for one tick.
   await hydrateDrafts();
   const persisted = await loadPersisted();
+  // Terminal scrollback cap lives in its own app_state row (keyed
+  // `scrollbackLines`) — the SAME row the main process reads via
+  // `electron/prefs/scrollback.ts`, so renderer + main agree on a single
+  // user-facing value. Read it here (before flipping `hydrated`) so the
+  // very first `ensureTerminal()` call in TerminalPane sees the correct
+  // cap. Best-effort — falls back to the slice's default on any failure.
+  let persistedScrollback: number | null = null;
+  try {
+    const raw = await window.ccsm?.loadState('scrollbackLines');
+    if (raw != null) persistedScrollback = sanitizeScrollbackLines(raw);
+  } catch {
+    /* default already in the slice */
+  }
   if (persisted) {
     const stillActive = persisted.sessions.some((s) => s.id === persisted.activeId);
     // Migration: older snapshots may carry `model`, `permission`, and
@@ -90,6 +104,9 @@ export async function hydrateStore(): Promise<void> {
         ? sanitizeFontSizePx(persisted.fontSizePx)
         : legacyFontSizeToPx(persisted.fontSize ?? 'md'),
     });
+  }
+  if (persistedScrollback !== null) {
+    useStore.setState({ scrollbackLines: persistedScrollback });
   }
   // Flip `hydrated` BEFORE kicking off the deferred IPCs below — components
   // that gate their first paint on this can stop showing skeleton state the
@@ -149,22 +166,6 @@ export async function hydrateStore(): Promise<void> {
           userHome: typeof userHome === 'string' ? userHome : '',
           claudeSettingsDefaultModel: typeof defaultModel === 'string' ? defaultModel : null,
         });
-      }
-      // Seed `lastUsedCwd` from the ccsm-owned `userCwds` LRU so the very
-      // first `+` click after launch already lands in the user's most
-      // recent project. Without this, the first session of every boot
-      // would silently fall back to home and re-train the picker. Skip
-      // when the only entry is `userHome` — that's the empty-LRU sentinel
-      // (`getUserCwds()` always appends home), which means "no real
-      // pick", so we leave `lastUsedCwd` null and let createSession use
-      // userHome via the explicit fallback.
-      if (api?.userCwds?.get) {
-        const list = await api.userCwds.get().catch(() => [] as string[]);
-        const head = Array.isArray(list) && list.length > 0 ? list[0] : null;
-        const home = useStore.getState().userHome;
-        if (head && head !== home) {
-          useStore.setState({ lastUsedCwd: head });
-        }
       }
     } catch {
       /* IPC unavailable — boot continues with empty defaults */

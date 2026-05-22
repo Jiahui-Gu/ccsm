@@ -9,15 +9,31 @@
 // ...args)` directly.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 interface RegistrarBus {
   resolveClaude: ReturnType<typeof vi.fn>;
   watcherListeners: Map<string, Array<(evt: unknown) => void>>;
+  // Task #42 — per-test overrides for the clipboard image stub. We keep
+  // these in the bus so vi.mock (hoisted) can reference them lazily
+  // without dragging state across tests.
+  clipboardReadImage: () => { isEmpty: () => boolean; toPNG: () => Buffer };
+  userDataDir: string;
 }
 function bus(): RegistrarBus {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (globalThis as any).__irBus as RegistrarBus;
 }
+
+// Task #42 — registrar now imports `app` and `clipboard` from electron at
+// module load. Provide a thin stub; per-test behaviour is steered via the
+// bus accessors so the mock factory itself stays static.
+vi.mock('electron', () => ({
+  app: { getPath: (_k: string) => bus().userDataDir },
+  clipboard: { readImage: () => bus().clipboardReadImage() },
+}));
 
 vi.mock('../claudeResolver', () => ({
   resolveClaude: (opts?: unknown) => bus().resolveClaude(opts),
@@ -87,7 +103,7 @@ function makeDeps(over: Partial<PtyIpcDeps> = {}): PtyIpcDeps {
     spawnPtySession: vi.fn(() => ({ sid: 's', pid: 1, cols: 80, rows: 24, cwd: '/' })),
     inputPtySession: vi.fn(),
     resizePtySession: vi.fn(),
-    killPtySession: vi.fn(() => true),
+    killPtySession: vi.fn(async () => true),
     getPtySession: vi.fn(() => null),
     getBufferSnapshot: vi.fn(async () => ({ snapshot: '', seq: 0 })),
     ...over,
@@ -99,6 +115,10 @@ beforeEach(() => {
   (globalThis as any).__irBus = {
     resolveClaude: vi.fn(),
     watcherListeners: new Map<string, Array<(evt: unknown) => void>>(),
+    // Default to an empty clipboard so the channel returns null cleanly
+    // for tests that don't touch the image branch.
+    clipboardReadImage: () => ({ isEmpty: () => true, toPNG: () => Buffer.alloc(0) }),
+    userDataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-ipcregistrar-')),
   } satisfies RegistrarBus;
 });
 
@@ -111,7 +131,7 @@ afterEach(() => {
 // ─── handler registration shape ───────────────────────────────────────────
 
 describe('registerPtyIpc handler registration', () => {
-  it('registers all nine pty:* channels (8 legacy + getBufferSnapshot)', () => {
+  it('registers all ten pty:* channels (8 legacy + getBufferSnapshot + saveClipboardImage)', () => {
     const ipc = makeFakeIpc();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, makeDeps());
@@ -126,6 +146,7 @@ describe('registerPtyIpc handler registration', () => {
         'pty:kill',
         'pty:list',
         'pty:resize',
+        'pty:saveClipboardImage',
         'pty:spawn',
       ].sort(),
     );
@@ -181,12 +202,12 @@ describe('pty:input / resize / kill / get pass-through', () => {
     expect(deps.resizePtySession).toHaveBeenCalledWith('sid', 100, 30);
   });
 
-  it('kill returns the deps result', () => {
+  it('kill returns the deps result', async () => {
     const ipc = makeFakeIpc();
-    const deps = makeDeps({ killPtySession: vi.fn(() => false) });
+    const deps = makeDeps({ killPtySession: vi.fn(async () => false) });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
-    expect(ipc.handlers.get('pty:kill')!({}, 'sid')).toBe(false);
+    await expect(ipc.handlers.get('pty:kill')!({}, 'sid')).resolves.toBe(false);
     expect(deps.killPtySession).toHaveBeenCalledWith('sid');
   });
 
@@ -203,18 +224,18 @@ describe('pty:input / resize / kill / get pass-through', () => {
 // ─── pty:spawn — claude resolution + spawn delegation + cwd-redirect ──────
 
 describe('pty:spawn', () => {
-  it('returns {ok:false, error:claude_not_found} when resolveClaude returns null', () => {
+  it('returns {ok:false, error:claude_not_found} when resolveClaude returns null', async () => {
     const ipc = makeFakeIpc();
     bus().resolveClaude.mockReturnValue(null);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, makeDeps());
-    expect(ipc.handlers.get('pty:spawn')!({}, 'sid', '/work')).toEqual({
+    expect(await ipc.handlers.get('pty:spawn')!({}, 'sid', '/work')).toEqual({
       ok: false,
       error: 'claude_not_found',
     });
   });
 
-  it('returns {ok:true, ...info} on success and forwards args to spawnPtySession', () => {
+  it('returns {ok:true, ...info} on success and forwards args to spawnPtySession', async () => {
     const ipc = makeFakeIpc();
     bus().resolveClaude.mockReturnValue('/bin/claude');
     const deps = makeDeps({
@@ -222,7 +243,7 @@ describe('pty:spawn', () => {
     });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
-    const out = ipc.handlers.get('pty:spawn')!({}, 'sid', '/work');
+    const out = await ipc.handlers.get('pty:spawn')!({}, 'sid', '/work');
     expect(out).toEqual({ ok: true, sid: 'sid', pid: 1, cols: 80, rows: 24, cwd: '/picked' });
     const call = (deps.spawnPtySession as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(call[0]).toBe('sid');
@@ -237,7 +258,7 @@ describe('pty:spawn', () => {
   // (PR-D #866) reflows both the headless source-of-truth buffer and the
   // visible xterm to the real container. The IPC handler therefore no
   // longer parses or threads cols/rows into spawnPtySession opts.
-  it('does not forward cols/rows to spawnPtySession (#867 — PR-D resize+replay covers #852)', () => {
+  it('does not forward cols/rows to spawnPtySession (#867 — PR-D resize+replay covers #852)', async () => {
     const ipc = makeFakeIpc();
     bus().resolveClaude.mockReturnValue('/bin/claude');
     const deps = makeDeps({
@@ -248,7 +269,7 @@ describe('pty:spawn', () => {
     // Even if a (legacy) renderer were to send the third opts argument,
     // the IPC handler ignores it — the only opt threaded into the
     // lifecycle is onCwdRedirect (#603).
-    ipc.handlers.get('pty:spawn')!({}, 'sid', '/work', { cols: 134, rows: 51 });
+    await ipc.handlers.get('pty:spawn')!({}, 'sid', '/work', { cols: 134, rows: 51 });
     const call = (deps.spawnPtySession as ReturnType<typeof vi.fn>).mock.calls[0];
     const opts = call[3] as { cols?: number; rows?: number; onCwdRedirect?: unknown };
     expect(opts.cols).toBeUndefined();
@@ -256,7 +277,7 @@ describe('pty:spawn', () => {
     expect(typeof opts.onCwdRedirect).toBe('function');
   });
 
-  it('omits opts argument entirely from `pty:spawn` (post-#867)', () => {
+  it('omits opts argument entirely from `pty:spawn` (post-#867)', async () => {
     const ipc = makeFakeIpc();
     bus().resolveClaude.mockReturnValue('/bin/claude');
     const deps = makeDeps({
@@ -264,7 +285,7 @@ describe('pty:spawn', () => {
     });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
-    ipc.handlers.get('pty:spawn')!({}, 'sid', '/work');
+    await ipc.handlers.get('pty:spawn')!({}, 'sid', '/work');
     const call = (deps.spawnPtySession as ReturnType<typeof vi.fn>).mock.calls[0];
     const opts = call[3] as { cols?: number; rows?: number; onCwdRedirect?: unknown };
     expect(opts.cols).toBeUndefined();
@@ -272,7 +293,7 @@ describe('pty:spawn', () => {
     expect(typeof opts.onCwdRedirect).toBe('function');
   });
 
-  it('returns {ok:false, error:spawn_failed:...} when spawnPtySession throws', () => {
+  it('returns {ok:false, error:spawn_failed:...} when spawnPtySession throws', async () => {
     const ipc = makeFakeIpc();
     bus().resolveClaude.mockReturnValue('/bin/claude');
     const deps = makeDeps({
@@ -280,12 +301,12 @@ describe('pty:spawn', () => {
     });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
-    const out = ipc.handlers.get('pty:spawn')!({}, 'sid', '/work') as { ok: boolean; error: string };
+    const out = (await ipc.handlers.get('pty:spawn')!({}, 'sid', '/work')) as { ok: boolean; error: string };
     expect(out.ok).toBe(false);
     expect(out.error).toMatch(/^spawn_failed: ENOENT$/);
   });
 
-  it('onCwdRedirect callback sends session:cwdRedirected to the main window', () => {
+  it('onCwdRedirect callback sends session:cwdRedirected to the main window', async () => {
     const ipc = makeFakeIpc();
     bus().resolveClaude.mockReturnValue('/bin/claude');
     const wc = makeWc(1);
@@ -301,13 +322,13 @@ describe('pty:spawn', () => {
     });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
-    ipc.handlers.get('pty:spawn')!({}, 'sid', '/work');
+    await ipc.handlers.get('pty:spawn')!({}, 'sid', '/work');
     expect(captured).not.toBeNull();
     captured!('/new/cwd');
     expect(wc.send).toHaveBeenCalledWith('session:cwdRedirected', { sid: 'sid', newCwd: '/new/cwd' });
   });
 
-  it('onCwdRedirect is a no-op when main window is null', () => {
+  it('onCwdRedirect is a no-op when main window is null', async () => {
     const ipc = makeFakeIpc();
     bus().resolveClaude.mockReturnValue('/bin/claude');
     let captured: ((newCwd: string) => void) | null = null;
@@ -320,11 +341,11 @@ describe('pty:spawn', () => {
     });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
-    ipc.handlers.get('pty:spawn')!({}, 'sid', '/work');
+    await ipc.handlers.get('pty:spawn')!({}, 'sid', '/work');
     expect(() => captured!('/new')).not.toThrow();
   });
 
-  it('onCwdRedirect swallows wc.send throws (renderer gone)', () => {
+  it('onCwdRedirect swallows wc.send throws (renderer gone)', async () => {
     const ipc = makeFakeIpc();
     bus().resolveClaude.mockReturnValue('/bin/claude');
     const wc = makeWc(1, { sendThrows: true });
@@ -340,7 +361,7 @@ describe('pty:spawn', () => {
     });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
-    ipc.handlers.get('pty:spawn')!({}, 'sid', '/work');
+    await ipc.handlers.get('pty:spawn')!({}, 'sid', '/work');
     expect(() => captured!('/new')).not.toThrow();
   });
 });
@@ -430,48 +451,100 @@ describe('pty:detach', () => {
 // ─── pty:checkClaudeAvailable ─────────────────────────────────────────────
 
 describe('pty:checkClaudeAvailable', () => {
-  it('returns {available:true, path} when resolveClaude succeeds', () => {
+  it('returns {available:true, path} when resolveClaude succeeds', async () => {
     const ipc = makeFakeIpc();
     bus().resolveClaude.mockReturnValue('/bin/claude');
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, makeDeps());
-    expect(ipc.handlers.get('pty:checkClaudeAvailable')!({}, undefined)).toEqual({
+    expect(await ipc.handlers.get('pty:checkClaudeAvailable')!({}, undefined)).toEqual({
       available: true,
       path: '/bin/claude',
     });
   });
 
-  it('returns {available:false} when resolveClaude returns null', () => {
+  it('returns {available:false} when resolveClaude returns null', async () => {
     const ipc = makeFakeIpc();
     bus().resolveClaude.mockReturnValue(null);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, makeDeps());
-    expect(ipc.handlers.get('pty:checkClaudeAvailable')!({}, undefined)).toEqual({
+    expect(await ipc.handlers.get('pty:checkClaudeAvailable')!({}, undefined)).toEqual({
       available: false,
     });
   });
 
-  it('passes {force:true} through to resolveClaude when opts.force === true', () => {
+  it('passes {force:true} through to resolveClaude when opts.force === true', async () => {
     const ipc = makeFakeIpc();
     bus().resolveClaude.mockReturnValue('/bin/claude');
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, makeDeps());
-    ipc.handlers.get('pty:checkClaudeAvailable')!({}, { force: true });
+    await ipc.handlers.get('pty:checkClaudeAvailable')!({}, { force: true });
     expect(bus().resolveClaude).toHaveBeenCalledWith({ force: true });
   });
 
-  it('does NOT pass force when opts is malformed (string / number / null / no force key)', () => {
+  it('does NOT pass force when opts is malformed (string / number / null / no force key)', async () => {
     const ipc = makeFakeIpc();
     bus().resolveClaude.mockReturnValue('/bin/claude');
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, makeDeps());
-    ipc.handlers.get('pty:checkClaudeAvailable')!({}, 'not-an-object');
-    ipc.handlers.get('pty:checkClaudeAvailable')!({}, null);
-    ipc.handlers.get('pty:checkClaudeAvailable')!({}, {});
-    ipc.handlers.get('pty:checkClaudeAvailable')!({}, { force: 'yes' });
+    await ipc.handlers.get('pty:checkClaudeAvailable')!({}, 'not-an-object');
+    await ipc.handlers.get('pty:checkClaudeAvailable')!({}, null);
+    await ipc.handlers.get('pty:checkClaudeAvailable')!({}, {});
+    await ipc.handlers.get('pty:checkClaudeAvailable')!({}, { force: 'yes' });
     for (const call of bus().resolveClaude.mock.calls) {
       expect(call[0]).toEqual({ force: false });
     }
+  });
+});
+
+// ─── pty:saveClipboardImage (Task #42) ────────────────────────────────────
+
+describe('pty:saveClipboardImage', () => {
+  it('writes PNG buffer under <userData>/clipboard-images/ and returns the absolute path', async () => {
+    const ipc = makeFakeIpc();
+    const pngBuf = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    bus().clipboardReadImage = () => ({ isEmpty: () => false, toPNG: () => pngBuf });
+    registerPtyIpc(ipc as unknown as Electron.IpcMain, makeDeps());
+    const out = (await ipc.handlers.get('pty:saveClipboardImage')!({})) as string;
+    expect(typeof out).toBe('string');
+    expect(path.isAbsolute(out)).toBe(true);
+    expect(out.startsWith(path.join(bus().userDataDir, 'clipboard-images'))).toBe(true);
+    expect(path.basename(out)).toMatch(/^\d{8}-\d{6}(-\d{3})?\.png$/);
+    expect(fs.readFileSync(out).equals(pngBuf)).toBe(true);
+  });
+
+  it('returns null and writes nothing when clipboard image is empty', async () => {
+    const ipc = makeFakeIpc();
+    // Default bus stub returns isEmpty=true.
+    registerPtyIpc(ipc as unknown as Electron.IpcMain, makeDeps());
+    const out = await ipc.handlers.get('pty:saveClipboardImage')!({});
+    expect(out).toBeNull();
+    const dir = path.join(bus().userDataDir, 'clipboard-images');
+    // mkdir not even attempted on the empty path; dir should not exist.
+    expect(fs.existsSync(dir)).toBe(false);
+  });
+
+  it('appends -001 suffix when the base timestamp file already exists (collision)', async () => {
+    const ipc = makeFakeIpc();
+    const pngBuf = Buffer.from([1, 2, 3, 4]);
+    bus().clipboardReadImage = () => ({ isEmpty: () => false, toPNG: () => pngBuf });
+
+    // Freeze Date so first and second invocations produce the same base.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 4, 22, 10, 11, 12));
+
+    registerPtyIpc(ipc as unknown as Electron.IpcMain, makeDeps());
+
+    const first = (await ipc.handlers.get('pty:saveClipboardImage')!({})) as string;
+    expect(path.basename(first)).toBe('20260522-101112.png');
+
+    const second = (await ipc.handlers.get('pty:saveClipboardImage')!({})) as string;
+    expect(path.basename(second)).toBe('20260522-101112-001.png');
+
+    // Both files must exist with the expected content.
+    expect(fs.readFileSync(first).equals(pngBuf)).toBe(true);
+    expect(fs.readFileSync(second).equals(pngBuf)).toBe(true);
+
+    vi.useRealTimers();
   });
 });
 

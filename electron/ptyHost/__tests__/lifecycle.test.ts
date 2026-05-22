@@ -12,6 +12,9 @@ interface FakePty {
   write: ReturnType<typeof vi.fn>;
   resize: ReturnType<typeof vi.fn>;
   kill: ReturnType<typeof vi.fn>;
+  onExit: (cb: () => void) => { dispose: () => void };
+  /** Test helper — fire the registered onExit listener. */
+  __fireExit?: () => void;
   killShouldThrow?: boolean;
   writeShouldThrow?: boolean;
   resizeShouldThrow?: boolean;
@@ -60,16 +63,42 @@ vi.mock('../entryFactory', () => ({
   makeEntry: (...args: unknown[]) => bus().makeEntry(...args),
 }));
 
+// scrollback prefs transitively import `electron` (via `../db` → `app`).
+// We don't exercise scrollback caps in these lifecycle tests — stub it.
+vi.mock('../../prefs/scrollback', () => ({
+  loadScrollbackLines: () => 1500,
+}));
+
 import * as L from '../lifecycle';
+
+function makeFakePty(over: Partial<FakePty> = {}): FakePty {
+  // Multi-listener onExit (mirrors node-pty's IEvent contract — see
+  // node-pty.d.ts: `readonly onExit: IEvent<...>`). The lifecycle race fix
+  // (#1277 review) registers a listener inside `kill()` to await entry
+  // removal; entryFactory also registers one for the cleanup pump. Both
+  // must fire on a single exit event.
+  const listeners = new Set<() => void>();
+  const pty: FakePty = {
+    pid: 1234,
+    write: vi.fn(),
+    resize: vi.fn(),
+    kill: vi.fn(),
+    onExit: (cb: () => void) => {
+      listeners.add(cb);
+      return { dispose: () => listeners.delete(cb) };
+    },
+    __fireExit: () => {
+      // Snapshot listeners — a listener may dispose itself when fired.
+      for (const cb of [...listeners]) cb();
+    },
+    ...over,
+  };
+  return pty;
+}
 
 function makeFakeEntry(over: Partial<FakeEntry> = {}): FakeEntry {
   return {
-    pty: {
-      pid: 1234,
-      write: vi.fn(),
-      resize: vi.fn(),
-      kill: vi.fn(),
-    },
+    pty: makeFakePty(),
     headless: { resize: vi.fn() },
     serialize: { serialize: () => 'snapshot' },
     attached: new Map(),
@@ -102,7 +131,7 @@ afterEach(() => {
 describe('lifecycle.spawn', () => {
   it('inserts a new Entry into the map and returns its info', () => {
     const sessions = new Map<string, FakeEntry>();
-    const entry = makeFakeEntry({ pty: { pid: 9, write: vi.fn(), resize: vi.fn(), kill: vi.fn() }, cwd: '/picked' });
+    const entry = makeFakeEntry({ pty: makeFakePty({ pid: 9 }), cwd: '/picked' });
     bus().makeEntry.mockReturnValue(entry);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -134,7 +163,7 @@ describe('lifecycle.spawn', () => {
 
   it('is idempotent — second spawn for the same sid returns existing Entry, no makeEntry call', () => {
     const sessions = new Map<string, FakeEntry>();
-    const entry = makeFakeEntry({ pty: { pid: 99, write: vi.fn(), resize: vi.fn(), kill: vi.fn() } });
+    const entry = makeFakeEntry({ pty: makeFakePty({ pid: 99 }) });
     sessions.set('sid-A', entry);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -171,8 +200,8 @@ describe('lifecycle.spawn', () => {
 describe('lifecycle.list and get', () => {
   it('list returns one info per entry', () => {
     const sessions = new Map<string, FakeEntry>();
-    sessions.set('a', makeFakeEntry({ cwd: '/a', pty: { pid: 1, write: vi.fn(), resize: vi.fn(), kill: vi.fn() } }));
-    sessions.set('b', makeFakeEntry({ cwd: '/b', pty: { pid: 2, write: vi.fn(), resize: vi.fn(), kill: vi.fn() } }));
+    sessions.set('a', makeFakeEntry({ cwd: '/a', pty: makeFakePty({ pid: 1 }) }));
+    sessions.set('b', makeFakeEntry({ cwd: '/b', pty: makeFakePty({ pid: 2 }) }));
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const out = L.list(sessions as any);
@@ -189,7 +218,7 @@ describe('lifecycle.list and get', () => {
 
   it('get returns the info for an existing entry', () => {
     const sessions = new Map<string, FakeEntry>();
-    sessions.set('s', makeFakeEntry({ cwd: '/c', pty: { pid: 7, write: vi.fn(), resize: vi.fn(), kill: vi.fn() } }));
+    sessions.set('s', makeFakeEntry({ cwd: '/c', pty: makeFakePty({ pid: 7 }) }));
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(L.get(sessions as any, 's')).toEqual({ sid: 's', pid: 7, cols: 80, rows: 24, cwd: '/c' });
   });
@@ -209,7 +238,7 @@ describe('lifecycle.attach and detach', () => {
     sessions.set('s', makeFakeEntry({
       cols: 99,
       rows: 33,
-      pty: { pid: 55, write: vi.fn(), resize: vi.fn(), kill: vi.fn() },
+      pty: makeFakePty({ pid: 55 }),
       serialize: { serialize: serializeSpy },
     }));
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -311,53 +340,220 @@ describe('lifecycle.resize', () => {
 // ─── kill / killAll ───────────────────────────────────────────────────────
 
 describe('lifecycle.kill', () => {
-  it('returns false for an unknown sid (no side effects)', () => {
+  it('resolves to false for an unknown sid (no side effects)', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect(L.kill(new Map() as any, 'ghost')).toBe(false);
+    await expect(L.kill(new Map() as any, 'ghost')).resolves.toBe(false);
     expect(bus().killCalls).toEqual([]);
     expect(bus().watcherStopCalls).toEqual([]);
   });
 
-  it('captures pid BEFORE pty.kill (binding may zero pid post-kill)', () => {
+  it('captures pid BEFORE pty.kill (binding may zero pid post-kill)', async () => {
     const sessions = new Map<string, FakeEntry>();
     const entry = makeFakeEntry();
     entry.pty.pid = 4242;
-    // simulate the binding zeroing pid on kill
-    entry.pty.kill = vi.fn(() => { entry.pty.pid = 0; });
+    // simulate the binding zeroing pid on kill, then firing onExit (the
+    // production race-fix path: kill() awaits onExit before resolving).
+    entry.pty.kill = vi.fn(() => { entry.pty.pid = 0; entry.pty.__fireExit!(); });
     sessions.set('s', entry);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect(L.kill(sessions as any, 's')).toBe(true);
+    await expect(L.kill(sessions as any, 's')).resolves.toBe(true);
     expect(bus().killCalls).toEqual([4242]);
   });
 
-  it('always invokes killProcessSubtree even if pty.kill throws', () => {
+  it('always invokes killProcessSubtree even if pty.kill throws', async () => {
     const sessions = new Map<string, FakeEntry>();
     const entry = makeFakeEntry();
     entry.pty.pid = 7;
     entry.pty.kill = vi.fn(() => { throw new Error('already dead'); });
     sessions.set('s', entry);
+    // pty.kill threw, no onExit fired → resolves false via timeout
+    vi.useFakeTimers();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect(L.kill(sessions as any, 's')).toBe(true);
+    const p = L.kill(sessions as any, 's');
     expect(bus().killCalls).toEqual([7]);
+    await vi.advanceTimersByTimeAsync(L.KILL_EXIT_TIMEOUT_MS + 10);
+    await expect(p).resolves.toBe(false);
+    vi.useRealTimers();
   });
 
-  it('always invokes sessionWatcher.stopWatching (belt-and-braces, swallows throws)', () => {
+  it('always invokes sessionWatcher.stopWatching (belt-and-braces, swallows throws)', async () => {
     const sessions = new Map<string, FakeEntry>();
-    sessions.set('s', makeFakeEntry());
+    const entry = makeFakeEntry();
+    // Fire onExit synchronously inside kill so the promise resolves promptly.
+    entry.pty.kill = vi.fn(() => entry.pty.__fireExit!());
+    sessions.set('s', entry);
     bus().watcherStopShouldThrow = true;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect(() => L.kill(sessions as any, 's')).not.toThrow();
+    await expect(L.kill(sessions as any, 's')).resolves.toBe(true);
     expect(bus().watcherStopCalls).toEqual(['s']);
+  });
+
+  // ─── #1277 review race fix ─────────────────────────────────────────────
+
+  it('awaits pty.onExit before resolving — renderer-attach race fix', async () => {
+    const sessions = new Map<string, FakeEntry>();
+    const entry = makeFakeEntry();
+    entry.pty.pid = 100;
+    // pty.kill() does NOT auto-fire onExit (the production node-pty contract:
+    // kill dispatches a signal; onExit fires when the OS reaps the process).
+    entry.pty.kill = vi.fn();
+    sessions.set('s', entry);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const p = L.kill(sessions as any, 's');
+    // pty.kill + processKiller already ran synchronously (kill signal dispatched).
+    expect(entry.pty.kill).toHaveBeenCalled();
+    expect(bus().killCalls).toEqual([100]);
+
+    // But the promise must NOT have resolved yet — the renderer awaits this
+    // before bumping reloadNonce, and the entry hasn't been removed.
+    let resolved: boolean | 'pending' = 'pending';
+    void p.then((v) => { resolved = v; });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(resolved).toBe('pending');
+
+    // Fire the OS-reap event. Now the kill promise should resolve.
+    entry.pty.__fireExit!();
+    await expect(p).resolves.toBe(true);
+  });
+
+  it('falls back to a 3s timeout when pty.onExit never fires (wedged kill)', async () => {
+    vi.useFakeTimers();
+    const sessions = new Map<string, FakeEntry>();
+    const entry = makeFakeEntry();
+    entry.pty.pid = 200;
+    // Simulates a wedged pty: kill signal dispatched but the process never
+    // exits (onExit silent). Without the timeout the renderer would hang
+    // forever on `await ccsmPty.kill(sid)`.
+    entry.pty.kill = vi.fn();
+    sessions.set('s', entry);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const p = L.kill(sessions as any, 's');
+    let resolved: boolean | 'pending' = 'pending';
+    void p.then((v) => { resolved = v; });
+
+    // Advance just under the timeout — still pending.
+    await vi.advanceTimersByTimeAsync(L.KILL_EXIT_TIMEOUT_MS - 100);
+    expect(resolved).toBe('pending');
+
+    // Cross the timeout — resolves false (entry-removed signal not observed),
+    // letting the renderer's reloadNonce path proceed instead of hanging.
+    await vi.advanceTimersByTimeAsync(200);
+    await expect(p).resolves.toBe(false);
+    vi.useRealTimers();
+  });
+
+  it('evicts the zombie entry on timeout so subsequent attach returns null (spawn-on-null unblocked)', async () => {
+    // #1277 follow-up: when KILL_EXIT_TIMEOUT_MS fires, kill() resolves false
+    // but the entry was still in the map — a subsequent pty:attach would
+    // return the zombie and bypass the spawn-on-null fallback, leaving the
+    // renderer registered on a dead pty (crash overlay → manual Retry).
+    // Fix: force SIGKILL + delete from map on timeout.
+    vi.useFakeTimers();
+    const sessions = new Map<string, FakeEntry>();
+    const entry = makeFakeEntry();
+    entry.pty.pid = 500;
+    // Track SIGKILL escalation — pty.kill called twice (first signal-less in
+    // production code, second with 'SIGKILL' on timeout).
+    entry.pty.kill = vi.fn();
+    sessions.set('s', entry);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const p = L.kill(sessions as any, 's');
+
+    // Cross the timeout — SIGKILL escalation + zombie eviction.
+    await vi.advanceTimersByTimeAsync(L.KILL_EXIT_TIMEOUT_MS + 10);
+    await expect(p).resolves.toBe(false);
+
+    // SIGKILL escalation attempted on the wedged pty.
+    expect(entry.pty.kill).toHaveBeenCalledWith('SIGKILL');
+    // Zombie removed from registry — attach now returns null, letting the
+    // renderer's reloadNonce → spawn-on-null fallback create a fresh PTY.
+    expect(sessions.has('s')).toBe(false);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(L.attach(sessions as any, 's')).toBeNull();
+    vi.useRealTimers();
+  });
+
+  it('swallows SIGKILL throws on timeout (still evicts the zombie + logs)', async () => {
+    // On Windows node-pty emulates signals; SIGKILL may throw. The timeout
+    // path must still delete the entry from the map (else the zombie blocks
+    // spawn-on-null forever) and must not propagate the throw.
+    vi.useFakeTimers();
+    const sessions = new Map<string, FakeEntry>();
+    const entry = makeFakeEntry();
+    entry.pty.pid = 600;
+    let calls = 0;
+    entry.pty.kill = vi.fn((signal?: string) => {
+      calls += 1;
+      // First call (signal-less production kill) succeeds; SIGKILL throws.
+      if (signal === 'SIGKILL') throw new Error('signal not supported');
+    });
+    sessions.set('s', entry);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const p = L.kill(sessions as any, 's');
+    await vi.advanceTimersByTimeAsync(L.KILL_EXIT_TIMEOUT_MS + 10);
+    await expect(p).resolves.toBe(false);
+
+    expect(calls).toBe(2); // initial kill + SIGKILL escalation
+    expect(sessions.has('s')).toBe(false);
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('SIGKILL also failed'),
+    );
+    vi.useRealTimers();
+  });
+
+  it('dedupes concurrent kills for the same sid — second call shares the first promise', async () => {
+    const sessions = new Map<string, FakeEntry>();
+    const entry = makeFakeEntry();
+    entry.pty.pid = 300;
+    entry.pty.kill = vi.fn();
+    sessions.set('s', entry);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const p1 = L.kill(sessions as any, 's');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const p2 = L.kill(sessions as any, 's');
+    // Same promise — second call is a no-op short-circuit, no extra
+    // pty.kill / processKiller / stopWatching invocations.
+    expect(p1).toBe(p2);
+    expect(entry.pty.kill).toHaveBeenCalledTimes(1);
+    expect(bus().killCalls).toEqual([300]);
+    expect(bus().watcherStopCalls).toEqual(['s']);
+
+    // Drain.
+    entry.pty.__fireExit!();
+    await expect(p1).resolves.toBe(true);
+  });
+
+  it('a fresh kill after the previous one completes is NOT deduped', async () => {
+    const sessions = new Map<string, FakeEntry>();
+    const entry = makeFakeEntry();
+    entry.pty.pid = 400;
+    entry.pty.kill = vi.fn(() => entry.pty.__fireExit!());
+    sessions.set('s', entry);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await L.kill(sessions as any, 's');
+    // Re-add the entry (simulating spawn-on-null fallback creating a new pty
+    // for the same sid) and kill again — this must NOT short-circuit.
+    sessions.set('s', entry);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await L.kill(sessions as any, 's');
+    expect(entry.pty.kill).toHaveBeenCalledTimes(2);
   });
 });
 
 describe('lifecycle.killAll', () => {
   it('kills every entry via the kill op', () => {
     const sessions = new Map<string, FakeEntry>();
-    sessions.set('a', makeFakeEntry({ pty: { pid: 1, write: vi.fn(), resize: vi.fn(), kill: vi.fn() } }));
-    sessions.set('b', makeFakeEntry({ pty: { pid: 2, write: vi.fn(), resize: vi.fn(), kill: vi.fn() } }));
-    sessions.set('c', makeFakeEntry({ pty: { pid: 3, write: vi.fn(), resize: vi.fn(), kill: vi.fn() } }));
+    sessions.set('a', makeFakeEntry({ pty: makeFakePty({ pid: 1 }) }));
+    sessions.set('b', makeFakeEntry({ pty: makeFakePty({ pid: 2 }) }));
+    sessions.set('c', makeFakeEntry({ pty: makeFakePty({ pid: 3 }) }));
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     L.killAll(sessions as any);
     expect(bus().killCalls.sort()).toEqual([1, 2, 3]);

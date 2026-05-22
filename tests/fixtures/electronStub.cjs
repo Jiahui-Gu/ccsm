@@ -147,6 +147,9 @@ const clipboard = {
   writeText: noop,
   clear: noop,
   has: () => false,
+  // Task #42 — default to an empty image so tests that hit
+  // `pty:saveClipboardImage` get null unless they override the stub.
+  readImage: () => ({ isEmpty: () => true, toPNG: () => Buffer.alloc(0) }),
 };
 const contextBridge = { exposeInMainWorld: noop };
 const webContents = { getAllWebContents: () => [], fromId: () => null };

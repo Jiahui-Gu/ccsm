@@ -52,6 +52,9 @@ const en = {
     unarchiveGroup: 'Unarchive group',
     archiveSession: 'Archive',
     unarchiveSession: 'Unarchive',
+    reloadSession: 'Reload session',
+    reloadingSessionToast: 'Reloading "{{name}}"…',
+    copySession: 'Copy session',
     deleteGroupEllipsis: 'Delete group…',
     deleteGroup: 'Delete group',
     deleteGroupConfirmTitle: 'Delete "{{name}}"?',
@@ -125,6 +128,12 @@ const en = {
       tray: 'Minimize to tray',
       quit: 'Quit'
     },
+    scrollback: 'Terminal scrollback',
+    scrollbackHint:
+      'How many lines each terminal keeps in its scrollback buffer. Applies on next attach for the headless mirror and on next launch for the visible terminal.',
+    scrollbackUnit: 'lines',
+    scrollbackAriaLabel: 'Terminal scrollback in lines',
+    scrollbackReset: 'Reset to default ({{default}})',
     version: 'Version',
     checkForUpdates: 'Check for updates',
     crashReporting: {

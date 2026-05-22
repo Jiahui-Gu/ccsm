@@ -1,6 +1,5 @@
 // Session CRUD slice: create / import / delete / restore / move /
-// rename / changeCwd / setSessionModel + active selection + LRU cwd
-// seed.
+// rename / changeCwd / setSessionModel + active selection.
 //
 // `ensureUsableGroup` is colocated here because the only callers are
 // session creation/import — it picks (or synthesizes) a target group so
@@ -15,6 +14,7 @@
 // `sessionTitleBackfillSlice` (split per Task #736 / PR #754 review).
 
 import type { Group, Session } from '../../types';
+import { CLAUDE_CODE_AGENT_ID } from '../../shared/agentIds';
 import { hydrateDrafts as _unused, deleteDrafts, snapshotDraft, restoreDraft } from '../drafts';
 import { resolvePreferredGroup } from '../lib/preferredGroupResolver';
 import {
@@ -131,7 +131,6 @@ export type SessionCrudSlice = Pick<
   | 'focusedGroupId'
   | 'userHome'
   | 'claudeSettingsDefaultModel'
-  | 'lastUsedCwd'
   | 'selectSession'
   | 'focusGroup'
   | 'createSession'
@@ -144,6 +143,10 @@ export type SessionCrudSlice = Pick<
   | 'setSessionModel'
   | 'archiveSession'
   | 'unarchiveSession'
+  | 'pendingRenameId'
+  | 'pendingForkSource'
+  | 'copySession'
+  | 'consumePendingRename'
 >;
 
 export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice {
@@ -154,7 +157,8 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
     focusedGroupId: null,
     userHome: '',
     claudeSettingsDefaultModel: null,
-    lastUsedCwd: null,
+    pendingRenameId: null,
+    pendingForkSource: {},
 
     selectSession: (id) => {
       set((s) => ({
@@ -180,7 +184,6 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
         activeId,
         userHome,
         claudeSettingsDefaultModel,
-        lastUsedCwd,
       } = get();
       const activeGroupId = sessions.find((s) => s.id === activeId)?.groupId;
       const preferred = resolvePreferredGroup(
@@ -193,7 +196,11 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
       const targetGroupId = ensured.groupId;
       const baseGroups = ensured.groups;
       const id = newSessionId();
-      const defaultCwd = lastUsedCwd ?? userHome ?? '';
+      // Default cwd is `os.homedir()` always — no fallback chain. Per
+      // PR #392 spec ("default cwd is home, no fallback chains"). The
+      // chevron popover next to the `+` covers the "open in another
+      // recent project" case so the default doesn't need to guess.
+      const defaultCwd = userHome ?? '';
       let initialModel = '';
       if (!initialModel) initialModel = claudeSettingsDefaultModel ?? '';
       const newSession: Session = {
@@ -203,7 +210,7 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
         cwd: opts.cwd ?? defaultCwd,
         model: initialModel,
         groupId: targetGroupId,
-        agentType: 'claude-code',
+        agentType: CLAUDE_CODE_AGENT_ID,
       };
       const targetGroup = baseGroups.find((g) => g.id === targetGroupId);
       const nextGroups =
@@ -219,14 +226,7 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
       const finalCwd = newSession.cwd;
       if (finalCwd && userHome && finalCwd !== userHome) {
         const api = window.ccsm;
-        void api?.userCwds?.push(finalCwd)
-          .then((list) => {
-            if (Array.isArray(list) && list.length > 0) {
-              set({ lastUsedCwd: list[0] ?? null });
-            }
-          })
-          .catch(() => {});
-        if (finalCwd !== lastUsedCwd) set({ lastUsedCwd: finalCwd });
+        void api?.userCwds?.push(finalCwd).catch(() => {});
       }
     },
 
@@ -298,7 +298,7 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
         cwd,
         model: initialModel,
         groupId: ensured.groupId,
-        agentType: 'claude-code',
+        agentType: CLAUDE_CODE_AGENT_ID,
         resumeSessionId,
       };
       set({
@@ -310,14 +310,7 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
       const userHome = get().userHome;
       if (cwd && userHome && cwd !== userHome) {
         const api = window.ccsm;
-        void api?.userCwds?.push(cwd)
-          .then((list) => {
-            if (Array.isArray(list) && list.length > 0) {
-              set({ lastUsedCwd: list[0] ?? null });
-            }
-          })
-          .catch(() => {});
-        if (cwd !== get().lastUsedCwd) set({ lastUsedCwd: cwd });
+        void api?.userCwds?.push(cwd).catch(() => {});
       }
       return id;
     },
@@ -446,14 +439,7 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
       const userHome = get().userHome;
       if (cwd && cwd !== userHome) {
         const api = window.ccsm;
-        void api?.userCwds?.push(cwd)
-          .then((list) => {
-            if (Array.isArray(list) && list.length > 0) {
-              set({ lastUsedCwd: list[0] ?? null });
-            }
-          })
-          .catch(() => {});
-        if (cwd !== get().lastUsedCwd) set({ lastUsedCwd: cwd });
+        void api?.userCwds?.push(cwd).catch(() => {});
       }
     },
 
@@ -563,6 +549,60 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
         const nextActive = s.activeId === '' ? sessionId : s.activeId;
         return { groups, sessions, activeId: nextActive };
       });
+    },
+
+    copySession: (sourceId) => {
+      const cur = get();
+      const source = cur.sessions.find((x) => x.id === sourceId);
+      if (!source) return null;
+      const newId = newSessionId();
+      // Place the copy in the same group as the source. If the source lives
+      // in an archive container we still honor that — user can unarchive
+      // afterwards. cwd/model/groupId/agentType all sourced from the
+      // original; archivedAt is intentionally NOT carried over so a copy
+      // never inherits a stale archive timestamp.
+      const copy: Session = {
+        id: newId,
+        name: `${source.name} (copy)`,
+        state: 'idle',
+        cwd: source.cwd,
+        model: source.model,
+        groupId: source.groupId,
+        agentType: source.agentType,
+        // Inherit cwdMissing — the directory state is independent of which
+        // session points at it; if it's missing for the source it's missing
+        // for the copy too.
+        ...(source.cwdMissing ? { cwdMissing: true as const } : {}),
+      };
+      // Insert the copy directly after the source so the new row appears
+      // adjacent to its origin (matches Finder "Duplicate" behavior). The
+      // sidebar renders sessions in order; so list-position == sidebar
+      // position. activeId flips to the new id; pendingRenameId arms
+      // inline rename for the matching <SessionRow>; pendingForkSource
+      // carries the source's claude UUID so the very first `pty.spawn`
+      // for newId becomes a `--resume <src> --fork-session --session-id
+      // <new>` invocation in main.
+      set((s) => {
+        const idx = s.sessions.findIndex((x) => x.id === sourceId);
+        const insertAt = idx === -1 ? 0 : idx + 1;
+        const sessions = [
+          ...s.sessions.slice(0, insertAt),
+          copy,
+          ...s.sessions.slice(insertAt),
+        ];
+        return {
+          sessions,
+          activeId: newId,
+          focusedGroupId: null,
+          pendingRenameId: newId,
+          pendingForkSource: { ...s.pendingForkSource, [newId]: sourceId },
+        };
+      });
+      return newId;
+    },
+
+    consumePendingRename: (sessionId) => {
+      set((s) => (s.pendingRenameId === sessionId ? { pendingRenameId: null } : {}));
     },
   };
 }

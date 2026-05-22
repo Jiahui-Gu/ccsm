@@ -57,11 +57,35 @@ vi.mock('../../src/terminal/xtermSingleton', async () => {
   };
 });
 
-// Mock store — _clearPtyExit is the only piece usePtyAttach reads.
+// Mock store — _clearPtyExit is the only piece usePtyAttach reads via the
+// hook selector. The fork-on-spawn path (right-click "Copy session") also
+// reaches into `useStore.getState().pendingForkSource[sid]` and calls
+// `useStore.setState((s) => …)` to clear the entry post-spawn, so the mock
+// must expose getState/setState statics on the same callable. Tests that
+// need to seed a fork source push into `mockStoreState.pendingForkSource`.
 const clearPtyExitSpy = vi.fn();
-vi.mock('../../src/stores/store', () => ({
-  useStore: (selector: (s: any) => any) => selector({ _clearPtyExit: clearPtyExitSpy }),
-}));
+const mockStoreState: { pendingForkSource: Record<string, string> } = {
+  pendingForkSource: {},
+};
+vi.mock('../../src/stores/store', () => {
+  const useStore = ((selector: (s: any) => any) =>
+    selector({ _clearPtyExit: clearPtyExitSpy, ...mockStoreState })) as any;
+  useStore.getState = () => ({ _clearPtyExit: clearPtyExitSpy, ...mockStoreState });
+  useStore.setState = (
+    patch:
+      | { pendingForkSource?: Record<string, string> }
+      | ((s: typeof mockStoreState) => { pendingForkSource?: Record<string, string> } | {}),
+  ) => {
+    const next =
+      typeof patch === 'function'
+        ? patch({ ...mockStoreState })
+        : patch;
+    if (next && 'pendingForkSource' in next && next.pendingForkSource) {
+      mockStoreState.pendingForkSource = next.pendingForkSource;
+    }
+  };
+  return { useStore };
+});
 
 import { usePtyAttach } from '../../src/terminal/usePtyAttach';
 import {
@@ -140,6 +164,7 @@ describe('usePtyAttach', () => {
     proposeDimensionsSpy.mockClear();
     proposeDimensionsSpy.mockReturnValue({ cols: 134, rows: 51 });
     clearPtyExitSpy.mockClear();
+    mockStoreState.pendingForkSource = {};
   });
 
   afterEach(() => {
@@ -204,11 +229,36 @@ describe('usePtyAttach', () => {
     renderHook(() => usePtyAttach('sid-C', '/cwd'));
     await flushAll();
 
-    expect(spies.spawn).toHaveBeenCalledWith('sid-C', '/cwd');
+    expect(spies.spawn).toHaveBeenCalledWith('sid-C', '/cwd', undefined);
     expect(spies.attach).toHaveBeenCalledTimes(2);
     // L4 PR-B (#865): the visible terminal paints the getBufferSnapshot
     // string, NOT the legacy attach.snapshot.
     expect(writeSpy).toHaveBeenCalledWith('after-spawn');
+  });
+
+  // Right-click "Copy session" → `copySession` registers `pendingForkSource[
+  // newSid] = sourceSid`. usePtyAttach's spawn-on-null-attach fallback must
+  // read it and pass `sourceSid` as the 3rd arg of `pty.spawn`, then clear
+  // the entry so a subsequent Retry doesn't re-fire `--fork-session` against
+  // an already-forked sid.
+  it('forwards pendingForkSource[sid] as the 3rd spawn arg, then clears it post-spawn', async () => {
+    let calls = 0;
+    const { bridge, spies } = makePtyBridge({ snapshot: { snapshot: 'forked', seq: 0 } });
+    spies.attach.mockImplementation(async () => {
+      calls += 1;
+      if (calls === 1) return null;
+      return { snapshot: 'ignored', cols: 80, rows: 24, pid: 1 };
+    });
+    (window as any).ccsmPty = bridge;
+    mockStoreState.pendingForkSource = { 'sid-FORK': 'sid-SOURCE' };
+
+    renderHook(() => usePtyAttach('sid-FORK', '/cwd'));
+    await flushAll();
+
+    expect(spies.spawn).toHaveBeenCalledWith('sid-FORK', '/cwd', 'sid-SOURCE');
+    // Post-spawn: pendingForkSource entry for this sid is gone, so a
+    // hypothetical re-spawn (Retry) wouldn't accidentally re-fork.
+    expect(mockStoreState.pendingForkSource['sid-FORK']).toBeUndefined();
   });
 
   // L4 PR-F (#867) — the spawn-time cols/rows hack added for #852 has been
@@ -232,8 +282,12 @@ describe('usePtyAttach', () => {
     renderHook(() => usePtyAttach('sid-867', '/cwd'));
     await flushAll();
 
-    // Spawn is called with sid + cwd ONLY — no opts argument.
-    expect(spies.spawn).toHaveBeenCalledWith('sid-867', '/cwd');
+    // Spawn is called with sid + cwd + an explicit `undefined` 3rd arg
+    // (forkSourceSid). The 3rd arg is only set on the right-click "Copy
+    // session" fork path; for the normal spawn-on-null-attach fallback it
+    // must be undefined so main takes the standard `--session-id <sid>`
+    // branch in `entryFactory.makeEntry`.
+    expect(spies.spawn).toHaveBeenCalledWith('sid-867', '/cwd', undefined);
     // FitAddon.proposeDimensions is no longer called pre-spawn.
     expect(proposeDimensionsSpy).not.toHaveBeenCalled();
   });

@@ -30,8 +30,10 @@ const ptyExitListeners = new Set<(e: PtyExitPayload) => void>();
 
 const ccsmPty = {
   list: (): Promise<unknown> => ipcRenderer.invoke('pty:list'),
-  spawn: (sid: string, cwd: string): Promise<unknown> =>
-    ipcRenderer.invoke('pty:spawn', sid, cwd),
+  spawn: (sid: string, cwd: string, forkSourceSid?: string): Promise<unknown> =>
+    forkSourceSid === undefined
+      ? ipcRenderer.invoke('pty:spawn', sid, cwd)
+      : ipcRenderer.invoke('pty:spawn', sid, cwd, forkSourceSid),
   attach: (sid: string): Promise<unknown> => ipcRenderer.invoke('pty:attach', sid),
   detach: (sid: string): Promise<void> => ipcRenderer.invoke('pty:detach', sid),
   input: (sid: string, data: string): Promise<void> =>
@@ -62,6 +64,11 @@ const ccsmPty = {
     readText: (): string => clipboard.readText(),
     writeText: (text: string): void => clipboard.writeText(text),
   },
+  // Task #42 — main-process IPC because clipboard.readImage() PNG encoding
+  // and the userData write both need the main side; renderer also doesn't
+  // get app.getPath('userData').
+  saveClipboardImage: (): Promise<string | null> =>
+    ipcRenderer.invoke('pty:saveClipboardImage'),
   checkClaudeAvailable: (opts?: { force?: boolean }): Promise<CheckClaudeAvailableResult> =>
     ipcRenderer.invoke('pty:checkClaudeAvailable', opts ?? {}),
 };

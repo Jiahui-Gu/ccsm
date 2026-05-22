@@ -51,6 +51,11 @@ vi.mock('node-pty', () => ({
 
 vi.mock('@xterm/headless', () => ({
   Terminal: class {
+    constructor(opts?: unknown) {
+      // Record constructor opts so tests can pin scrollback wiring.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (globalThis as any).__pf_lastHeadlessOpts = opts;
+    }
     // Mirror @xterm/headless's `write(data, callback?)` signature so tests
     // can exercise PR-C backpressure (we count pending writes by deferring
     // the callback until the test fires it).
@@ -99,6 +104,17 @@ vi.mock('../cwdResolver', () => ({
 
 vi.mock('../dataFanout', () => ({
   emitPtyData: (sid: string, chunk: string) => bus().emitData(sid, chunk),
+}));
+
+// The user-configured scrollback cap is now read at headless construction
+// time. Stub the prefs module so tests don't hit the SQLite-backed
+// loadState path; tests that care about the cap value flip
+// `globalThis.__pf_scrollback` directly.
+vi.mock('../../prefs/scrollback', () => ({
+  loadScrollbackLines: () =>
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (((globalThis as any).__pf_scrollback as number | undefined) ?? 1500),
+  DEFAULT_SCROLLBACK_LINES: 1500,
 }));
 
 import { makeEntry } from '../entryFactory';
@@ -200,6 +216,79 @@ describe('entryFactory.makeEntry', () => {
     expect(e.rows).toBe(40);
     expect(e.cwd).toBe('/work');
     expect(e.attached.size).toBe(0);
+  });
+
+  it('passes the user-configured scrollback cap into the headless Terminal constructor', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).__pf_scrollback = 2500;
+    makeEntry('sid-SCROLL', '/work', '/bin/claude', 80, 24, { onExit: vi.fn() });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const opts = (globalThis as any).__pf_lastHeadlessOpts as
+      | { scrollback?: number }
+      | undefined;
+    expect(opts?.scrollback).toBe(2500);
+  });
+
+  it('falls back to the default cap when the prefs module returns the default', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    delete (globalThis as any).__pf_scrollback;
+    makeEntry('sid-DEFAULT', '/work', '/bin/claude', 80, 24, { onExit: vi.fn() });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const opts = (globalThis as any).__pf_lastHeadlessOpts as
+      | { scrollback?: number }
+      | undefined;
+    expect(opts?.scrollback).toBe(1500);
+  });
+
+  // Right-click "Copy session" path: when the renderer mints a fresh sid
+  // (no JSONL on disk yet) AND passes a `forkSourceSid`, makeEntry must
+  // spawn `claude --resume <src> --fork-session --session-id <new>` so the
+  // CLI duplicates the source's transcript natively. The bare new-session
+  // path (`['--session-id', sid]`) would lose the source context entirely.
+  it('forks via --resume + --fork-session + --session-id when forkSourceSid is set and no JSONL exists', () => {
+    bus().sourceJsonl = null;
+    makeEntry(
+      'sid-NEW',
+      '/work',
+      '/bin/claude',
+      80,
+      24,
+      { onExit: vi.fn() },
+      'sid-SOURCE',
+    );
+    const args = bus().ptySpawn.mock.calls[0][1] as string[];
+    expect(args).toEqual([
+      '--resume',
+      'sid-SOURCE',
+      '--fork-session',
+      '--session-id',
+      'sid-NEW',
+    ]);
+    // No import-resume copy expected — sourceJsonl is null so the existing
+    // `ensureResumeJsonlAtSpawnCwd` branch is skipped (correct: claude
+    // CLI handles the transcript copy itself with --fork-session).
+    expect(bus().ensureJsonl).not.toHaveBeenCalled();
+  });
+
+  // Defensive: once the forked session has booted at least once, its own
+  // JSONL exists at `<newSid>.jsonl`. A re-spawn (Retry, app relaunch)
+  // must NOT re-issue --fork-session — that would copy the transcript a
+  // SECOND time. Falling through to the normal `--resume <new>` path is
+  // the right behavior. We model this by setting sourceJsonl truthy
+  // (i.e. findJsonlForSid found the new sid's jsonl).
+  it('skips --fork-session and resumes the new sid directly when the new sid already has a JSONL', () => {
+    bus().sourceJsonl = '/proj/sid-NEW.jsonl';
+    makeEntry(
+      'sid-NEW',
+      '/work',
+      '/bin/claude',
+      80,
+      24,
+      { onExit: vi.fn() },
+      'sid-SOURCE',
+    );
+    const args = bus().ptySpawn.mock.calls[0][1] as string[];
+    expect(args).toEqual(['--resume', 'sid-NEW']);
   });
 });
 

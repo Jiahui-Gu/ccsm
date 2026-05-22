@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createSessionRuntimeSlice } from '../../../src/stores/slices/sessionRuntimeSlice';
 import type { RootStore } from '../../../src/stores/slices/types';
 import type { Session } from '../../../src/types';
@@ -81,5 +81,86 @@ describe('sessionRuntimeSlice', () => {
     expect(h.state().flashStates['a']).toBe(true);
     h.runtime._setFlash('a', false);
     expect(h.state().flashStates['a']).toBeUndefined();
+  });
+
+  // Ref-stability regression guards for the sidebar perf path. The Sidebar
+  // buckets sessions by groupId via useMemo([sessions]) and relies on
+  // React.memo on GroupRow / SessionRow to short-circuit unrelated rows
+  // when a single session's `state` toggles (waiting<->idle on JSONL
+  // chunks). Both rely on the slice patching ONLY the changed session and
+  // preserving every other session's reference via per-element map. If
+  // that property regresses, the sidebar streaming-flicker bug returns.
+  it('_applySessionState is a noop (same sessions ref) when state is unchanged', () => {
+    const sessions = [mkSession('a', 'g1', { state: 'idle' })];
+    const h = harness({ sessions, activeId: 'b' });
+    const before = h.state().sessions;
+    h.runtime._applySessionState('a', 'idle');
+    // Same array ref — no subscriber notification, no persist scheduled.
+    expect(h.state().sessions).toBe(before);
+  });
+
+  it('_applySessionState preserves untouched session refs on real change', () => {
+    const a = mkSession('a', 'g1', { state: 'idle' });
+    const b = mkSession('b', 'g1', { state: 'idle' });
+    const c = mkSession('c', 'g2', { state: 'idle' });
+    const h = harness({ sessions: [a, b, c], activeId: 'x' });
+    h.runtime._applySessionState('b', 'waiting');
+    const next = h.state().sessions;
+    // `b` was patched — new object ref.
+    expect(next[1]).not.toBe(b);
+    expect(next[1].state).toBe('waiting');
+    // `a` and `c` were untouched — same ref so React.memo on SessionRow
+    // can short-circuit.
+    expect(next[0]).toBe(a);
+    expect(next[2]).toBe(c);
+  });
+
+  describe('reloadSession', () => {
+    let killSpy: ReturnType<typeof vi.fn>;
+    let prevPty: unknown;
+    beforeEach(() => {
+      killSpy = vi.fn().mockResolvedValue({ ok: true, killed: true });
+      prevPty = (window as unknown as { ccsmPty?: unknown }).ccsmPty;
+      (window as unknown as { ccsmPty: unknown }).ccsmPty = { kill: killSpy };
+    });
+    afterEach(() => {
+      (window as unknown as { ccsmPty: unknown }).ccsmPty = prevPty;
+    });
+
+    it('initial reloadNonce is empty', () => {
+      const h = harness();
+      expect(h.state().reloadNonce).toEqual({});
+    });
+
+    it('kills pty and bumps the per-session reloadNonce', async () => {
+      const h = harness({ sessions: [mkSession('a', 'g1')] });
+      await h.runtime.reloadSession('a');
+      expect(killSpy).toHaveBeenCalledWith('a');
+      expect(h.state().reloadNonce['a']).toBe(1);
+      await h.runtime.reloadSession('a');
+      expect(h.state().reloadNonce['a']).toBe(2);
+    });
+
+    it('clears any stale disconnect entry on reload', async () => {
+      const h = harness({ sessions: [mkSession('a', 'g1')] });
+      h.runtime._applyPtyExit('a', { code: 1, signal: null });
+      expect(h.state().disconnectedSessions['a'].kind).toBe('crashed');
+      await h.runtime.reloadSession('a');
+      expect(h.state().disconnectedSessions['a']).toBeUndefined();
+    });
+
+    it('swallows kill IPC errors so the nonce still bumps', async () => {
+      killSpy.mockRejectedValueOnce(new Error('not running'));
+      const h = harness({ sessions: [mkSession('a', 'g1')] });
+      await h.runtime.reloadSession('a');
+      expect(h.state().reloadNonce['a']).toBe(1);
+    });
+
+    it('tolerates ccsmPty being undefined (test env)', async () => {
+      (window as unknown as { ccsmPty: unknown }).ccsmPty = undefined;
+      const h = harness({ sessions: [mkSession('a', 'g1')] });
+      await h.runtime.reloadSession('a');
+      expect(h.state().reloadNonce['a']).toBe(1);
+    });
   });
 });

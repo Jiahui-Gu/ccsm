@@ -40,7 +40,7 @@ describe('<SessionRow /> (extracted)', () => {
                 session={session}
                 active={opts.active ?? false}
                 selected={opts.selected ?? false}
-                onSelect={() => {}}
+                onSelectSession={() => {}}
                 normalGroups={[group]}
               />
             </ul>

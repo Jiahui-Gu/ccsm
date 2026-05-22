@@ -174,9 +174,11 @@ export function installUpdaterIpc(): void {
     if (lastStatus.kind !== 'downloaded') {
       return { ok: false as const, reason: 'not-ready' as const };
     }
-    // quitAndInstall: (isSilent, isForceRunAfter). We want a visible installer
-    // on Windows (isSilent=false) and to relaunch after install on all OSes.
-    setImmediate(() => autoUpdater.quitAndInstall(false, true));
+    // quitAndInstall: (isSilent, isForceRunAfter). With NSIS oneClick=true the
+    // installer runs without UI; pair with isSilent=true so electron-updater
+    // doesn't pop a redundant progress window. isForceRunAfter=true relaunches
+    // CCSM after install on all OSes — VSCode-style restart-to-update.
+    setImmediate(() => autoUpdater.quitAndInstall(true, true));
     return { ok: true as const };
   });
 

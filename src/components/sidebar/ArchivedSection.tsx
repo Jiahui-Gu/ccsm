@@ -14,10 +14,16 @@ import { GroupRow } from './GroupRow';
 // J14: archived groups are a "viewer" surface — DnD onto archived headers is
 // rejected upstream in useSidebarDnd. The archived rows here intentionally
 // don't render their own SortableContext (no empty-drop targets either).
-export function ArchivedSection({
+//
+// Perf: receives a `getSessionsForGroup` lookup from <Sidebar> rather than a
+// flat `sessions` array we'd have to .filter() per row. The parent bucket is
+// built once per `sessions` ref change, so each archived GroupRow's
+// `sessions` prop ref stays stable when its own bucket didn't change —
+// preserving React.memo on GroupRow / SessionRow.
+function ArchivedSectionImpl({
   archivedGroups,
   normalGroups,
-  sessions,
+  getSessionsForGroup,
   activeSessionId,
   focusedGroupId,
   onSelectSession,
@@ -25,7 +31,7 @@ export function ArchivedSection({
 }: {
   archivedGroups: Group[];
   normalGroups: Group[];
-  sessions: Session[];
+  getSessionsForGroup: (groupId: string) => Session[];
   activeSessionId: string;
   focusedGroupId: string | null;
   onSelectSession: (id: string) => void;
@@ -65,12 +71,12 @@ export function ArchivedSection({
             <GroupRow
               key={g.id}
               group={g}
-              sessions={sessions.filter((s) => s.groupId === g.id)}
+              sessions={getSessionsForGroup(g.id)}
               activeSessionId={activeSessionId}
               focused={focusedGroupId === g.id}
               anyGroupFocused={focusedGroupId !== null}
               onSelectSession={onSelectSession}
-              onFocus={() => onFocusGroup(g.id)}
+              onFocusGroup={onFocusGroup}
               normalGroups={normalGroups}
             />
           ))}
@@ -79,3 +85,13 @@ export function ArchivedSection({
     </>
   );
 }
+
+// Memoize for symmetry with GroupRow / SessionRow so a Sidebar re-render
+// driven by an unrelated store mutation (e.g. a session state toggle on a
+// non-archived row) doesn't re-render the archived block. All props are
+// ref-stable upstream: `archivedGroups` / `normalGroups` come from
+// useMemo'd partitions of `groups`, `getSessionsForGroup` is useCallback'd,
+// `activeSessionId` / `focusedGroupId` are primitives, and
+// `onSelectSession` / `onFocusGroup` are direct Zustand action refs passed
+// through App.tsx unchanged. See PR #1269.
+export const ArchivedSection = React.memo(ArchivedSectionImpl);

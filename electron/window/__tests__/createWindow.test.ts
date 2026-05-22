@@ -1,9 +1,72 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Capture context-menu listener + popup invocations from the BrowserWindow
 // mock. Each test flushes via beforeEach so `popupCalls.length === 0` is the
 // reverse-verify baseline that proves the listener actually wired up.
 const popupCalls: Array<{ items: unknown[]; window: unknown }> = [];
+
+// Stash for the most-recently-constructed BrowserWindow mock. The `createWindow`
+// factory builds the window via `new BrowserWindow(...)` (not a deps-injected
+// ctor — the deps bag intentionally only carries cross-module references), so
+// the only seam is `vi.mock('electron')`. The mock ctor pushes the latest
+// instance into `latestWin` so each factory test can drive its listeners.
+interface FakeWin {
+  ctorOpts: Record<string, unknown>;
+  listeners: Map<string, (...args: unknown[]) => void>;
+  webContentsListeners: Map<string, (...args: unknown[]) => void>;
+  hide: ReturnType<typeof vi.fn>;
+  show: ReturnType<typeof vi.fn>;
+  loadURL: ReturnType<typeof vi.fn>;
+  loadFile: ReturnType<typeof vi.fn>;
+  isDestroyed: ReturnType<typeof vi.fn>;
+  isMaximized: ReturnType<typeof vi.fn>;
+  setMenuBarVisibility: ReturnType<typeof vi.fn>;
+  webContents: {
+    on: ReturnType<typeof vi.fn>;
+    send: ReturnType<typeof vi.fn>;
+    setWindowOpenHandler: ReturnType<typeof vi.fn>;
+    openDevTools: ReturnType<typeof vi.fn>;
+    focus: ReturnType<typeof vi.fn>;
+    setBackgroundThrottling: ReturnType<typeof vi.fn>;
+    isDestroyed: ReturnType<typeof vi.fn>;
+  };
+  on: ReturnType<typeof vi.fn>;
+}
+
+let latestWin: FakeWin | null = null;
+let appQuitMock: ReturnType<typeof vi.fn>;
+
+function makeFakeWin(opts: Record<string, unknown>): FakeWin {
+  const listeners = new Map<string, (...args: unknown[]) => void>();
+  const webContentsListeners = new Map<string, (...args: unknown[]) => void>();
+  const win: FakeWin = {
+    ctorOpts: opts,
+    listeners,
+    webContentsListeners,
+    hide: vi.fn(),
+    show: vi.fn(),
+    loadURL: vi.fn(),
+    loadFile: vi.fn(),
+    isDestroyed: vi.fn(() => false),
+    isMaximized: vi.fn(() => false),
+    setMenuBarVisibility: vi.fn(),
+    webContents: {
+      on: vi.fn((evt: string, cb: (...args: unknown[]) => void) => {
+        webContentsListeners.set(evt, cb);
+      }),
+      send: vi.fn(),
+      setWindowOpenHandler: vi.fn(),
+      openDevTools: vi.fn(),
+      focus: vi.fn(),
+      setBackgroundThrottling: vi.fn(),
+      isDestroyed: vi.fn(() => false),
+    },
+    on: vi.fn((evt: string, cb: (...args: unknown[]) => void) => {
+      listeners.set(evt, cb);
+    }),
+  };
+  return win;
+}
 
 vi.mock('electron', () => {
   const Menu = {
@@ -12,10 +75,54 @@ vi.mock('electron', () => {
         popupCalls.push({ items, window: opts.window }),
     }),
   };
-  return { Menu };
+  class BrowserWindow {
+    constructor(opts: Record<string, unknown>) {
+      const w = makeFakeWin(opts);
+      latestWin = w;
+      // Returning an object from a constructor overrides `this`, so the
+      // factory's `win` variable is the same FakeWin we expose via
+      // `latestWin` — re-stubbing methods on `latestWin` (e.g.
+      // `latestWin.isMaximized = vi.fn(() => true)`) is observed by the
+      // factory's captured listeners.
+      return w as unknown as BrowserWindow;
+    }
+  }
+  const app = {
+    quit: (...args: unknown[]) => appQuitMock(...args),
+    isPackaged: false,
+  };
+  return { BrowserWindow, Menu, app };
 });
 
-import { installContextMenu, isAllowedNavigation, decideCloseAction } from '../createWindow';
+// Mock the close-action prefs module — both reads + writes are observed.
+const getCloseActionMock = vi.fn<[], 'ask' | 'tray' | 'quit'>(() => 'tray');
+const setCloseActionMock = vi.fn();
+vi.mock('../../prefs/closeAction', () => ({
+  getCloseAction: () => getCloseActionMock(),
+  setCloseAction: (v: 'ask' | 'tray' | 'quit') => setCloseActionMock(v),
+}));
+
+// i18n + branding are leaf imports we don't want to exercise.
+vi.mock('../../i18n', () => ({
+  tCloseDialog: (k: string) => `close.${k}`,
+}));
+vi.mock('../../branding/icon', () => ({
+  buildAppIcon: () => ({ __mockIcon: true }),
+}));
+
+import {
+  installContextMenu,
+  installContextMenuSuppressIpc,
+  isAllowedNavigation,
+  isContextMenuSuppressed,
+  recordContextMenuSuppression,
+  decideCloseAction,
+  createWindow,
+  CLOSE_ASK_TIMEOUT_MS,
+  __resetContextMenuSuppressionForTests,
+  __resetSuppressIpcForTests,
+  type CreateWindowDeps,
+} from '../createWindow';
 
 interface ContextMenuParams {
   selectionText: string;
@@ -51,6 +158,7 @@ function makeFakeWindow() {
 describe('installContextMenu', () => {
   beforeEach(() => {
     popupCalls.length = 0;
+    __resetContextMenuSuppressionForTests();
   });
 
   it('registers a single context-menu listener on the window webContents', () => {
@@ -142,6 +250,173 @@ describe('installContextMenu', () => {
     const items = popupCalls[0].items as Array<Record<string, unknown>>;
     const paste = items.find((i) => i.role === 'paste');
     expect(paste?.enabled).toBe(false);
+  });
+
+  // ─── Task #41: terminal pane's one-shot suppression ──────────────────
+  // The terminal pane handles right-click inline (copy-on-selection /
+  // paste-on-empty, no popover). Electron fires `context-menu` on the
+  // WebContents regardless of renderer `preventDefault()`, so the pane
+  // sends `shell:suppressContextMenuOnce` immediately before its
+  // onContextMenu returns; main records a short deadline and the
+  // listener installed here consults it.
+
+  it('suppresses native menu when within suppression deadline (Task #41)', () => {
+    const fake = makeFakeWindow();
+    installContextMenu(fake.win);
+    recordContextMenuSuppression(Date.now());
+    fake.fire({
+      selectionText: 'something',
+      isEditable: false,
+      editFlags: {
+        canCut: false,
+        canCopy: true,
+        canPaste: false,
+        canSelectAll: true,
+      },
+    });
+    expect(popupCalls).toHaveLength(0);
+  });
+
+  it('the suppression is one-shot: a second right-click gets the menu', () => {
+    const fake = makeFakeWindow();
+    installContextMenu(fake.win);
+    recordContextMenuSuppression(Date.now());
+    // First click suppressed.
+    fake.fire({
+      selectionText: '',
+      isEditable: false,
+      editFlags: { canCut: false, canCopy: false, canPaste: false, canSelectAll: true },
+    });
+    // Second click — no new suppression sent — must produce a popup.
+    fake.fire({
+      selectionText: 'second',
+      isEditable: false,
+      editFlags: { canCut: false, canCopy: true, canPaste: false, canSelectAll: true },
+    });
+    expect(popupCalls).toHaveLength(1);
+  });
+
+  it('an expired suppression deadline does not block the menu', () => {
+    const fake = makeFakeWindow();
+    installContextMenu(fake.win);
+    // Record a suppression "200ms in the past" by mutating Date.now via a
+    // narrow spy — keeps the test independent of vi.useFakeTimers (which
+    // the parent describe does not enable).
+    const realNow = Date.now;
+    const stableNow = realNow();
+    Date.now = () => stableNow - 200;
+    try {
+      recordContextMenuSuppression(Date.now());
+    } finally {
+      Date.now = realNow;
+    }
+    // Now-now is 200ms past the recorded deadline — listener should
+    // proceed to popup as normal.
+    fake.fire({
+      selectionText: 'hello',
+      isEditable: false,
+      editFlags: { canCut: false, canCopy: true, canPaste: false, canSelectAll: true },
+    });
+    expect(popupCalls).toHaveLength(1);
+  });
+});
+
+// ─── Task #41: pure suppression decider + IPC wiring ────────────────────
+// Pure helpers + the IPC registration so the suppression mechanism can be
+// driven without mounting an Electron window. The deadline math is a
+// strict `<` (not `<=`) so a request recorded at T=1000 with a 100ms
+// window suppresses everything up to T=1099 inclusive and allows T=1100.
+
+describe('isContextMenuSuppressed (Task #41)', () => {
+  it('returns true when now is before the deadline', () => {
+    expect(isContextMenuSuppressed(1000, 999)).toBe(true);
+  });
+
+  it('returns false at the deadline boundary', () => {
+    expect(isContextMenuSuppressed(1000, 1000)).toBe(false);
+  });
+
+  it('returns false after the deadline', () => {
+    expect(isContextMenuSuppressed(1000, 1001)).toBe(false);
+  });
+
+  it('returns false for the default uninitialised deadline of 0', () => {
+    expect(isContextMenuSuppressed(0, 12345)).toBe(false);
+  });
+});
+
+describe('recordContextMenuSuppression (Task #41)', () => {
+  beforeEach(() => {
+    __resetContextMenuSuppressionForTests();
+  });
+
+  it('records a deadline 100ms after the supplied now', () => {
+    const deadline = recordContextMenuSuppression(1000);
+    expect(deadline).toBe(1100);
+  });
+
+  it('later calls extend (overwrite) the deadline, never shrink it relative to live now', () => {
+    expect(recordContextMenuSuppression(1000)).toBe(1100);
+    // A second call at T=1050 sets the deadline to 1150. This is the
+    // intended "renew the one-shot" behavior — a fresh request always
+    // pushes the deadline forward.
+    expect(recordContextMenuSuppression(1050)).toBe(1150);
+  });
+});
+
+describe('installContextMenuSuppressIpc (Task #41)', () => {
+  beforeEach(() => {
+    __resetSuppressIpcForTests();
+    __resetContextMenuSuppressionForTests();
+    popupCalls.length = 0;
+  });
+
+  it('registers exactly one listener on shell:suppressContextMenuOnce', () => {
+    const handlers = new Map<string, (...args: unknown[]) => void>();
+    const ipcMain = {
+      on: vi.fn((ch: string, cb: (...args: unknown[]) => void) => {
+        handlers.set(ch, cb);
+      }),
+    } as unknown as import('electron').IpcMain;
+    installContextMenuSuppressIpc(ipcMain);
+    expect(handlers.has('shell:suppressContextMenuOnce')).toBe(true);
+  });
+
+  it('the registered handler arms a suppression that blocks the next menu', () => {
+    const handlers = new Map<string, (...args: unknown[]) => void>();
+    const ipcMain = {
+      on: vi.fn((ch: string, cb: (...args: unknown[]) => void) => {
+        handlers.set(ch, cb);
+      }),
+    } as unknown as import('electron').IpcMain;
+    installContextMenuSuppressIpc(ipcMain);
+    const fake = makeFakeWindow();
+    installContextMenu(fake.win);
+    // No suppression yet — popup fires.
+    fake.fire({
+      selectionText: 'a',
+      isEditable: false,
+      editFlags: { canCut: false, canCopy: true, canPaste: false, canSelectAll: true },
+    });
+    expect(popupCalls).toHaveLength(1);
+    // Renderer asks to suppress; next popup is swallowed.
+    handlers.get('shell:suppressContextMenuOnce')!();
+    fake.fire({
+      selectionText: 'b',
+      isEditable: false,
+      editFlags: { canCut: false, canCopy: true, canPaste: false, canSelectAll: true },
+    });
+    expect(popupCalls).toHaveLength(1);
+  });
+
+  it('is idempotent — repeated installs do not double-register', () => {
+    const handlers: string[] = [];
+    const ipcMain = {
+      on: vi.fn((ch: string) => handlers.push(ch)),
+    } as unknown as import('electron').IpcMain;
+    installContextMenuSuppressIpc(ipcMain);
+    installContextMenuSuppressIpc(ipcMain);
+    expect(handlers.filter((c) => c === 'shell:suppressContextMenuOnce')).toHaveLength(1);
   });
 });
 
@@ -238,5 +513,348 @@ describe('decideCloseAction (#1253)', () => {
       action: 'cancel',
       persist: null,
     });
+  });
+});
+
+// Factory-level coverage. The pure helpers above are well-tested, but the
+// `createWindow()` body itself (lines 174-476 — BrowserWindow ctor opts,
+// `will-navigate` hookup, dev-vs-prod load branch, the close-action choreography
+// across `tray | quit | ask` × `CCSM_DEV_QUIT_ON_CLOSE` × `isQuitting`, and the
+// IPC ask-dialog round-trip) was uncovered. These cases drive the factory
+// through the captured listener map so each branch is hit deterministically
+// without booting Electron.
+describe('createWindow factory', () => {
+  let ipcHandlers: Map<string, (...args: unknown[]) => void>;
+  let removedIpcChannels: string[];
+  let deps: CreateWindowDeps;
+  let isQuittingFlag: boolean;
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    popupCalls.length = 0;
+    latestWin = null;
+    isQuittingFlag = false;
+    appQuitMock = vi.fn();
+    getCloseActionMock.mockReset().mockReturnValue('tray');
+    setCloseActionMock.mockReset();
+    ipcHandlers = new Map();
+    removedIpcChannels = [];
+    // Default env: not e2e-hidden, no dev-quit override, no custom port.
+    delete process.env.CCSM_E2E_HIDDEN;
+    delete process.env.CCSM_DEV_QUIT_ON_CLOSE;
+    delete process.env.CCSM_DEV_PORT;
+    deps = {
+      isDev: false,
+      getActiveSid: vi.fn(() => null),
+      onFocusChange: vi.fn(),
+      getIsQuitting: vi.fn(() => isQuittingFlag),
+      setIsQuitting: vi.fn((v: boolean) => {
+        isQuittingFlag = v;
+      }),
+      ipcMain: {
+        on: vi.fn((channel: string, cb: (...args: unknown[]) => void) => {
+          ipcHandlers.set(channel, cb);
+        }),
+        removeListener: vi.fn((channel: string) => {
+          removedIpcChannels.push(channel);
+        }),
+      } as unknown as CreateWindowDeps['ipcMain'],
+    };
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    warnSpy.mockRestore();
+  });
+
+  // ─── BrowserWindow ctor opts (hidden-mode positioning + skipTaskbar) ──
+  it('non-hidden launch creates a normally-positioned window', () => {
+    createWindow(deps);
+    expect(latestWin).not.toBeNull();
+    expect(latestWin!.ctorOpts.x).toBeUndefined();
+    expect(latestWin!.ctorOpts.y).toBeUndefined();
+    expect(latestWin!.ctorOpts.skipTaskbar).toBe(false);
+    expect(latestWin!.ctorOpts.show).toBe(true);
+  });
+
+  it('CCSM_E2E_HIDDEN=1 positions window offscreen and hides from taskbar', () => {
+    process.env.CCSM_E2E_HIDDEN = '1';
+    createWindow(deps);
+    expect(latestWin!.ctorOpts.x).toBe(-32000);
+    expect(latestWin!.ctorOpts.y).toBe(-32000);
+    expect(latestWin!.ctorOpts.skipTaskbar).toBe(true);
+    // Hidden mode also primes Chromium-level focus and disables throttling.
+    expect(latestWin!.webContents.focus).toHaveBeenCalled();
+    expect(latestWin!.webContents.setBackgroundThrottling).toHaveBeenCalledWith(false);
+  });
+
+  // ─── dev vs prod renderer load ─────────────────────────────────────────
+  it('dev mode loads the webpack-dev-server URL on the configured port', () => {
+    process.env.CCSM_DEV_PORT = '5174';
+    createWindow({ ...deps, isDev: true });
+    expect(latestWin!.loadURL).toHaveBeenCalledWith('http://localhost:5174');
+    expect(latestWin!.loadFile).not.toHaveBeenCalled();
+    // DevTools open in detached mode when not e2e-hidden.
+    expect(latestWin!.webContents.openDevTools).toHaveBeenCalledWith({ mode: 'detach' });
+  });
+
+  it('dev mode falls back to port 4100 when CCSM_DEV_PORT unset', () => {
+    createWindow({ ...deps, isDev: true });
+    expect(latestWin!.loadURL).toHaveBeenCalledWith('http://localhost:4100');
+  });
+
+  it('prod mode loads the packaged renderer file', () => {
+    createWindow(deps);
+    expect(latestWin!.loadFile).toHaveBeenCalled();
+    expect(latestWin!.loadURL).not.toHaveBeenCalled();
+  });
+
+  // ─── will-navigate guard wiring (delegates to isAllowedNavigation) ────
+  it('will-navigate prevents external URL navigation', () => {
+    createWindow(deps);
+    const willNav = latestWin!.webContentsListeners.get('will-navigate')!;
+    expect(willNav).toBeDefined();
+    const evt = { preventDefault: vi.fn() };
+    willNav(evt, 'https://evil.example.com/');
+    expect(evt.preventDefault).toHaveBeenCalled();
+  });
+
+  it('will-navigate allows the configured dev-server origin', () => {
+    process.env.CCSM_DEV_PORT = '4100';
+    createWindow(deps);
+    const willNav = latestWin!.webContentsListeners.get('will-navigate')!;
+    const evt = { preventDefault: vi.fn() };
+    willNav(evt, 'http://localhost:4100/index.html');
+    expect(evt.preventDefault).not.toHaveBeenCalled();
+  });
+
+  // ─── window-open handler denies popups (preload-leak hardening) ───────
+  it('blocks renderer-initiated window.open() calls', () => {
+    createWindow(deps);
+    const handler = latestWin!.webContents.setWindowOpenHandler.mock.calls[0][0];
+    expect(handler()).toEqual({ action: 'deny' });
+  });
+
+  // ─── focus / maximize forwarding ──────────────────────────────────────
+  it('focus event forwards activeSid to onFocusChange', () => {
+    deps.getActiveSid = vi.fn(() => 'sid-42');
+    createWindow(deps);
+    latestWin!.listeners.get('focus')!();
+    expect(deps.onFocusChange).toHaveBeenCalledWith({ focused: true, activeSid: 'sid-42' });
+  });
+
+  it('maximize/unmaximize broadcast window:maximizedChanged', () => {
+    createWindow(deps);
+    latestWin!.isMaximized = vi.fn(() => true);
+    latestWin!.listeners.get('maximize')!();
+    expect(latestWin!.webContents.send).toHaveBeenCalledWith('window:maximizedChanged', true);
+    latestWin!.isMaximized = vi.fn(() => false);
+    latestWin!.listeners.get('unmaximize')!();
+    expect(latestWin!.webContents.send).toHaveBeenLastCalledWith('window:maximizedChanged', false);
+  });
+
+  it('show event re-sends window:afterShow so renderer can clear fade opacity', () => {
+    createWindow(deps);
+    latestWin!.webContents.send.mockClear();
+    latestWin!.listeners.get('show')!();
+    expect(latestWin!.webContents.send).toHaveBeenCalledWith('window:afterShow');
+  });
+
+  // ─── close-action: tray (default) → fade-then-hide ────────────────────
+  it('close with pref=tray prevents default and fades to hide after 180ms', () => {
+    getCloseActionMock.mockReturnValue('tray');
+    createWindow(deps);
+    const closeEvt = { preventDefault: vi.fn() };
+    latestWin!.listeners.get('close')!(closeEvt);
+    expect(closeEvt.preventDefault).toHaveBeenCalled();
+    // Renderer is told to start fading first.
+    expect(latestWin!.webContents.send).toHaveBeenCalledWith('window:beforeHide', { durationMs: 180 });
+    // Hide is deferred to the end of the fade window.
+    expect(latestWin!.hide).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(180);
+    expect(latestWin!.hide).toHaveBeenCalled();
+  });
+
+  it('multiple close presses during fade are coalesced (single hide)', () => {
+    getCloseActionMock.mockReturnValue('tray');
+    createWindow(deps);
+    const closeHandler = latestWin!.listeners.get('close')!;
+    closeHandler({ preventDefault: vi.fn() });
+    closeHandler({ preventDefault: vi.fn() });
+    closeHandler({ preventDefault: vi.fn() });
+    vi.advanceTimersByTime(180);
+    expect(latestWin!.hide).toHaveBeenCalledTimes(1);
+  });
+
+  // ─── close-action: quit ────────────────────────────────────────────────
+  it('close with pref=quit flips isQuitting and lets default through', () => {
+    getCloseActionMock.mockReturnValue('quit');
+    createWindow(deps);
+    const closeEvt = { preventDefault: vi.fn() };
+    latestWin!.listeners.get('close')!(closeEvt);
+    expect(deps.setIsQuitting).toHaveBeenCalledWith(true);
+    expect(closeEvt.preventDefault).not.toHaveBeenCalled();
+    expect(latestWin!.hide).not.toHaveBeenCalled();
+  });
+
+  // ─── isQuitting short-circuit ─────────────────────────────────────────
+  it('close with isQuitting=true short-circuits with no preventDefault and no hide', () => {
+    isQuittingFlag = true;
+    getCloseActionMock.mockReturnValue('tray');
+    createWindow(deps);
+    const closeEvt = { preventDefault: vi.fn() };
+    latestWin!.listeners.get('close')!(closeEvt);
+    expect(closeEvt.preventDefault).not.toHaveBeenCalled();
+    expect(latestWin!.hide).not.toHaveBeenCalled();
+    expect(getCloseActionMock).not.toHaveBeenCalled();
+  });
+
+  // ─── dev-loop escape hatch ─────────────────────────────────────────────
+  it('CCSM_DEV_QUIT_ON_CLOSE=1 bypasses tray and quits even with pref=tray', () => {
+    process.env.CCSM_DEV_QUIT_ON_CLOSE = '1';
+    getCloseActionMock.mockReturnValue('tray');
+    createWindow(deps);
+    const closeEvt = { preventDefault: vi.fn() };
+    latestWin!.listeners.get('close')!(closeEvt);
+    expect(deps.setIsQuitting).toHaveBeenCalledWith(true);
+    expect(closeEvt.preventDefault).not.toHaveBeenCalled();
+    expect(latestWin!.hide).not.toHaveBeenCalled();
+    // Pref is never consulted on this branch.
+    expect(getCloseActionMock).not.toHaveBeenCalled();
+  });
+
+  // ─── close-action: ask → IPC round-trip ───────────────────────────────
+  it('close with pref=ask sends IPC askCloseAction and registers resolve handler', () => {
+    getCloseActionMock.mockReturnValue('ask');
+    createWindow(deps);
+    expect(ipcHandlers.has('window:resolveCloseAction')).toBe(true);
+    const closeEvt = { preventDefault: vi.fn() };
+    latestWin!.listeners.get('close')!(closeEvt);
+    expect(closeEvt.preventDefault).toHaveBeenCalled();
+    const sendCall = latestWin!.webContents.send.mock.calls.find(
+      (c) => c[0] === 'window:askCloseAction',
+    );
+    expect(sendCall).toBeDefined();
+    const payload = sendCall![1] as { requestId: string; labels: Record<string, string> };
+    expect(typeof payload.requestId).toBe('string');
+    expect(payload.labels.tray).toBe('close.tray');
+  });
+
+  it('ask → renderer chooses tray + dontAskAgain persists tray and hides', () => {
+    getCloseActionMock.mockReturnValue('ask');
+    createWindow(deps);
+    latestWin!.listeners.get('close')!({ preventDefault: vi.fn() });
+    const askPayload = latestWin!.webContents.send.mock.calls.find(
+      (c) => c[0] === 'window:askCloseAction',
+    )![1] as { requestId: string };
+    const resolve = ipcHandlers.get('window:resolveCloseAction')!;
+    resolve({}, { requestId: askPayload.requestId, choice: 'tray', dontAskAgain: true });
+    expect(setCloseActionMock).toHaveBeenCalledWith('tray');
+    vi.advanceTimersByTime(180);
+    expect(latestWin!.hide).toHaveBeenCalled();
+  });
+
+  it('ask → renderer chooses quit triggers app.quit and flips isQuitting', () => {
+    getCloseActionMock.mockReturnValue('ask');
+    createWindow(deps);
+    latestWin!.listeners.get('close')!({ preventDefault: vi.fn() });
+    const askPayload = latestWin!.webContents.send.mock.calls.find(
+      (c) => c[0] === 'window:askCloseAction',
+    )![1] as { requestId: string };
+    const resolve = ipcHandlers.get('window:resolveCloseAction')!;
+    resolve({}, { requestId: askPayload.requestId, choice: 'quit', dontAskAgain: false });
+    expect(deps.setIsQuitting).toHaveBeenCalledWith(true);
+    expect(appQuitMock).toHaveBeenCalled();
+    expect(setCloseActionMock).not.toHaveBeenCalled();
+  });
+
+  it('ask → renderer chooses cancel does nothing destructive', () => {
+    getCloseActionMock.mockReturnValue('ask');
+    createWindow(deps);
+    latestWin!.listeners.get('close')!({ preventDefault: vi.fn() });
+    const askPayload = latestWin!.webContents.send.mock.calls.find(
+      (c) => c[0] === 'window:askCloseAction',
+    )![1] as { requestId: string };
+    const resolve = ipcHandlers.get('window:resolveCloseAction')!;
+    resolve({}, { requestId: askPayload.requestId, choice: 'cancel', dontAskAgain: true });
+    expect(setCloseActionMock).not.toHaveBeenCalled();
+    expect(appQuitMock).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(500);
+    expect(latestWin!.hide).not.toHaveBeenCalled();
+  });
+
+  it('ask → stale resolve with mismatched requestId is ignored', () => {
+    getCloseActionMock.mockReturnValue('ask');
+    createWindow(deps);
+    latestWin!.listeners.get('close')!({ preventDefault: vi.fn() });
+    const resolve = ipcHandlers.get('window:resolveCloseAction')!;
+    resolve({}, { requestId: 'not-a-real-id', choice: 'quit', dontAskAgain: false });
+    expect(deps.setIsQuitting).not.toHaveBeenCalled();
+    expect(appQuitMock).not.toHaveBeenCalled();
+  });
+
+  it('ask → repeated close presses while ask is in flight do not stack dialogs', () => {
+    getCloseActionMock.mockReturnValue('ask');
+    createWindow(deps);
+    const closeHandler = latestWin!.listeners.get('close')!;
+    closeHandler({ preventDefault: vi.fn() });
+    closeHandler({ preventDefault: vi.fn() });
+    const asks = latestWin!.webContents.send.mock.calls.filter(
+      (c) => c[0] === 'window:askCloseAction',
+    );
+    expect(asks).toHaveLength(1);
+  });
+
+  it('ask → renderer never replies; CLOSE_ASK_TIMEOUT_MS triggers tray fallback', () => {
+    getCloseActionMock.mockReturnValue('ask');
+    createWindow(deps);
+    latestWin!.listeners.get('close')!({ preventDefault: vi.fn() });
+    expect(latestWin!.hide).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(CLOSE_ASK_TIMEOUT_MS);
+    // Timeout warns + falls through to fadeThenHide → setTimeout(180).
+    expect(warnSpy).toHaveBeenCalled();
+    vi.advanceTimersByTime(180);
+    expect(latestWin!.hide).toHaveBeenCalled();
+    // Timeout path explicitly does NOT persist anything.
+    expect(setCloseActionMock).not.toHaveBeenCalled();
+  });
+
+  it('ask → renderer destroyed before send falls straight to tray fallback', () => {
+    getCloseActionMock.mockReturnValue('ask');
+    createWindow(deps);
+    latestWin!.webContents.isDestroyed = vi.fn(() => true);
+    latestWin!.listeners.get('close')!({ preventDefault: vi.fn() });
+    // No askCloseAction send (renderer is gone), straight to fade-then-hide.
+    const asks = latestWin!.webContents.send.mock.calls.filter(
+      (c) => c[0] === 'window:askCloseAction',
+    );
+    expect(asks).toHaveLength(0);
+    vi.advanceTimersByTime(180);
+    expect(latestWin!.hide).toHaveBeenCalled();
+  });
+
+  // ─── closed event cleans up the IPC listener ──────────────────────────
+  it('closed event removes the resolveCloseAction IPC listener', () => {
+    createWindow(deps);
+    latestWin!.listeners.get('closed')!();
+    expect(removedIpcChannels).toContain('window:resolveCloseAction');
+  });
+
+  it('closed event clears any pending ask timer', () => {
+    getCloseActionMock.mockReturnValue('ask');
+    createWindow(deps);
+    latestWin!.listeners.get('close')!({ preventDefault: vi.fn() });
+    latestWin!.listeners.get('closed')!();
+    // Advancing past the timeout must NOT trigger the tray fallback now.
+    vi.advanceTimersByTime(CLOSE_ASK_TIMEOUT_MS + 500);
+    expect(latestWin!.hide).not.toHaveBeenCalled();
+  });
+
+  // ─── installContextMenu wired up during factory ───────────────────────
+  it('factory installs the context-menu listener on webContents', () => {
+    createWindow(deps);
+    expect(latestWin!.webContentsListeners.has('context-menu')).toBe(true);
   });
 });

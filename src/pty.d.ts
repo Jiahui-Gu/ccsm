@@ -64,7 +64,11 @@ export type CheckClaudeAvailableResult =
 
 export interface CcsmPtyApi {
   list(): Promise<PtySessionInfo[]>;
-  spawn(sid: string, cwd: string): Promise<SpawnResult>;
+  /** When `forkSourceSid` is set, main spawns
+   *  `claude --resume <forkSourceSid> --fork-session --session-id <sid>` so the
+   *  new pty boots with the source session's full transcript context but
+   *  writes to its own JSONL. Used by the right-click "Copy session" flow. */
+  spawn(sid: string, cwd: string, forkSourceSid?: string): Promise<SpawnResult>;
   attach(sid: string): Promise<AttachResult | null>;
   detach(sid: string): Promise<void>;
   input(sid: string, data: string): Promise<void>;
@@ -79,12 +83,28 @@ export interface CcsmPtyApi {
     readText(): string;
     writeText(text: string): void;
   };
+  /**
+   * Task #42 — if the clipboard holds an image, save it as a PNG under
+   * `<userData>/clipboard-images/YYYYMMDD-HHMMSS[-NNN].png` and return
+   * the absolute path (native separators). Returns null if no image is
+   * present. Used by the paste path to convert pasted screenshots into
+   * file paths that claude can read.
+   */
+  saveClipboardImage(): Promise<string | null>;
   checkClaudeAvailable(opts?: { force?: boolean }): Promise<CheckClaudeAvailableResult>;
 }
 
 declare global {
   interface Window {
     ccsmPty: CcsmPtyApi;
+    ccsmShell?: {
+      /** Tell main to skip the very next native context-menu popup. Used
+       *  by TerminalPane's `onContextMenu` handler so right-click can
+       *  copy/paste inline without a popover racing on top. See
+       *  `electron/preload/bridges/ccsmShell.ts`. Optional because tests
+       *  / e2e probes may not install the bridge. */
+      suppressContextMenuOnce(): void;
+    };
     __ccsmTerm?: import('@xterm/xterm').Terminal;
   }
 }

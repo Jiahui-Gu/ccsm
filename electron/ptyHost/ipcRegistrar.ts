@@ -6,10 +6,41 @@
 // tangled with the IPC surface. The registrar owns no state of its own
 // beyond the one-shot `stateBridgeInstalled` guard.
 
-import type { BrowserWindow, IpcMain } from 'electron';
+import fs from 'node:fs';
+import path from 'node:path';
+import { app, clipboard, type BrowserWindow, type IpcMain } from 'electron';
 import { resolveClaude } from './claudeResolver';
 import { sessionWatcher } from '../sessionWatcher';
 import type { AttachResult, BufferSnapshot, PtySessionInfo } from './lifecycle';
+
+/**
+ * Task #42 — clipboard image auto-save. Filename format:
+ * `YYYYMMDD-HHMMSS[-NNN].png`. Local time (matches the user's Finder /
+ * Explorer column when they go looking for the file). The `-NNN` suffix
+ * is appended on same-second collisions; we cap retries at 999 so a
+ * runaway loop can't pin the main thread.
+ */
+function formatClipboardImageTimestamp(d: Date): string {
+  const pad = (n: number, w = 2): string => String(n).padStart(w, '0');
+  return (
+    `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-` +
+    `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+  );
+}
+
+/**
+ * Resolve a non-colliding filename inside `dir` for the given timestamp
+ * base. Uses sync existsSync because the loop must be atomic w.r.t. the
+ * subsequent write — interleaving another async tick here would race
+ * two paste-image calls landing the same second.
+ */
+function resolveClipboardImagePath(dir: string, base: string): string {
+  let file = path.join(dir, `${base}.png`);
+  for (let n = 1; n < 1000 && fs.existsSync(file); n++) {
+    file = path.join(dir, `${base}-${String(n).padStart(3, '0')}.png`);
+  }
+  return file;
+}
 
 interface SessionEntryHandle {
   pty: { pid: number };
@@ -31,11 +62,16 @@ export interface PtyIpcDeps {
     sid: string,
     cwd: string,
     claudePath: string,
-    opts?: { cols?: number; rows?: number; onCwdRedirect?: (newCwd: string) => void },
+    opts?: {
+      cols?: number;
+      rows?: number;
+      onCwdRedirect?: (newCwd: string) => void;
+      forkSourceSid?: string;
+    },
   ) => PtySessionInfo;
   inputPtySession: (sid: string, data: string) => void;
   resizePtySession: (sid: string, cols: number, rows: number) => void;
-  killPtySession: (sid: string) => boolean;
+  killPtySession: (sid: string) => Promise<boolean>;
   getPtySession: (sid: string) => PtySessionInfo | null;
   /** L4 PR-B (#865): async chunked snapshot + capture seq. Routed through
    *  the deps surface (rather than direct module import) so the registrar
@@ -87,11 +123,19 @@ export function registerPtyIpc(ipcMain: IpcMain, deps: PtyIpcDeps): void {
 
   ipcMain.handle('pty:list', () => deps.listPtySessions());
 
-  ipcMain.handle('pty:spawn', (_event, sid: string, cwd: string) => {
-    const claudePath = resolveClaude();
+  ipcMain.handle('pty:spawn', async (_event, sid: string, cwd: string, forkSourceSid?: string) => {
+    const claudePath = await resolveClaude();
     if (!claudePath) {
       return { ok: false, error: 'claude_not_found' };
     }
+    // Defense-in-depth: only accept a string (and in the same shape as `sid`
+    // — `toClaudeSid` will throw on anything that doesn't pass `VALID_SID_RE`,
+    // so a malformed value here surfaces as `spawn_failed:` rather than
+    // landing as raw argv text). Anything else (number, object, array,
+    // undefined → rest-arg behavior) is dropped to undefined.
+    const fork = typeof forkSourceSid === 'string' && forkSourceSid.length > 0
+      ? forkSourceSid
+      : undefined;
     // L4 PR-F (#867): the renderer no longer forwards initial cols/rows.
     // The PTY launches at the lifecycle defaults (DEFAULT_COLS/ROWS) and
     // the renderer's post-attach `pty:resize` (with snapshot replay,
@@ -103,6 +147,7 @@ export function registerPtyIpc(ipcMain: IpcMain, deps: PtyIpcDeps): void {
     // redundant; it has been removed.
     try {
       const info = deps.spawnPtySession(sid, cwd, claudePath, {
+        forkSourceSid: fork,
         // Import-resume cwd-redirect (#603 reviewer Layer-1 fix). When the
         // copy helper relocates the JSONL into the spawn cwd's projectDir,
         // the renderer's `session.cwd` (still pointing at the original
@@ -163,7 +208,14 @@ export function registerPtyIpc(ipcMain: IpcMain, deps: PtyIpcDeps): void {
     deps.resizePtySession(sid, cols, rows);
   });
 
-  ipcMain.handle('pty:kill', (_event, sid: string) => deps.killPtySession(sid));
+  // Race fix (#1277 review): killPtySession returns a Promise that resolves
+  // only after pty.onExit fires (entry removed from sessions Map) or
+  // KILL_EXIT_TIMEOUT_MS elapses. ipcMain.handle awaits the return so the
+  // renderer's `await ccsmPty.kill(sid)` does NOT resolve until the entry
+  // is gone — a subsequent `pty:attach` is then guaranteed to see null and
+  // walk the spawn-on-null fallback rather than registering as a viewer of
+  // a dying pty.
+  ipcMain.handle('pty:kill', async (_event, sid: string) => deps.killPtySession(sid));
 
   ipcMain.handle('pty:get', (_event, sid: string) => deps.getPtySession(sid));
 
@@ -182,10 +234,35 @@ export function registerPtyIpc(ipcMain: IpcMain, deps: PtyIpcDeps): void {
   // `force: true` bypasses the resolver's success-cache so the user can
   // install claude in another terminal and recover in-place via the
   // ClaudeMissingGuide "Re-check" button without restarting the app.
-  ipcMain.handle('pty:checkClaudeAvailable', (_event, opts: unknown) => {
+  ipcMain.handle('pty:checkClaudeAvailable', async (_event, opts: unknown) => {
     const force =
       typeof opts === 'object' && opts !== null && (opts as { force?: unknown }).force === true;
-    const p = resolveClaude({ force });
+    const p = await resolveClaude({ force });
     return p ? { available: true as const, path: p } : { available: false as const };
+  });
+
+  // Task #42 — when the renderer detects a paste intent and the clipboard
+  // holds an image (e.g. user took a screenshot, dragged a PNG into the
+  // clipboard, or copied from a browser), drop it to disk under
+  // `<userData>/clipboard-images/` and return the absolute path so the
+  // renderer can inject the path into the active PTY. Claude reads files
+  // by path, so this is the canonical way to feed it a screenshot.
+  //
+  // Returns null when there is no image on the clipboard — renderer falls
+  // back to its normal text-paste path. We do NOT inspect text here, even
+  // when text is also present, because Windows readText() is unreliable
+  // when the clipboard holds an image (readImage().isEmpty() IS reliable).
+  // The renderer holds the text fallback synchronously before invoking us.
+  ipcMain.handle('pty:saveClipboardImage', async () => {
+    const img = clipboard.readImage();
+    if (img.isEmpty()) return null;
+    const buf = img.toPNG();
+    if (buf.length === 0) return null;
+    const dir = path.join(app.getPath('userData'), 'clipboard-images');
+    await fs.promises.mkdir(dir, { recursive: true });
+    const base = formatClipboardImageTimestamp(new Date());
+    const file = resolveClipboardImagePath(dir, base);
+    await fs.promises.writeFile(file, buf);
+    return file;
   });
 }
