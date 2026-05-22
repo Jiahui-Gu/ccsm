@@ -151,6 +151,29 @@ export function setSnapshotReplay(fn: (() => Promise<void>) | null): void {
  * (currently only tests) can await; production paste paths fire-and-forget
  * via `void`.
  */
+/**
+ * Prepare a clipboard payload for injection into the PTY:
+ *   1. Normalize CRLF → LF (and lone CR → LF). Windows clipboards (notepad,
+ *      most browsers) hand back CRLF; PTYs / claude treat each `\r` as a
+ *      submit. Without this, every multi-line Windows paste fires the prompt
+ *      after the first line and the rest lands in fresh prompts.
+ *   2. If xterm reports bracketed-paste mode active (claude's Ink TUI sends
+ *      `\x1b[?2004h` on startup), wrap in `\x1b[200~ ... \x1b[201~` so the
+ *      app treats the whole payload as paste, not typed input. Without this:
+ *      embedded `\n` submits prematurely, embedded `\x03` SIGINTs claude,
+ *      and embedded ANSI escapes are interpreted as terminal commands.
+ *
+ * Read `term.modes.bracketedPasteMode` (xterm.js IModes — updated live by
+ * the parser as the app sends DECSET 2004 h/l). Falls back to "no wrap" if
+ * the singleton hasn't been constructed yet (e.g. paste fired before the
+ * terminal mounted — shouldn't happen, but the early-return is cheap).
+ */
+function preparePastePayload(text: string): string {
+  const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const bracketed = term?.modes?.bracketedPasteMode === true;
+  return bracketed ? `\x1b[200~${normalized}\x1b[201~` : normalized;
+}
+
 export async function pasteIntoActivePty(fallbackText: string | undefined): Promise<void> {
   // N1 race fix (reviewer): snapshot `activeSid` BEFORE the async IPC hop.
   // `saveClipboardImage` round-trips to main; the user can switch sessions
@@ -164,13 +187,17 @@ export async function pasteIntoActivePty(fallbackText: string | undefined): Prom
   try {
     const imagePath = await window.ccsmPty?.saveClipboardImage?.();
     if (imagePath) {
-      window.ccsmPty.input(sid, imagePath);
+      // Image path is a single-line string with no CR, but route it through
+      // the same prep so bracketed-paste wrapping applies — claude must see
+      // the path as one atomic paste, not as keystrokes that could collide
+      // with TUI keybindings while the path streams in.
+      window.ccsmPty.input(sid, preparePastePayload(imagePath));
       return;
     }
   } catch {
     // best-effort — fall through to text paste on IPC failure.
   }
-  if (fallbackText) window.ccsmPty.input(sid, fallbackText);
+  if (fallbackText) window.ccsmPty.input(sid, preparePastePayload(fallbackText));
 }
 
 /**
