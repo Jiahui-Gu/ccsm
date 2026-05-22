@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { PTY_CHANNELS, SESSION_CHANNELS } from '../../shared/ipcChannels';
 
 interface RegistrarBus {
   resolveClaude: ReturnType<typeof vi.fn>;
@@ -137,17 +138,17 @@ describe('registerPtyIpc handler registration', () => {
     registerPtyIpc(ipc as any, makeDeps());
     expect(Array.from(ipc.handlers.keys()).sort()).toEqual(
       [
-        'pty:attach',
-        'pty:checkClaudeAvailable',
-        'pty:detach',
-        'pty:get',
-        'pty:getBufferSnapshot',
-        'pty:input',
-        'pty:kill',
-        'pty:list',
-        'pty:resize',
-        'pty:saveClipboardImage',
-        'pty:spawn',
+        PTY_CHANNELS.attach,
+        PTY_CHANNELS.checkClaudeAvailable,
+        PTY_CHANNELS.detach,
+        PTY_CHANNELS.get,
+        PTY_CHANNELS.getBufferSnapshot,
+        PTY_CHANNELS.input,
+        PTY_CHANNELS.kill,
+        PTY_CHANNELS.list,
+        PTY_CHANNELS.resize,
+        PTY_CHANNELS.saveClipboardImage,
+        PTY_CHANNELS.spawn,
       ].sort(),
     );
   });
@@ -163,7 +164,7 @@ describe('registerPtyIpc handler registration', () => {
     });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
-    const out = await ipc.handlers.get('pty:getBufferSnapshot')!({}, 'sid-Z');
+    const out = await ipc.handlers.get(PTY_CHANNELS.getBufferSnapshot)!({}, 'sid-Z');
     expect(out).toEqual({ snapshot: 'snap-for-sid-Z', seq: 7 });
     expect(deps.getBufferSnapshot).toHaveBeenCalledWith('sid-Z');
   });
@@ -171,13 +172,13 @@ describe('registerPtyIpc handler registration', () => {
 
 // ─── pty:list / get / input / resize / kill — thin pass-through ───────────
 
-describe('pty:list', () => {
+describe(PTY_CHANNELS.list, () => {
   it('delegates to deps.listPtySessions', () => {
     const ipc = makeFakeIpc();
     const deps = makeDeps({ listPtySessions: vi.fn(() => [{ sid: 'a', pid: 1, cols: 80, rows: 24, cwd: '/x' }]) });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
-    const out = ipc.handlers.get('pty:list')!({});
+    const out = ipc.handlers.get(PTY_CHANNELS.list)!({});
     expect(out).toEqual([{ sid: 'a', pid: 1, cols: 80, rows: 24, cwd: '/x' }]);
     expect(deps.listPtySessions).toHaveBeenCalledTimes(1);
   });
@@ -189,7 +190,7 @@ describe('pty:input / resize / kill / get pass-through', () => {
     const deps = makeDeps();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
-    ipc.handlers.get('pty:input')!({}, 'sid', 'echo\n');
+    ipc.handlers.get(PTY_CHANNELS.input)!({}, 'sid', 'echo\n');
     expect(deps.inputPtySession).toHaveBeenCalledWith('sid', 'echo\n');
   });
 
@@ -198,7 +199,7 @@ describe('pty:input / resize / kill / get pass-through', () => {
     const deps = makeDeps();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
-    ipc.handlers.get('pty:resize')!({}, 'sid', 100, 30);
+    ipc.handlers.get(PTY_CHANNELS.resize)!({}, 'sid', 100, 30);
     expect(deps.resizePtySession).toHaveBeenCalledWith('sid', 100, 30);
   });
 
@@ -207,7 +208,7 @@ describe('pty:input / resize / kill / get pass-through', () => {
     const deps = makeDeps({ killPtySession: vi.fn(async () => false) });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
-    await expect(ipc.handlers.get('pty:kill')!({}, 'sid')).resolves.toBe(false);
+    await expect(ipc.handlers.get(PTY_CHANNELS.kill)!({}, 'sid')).resolves.toBe(false);
     expect(deps.killPtySession).toHaveBeenCalledWith('sid');
   });
 
@@ -217,19 +218,19 @@ describe('pty:input / resize / kill / get pass-through', () => {
     const deps = makeDeps({ getPtySession: vi.fn(() => info) });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
-    expect(ipc.handlers.get('pty:get')!({}, 's')).toBe(info);
+    expect(ipc.handlers.get(PTY_CHANNELS.get)!({}, 's')).toBe(info);
   });
 });
 
 // ─── pty:spawn — claude resolution + spawn delegation + cwd-redirect ──────
 
-describe('pty:spawn', () => {
+describe(PTY_CHANNELS.spawn, () => {
   it('returns {ok:false, error:claude_not_found} when resolveClaude returns null', async () => {
     const ipc = makeFakeIpc();
     bus().resolveClaude.mockReturnValue(null);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, makeDeps());
-    expect(await ipc.handlers.get('pty:spawn')!({}, 'sid', '/work')).toEqual({
+    expect(await ipc.handlers.get(PTY_CHANNELS.spawn)!({}, 'sid', '/work')).toEqual({
       ok: false,
       error: 'claude_not_found',
     });
@@ -243,7 +244,7 @@ describe('pty:spawn', () => {
     });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
-    const out = await ipc.handlers.get('pty:spawn')!({}, 'sid', '/work');
+    const out = await ipc.handlers.get(PTY_CHANNELS.spawn)!({}, 'sid', '/work');
     expect(out).toEqual({ ok: true, sid: 'sid', pid: 1, cols: 80, rows: 24, cwd: '/picked' });
     const call = (deps.spawnPtySession as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(call[0]).toBe('sid');
@@ -269,7 +270,7 @@ describe('pty:spawn', () => {
     // Even if a (legacy) renderer were to send the third opts argument,
     // the IPC handler ignores it — the only opt threaded into the
     // lifecycle is onCwdRedirect (#603).
-    await ipc.handlers.get('pty:spawn')!({}, 'sid', '/work', { cols: 134, rows: 51 });
+    await ipc.handlers.get(PTY_CHANNELS.spawn)!({}, 'sid', '/work', { cols: 134, rows: 51 });
     const call = (deps.spawnPtySession as ReturnType<typeof vi.fn>).mock.calls[0];
     const opts = call[3] as { cols?: number; rows?: number; onCwdRedirect?: unknown };
     expect(opts.cols).toBeUndefined();
@@ -285,7 +286,7 @@ describe('pty:spawn', () => {
     });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
-    await ipc.handlers.get('pty:spawn')!({}, 'sid', '/work');
+    await ipc.handlers.get(PTY_CHANNELS.spawn)!({}, 'sid', '/work');
     const call = (deps.spawnPtySession as ReturnType<typeof vi.fn>).mock.calls[0];
     const opts = call[3] as { cols?: number; rows?: number; onCwdRedirect?: unknown };
     expect(opts.cols).toBeUndefined();
@@ -301,7 +302,7 @@ describe('pty:spawn', () => {
     });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
-    const out = (await ipc.handlers.get('pty:spawn')!({}, 'sid', '/work')) as { ok: boolean; error: string };
+    const out = (await ipc.handlers.get(PTY_CHANNELS.spawn)!({}, 'sid', '/work')) as { ok: boolean; error: string };
     expect(out.ok).toBe(false);
     expect(out.error).toMatch(/^spawn_failed: ENOENT$/);
   });
@@ -322,10 +323,10 @@ describe('pty:spawn', () => {
     });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
-    await ipc.handlers.get('pty:spawn')!({}, 'sid', '/work');
+    await ipc.handlers.get(PTY_CHANNELS.spawn)!({}, 'sid', '/work');
     expect(captured).not.toBeNull();
     captured!('/new/cwd');
-    expect(wc.send).toHaveBeenCalledWith('session:cwdRedirected', { sid: 'sid', newCwd: '/new/cwd' });
+    expect(wc.send).toHaveBeenCalledWith(SESSION_CHANNELS.cwdRedirected, { sid: 'sid', newCwd: '/new/cwd' });
   });
 
   it('onCwdRedirect is a no-op when main window is null', async () => {
@@ -341,7 +342,7 @@ describe('pty:spawn', () => {
     });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
-    await ipc.handlers.get('pty:spawn')!({}, 'sid', '/work');
+    await ipc.handlers.get(PTY_CHANNELS.spawn)!({}, 'sid', '/work');
     expect(() => captured!('/new')).not.toThrow();
   });
 
@@ -361,19 +362,19 @@ describe('pty:spawn', () => {
     });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
-    await ipc.handlers.get('pty:spawn')!({}, 'sid', '/work');
+    await ipc.handlers.get(PTY_CHANNELS.spawn)!({}, 'sid', '/work');
     expect(() => captured!('/new')).not.toThrow();
   });
 });
 
 // ─── pty:attach / detach — webContents bookkeeping ────────────────────────
 
-describe('pty:attach', () => {
+describe(PTY_CHANNELS.attach, () => {
   it('returns null when entry is unknown', () => {
     const ipc = makeFakeIpc();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, makeDeps({ getEntry: () => undefined }));
-    expect(ipc.handlers.get('pty:attach')!({ sender: makeWc(1) }, 'sid')).toBeNull();
+    expect(ipc.handlers.get(PTY_CHANNELS.attach)!({ sender: makeWc(1) }, 'sid')).toBeNull();
   });
 
   it('registers the sender wc into the entry.attached map and returns AttachResult (no snapshot — #888 follow-up)', () => {
@@ -394,7 +395,7 @@ describe('pty:attach', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
     const wc = makeWc(7);
-    const res = ipc.handlers.get('pty:attach')!({ sender: wc }, 'sid');
+    const res = ipc.handlers.get(PTY_CHANNELS.attach)!({ sender: wc }, 'sid');
     expect(res).toEqual({ cols: 80, rows: 24, pid: 42 });
     expect(attached.get(7)).toBe(wc);
     // #888 follow-up: pty:attach MUST NOT serialize the headless buffer.
@@ -420,7 +421,7 @@ describe('pty:attach', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
     const wc = makeWc(11);
-    ipc.handlers.get('pty:attach')!({ sender: wc }, 'sid');
+    ipc.handlers.get(PTY_CHANNELS.attach)!({ sender: wc }, 'sid');
     expect(attached.has(11)).toBe(true);
     expect(typeof wc.destroyedHandler).toBe('function');
     wc.destroyedHandler!();
@@ -428,7 +429,7 @@ describe('pty:attach', () => {
   });
 });
 
-describe('pty:detach', () => {
+describe(PTY_CHANNELS.detach, () => {
   it('removes the sender id from entry.attached', () => {
     const ipc = makeFakeIpc();
     const attached = new Map<number, unknown>([[5, makeWc(5)]]);
@@ -436,7 +437,7 @@ describe('pty:detach', () => {
     const entry = { attached } as any;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, makeDeps({ getEntry: () => entry }));
-    ipc.handlers.get('pty:detach')!({ sender: makeWc(5) }, 'sid');
+    ipc.handlers.get(PTY_CHANNELS.detach)!({ sender: makeWc(5) }, 'sid');
     expect(attached.has(5)).toBe(false);
   });
 
@@ -444,19 +445,19 @@ describe('pty:detach', () => {
     const ipc = makeFakeIpc();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, makeDeps({ getEntry: () => undefined }));
-    expect(() => ipc.handlers.get('pty:detach')!({ sender: makeWc(1) }, 'sid')).not.toThrow();
+    expect(() => ipc.handlers.get(PTY_CHANNELS.detach)!({ sender: makeWc(1) }, 'sid')).not.toThrow();
   });
 });
 
 // ─── pty:checkClaudeAvailable ─────────────────────────────────────────────
 
-describe('pty:checkClaudeAvailable', () => {
+describe(PTY_CHANNELS.checkClaudeAvailable, () => {
   it('returns {available:true, path} when resolveClaude succeeds', async () => {
     const ipc = makeFakeIpc();
     bus().resolveClaude.mockReturnValue('/bin/claude');
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, makeDeps());
-    expect(await ipc.handlers.get('pty:checkClaudeAvailable')!({}, undefined)).toEqual({
+    expect(await ipc.handlers.get(PTY_CHANNELS.checkClaudeAvailable)!({}, undefined)).toEqual({
       available: true,
       path: '/bin/claude',
     });
@@ -467,7 +468,7 @@ describe('pty:checkClaudeAvailable', () => {
     bus().resolveClaude.mockReturnValue(null);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, makeDeps());
-    expect(await ipc.handlers.get('pty:checkClaudeAvailable')!({}, undefined)).toEqual({
+    expect(await ipc.handlers.get(PTY_CHANNELS.checkClaudeAvailable)!({}, undefined)).toEqual({
       available: false,
     });
   });
@@ -477,7 +478,7 @@ describe('pty:checkClaudeAvailable', () => {
     bus().resolveClaude.mockReturnValue('/bin/claude');
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, makeDeps());
-    await ipc.handlers.get('pty:checkClaudeAvailable')!({}, { force: true });
+    await ipc.handlers.get(PTY_CHANNELS.checkClaudeAvailable)!({}, { force: true });
     expect(bus().resolveClaude).toHaveBeenCalledWith({ force: true });
   });
 
@@ -486,10 +487,10 @@ describe('pty:checkClaudeAvailable', () => {
     bus().resolveClaude.mockReturnValue('/bin/claude');
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, makeDeps());
-    await ipc.handlers.get('pty:checkClaudeAvailable')!({}, 'not-an-object');
-    await ipc.handlers.get('pty:checkClaudeAvailable')!({}, null);
-    await ipc.handlers.get('pty:checkClaudeAvailable')!({}, {});
-    await ipc.handlers.get('pty:checkClaudeAvailable')!({}, { force: 'yes' });
+    await ipc.handlers.get(PTY_CHANNELS.checkClaudeAvailable)!({}, 'not-an-object');
+    await ipc.handlers.get(PTY_CHANNELS.checkClaudeAvailable)!({}, null);
+    await ipc.handlers.get(PTY_CHANNELS.checkClaudeAvailable)!({}, {});
+    await ipc.handlers.get(PTY_CHANNELS.checkClaudeAvailable)!({}, { force: 'yes' });
     for (const call of bus().resolveClaude.mock.calls) {
       expect(call[0]).toEqual({ force: false });
     }
@@ -498,13 +499,13 @@ describe('pty:checkClaudeAvailable', () => {
 
 // ─── pty:saveClipboardImage (Task #42) ────────────────────────────────────
 
-describe('pty:saveClipboardImage', () => {
+describe(PTY_CHANNELS.saveClipboardImage, () => {
   it('writes PNG buffer under <userData>/clipboard-images/ and returns the absolute path', async () => {
     const ipc = makeFakeIpc();
     const pngBuf = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
     bus().clipboardReadImage = () => ({ isEmpty: () => false, toPNG: () => pngBuf });
     registerPtyIpc(ipc as unknown as Electron.IpcMain, makeDeps());
-    const out = (await ipc.handlers.get('pty:saveClipboardImage')!({})) as string;
+    const out = (await ipc.handlers.get(PTY_CHANNELS.saveClipboardImage)!({})) as string;
     expect(typeof out).toBe('string');
     expect(path.isAbsolute(out)).toBe(true);
     expect(out.startsWith(path.join(bus().userDataDir, 'clipboard-images'))).toBe(true);
@@ -516,7 +517,7 @@ describe('pty:saveClipboardImage', () => {
     const ipc = makeFakeIpc();
     // Default bus stub returns isEmpty=true.
     registerPtyIpc(ipc as unknown as Electron.IpcMain, makeDeps());
-    const out = await ipc.handlers.get('pty:saveClipboardImage')!({});
+    const out = await ipc.handlers.get(PTY_CHANNELS.saveClipboardImage)!({});
     expect(out).toBeNull();
     const dir = path.join(bus().userDataDir, 'clipboard-images');
     // mkdir not even attempted on the empty path; dir should not exist.
@@ -534,10 +535,10 @@ describe('pty:saveClipboardImage', () => {
 
     registerPtyIpc(ipc as unknown as Electron.IpcMain, makeDeps());
 
-    const first = (await ipc.handlers.get('pty:saveClipboardImage')!({})) as string;
+    const first = (await ipc.handlers.get(PTY_CHANNELS.saveClipboardImage)!({})) as string;
     expect(path.basename(first)).toBe('20260522-101112.png');
 
-    const second = (await ipc.handlers.get('pty:saveClipboardImage')!({})) as string;
+    const second = (await ipc.handlers.get(PTY_CHANNELS.saveClipboardImage)!({})) as string;
     expect(path.basename(second)).toBe('20260522-101112-001.png');
 
     // Both files must exist with the expected content.
@@ -579,7 +580,7 @@ describe('sessionWatcher → renderer bridge', () => {
       return;
     }
     listeners[0]!({ sid: 'a', state: 'idle' });
-    expect(wc.send).toHaveBeenCalledWith('session:state', { sid: 'a', state: 'idle' });
+    expect(wc.send).toHaveBeenCalledWith(SESSION_CHANNELS.state, { sid: 'a', state: 'idle' });
   });
 
   it('forwards title-changed events to the main window webContents (when listener present)', () => {
@@ -591,7 +592,7 @@ describe('sessionWatcher → renderer bridge', () => {
     const listeners = bus().watcherListeners.get('title-changed') ?? [];
     if (listeners.length === 0) return;
     listeners[0]!({ sid: 'a', title: 'fixing X' });
-    expect(wc.send).toHaveBeenCalledWith('session:title', { sid: 'a', title: 'fixing X' });
+    expect(wc.send).toHaveBeenCalledWith(SESSION_CHANNELS.title, { sid: 'a', title: 'fixing X' });
   });
 
   it('state-changed forward is a no-op when getMainWindow returns null', () => {

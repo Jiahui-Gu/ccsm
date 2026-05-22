@@ -14,6 +14,7 @@
 // Extracted from `electron/preload.ts` in #769 (SRP wave-2 PR-A).
 
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
+import { SESSION_CHANNELS } from '../../shared/ipcChannels';
 
 // Canonical 3-state vocabulary lives in `src/shared/sessionState.ts` so
 // the renderer (`src/session.d.ts`), the watcher (`electron/sessionWatcher/
@@ -59,7 +60,7 @@ const ccsmSession = {
   // suppress toasts for the session the user is currently viewing. Fire on
   // every selectSession; main caches the latest value.
   setActive: (sid: string | null): void => {
-    ipcRenderer.send('session:setActive', sid ?? '');
+    ipcRenderer.send(SESSION_CHANNELS.setActive, sid ?? '');
   },
   // Renderer pushes the user-visible name for a sid so notify toasts can
   // label the toast with the friendly name (rename or SDK auto-summary)
@@ -67,14 +68,14 @@ const ccsmSession = {
   // title apply, new session creation). Empty name clears the mirror.
   setName: (sid: string, name: string | null): void => {
     if (!sid) return;
-    ipcRenderer.send('session:setName', { sid, name: name ?? '' });
+    ipcRenderer.send(SESSION_CHANNELS.setName, { sid, name: name ?? '' });
   },
 };
 
 export type CCSMSessionAPI = typeof ccsmSession;
 
 export function installCcsmSessionBridge(): void {
-  ipcRenderer.on('session:state', (_e: IpcRendererEvent, payload: SessionStatePayload) => {
+  ipcRenderer.on(SESSION_CHANNELS.state, (_e: IpcRendererEvent, payload: SessionStatePayload) => {
     for (const cb of sessionStateListeners) {
       try {
         cb(payload);
@@ -88,7 +89,7 @@ export function installCcsmSessionBridge(): void {
   // (electron/sessionWatcher) when the SDK-derived `summary` for a session
   // changes. Renderer subscribes via `window.ccsmSession.onTitle` and pipes
   // into the store's `_applyExternalTitle` action.
-  ipcRenderer.on('session:title', (_e: IpcRendererEvent, payload: SessionTitlePayload) => {
+  ipcRenderer.on(SESSION_CHANNELS.title, (_e: IpcRendererEvent, payload: SessionTitlePayload) => {
     for (const cb of sessionTitleListeners) {
       try {
         cb(payload);
@@ -103,7 +104,7 @@ export function installCcsmSessionBridge(): void {
   // patches `session.cwd` so the sessionTitles bridge (rename / list /
   // backfill) reads/writes the COPY rather than the now-frozen SOURCE.
   ipcRenderer.on(
-    'session:cwdRedirected',
+    SESSION_CHANNELS.cwdRedirected,
     (_e: IpcRendererEvent, payload: SessionCwdRedirectedPayload) => {
       for (const cb of sessionCwdRedirectedListeners) {
         try {
@@ -118,7 +119,7 @@ export function installCcsmSessionBridge(): void {
   // Main pushes `session:activate` when the user clicks a desktop notification.
   // Renderer subscribes via `window.ccsmSession.onActivate` and calls its
   // `selectSession(sid)` so the chosen session lands focused.
-  ipcRenderer.on('session:activate', (_e: IpcRendererEvent, payload: SessionActivatePayload) => {
+  ipcRenderer.on(SESSION_CHANNELS.activate, (_e: IpcRendererEvent, payload: SessionActivatePayload) => {
     for (const cb of sessionActivateListeners) {
       try {
         cb(payload);

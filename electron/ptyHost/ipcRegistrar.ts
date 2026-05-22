@@ -12,6 +12,7 @@ import { app, clipboard, type BrowserWindow, type IpcMain } from 'electron';
 import { resolveClaude } from './claudeResolver';
 import { sessionWatcher } from '../sessionWatcher';
 import type { AttachResult, BufferSnapshot, PtySessionInfo } from './lifecycle';
+import { PTY_CHANNELS, SESSION_CHANNELS } from '../shared/ipcChannels';
 
 /**
  * Task #42 — clipboard image auto-save. Filename format:
@@ -99,7 +100,7 @@ export function registerPtyIpc(ipcMain: IpcMain, deps: PtyIpcDeps): void {
       const wc = win.webContents;
       if (wc.isDestroyed()) return;
       try {
-        wc.send('session:state', evt);
+        wc.send(SESSION_CHANNELS.state, evt);
       } catch {
         /* renderer gone */
       }
@@ -113,7 +114,7 @@ export function registerPtyIpc(ipcMain: IpcMain, deps: PtyIpcDeps): void {
       const wc = win.webContents;
       if (wc.isDestroyed()) return;
       try {
-        wc.send('session:title', evt);
+        wc.send(SESSION_CHANNELS.title, evt);
       } catch {
         /* renderer gone */
       }
@@ -121,9 +122,9 @@ export function registerPtyIpc(ipcMain: IpcMain, deps: PtyIpcDeps): void {
     stateBridgeInstalled = true;
   }
 
-  ipcMain.handle('pty:list', () => deps.listPtySessions());
+  ipcMain.handle(PTY_CHANNELS.list, () => deps.listPtySessions());
 
-  ipcMain.handle('pty:spawn', async (_event, sid: string, cwd: string, forkSourceSid?: string) => {
+  ipcMain.handle(PTY_CHANNELS.spawn, async (_event, sid: string, cwd: string, forkSourceSid?: string) => {
     const claudePath = await resolveClaude();
     if (!claudePath) {
       return { ok: false, error: 'claude_not_found' };
@@ -161,7 +162,7 @@ export function registerPtyIpc(ipcMain: IpcMain, deps: PtyIpcDeps): void {
           const wc = win.webContents;
           if (wc.isDestroyed()) return;
           try {
-            wc.send('session:cwdRedirected', { sid, newCwd });
+            wc.send(SESSION_CHANNELS.cwdRedirected, { sid, newCwd });
           } catch {
             /* renderer gone */
           }
@@ -176,7 +177,7 @@ export function registerPtyIpc(ipcMain: IpcMain, deps: PtyIpcDeps): void {
     }
   });
 
-  ipcMain.handle('pty:attach', (event, sid: string) => {
+  ipcMain.handle(PTY_CHANNELS.attach, (event, sid: string) => {
     const entry = deps.getEntry(sid);
     if (!entry) return null;
     const wc = event.sender;
@@ -194,17 +195,17 @@ export function registerPtyIpc(ipcMain: IpcMain, deps: PtyIpcDeps): void {
     } satisfies AttachResult;
   });
 
-  ipcMain.handle('pty:detach', (event, sid: string) => {
+  ipcMain.handle(PTY_CHANNELS.detach, (event, sid: string) => {
     const entry = deps.getEntry(sid);
     if (!entry) return;
     entry.attached.delete(event.sender.id);
   });
 
-  ipcMain.handle('pty:input', (_event, sid: string, data: string) => {
+  ipcMain.handle(PTY_CHANNELS.input, (_event, sid: string, data: string) => {
     deps.inputPtySession(sid, data);
   });
 
-  ipcMain.handle('pty:resize', (_event, sid: string, cols: number, rows: number) => {
+  ipcMain.handle(PTY_CHANNELS.resize, (_event, sid: string, cols: number, rows: number) => {
     deps.resizePtySession(sid, cols, rows);
   });
 
@@ -215,16 +216,16 @@ export function registerPtyIpc(ipcMain: IpcMain, deps: PtyIpcDeps): void {
   // is gone — a subsequent `pty:attach` is then guaranteed to see null and
   // walk the spawn-on-null fallback rather than registering as a viewer of
   // a dying pty.
-  ipcMain.handle('pty:kill', async (_event, sid: string) => deps.killPtySession(sid));
+  ipcMain.handle(PTY_CHANNELS.kill, async (_event, sid: string) => deps.killPtySession(sid));
 
-  ipcMain.handle('pty:get', (_event, sid: string) => deps.getPtySession(sid));
+  ipcMain.handle(PTY_CHANNELS.get, (_event, sid: string) => deps.getPtySession(sid));
 
   // L4 PR-B (#865) — visible xterm attach replay channel. Returns the
   // serialized headless buffer plus the captured chunk seq so the
   // renderer can drop live `pty:data` chunks already baked into the
   // snapshot. Async so a multi-MB serialize doesn't block the main
   // thread — `lifecycle.getBufferSnapshot` chunks the join.
-  ipcMain.handle('pty:getBufferSnapshot', (_event, sid: string) =>
+  ipcMain.handle(PTY_CHANNELS.getBufferSnapshot, (_event, sid: string) =>
     deps.getBufferSnapshot(sid),
   );
 
@@ -234,7 +235,7 @@ export function registerPtyIpc(ipcMain: IpcMain, deps: PtyIpcDeps): void {
   // `force: true` bypasses the resolver's success-cache so the user can
   // install claude in another terminal and recover in-place via the
   // ClaudeMissingGuide "Re-check" button without restarting the app.
-  ipcMain.handle('pty:checkClaudeAvailable', async (_event, opts: unknown) => {
+  ipcMain.handle(PTY_CHANNELS.checkClaudeAvailable, async (_event, opts: unknown) => {
     const force =
       typeof opts === 'object' && opts !== null && (opts as { force?: unknown }).force === true;
     const p = await resolveClaude({ force });
@@ -253,7 +254,7 @@ export function registerPtyIpc(ipcMain: IpcMain, deps: PtyIpcDeps): void {
   // when text is also present, because Windows readText() is unreliable
   // when the clipboard holds an image (readImage().isEmpty() IS reliable).
   // The renderer holds the text fallback synchronously before invoking us.
-  ipcMain.handle('pty:saveClipboardImage', async () => {
+  ipcMain.handle(PTY_CHANNELS.saveClipboardImage, async () => {
     const img = clipboard.readImage();
     if (img.isEmpty()) return null;
     const buf = img.toPNG();
