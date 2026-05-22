@@ -15,6 +15,19 @@ import {
   writeAndScrollToBottom,
 } from './xtermSingleton';
 
+// xterm's `Terminal.write()` is asynchronous: bytes are appended to an
+// internal queue and processed on a parser tick, so synchronous code that
+// runs immediately after a `write()` call (notably `scrollToBottom()`) can
+// observe a stale `baseY`. The 2-arg form fires a callback after the chunk
+// is flushed through the parser; wrap it as a promise so callers can await
+// before reading viewport state. A 0-length string is a valid flush
+// sentinel — xterm processes writes in order, so awaiting an empty write
+// drains everything queued before it.
+const writeAsync = (
+  t: { write: (s: string, cb?: () => void) => void },
+  s: string,
+): Promise<void> => new Promise((resolve) => t.write(s, resolve));
+
 export type PtyAttachState =
   | { kind: 'attaching' }
   | { kind: 'ready' }
@@ -279,7 +292,7 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
 
         // Step 4: write snapshot to the visible terminal.
         const tSnap = getTerm();
-        if (tSnap && snap.snapshot) tSnap.write(snap.snapshot);
+        if (tSnap && snap.snapshot) await writeAsync(tSnap, snap.snapshot);
 
         // Step 5: drain buffered chunks with seq > snapSeq, in order.
         // Anything with seq <= snapSeq is already represented in the
@@ -290,12 +303,10 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
           for (const b of buffered) {
             if (b.seq > snapSeq) tDrain.write(b.chunk);
           }
-          // Park the viewport at the bottom AFTER the WriteBuffer drains
-          // the snapshot + drained chunks (see writeAndScrollToBottom).
-          // Without this, attach lands the scrollbar at the top of the
-          // transcript because xterm.write is queued and a synchronous
-          // scrollToBottom() would run before baseY catches up.
-          writeAndScrollToBottom(tDrain);
+          // Flush the xterm write queue before reading viewport state.
+          // `write` is async; without this the scrollToBottom below races
+          // a not-yet-processed write and observes a stale baseY.
+          await writeAsync(tDrain, '');
         }
         buffered.length = 0;
 
@@ -305,7 +316,9 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
         // in the middle of the snapshot write, or a scrollback truncation
         // when the snapshot exceeds the configured cap, leaves the viewport
         // stranded). Pin it explicitly — the user's mental model on session
-        // attach is "I'm caught up at the prompt".
+        // attach is "I'm caught up at the prompt". This runs AFTER the
+        // writeAsync above has flushed the parser queue, so baseY reflects
+        // the snapshot+drain content.
         const tAfterSnap = getTerm();
         if (tAfterSnap) {
           try {
@@ -376,7 +389,7 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
             } catch (e) {
               console.warn('[TerminalPane] resize reset failed', e);
             }
-            if (snap2.snapshot) tReplay.write(snap2.snapshot);
+            if (snap2.snapshot) await writeAsync(tReplay, snap2.snapshot);
           }
           snapSeq = snap2.seq;
           const tDrain2 = getTerm();
@@ -384,20 +397,20 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
             for (const b of buffered) {
               if (b.seq > snapSeq) tDrain2.write(b.chunk);
             }
-            // Same rationale as the initial-attach drain above: this
-            // replay path is fired by the post-attach fit branch below
-            // (and by `useTerminalResize` after a SIGWINCH). For the
-            // attach side we want unconditional scroll-to-bottom; the
-            // resize side gates separately on the user's prior atBottom.
-            writeAndScrollToBottom(tDrain2);
+            // Flush the parser queue so the scrollToBottom below sees the
+            // post-replay baseY, not a stale pre-write one. xterm processes
+            // writes in order; awaiting a 0-length write drains everything
+            // queued before it.
+            await writeAsync(tDrain2, '');
           }
           buffered.length = 0;
-          // After a replay the visible buffer was reset and rewritten
-          // from scratch. xterm's default "follow live output" is not
-          // re-engaged by `write` alone if the user-scroll latch was
-          // set, and `reset()` doesn't clear that latch reliably either.
-          // Pin viewport to bottom so the user sees the prompt — same
-          // invariant as the attach-time snapshot write above.
+          // Once we've awaited the snapshot write + drain through xterm's
+          // queue, the visible buffer is rewritten from scratch. xterm's
+          // default "follow live output" is not re-engaged by `write`
+          // alone if the user-scroll latch was set, and `reset()` doesn't
+          // clear that latch reliably either. Pin viewport to bottom so
+          // the user sees the prompt — same invariant as the attach-time
+          // snapshot write above.
           const tBottom = getTerm();
           if (tBottom) {
             try {

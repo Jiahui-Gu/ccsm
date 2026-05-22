@@ -109,7 +109,7 @@ describe('usePtyAttach', () => {
 
     expect(spies.attach).toHaveBeenCalledWith('sid-A');
     expect(resetSpy).toHaveBeenCalled();
-    expect(writeSpy).toHaveBeenCalledWith('snap');
+    expect(writeSpy).toHaveBeenCalledWith('snap', expect.any(Function));
     expect(spies.onData).toHaveBeenCalled();
     expect(getActiveSid()).toBe('sid-A');
     expect(focusSpy).toHaveBeenCalled();
@@ -160,7 +160,7 @@ describe('usePtyAttach', () => {
     expect(spies.attach).toHaveBeenCalledTimes(2);
     // L4 PR-B (#865): the visible terminal paints the getBufferSnapshot
     // string, NOT the legacy attach.snapshot.
-    expect(writeSpy).toHaveBeenCalledWith('after-spawn');
+    expect(writeSpy).toHaveBeenCalledWith('after-spawn', expect.any(Function));
   });
 
   // Right-click "Copy session" → `copySession` registers `pendingForkSource[
@@ -270,20 +270,41 @@ describe('usePtyAttach', () => {
   // lands mid-replay or (b) the snapshot exceeds the scrollback cap and
   // baseY caps before viewportY catches up. The fix pins viewport to
   // bottom after the snapshot write (and again after any replay).
-  it('attach ends with viewport pinned to bottom (scrollToBottom called after snapshot write)', async () => {
+  it('attach ends with viewport pinned to bottom (scrollToBottom observes the snapshot write as flushed)', async () => {
     const { bridge } = makePtyBridge();
     (window as any).ccsmPty = bridge;
+
+    // Track when each write's callback actually fires (post-microtask).
+    // scrollToBottom must run in a microtask AFTER the snapshot write's
+    // callback resolved — i.e. AFTER the parser would have updated baseY.
+    // A buggy sync-after-write scrollToBottom would observe order
+    // [write_called, scroll_called, write_cb_fired] and fail this test.
+    const events: string[] = [];
+    writeSpy.mockImplementation((s: string, cb?: () => void) => {
+      events.push(`write_called:${s}`);
+      if (cb) {
+        queueMicrotask(() => {
+          events.push(`write_cb:${s}`);
+          cb();
+        });
+      }
+    });
+    scrollToBottomSpy.mockImplementation(() => {
+      events.push('scroll');
+    });
 
     renderHook(() => usePtyAttach('sid-bottom', '/tmp'));
     await flushAll();
 
-    // Order matters: scroll must happen AFTER the snapshot is written,
-    // otherwise the viewport is pinned to an empty buffer and the actual
-    // snapshot writes scroll it again.
-    const writeOrder = writeSpy.mock.invocationCallOrder[0];
-    const scrollOrder = scrollToBottomSpy.mock.invocationCallOrder[0];
+    // scrollToBottom must observe the write as already flushed.
+    // We model that by making write() schedule its callback on
+    // queueMicrotask; the test asserts scrollToBottom runs in a microtask
+    // AFTER the write callback.
     expect(scrollToBottomSpy).toHaveBeenCalled();
-    expect(scrollOrder).toBeGreaterThan(writeOrder);
+    const snapWriteCbIdx = events.indexOf("write_cb:snap");
+    const scrollIdx = events.indexOf('scroll');
+    expect(snapWriteCbIdx).toBeGreaterThanOrEqual(0);
+    expect(scrollIdx).toBeGreaterThan(snapWriteCbIdx);
   });
 
   // Bug: two replay drivers (post-attach fit gate + ResizeObserver in
@@ -346,8 +367,83 @@ describe('usePtyAttach', () => {
     // Replay #1:     1 reset + 1 write('reflow')
     // Replay #2:     1 reset + 1 write('reflow-drain')
     expect(resetSpy).toHaveBeenCalledTimes(3);
-    expect(writeSpy).toHaveBeenCalledWith('reflow');
-    expect(writeSpy).toHaveBeenCalledWith('reflow-drain');
+    expect(writeSpy).toHaveBeenCalledWith('reflow', expect.any(Function));
+    expect(writeSpy).toHaveBeenCalledWith('reflow-drain', expect.any(Function));
+  });
+
+  // Regression: the coalesce drain is a WHILE loop, not a single re-run.
+  // A 3rd replay request that arrives WHILE the drain run is itself
+  // awaiting getBufferSnapshot must coalesce into `pending` again, and
+  // the loop must re-check `pending` after each drain iteration. If the
+  // loop only checked once, the 3rd request would be silently dropped
+  // (and a stale viewport stranded one resize behind).
+  it('snapshotReplay coalesces a third request that arrives during the drain run', async () => {
+    let releaseFirst: (v: { snapshot: string; seq: number }) => void = () => {};
+    let releaseDrain: (v: { snapshot: string; seq: number }) => void = () => {};
+    const { bridge, spies } = makePtyBridge();
+    let snapshotCalls = 0;
+    spies.getBufferSnapshot.mockImplementation(async () => {
+      snapshotCalls += 1;
+      if (snapshotCalls === 1) return { snapshot: 'snap', seq: 0 };
+      if (snapshotCalls === 2) {
+        return new Promise<{ snapshot: string; seq: number }>((res) => {
+          releaseFirst = res;
+        });
+      }
+      if (snapshotCalls === 3) {
+        // The drain-run fetch — also block, so we can fire replay #3
+        // while it is in flight and prove it coalesces.
+        return new Promise<{ snapshot: string; seq: number }>((res) => {
+          releaseDrain = res;
+        });
+      }
+      return { snapshot: 'third', seq: 30 };
+    });
+    (window as any).ccsmPty = bridge;
+
+    renderHook(() => usePtyAttach('sid-coalesce-3', '/tmp'));
+    await flushAll();
+    expect(snapshotCalls).toBe(1);
+
+    const { getSnapshotReplay } = await import('../../src/terminal/xtermSingleton');
+    const replay = (getSnapshotReplay as any)();
+    expect(typeof replay).toBe('function');
+
+    // Replay #1: enters the deferred snapshot fetch.
+    const p1 = replay();
+    // Replay #2: coalesces into pending.
+    const p2 = replay();
+    await flush();
+    expect(snapshotCalls).toBe(2);
+
+    // Resolve #1 — the while-loop now starts the drain run, which calls
+    // getBufferSnapshot again. That fetch is also deferred.
+    releaseFirst({ snapshot: 'first-reflow', seq: 5 });
+    await flush();
+    await flush();
+    expect(snapshotCalls).toBe(3);
+
+    // Replay #3: arrives WHILE the drain-run snapshot is in flight. The
+    // pending flag must be set again (the while-loop re-checks pending
+    // after each drain iteration).
+    const p3 = replay();
+    await flush();
+    // No new fetch yet — #3 is parked in pending behind the drain run.
+    expect(snapshotCalls).toBe(3);
+
+    // Resolve the drain-run snapshot. The loop now re-checks pending,
+    // sees it set, and runs ONE more iteration for #3.
+    releaseDrain({ snapshot: 'drain', seq: 20 });
+    await act(async () => {
+      await p1;
+      await p2;
+      await p3;
+    });
+    // Total: initial attach (1) + replay #1 (2) + drain for #2 (3) +
+    // drain for #3 (4). The bug-mode (loop only checks pending once)
+    // would stop at 3 and silently drop #3 — but here we want the
+    // while-loop branch covered, which yields 4.
+    expect(snapshotCalls).toBe(4);
   });
 
   it('flips to error state when ccsmPty bridge is missing', async () => {
