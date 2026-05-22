@@ -10,14 +10,15 @@
 // drift: when usePtyAttach grew a `scrollToBottom` call, only one test file
 // knew about it. This module is the single place to update.
 //
-// Why two flavors of xterm mock helper:
+// Why only one flavor of xterm mock helper here:
 //   - vi.mock hoists to the top of the file, so the factory MUST be a fresh
 //     object literal at hoist-time — we expose `createXtermSingletonMock()`
 //     that callers reference inside their `vi.mock` factory. The shared
 //     `Spies` object is mutated by the mock so tests can assert against it.
-//   - The other style (`vi.spyOn(singleton, 'getTerm')`) is for tests that
-//     still need access to the real module — we expose `installSpiedXterm`
-//     for that path.
+//   - The other terminal test file uses `vi.spyOn` directly against the real
+//     singleton. Its domain-specific state machine for ordered writes is a
+//     worse fit for this harness's shape, so we leave it as-is rather than
+//     force-fit a helper around it.
 import { vi, type Mock } from 'vitest';
 
 // ---------------------------------------------------------------------------
@@ -189,8 +190,6 @@ export function createXtermSingletonMock(
 //   - `bridge` — drop into `(window as any).ccsmPty = bridge`
 //   - `spies` — call-history mocks for assertions
 //   - `fire.data(payload)` / `fire.exit(evt)` — invoke registered listeners
-//   - `defer.snapshot()` — returns a controller for the NEXT
-//     getBufferSnapshot call so a test can await a yield point mid-attach
 // ---------------------------------------------------------------------------
 
 export type AttachResp = { snapshot: string; cols: number; rows: number; pid: number } | null;
@@ -220,14 +219,6 @@ export interface PtyBridgeHarness {
     data: (p: { sid: string; chunk: string; seq: number }) => void;
     exit: (e: { sessionId: string; code?: number | null; signal?: string | number | null }) => void;
   };
-  /**
-   * Arm a deferred snapshot for the NEXT getBufferSnapshot call. Returns
-   * a controller — call `.resolve(snap)` to release the await inside
-   * usePtyAttach. Subsequent calls go back to the default `snapshot`.
-   */
-  defer: {
-    snapshot(): { resolve: (snap: { snapshot: string; seq: number }) => void; promise: Promise<{ snapshot: string; seq: number }> };
-  };
 }
 
 export function createPtyBridge(opts: PtyBridgeOptions = {}): PtyBridgeHarness {
@@ -250,13 +241,6 @@ export function createPtyBridge(opts: PtyBridgeOptions = {}): PtyBridgeHarness {
     | ((evt: { sessionId: string; code?: number | null; signal?: string | number | null }) => void)
     | null = null;
 
-  // Deferred-snapshot queue. Each entry overrides ONE call to
-  // getBufferSnapshot, FIFO. Once drained, fall back to `snapshotResp`.
-  const deferredSnapshots: Array<{
-    promise: Promise<{ snapshot: string; seq: number }>;
-    resolve: (snap: { snapshot: string; seq: number }) => void;
-  }> = [];
-
   const detach = vi.fn(async (_sid: string) => undefined);
   const attach = vi.fn(async (_sid: string) => attachResp);
   const spawn = vi.fn(async (sid: string, _cwd: string, _forkSourceSid?: string) => {
@@ -275,11 +259,7 @@ export function createPtyBridge(opts: PtyBridgeOptions = {}): PtyBridgeHarness {
     onExitHandler = cb;
     return onExitUnsub;
   });
-  const getBufferSnapshot = vi.fn(async (_sid: string) => {
-    const deferred = deferredSnapshots.shift();
-    if (deferred) return deferred.promise;
-    return snapshotResp;
-  });
+  const getBufferSnapshot = vi.fn(async (_sid: string) => snapshotResp);
 
   const bridge = { attach, detach, spawn, input, resize, onData, onExit, getBufferSnapshot };
   return {
@@ -288,17 +268,6 @@ export function createPtyBridge(opts: PtyBridgeOptions = {}): PtyBridgeHarness {
     fire: {
       data: (p) => onDataHandler?.(p),
       exit: (e) => onExitHandler?.(e),
-    },
-    defer: {
-      snapshot() {
-        let resolveFn!: (snap: { snapshot: string; seq: number }) => void;
-        const promise = new Promise<{ snapshot: string; seq: number }>((r) => {
-          resolveFn = r;
-        });
-        const entry = { promise, resolve: resolveFn };
-        deferredSnapshots.push(entry);
-        return entry;
-      },
     },
   };
 }
@@ -315,10 +284,12 @@ export function uninstallCcsmPty(): void {
 // Async settle
 //
 // usePtyAttach's attach effect is an async IIFE that awaits
-// attach → getBufferSnapshot → optionally pty.resize → replay. Each `await`
-// yields to the microtask queue once. `settleAttach()` is the named
-// replacement for the previous `await flush(); await flush(); await flush();`
-// pattern — and it self-documents what we're waiting for.
+// attach → getBufferSnapshot → optionally pty.resize → replay. Each
+// `setTimeout(0)` is a macrotask yield, which drains promise microtasks
+// scheduled during the previous task. Three yields cover usePtyAttach's
+// three-await chain. `settleAttach()` is the named replacement for the
+// previous `await flush(); await flush(); await flush();` pattern — and
+// it self-documents what we're waiting for.
 //
 // Use `settleAttach({ wrap: act })` when the test renders a hook via
 // @testing-library/react and you want React to settle effects at the same
@@ -329,7 +300,7 @@ export function uninstallCcsmPty(): void {
 export async function settleAttach(opts?: {
   /** Pass `act` from @testing-library/react to wrap the settle. */
   wrap?: <T>(cb: () => Promise<T> | T) => Promise<T>;
-  /** Override the number of microtask yields (default 3). Bump for chains with extra awaits. */
+  /** Override the number of macrotask yields (default 3). Bump for chains with extra awaits. */
   ticks?: number;
 }): Promise<void> {
   const ticks = opts?.ticks ?? 3;
