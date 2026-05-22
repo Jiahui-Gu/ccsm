@@ -13,6 +13,7 @@ import {
   setSnapshotReplay,
   getSnapshotReplay,
   writeAndScrollToBottom,
+  writeOrBuffer,
 } from './xtermSingleton';
 
 export type PtyAttachState =
@@ -263,7 +264,7 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
             // Post-snapshot: drop anything seq <= snapSeq (already in
             // the snapshot we wrote) and write the rest live.
             if (payload.seq > snapSeq) {
-              getTerm()?.write(payload.chunk);
+              writeOrBuffer(payload.chunk);
             }
           }),
         );

@@ -37,6 +37,19 @@ let inputDisposable: { dispose: () => void } | null = null;
 // suppresses the native paste event reaching the current host element.
 // See the paste-path block inside `ensureTerminal` for details.
 let keyboardPasteHandled = false;
+// IME composition state: while a Chinese/Japanese/Korean IME is composing,
+// every term.write reanchors xterm's hidden textarea and makes the
+// composition preview box jump around. Buffer pty chunks until compositionend.
+let isComposing = false;
+let imeBuffer = '';
+
+export function writeOrBuffer(chunk: string): void {
+  if (isComposing) {
+    imeBuffer += chunk;
+    return;
+  }
+  term?.write(chunk);
+}
 // L4 PR-D (#866): callback installed by `usePtyAttach` once it has wired the
 // snapshot/dedupe-by-seq flow. Invoked by `useTerminalResize` AFTER pushing
 // a new size to the headless mirror so the visible xterm can re-render
@@ -308,6 +321,21 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
 
   term.open(host);
 
+  const ta = term.textarea;
+  if (ta) {
+    ta.addEventListener('compositionstart', () => {
+      isComposing = true;
+    });
+    ta.addEventListener('compositionend', () => {
+      isComposing = false;
+      if (imeBuffer) {
+        const pending = imeBuffer;
+        imeBuffer = '';
+        term?.write(pending);
+      }
+    });
+  }
+
   // Single canonical paste path.
   //
   // xterm.js exposes two competing entry points for paste:
@@ -496,6 +524,8 @@ export function __resetSingletonForTests(): void {
   inputDisposable = null;
   snapshotReplay = null;
   keyboardPasteHandled = false;
+  isComposing = false;
+  imeBuffer = '';
   if (typeof window !== 'undefined') {
     delete window.__ccsmTerm;
   }
