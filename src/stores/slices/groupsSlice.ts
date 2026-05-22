@@ -82,7 +82,7 @@ export function createGroupsSlice(set: SetFn, get: GetFn): GroupsSlice {
 
     renameGroup: (id, name) => {
       set((s) => ({
-        groups: s.groups.map((g) => (g.id === id ? { ...g, name } : g)),
+        groups: s.groups.map((g) => (g.id === id ? { ...g, name, nameKey: undefined } : g)),
       }));
     },
 
