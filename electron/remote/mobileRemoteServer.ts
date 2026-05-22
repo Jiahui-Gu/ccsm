@@ -16,11 +16,19 @@ type MobileRemoteServer = {
 type WsClient = {
   socket: Duplex;
   pending: Buffer;
+  /** Accumulator for fragmented text messages (FIN=0). Reset on each
+   *  complete message; non-empty means we're mid-fragment. */
+  fragment: Buffer;
   send: (payload: unknown) => void;
 };
 
 const DEFAULT_PORT = 4177;
 const HOST = '127.0.0.1';
+/** Hard cap on a single inbound text message. Anything beyond this is a
+ *  protocol violation or a buggy client; we close with 1009 rather than let
+ *  Buffer.concat OOM the main process. 1 MiB is generous for our protocol
+ *  (largest legitimate message is session.input, typically << 64 KiB). */
+const MAX_MESSAGE_BYTES = 1 << 20;
 
 export function startMobileRemoteServer(): MobileRemoteServer | null {
   if (process.env.CCSM_MOBILE_REMOTE !== '1') return null;
@@ -68,6 +76,7 @@ export function startMobileRemoteServer(): MobileRemoteServer | null {
     const client: WsClient = {
       socket,
       pending: Buffer.alloc(0),
+      fragment: Buffer.alloc(0),
       send: (payload) => {
         if (socket.destroyed) return;
         socket.write(encodeFrame(JSON.stringify(payload)));
@@ -79,10 +88,21 @@ export function startMobileRemoteServer(): MobileRemoteServer | null {
 
     socket.on('data', (chunk) => {
       client.pending = Buffer.concat([client.pending, chunk]);
-      const decoded = decodeFrames(client.pending);
-      client.pending = decoded.remaining;
+      const decoded = decodeFrames(client);
+      if (decoded.kind === 'fatal') {
+        closeSocket(socket, decoded.code);
+        clients.delete(client);
+        return;
+      }
       for (const message of decoded.messages) {
         void handleClientMessage(client, message);
+      }
+      for (const pong of decoded.pongs) {
+        if (!socket.destroyed) socket.write(encodeControlFrame(0xa, pong));
+      }
+      if (decoded.close) {
+        closeSocket(socket, 1000);
+        clients.delete(client);
       }
     });
     socket.on('close', () => clients.delete(client));
@@ -212,67 +232,163 @@ function buildUpgradeResponse(key: string): string {
 }
 
 function encodeFrame(payload: string): Buffer {
-  const body = Buffer.from(payload, 'utf8');
+  return encodeFrameBytes(0x81, Buffer.from(payload, 'utf8'));
+}
+
+function encodeControlFrame(opcode: number, payload: Buffer): Buffer {
+  return encodeFrameBytes(0x80 | (opcode & 0x0f), payload);
+}
+
+function encodeFrameBytes(firstByte: number, body: Buffer): Buffer {
   if (body.length < 126) {
-    return Buffer.concat([Buffer.from([0x81, body.length]), body]);
+    return Buffer.concat([Buffer.from([firstByte, body.length]), body]);
   }
   if (body.length <= 0xffff) {
     const header = Buffer.allocUnsafe(4);
-    header[0] = 0x81;
+    header[0] = firstByte;
     header[1] = 126;
     header.writeUInt16BE(body.length, 2);
     return Buffer.concat([header, body]);
   }
   const header = Buffer.allocUnsafe(10);
-  header[0] = 0x81;
+  header[0] = firstByte;
   header[1] = 127;
   header.writeBigUInt64BE(BigInt(body.length), 2);
   return Buffer.concat([header, body]);
 }
 
-function decodeFrames(buffer: Buffer): { messages: string[]; remaining: Buffer } {
+function closeSocket(socket: Duplex, code: number): void {
+  if (socket.destroyed) return;
+  const body = Buffer.allocUnsafe(2);
+  body.writeUInt16BE(code, 0);
+  try {
+    socket.write(encodeControlFrame(0x8, body));
+  } catch {
+    /* socket already gone */
+  }
+  socket.destroy();
+}
+
+type DecodeResult =
+  | {
+      kind: 'ok';
+      messages: string[];
+      pongs: Buffer[];
+      close: boolean;
+    }
+  | { kind: 'fatal'; code: number };
+
+/**
+ * Stateful WebSocket frame decoder. Mutates `client.pending` and
+ * `client.fragment`:
+ *   - `pending` keeps partially-arrived frame bytes between data events.
+ *   - `fragment` accumulates text fragments across FIN=0 frames.
+ *
+ * Returns either a batch of complete text messages + Ping payloads to Pong,
+ * or a fatal protocol-violation code that the caller should Close with.
+ */
+function decodeFrames(client: WsClient): DecodeResult {
   const messages: string[] = [];
+  const pongs: Buffer[] = [];
+  let close = false;
+  let buffer = client.pending;
   let offset = 0;
 
   while (offset + 2 <= buffer.length) {
     const frameStart = offset;
     const first = buffer[offset]!;
     const second = buffer[offset + 1]!;
+    const fin = (first & 0x80) !== 0;
+    const rsv = first & 0x70;
     const opcode = first & 0x0f;
     const masked = (second & 0x80) !== 0;
     let length = second & 0x7f;
     offset += 2;
 
+    if (rsv !== 0) return { kind: 'fatal', code: 1002 };
+
     if (length === 126) {
-      if (offset + 2 > buffer.length) return { messages, remaining: buffer.subarray(frameStart) };
+      if (offset + 2 > buffer.length) {
+        client.pending = buffer.subarray(frameStart);
+        return { kind: 'ok', messages, pongs, close };
+      }
       length = buffer.readUInt16BE(offset);
       offset += 2;
     } else if (length === 127) {
-      if (offset + 8 > buffer.length) return { messages, remaining: buffer.subarray(frameStart) };
+      if (offset + 8 > buffer.length) {
+        client.pending = buffer.subarray(frameStart);
+        return { kind: 'ok', messages, pongs, close };
+      }
       const big = buffer.readBigUInt64BE(offset);
-      if (big > BigInt(Number.MAX_SAFE_INTEGER)) return { messages, remaining: Buffer.alloc(0) };
+      if (big > BigInt(MAX_MESSAGE_BYTES)) return { kind: 'fatal', code: 1009 };
       length = Number(big);
       offset += 8;
     }
 
-    if (!masked) return { messages, remaining: Buffer.alloc(0) };
-    if (offset + 4 + length > buffer.length) return { messages, remaining: buffer.subarray(frameStart) };
+    if (!masked) return { kind: 'fatal', code: 1002 };
+    if (length > MAX_MESSAGE_BYTES) return { kind: 'fatal', code: 1009 };
+
+    const isControl = (opcode & 0x8) !== 0;
+    if (isControl && (!fin || length > 125)) return { kind: 'fatal', code: 1002 };
+
+    if (offset + 4 + length > buffer.length) {
+      client.pending = buffer.subarray(frameStart);
+      return { kind: 'ok', messages, pongs, close };
+    }
     const mask = buffer.subarray(offset, offset + 4);
     offset += 4;
-    const payload = buffer.subarray(offset, offset + length);
+    const payload = unmask(buffer.subarray(offset, offset + length), mask);
     offset += length;
 
-    if (opcode === 0x8) return { messages, remaining: Buffer.alloc(0) };
-    if (opcode !== 0x1) continue;
-
-    const decoded = Buffer.allocUnsafe(payload.length);
-    for (let i = 0; i < payload.length; i += 1) {
-      decoded[i] = payload[i]! ^ mask[i % 4]!;
+    if (opcode === 0x8) {
+      close = true;
+      break;
     }
-    messages.push(decoded.toString('utf8'));
+    if (opcode === 0x9) {
+      pongs.push(payload);
+      continue;
+    }
+    if (opcode === 0xa) {
+      // Pong reply to our (currently nonexistent) Pings — ignore.
+      continue;
+    }
+
+    // Data frames: 0x0 continuation, 0x1 text, 0x2 binary.
+    if (opcode === 0x2) return { kind: 'fatal', code: 1003 };
+    if (opcode === 0x1) {
+      if (client.fragment.length > 0) return { kind: 'fatal', code: 1002 };
+      if (fin) {
+        messages.push(payload.toString('utf8'));
+      } else {
+        if (payload.length > MAX_MESSAGE_BYTES) return { kind: 'fatal', code: 1009 };
+        client.fragment = payload;
+      }
+      continue;
+    }
+    if (opcode === 0x0) {
+      if (client.fragment.length === 0) return { kind: 'fatal', code: 1002 };
+      const next = Buffer.concat([client.fragment, payload]);
+      if (next.length > MAX_MESSAGE_BYTES) return { kind: 'fatal', code: 1009 };
+      client.fragment = next;
+      if (fin) {
+        messages.push(client.fragment.toString('utf8'));
+        client.fragment = Buffer.alloc(0);
+      }
+      continue;
+    }
+    return { kind: 'fatal', code: 1002 };
   }
 
-  return { messages, remaining: buffer.subarray(offset) };
+  client.pending = buffer.subarray(offset);
+  return { kind: 'ok', messages, pongs, close };
+}
+
+function unmask(payload: Buffer, mask: Buffer): Buffer {
+  const out = Buffer.allocUnsafe(payload.length);
+  for (let i = 0; i < payload.length; i += 1) {
+    out[i] = payload[i]! ^ mask[i % 4]!;
+  }
+  return out;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
