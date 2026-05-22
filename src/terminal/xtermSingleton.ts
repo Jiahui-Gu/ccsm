@@ -49,6 +49,20 @@ let keyboardPasteHandled = false;
 // the per-attach `snapSeq` to the snapshot's seq so subsequent live
 // chunks dedupe correctly.
 let snapshotReplay: (() => Promise<void>) | null = null;
+// Capture-phase `paste` listener bookkeeping. The listener is bound to the
+// host DOM node passed into `ensureTerminal`; React can remount TerminalPane
+// (e.g. close-all → create-new flow), which produces a brand-new host div.
+// When the retarget branch below re-`open`s xterm against the new host, the
+// listener attached to the old (now-orphaned) host stops receiving paste
+// events from the live DOM tree. The Electron context-menu paste / Shift+
+// Insert paths then fall through to xterm's built-in paste pipeline,
+// regressing the bracketed-paste/CRLF fix from #1303.
+//
+// Track the currently-bound host + listener at module scope so we can
+// `removeEventListener` from the old host and `addEventListener` on the
+// new host every time `ensureTerminal` rebinds. See `attachPasteCapture`.
+let pasteHost: HTMLElement | null = null;
+let pasteListener: ((e: ClipboardEvent) => void) | null = null;
 
 export function getTerm(): Terminal | null {
   return term;
@@ -173,6 +187,47 @@ export async function pasteIntoActivePty(fallbackText: string | undefined): Prom
   if (fallbackText) window.ccsmPty.input(sid, fallbackText);
 }
 
+// Module-scope capture-phase paste listener. Hoisted out of `ensureTerminal`
+// so the same function identity can be removed from the previously-bound host
+// and re-attached to the new host on retarget. Closes over no construction-
+// local state — only the module-level `keyboardPasteHandled` flag and
+// `pasteIntoActivePty`. See the long comment inside `ensureTerminal` for the
+// design rationale of the single canonical paste path.
+function onPasteCapture(e: ClipboardEvent): void {
+  e.stopImmediatePropagation();
+  e.preventDefault();
+  if (keyboardPasteHandled) {
+    keyboardPasteHandled = false;
+    return;
+  }
+  // Read text synchronously: clipboardData is only valid during the
+  // event dispatch, so we can't await before reading it.
+  const text = e.clipboardData?.getData('text/plain') ?? '';
+  void pasteIntoActivePty(text || undefined);
+}
+
+/**
+ * Attach the capture-phase paste listener to `host`, detaching it from the
+ * previously-bound host first if any. Idempotent and safe to call after
+ * every `term.open(host)` (both first-construction and the retarget branch
+ * inside `ensureTerminal`).
+ *
+ * Why this exists: TerminalPane remount produces a new host div. The
+ * retarget branch re-`open`s xterm against the new host, but without this
+ * helper the paste listener stayed on the orphaned old host — Electron
+ * context-menu paste and Shift+Insert then bypassed `pasteIntoActivePty`
+ * and fell through to xterm's built-in pipeline, regressing the
+ * bracketed-paste/CRLF fix from #1303.
+ */
+function attachPasteCapture(host: HTMLElement): void {
+  if (pasteHost && pasteListener) {
+    pasteHost.removeEventListener('paste', pasteListener, true);
+  }
+  pasteListener = onPasteCapture;
+  host.addEventListener('paste', pasteListener, true);
+  pasteHost = host;
+}
+
 /**
  * Create (or re-attach) the singleton Terminal against `host`. Idempotent:
  * subsequent calls reuse the cached instance and only re-`open` if React
@@ -186,6 +241,12 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
       } catch {
         // open() throws if already attached to this exact host; ignore.
       }
+      // Rebind the capture-phase paste listener to the new host. Without
+      // this the listener stays on the orphaned old host and Electron
+      // context-menu paste / Shift+Insert fall through to xterm's built-in
+      // pipeline (regression of #1303 bracketed-paste/CRLF fix). See
+      // `attachPasteCapture` for details.
+      attachPasteCapture(host);
     }
     return term;
   }
@@ -329,19 +390,11 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
   // module scope: every paste path (capture-phase DOM event, Ctrl/Cmd+V
   // keydown, right-click `terminalPaste`) funnels through that helper so
   // pasted screenshots auto-save and inject as a path.
-  const onPasteCapture = (e: ClipboardEvent): void => {
-    e.stopImmediatePropagation();
-    e.preventDefault();
-    if (keyboardPasteHandled) {
-      keyboardPasteHandled = false;
-      return;
-    }
-    // Read text synchronously: clipboardData is only valid during the
-    // event dispatch, so we can't await before reading it.
-    const text = e.clipboardData?.getData('text/plain') ?? '';
-    void pasteIntoActivePty(text || undefined);
-  };
-  host.addEventListener('paste', onPasteCapture, { capture: true });
+  //
+  // The listener function (`onPasteCapture`) and the binding logic are at
+  // module scope so the retarget branch above can rebind cleanly when
+  // TerminalPane remounts into a new host div.
+  attachPasteCapture(host);
 
   // ttyd-style: auto-copy on selection change. Works in alt-screen apps
   // (claude/Ink) when user holds Shift to bypass mouse tracking and
@@ -469,6 +522,17 @@ export function __resetSingletonForTests(): void {
   inputDisposable = null;
   snapshotReplay = null;
   keyboardPasteHandled = false;
+  // Detach the capture-phase paste listener from whichever host it landed
+  // on so tests that mount fresh hosts don't see stale listeners firing.
+  if (pasteHost && pasteListener) {
+    try {
+      pasteHost.removeEventListener('paste', pasteListener, true);
+    } catch {
+      // best-effort — host may already be detached.
+    }
+  }
+  pasteHost = null;
+  pasteListener = null;
   if (typeof window !== 'undefined') {
     delete window.__ccsmTerm;
   }

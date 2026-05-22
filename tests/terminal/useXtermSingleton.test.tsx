@@ -511,4 +511,57 @@ describe('useXtermSingleton', () => {
       expect(selectAllSpy).not.toHaveBeenCalled();
     });
   });
+
+  // Regression guard: capture-phase paste listener MUST be rebound on host
+  // change. TerminalPane remount (close-all → create-new flow) produces a
+  // new host div; the retarget branch in `ensureTerminal` re-`open`s xterm
+  // against the new host. Without listener rebinding, the paste listener
+  // stays on the orphaned old host — Electron context-menu paste and
+  // Shift+Insert then bypass `pasteIntoActivePty` and fall through to
+  // xterm's built-in paste pipeline, regressing the bracketed-paste/CRLF
+  // fix from #1303.
+  describe('paste listener rebinds on host change', () => {
+    it('removes the listener from the old host and adds it to the new host on retarget', () => {
+      const hostA = document.createElement('div');
+      const hostB = document.createElement('div');
+      document.body.appendChild(hostA);
+      document.body.appendChild(hostB);
+
+      const addSpyA = vi.spyOn(hostA, 'addEventListener');
+      const removeSpyA = vi.spyOn(hostA, 'removeEventListener');
+      const addSpyB = vi.spyOn(hostB, 'addEventListener');
+      const removeSpyB = vi.spyOn(hostB, 'removeEventListener');
+
+      // First ensureTerminal binds against hostA.
+      renderHook(() => useXtermSingleton({ current: hostA }));
+      const pasteAddOnA = addSpyA.mock.calls.filter((c) => c[0] === 'paste');
+      expect(pasteAddOnA).toHaveLength(1);
+
+      // Flip the mock's `_parent` so the retarget branch's
+      // `_core._parent !== host` check triggers — otherwise the second
+      // ensureTerminal hits the no-op "same host, already attached" path
+      // and we'd never exercise the rebind.
+      const t = getTerm() as unknown as { _core: { _parent: HTMLElement | null } };
+      t._core._parent = hostA;
+
+      renderHook(() => useXtermSingleton({ current: hostB }));
+
+      // Old host: listener removed.
+      const pasteRemoveOnA = removeSpyA.mock.calls.filter((c) => c[0] === 'paste');
+      expect(pasteRemoveOnA).toHaveLength(1);
+      // New host: listener added.
+      const pasteAddOnB = addSpyB.mock.calls.filter((c) => c[0] === 'paste');
+      expect(pasteAddOnB).toHaveLength(1);
+      // Same listener identity across remove + add so the rebind is
+      // not allocating a stale closure on each call.
+      expect(pasteRemoveOnA[0][1]).toBe(pasteAddOnB[0][1]);
+      // No spurious add on the old host during retarget, no remove on the
+      // brand-new host.
+      expect(addSpyA.mock.calls.filter((c) => c[0] === 'paste')).toHaveLength(1);
+      expect(removeSpyB.mock.calls.filter((c) => c[0] === 'paste')).toHaveLength(0);
+
+      document.body.removeChild(hostA);
+      document.body.removeChild(hostB);
+    });
+  });
 });
