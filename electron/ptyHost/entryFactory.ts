@@ -34,6 +34,7 @@ import {
 import { resolveSpawnCwd } from './cwdResolver';
 import { emitPtyData } from './dataFanout';
 import { loadScrollbackLines } from '../prefs/scrollback';
+import { PTY_CHANNELS } from '../shared/ipcChannels';
 
 export const DEFAULT_COLS = 120;
 export const DEFAULT_ROWS = 30;
@@ -202,7 +203,7 @@ export function dispatchPtyChunk(sid: string, entry: Entry, chunk: string): void
       continue;
     }
     try {
-      wc.send('pty:data', { sid, chunk, seq });
+      wc.send(PTY_CHANNELS.data, { sid, chunk, seq });
     } catch {
       /* renderer gone — best effort */
     }
@@ -321,7 +322,7 @@ export function makeEntry(
     for (const wc of entry.attached.values()) {
       if (!wc.isDestroyed()) {
         try {
-          wc.send('pty:exit', {
+          wc.send(PTY_CHANNELS.exit, {
             sessionId: sid,
             code: exitCode ?? null,
             signal: signal ?? null,

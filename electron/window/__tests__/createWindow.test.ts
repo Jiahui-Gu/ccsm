@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { WINDOW_CHANNELS } from '../../shared/ipcChannels';
 
 // Capture context-menu listener + popup invocations from the BrowserWindow
 // mock. Each test flushes via beforeEach so `popupCalls.length === 0` is the
@@ -649,17 +650,17 @@ describe('createWindow factory', () => {
     createWindow(deps);
     latestWin!.isMaximized = vi.fn(() => true);
     latestWin!.listeners.get('maximize')!();
-    expect(latestWin!.webContents.send).toHaveBeenCalledWith('window:maximizedChanged', true);
+    expect(latestWin!.webContents.send).toHaveBeenCalledWith(WINDOW_CHANNELS.maximizedChanged, true);
     latestWin!.isMaximized = vi.fn(() => false);
     latestWin!.listeners.get('unmaximize')!();
-    expect(latestWin!.webContents.send).toHaveBeenLastCalledWith('window:maximizedChanged', false);
+    expect(latestWin!.webContents.send).toHaveBeenLastCalledWith(WINDOW_CHANNELS.maximizedChanged, false);
   });
 
   it('show event re-sends window:afterShow so renderer can clear fade opacity', () => {
     createWindow(deps);
     latestWin!.webContents.send.mockClear();
     latestWin!.listeners.get('show')!();
-    expect(latestWin!.webContents.send).toHaveBeenCalledWith('window:afterShow');
+    expect(latestWin!.webContents.send).toHaveBeenCalledWith(WINDOW_CHANNELS.afterShow);
   });
 
   // ─── close-action: tray (default) → fade-then-hide ────────────────────
@@ -670,7 +671,7 @@ describe('createWindow factory', () => {
     latestWin!.listeners.get('close')!(closeEvt);
     expect(closeEvt.preventDefault).toHaveBeenCalled();
     // Renderer is told to start fading first.
-    expect(latestWin!.webContents.send).toHaveBeenCalledWith('window:beforeHide', { durationMs: 180 });
+    expect(latestWin!.webContents.send).toHaveBeenCalledWith(WINDOW_CHANNELS.beforeHide, { durationMs: 180 });
     // Hide is deferred to the end of the fade window.
     expect(latestWin!.hide).not.toHaveBeenCalled();
     vi.advanceTimersByTime(180);
@@ -729,12 +730,12 @@ describe('createWindow factory', () => {
   it('close with pref=ask sends IPC askCloseAction and registers resolve handler', () => {
     getCloseActionMock.mockReturnValue('ask');
     createWindow(deps);
-    expect(ipcHandlers.has('window:resolveCloseAction')).toBe(true);
+    expect(ipcHandlers.has(WINDOW_CHANNELS.resolveCloseAction)).toBe(true);
     const closeEvt = { preventDefault: vi.fn() };
     latestWin!.listeners.get('close')!(closeEvt);
     expect(closeEvt.preventDefault).toHaveBeenCalled();
     const sendCall = latestWin!.webContents.send.mock.calls.find(
-      (c) => c[0] === 'window:askCloseAction',
+      (c) => c[0] === WINDOW_CHANNELS.askCloseAction,
     );
     expect(sendCall).toBeDefined();
     const payload = sendCall![1] as { requestId: string; labels: Record<string, string> };
@@ -747,9 +748,9 @@ describe('createWindow factory', () => {
     createWindow(deps);
     latestWin!.listeners.get('close')!({ preventDefault: vi.fn() });
     const askPayload = latestWin!.webContents.send.mock.calls.find(
-      (c) => c[0] === 'window:askCloseAction',
+      (c) => c[0] === WINDOW_CHANNELS.askCloseAction,
     )![1] as { requestId: string };
-    const resolve = ipcHandlers.get('window:resolveCloseAction')!;
+    const resolve = ipcHandlers.get(WINDOW_CHANNELS.resolveCloseAction)!;
     resolve({}, { requestId: askPayload.requestId, choice: 'tray', dontAskAgain: true });
     expect(setCloseActionMock).toHaveBeenCalledWith('tray');
     vi.advanceTimersByTime(180);
@@ -761,9 +762,9 @@ describe('createWindow factory', () => {
     createWindow(deps);
     latestWin!.listeners.get('close')!({ preventDefault: vi.fn() });
     const askPayload = latestWin!.webContents.send.mock.calls.find(
-      (c) => c[0] === 'window:askCloseAction',
+      (c) => c[0] === WINDOW_CHANNELS.askCloseAction,
     )![1] as { requestId: string };
-    const resolve = ipcHandlers.get('window:resolveCloseAction')!;
+    const resolve = ipcHandlers.get(WINDOW_CHANNELS.resolveCloseAction)!;
     resolve({}, { requestId: askPayload.requestId, choice: 'quit', dontAskAgain: false });
     expect(deps.setIsQuitting).toHaveBeenCalledWith(true);
     expect(appQuitMock).toHaveBeenCalled();
@@ -775,9 +776,9 @@ describe('createWindow factory', () => {
     createWindow(deps);
     latestWin!.listeners.get('close')!({ preventDefault: vi.fn() });
     const askPayload = latestWin!.webContents.send.mock.calls.find(
-      (c) => c[0] === 'window:askCloseAction',
+      (c) => c[0] === WINDOW_CHANNELS.askCloseAction,
     )![1] as { requestId: string };
-    const resolve = ipcHandlers.get('window:resolveCloseAction')!;
+    const resolve = ipcHandlers.get(WINDOW_CHANNELS.resolveCloseAction)!;
     resolve({}, { requestId: askPayload.requestId, choice: 'cancel', dontAskAgain: true });
     expect(setCloseActionMock).not.toHaveBeenCalled();
     expect(appQuitMock).not.toHaveBeenCalled();
@@ -789,7 +790,7 @@ describe('createWindow factory', () => {
     getCloseActionMock.mockReturnValue('ask');
     createWindow(deps);
     latestWin!.listeners.get('close')!({ preventDefault: vi.fn() });
-    const resolve = ipcHandlers.get('window:resolveCloseAction')!;
+    const resolve = ipcHandlers.get(WINDOW_CHANNELS.resolveCloseAction)!;
     resolve({}, { requestId: 'not-a-real-id', choice: 'quit', dontAskAgain: false });
     expect(deps.setIsQuitting).not.toHaveBeenCalled();
     expect(appQuitMock).not.toHaveBeenCalled();
@@ -802,7 +803,7 @@ describe('createWindow factory', () => {
     closeHandler({ preventDefault: vi.fn() });
     closeHandler({ preventDefault: vi.fn() });
     const asks = latestWin!.webContents.send.mock.calls.filter(
-      (c) => c[0] === 'window:askCloseAction',
+      (c) => c[0] === WINDOW_CHANNELS.askCloseAction,
     );
     expect(asks).toHaveLength(1);
   });
@@ -828,7 +829,7 @@ describe('createWindow factory', () => {
     latestWin!.listeners.get('close')!({ preventDefault: vi.fn() });
     // No askCloseAction send (renderer is gone), straight to fade-then-hide.
     const asks = latestWin!.webContents.send.mock.calls.filter(
-      (c) => c[0] === 'window:askCloseAction',
+      (c) => c[0] === WINDOW_CHANNELS.askCloseAction,
     );
     expect(asks).toHaveLength(0);
     vi.advanceTimersByTime(180);
@@ -839,7 +840,7 @@ describe('createWindow factory', () => {
   it('closed event removes the resolveCloseAction IPC listener', () => {
     createWindow(deps);
     latestWin!.listeners.get('closed')!();
-    expect(removedIpcChannels).toContain('window:resolveCloseAction');
+    expect(removedIpcChannels).toContain(WINDOW_CHANNELS.resolveCloseAction);
   });
 
   it('closed event clears any pending ask timer', () => {

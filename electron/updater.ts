@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain } from 'electron';
 import { autoUpdater } from 'electron-updater';
+import { UPDATES_CHANNELS } from './shared/ipcChannels';
 
 // All status updates flow through one channel so the renderer doesn't have to
 // subscribe to N separate event names. The shape mirrors electron-updater's
@@ -29,7 +30,7 @@ const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
 const CHAN_AVAILABLE = 'update:available';
 const CHAN_DOWNLOADED = 'update:downloaded';
 const CHAN_ERROR = 'update:error';
-const CHAN_STATUS = 'updates:status';
+const CHAN_STATUS = UPDATES_CHANNELS.status;
 
 function sendAll(channel: string, payload: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -132,9 +133,9 @@ export function installUpdaterIpc(): void {
     broadcast({ kind: 'error', message: err?.message ?? String(err) })
   );
 
-  ipcMain.handle('updates:status', () => lastStatus);
+  ipcMain.handle(UPDATES_CHANNELS.status, () => lastStatus);
 
-  ipcMain.handle('updates:check', async () => {
+  ipcMain.handle(UPDATES_CHANNELS.check, async () => {
     if (!app.isPackaged) {
       const status: UpdateStatus = { kind: 'not-available', version: app.getVersion() };
       broadcast(status);
@@ -151,7 +152,7 @@ export function installUpdaterIpc(): void {
     }
   });
 
-  ipcMain.handle('updates:download', async () => {
+  ipcMain.handle(UPDATES_CHANNELS.download, async () => {
     if (!app.isPackaged) return { ok: false, reason: 'not-packaged' as const };
     try {
       await autoUpdater.downloadUpdate();
@@ -161,7 +162,7 @@ export function installUpdaterIpc(): void {
     }
   });
 
-  ipcMain.handle('updates:install', () => {
+  ipcMain.handle(UPDATES_CHANNELS.install, () => {
     if (!app.isPackaged) return { ok: false as const, reason: 'not-packaged' as const };
     // Defense-in-depth: refuse to call quitAndInstall unless we've
     // actually broadcast a `downloaded` event. Without this guard a
@@ -182,8 +183,8 @@ export function installUpdaterIpc(): void {
     return { ok: true as const };
   });
 
-  ipcMain.handle('updates:getAutoCheck', () => autoCheckEnabled);
-  ipcMain.handle('updates:setAutoCheck', (_e, enabled: boolean) => {
+  ipcMain.handle(UPDATES_CHANNELS.getAutoCheck, () => autoCheckEnabled);
+  ipcMain.handle(UPDATES_CHANNELS.setAutoCheck, (_e, enabled: boolean) => {
     autoCheckEnabled = !!enabled;
     if (autoCheckEnabled) {
       startPeriodicChecks();

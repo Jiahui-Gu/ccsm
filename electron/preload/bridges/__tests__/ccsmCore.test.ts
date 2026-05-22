@@ -12,6 +12,7 @@
 // `invoke` to resolve.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { DB_CHANNELS, UPDATES_CHANNELS, WINDOW_CHANNELS } from '../../../shared/ipcChannels';
 
 const { exposeSpy, invokeSpy, sendSpy, onSpy, removeListenerSpy } = vi.hoisted(() => ({
   exposeSpy: vi.fn(),
@@ -107,7 +108,7 @@ describe('ccsmCore preload bridge', () => {
   });
 
   it.each<[string, string, unknown[]]>([
-    ['loadState', 'db:load', ['some.key']],
+    ['loadState', DB_CHANNELS.load, ['some.key']],
     ['getVersion', 'app:getVersion', []],
     ['scanImportable', 'import:scan', []],
     ['recentCwds', 'import:recentCwds', []],
@@ -116,12 +117,12 @@ describe('ccsmCore preload bridge', () => {
     ['defaultModel', 'settings:defaultModel', []],
     ['pathsExist', 'paths:exist', [['/a', '/b']]],
     ['openExternal', 'ccsm:openExternal', ['https://example.com']],
-    ['updatesStatus', 'updates:status', []],
-    ['updatesCheck', 'updates:check', []],
-    ['updatesDownload', 'updates:download', []],
-    ['updatesInstall', 'updates:install', []],
-    ['updatesGetAutoCheck', 'updates:getAutoCheck', []],
-    ['updatesSetAutoCheck', 'updates:setAutoCheck', [true]],
+    ['updatesStatus', UPDATES_CHANNELS.status, []],
+    ['updatesCheck', UPDATES_CHANNELS.check, []],
+    ['updatesDownload', UPDATES_CHANNELS.download, []],
+    ['updatesInstall', UPDATES_CHANNELS.install, []],
+    ['updatesGetAutoCheck', UPDATES_CHANNELS.getAutoCheck, []],
+    ['updatesSetAutoCheck', UPDATES_CHANNELS.setAutoCheck, [true]],
   ])('forwards %s -> ipcRenderer.invoke("%s", ...)', async (m, chan, args) => {
     const api = getApi();
     const fn = api[m] as (...a: unknown[]) => Promise<unknown>;
@@ -140,7 +141,7 @@ describe('ccsmCore preload bridge', () => {
     await expect(
       (api.saveState as (k: string, v: string) => Promise<void>)('k', 'v'),
     ).resolves.toBeUndefined();
-    expect(invokeSpy).toHaveBeenCalledWith('db:save', 'k', 'v');
+    expect(invokeSpy).toHaveBeenCalledWith(DB_CHANNELS.save, 'k', 'v');
   });
 
   it('saveState rethrows on {ok:false} so .catch handlers fire', async () => {
@@ -176,10 +177,10 @@ describe('ccsmCore preload bridge', () => {
   });
 
   it.each<[string, string, unknown[]]>([
-    ['minimize', 'window:minimize', []],
-    ['toggleMaximize', 'window:toggleMaximize', []],
-    ['close', 'window:close', []],
-    ['isMaximized', 'window:isMaximized', []],
+    ['minimize', WINDOW_CHANNELS.minimize, []],
+    ['toggleMaximize', WINDOW_CHANNELS.toggleMaximize, []],
+    ['close', WINDOW_CHANNELS.close, []],
+    ['isMaximized', WINDOW_CHANNELS.isMaximized, []],
   ])('window.%s invokes "%s"', async (m, chan, args) => {
     const api = getApi();
     const w = api.window as Record<string, (...a: unknown[]) => Promise<unknown>>;
@@ -197,7 +198,7 @@ describe('ccsmCore preload bridge', () => {
     (
       api.window as { resolveCloseAction: (p: typeof payload) => void }
     ).resolveCloseAction(payload);
-    expect(sendSpy).toHaveBeenCalledWith('window:resolveCloseAction', payload);
+    expect(sendSpy).toHaveBeenCalledWith(WINDOW_CHANNELS.resolveCloseAction, payload);
   });
 
   it('window.platform mirrors process.platform', () => {
@@ -212,7 +213,7 @@ describe('ccsmCore preload bridge', () => {
   // make the unsubscribe a silent no-op and leak a handler on every dialog
   // open / window-state change.
   it.each<[string, string]>([
-    ['onUpdateStatus', 'updates:status'],
+    ['onUpdateStatus', UPDATES_CHANNELS.status],
     ['onUpdateDownloaded', 'update:downloaded'],
   ])('%s registers and cleanly unsubscribes on "%s"', (m, chan) => {
     const api = getApi();
@@ -227,10 +228,10 @@ describe('ccsmCore preload bridge', () => {
   });
 
   it.each<[string, string]>([
-    ['onMaximizedChanged', 'window:maximizedChanged'],
-    ['onBeforeHide', 'window:beforeHide'],
-    ['onAfterShow', 'window:afterShow'],
-    ['onAskCloseAction', 'window:askCloseAction'],
+    ['onMaximizedChanged', WINDOW_CHANNELS.maximizedChanged],
+    ['onBeforeHide', WINDOW_CHANNELS.beforeHide],
+    ['onAfterShow', WINDOW_CHANNELS.afterShow],
+    ['onAskCloseAction', WINDOW_CHANNELS.askCloseAction],
   ])('window.%s registers and unsubscribes on "%s"', (m, chan) => {
     const api = getApi();
     const w = api.window as Record<string, (cb: unknown) => () => void>;
@@ -247,7 +248,7 @@ describe('ccsmCore preload bridge', () => {
     const api = getApi();
     const cb = vi.fn();
     (api.onUpdateStatus as (cb: unknown) => () => void)(cb);
-    const wrap = onSpy.mock.calls.find((c) => c[0] === 'updates:status')![1] as (
+    const wrap = onSpy.mock.calls.find((c) => c[0] === UPDATES_CHANNELS.status)![1] as (
       e: unknown,
       p: unknown,
     ) => void;
@@ -264,7 +265,7 @@ describe('ccsmCore preload bridge', () => {
       }
     ).onAskCloseAction(cb);
     const wrap = onSpy.mock.calls.find(
-      (c) => c[0] === 'window:askCloseAction',
+      (c) => c[0] === WINDOW_CHANNELS.askCloseAction,
     )![1] as (e: unknown, p: unknown) => void;
     const payload = {
       requestId: 'req-2',

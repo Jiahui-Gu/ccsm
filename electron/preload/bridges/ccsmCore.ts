@@ -5,6 +5,11 @@
 // without behavioral change.
 
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
+import {
+  DB_CHANNELS,
+  UPDATES_CHANNELS,
+  WINDOW_CHANNELS,
+} from '../../shared/ipcChannels';
 
 type UpdateStatus =
   | { kind: 'idle' }
@@ -16,7 +21,7 @@ type UpdateStatus =
   | { kind: 'error'; message: string };
 
 const api = {
-  loadState: (key: string): Promise<string | null> => ipcRenderer.invoke('db:load', key),
+  loadState: (key: string): Promise<string | null> => ipcRenderer.invoke(DB_CHANNELS.load, key),
   // The IPC handler returns a `{ok}` shape so it never crosses the IPC
   // boundary as a thrown Error (Electron surfaces those as ugly stack
   // dumps in the renderer console). We unwrap here and re-throw on
@@ -25,7 +30,7 @@ const api = {
   // resolved `{ok:false}` would otherwise slip past `.catch` silently
   // and produce data loss with zero renderer signal.
   saveState: async (key: string, value: string): Promise<void> => {
-    const result = (await ipcRenderer.invoke('db:save', key, value)) as
+    const result = (await ipcRenderer.invoke(DB_CHANNELS.save, key, value)) as
       | { ok: true }
       | { ok: false; error: string };
     if (!result.ok) {
@@ -119,19 +124,19 @@ const api = {
   openExternal: (url: string): Promise<boolean> =>
     ipcRenderer.invoke('ccsm:openExternal', url),
 
-  updatesStatus: (): Promise<UpdateStatus> => ipcRenderer.invoke('updates:status'),
-  updatesCheck: (): Promise<UpdateStatus> => ipcRenderer.invoke('updates:check'),
+  updatesStatus: (): Promise<UpdateStatus> => ipcRenderer.invoke(UPDATES_CHANNELS.status),
+  updatesCheck: (): Promise<UpdateStatus> => ipcRenderer.invoke(UPDATES_CHANNELS.check),
   updatesDownload: (): Promise<{ ok: true } | { ok: false; reason: string }> =>
-    ipcRenderer.invoke('updates:download'),
+    ipcRenderer.invoke(UPDATES_CHANNELS.download),
   updatesInstall: (): Promise<{ ok: true } | { ok: false; reason: string }> =>
-    ipcRenderer.invoke('updates:install'),
-  updatesGetAutoCheck: (): Promise<boolean> => ipcRenderer.invoke('updates:getAutoCheck'),
+    ipcRenderer.invoke(UPDATES_CHANNELS.install),
+  updatesGetAutoCheck: (): Promise<boolean> => ipcRenderer.invoke(UPDATES_CHANNELS.getAutoCheck),
   updatesSetAutoCheck: (enabled: boolean): Promise<boolean> =>
-    ipcRenderer.invoke('updates:setAutoCheck', enabled),
+    ipcRenderer.invoke(UPDATES_CHANNELS.setAutoCheck, enabled),
   onUpdateStatus: (handler: (s: UpdateStatus) => void): (() => void) => {
     const wrap = (_e: IpcRendererEvent, payload: UpdateStatus) => handler(payload);
-    ipcRenderer.on('updates:status', wrap);
-    return () => ipcRenderer.removeListener('updates:status', wrap);
+    ipcRenderer.on(UPDATES_CHANNELS.status, wrap);
+    return () => ipcRenderer.removeListener(UPDATES_CHANNELS.status, wrap);
   },
   onUpdateDownloaded: (handler: (info: { version: string }) => void): (() => void) => {
     const wrap = (_e: IpcRendererEvent, payload: { version: string }) => handler(payload);
@@ -140,27 +145,27 @@ const api = {
   },
 
   window: {
-    minimize: (): Promise<void> => ipcRenderer.invoke('window:minimize'),
-    toggleMaximize: (): Promise<boolean> => ipcRenderer.invoke('window:toggleMaximize'),
-    close: (): Promise<void> => ipcRenderer.invoke('window:close'),
-    isMaximized: (): Promise<boolean> => ipcRenderer.invoke('window:isMaximized'),
+    minimize: (): Promise<void> => ipcRenderer.invoke(WINDOW_CHANNELS.minimize),
+    toggleMaximize: (): Promise<boolean> => ipcRenderer.invoke(WINDOW_CHANNELS.toggleMaximize),
+    close: (): Promise<void> => ipcRenderer.invoke(WINDOW_CHANNELS.close),
+    isMaximized: (): Promise<boolean> => ipcRenderer.invoke(WINDOW_CHANNELS.isMaximized),
     onMaximizedChanged: (handler: (max: boolean) => void): (() => void) => {
       const wrap = (_e: IpcRendererEvent, max: boolean) => handler(max);
-      ipcRenderer.on('window:maximizedChanged', wrap);
-      return () => ipcRenderer.removeListener('window:maximizedChanged', wrap);
+      ipcRenderer.on(WINDOW_CHANNELS.maximizedChanged, wrap);
+      return () => ipcRenderer.removeListener(WINDOW_CHANNELS.maximizedChanged, wrap);
     },
     onBeforeHide: (
       handler: (info: { durationMs: number }) => void
     ): (() => void) => {
       const wrap = (_e: IpcRendererEvent, payload: { durationMs: number }) =>
         handler(payload);
-      ipcRenderer.on('window:beforeHide', wrap);
-      return () => ipcRenderer.removeListener('window:beforeHide', wrap);
+      ipcRenderer.on(WINDOW_CHANNELS.beforeHide, wrap);
+      return () => ipcRenderer.removeListener(WINDOW_CHANNELS.beforeHide, wrap);
     },
     onAfterShow: (handler: () => void): (() => void) => {
       const wrap = () => handler();
-      ipcRenderer.on('window:afterShow', wrap);
-      return () => ipcRenderer.removeListener('window:afterShow', wrap);
+      ipcRenderer.on(WINDOW_CHANNELS.afterShow, wrap);
+      return () => ipcRenderer.removeListener(WINDOW_CHANNELS.afterShow, wrap);
     },
     /**
      * Main fires `window:askCloseAction` when the user clicks the window X
@@ -201,8 +206,8 @@ const api = {
           };
         },
       ) => handler(payload);
-      ipcRenderer.on('window:askCloseAction', wrap);
-      return () => ipcRenderer.removeListener('window:askCloseAction', wrap);
+      ipcRenderer.on(WINDOW_CHANNELS.askCloseAction, wrap);
+      return () => ipcRenderer.removeListener(WINDOW_CHANNELS.askCloseAction, wrap);
     },
     /**
      * Renderer's reply to the latest `window:askCloseAction` ping. The
@@ -219,7 +224,7 @@ const api = {
       choice: 'tray' | 'quit' | 'cancel';
       dontAskAgain: boolean;
     }): void => {
-      ipcRenderer.send('window:resolveCloseAction', payload);
+      ipcRenderer.send(WINDOW_CHANNELS.resolveCloseAction, payload);
     },
     platform: process.platform
   },
