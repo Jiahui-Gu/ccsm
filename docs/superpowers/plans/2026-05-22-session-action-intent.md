@@ -84,7 +84,8 @@ muddy the discriminated union for no win.
 │  Sidebar row / context menu                                       │
 │                                                                   │
 │  onClick → dispatchSessionAction({                                │
-│    kind: 'reload' | 'copy' | 'rename' | 'archive' | 'retry',      │
+│    kind: 'reload' | 'copy' | 'rename'                             │
+│        | 'archive' | 'unarchive' | 'retry',                       │
 │    sessionId: '...',                                              │
 │    payload?: ...                                                  │
 │  })                                                               │
@@ -115,7 +116,7 @@ muddy the discriminated union for no win.
 │    - copy:   createNewSid → spawn(fork); if andThenRename, then   │
 │        flip pendingAction to {kind:'rename'} on the new sid       │
 │    - rename: focus the rename input → clear pending on submit     │
-│    - archive: store mutation only → clear pending                 │
+│    - archive / unarchive: store mutation only → clear pending     │
 │    - retry: same shape as reload but no kill phase                │
 └───────────────────────────────────────────────────────────────────┘
 ```
@@ -128,6 +129,7 @@ type SessionAction =
   | { kind: 'copy'; sourceSid: string; andThenRename: boolean }
   | { kind: 'rename' }
   | { kind: 'archive' }
+  | { kind: 'unarchive' }
   | { kind: 'retry' };
 
 // Parallel runtime map — NOT on the persisted SessionEntity:
@@ -136,7 +138,7 @@ type SessionRuntime = {
   attemptId: number;
 };
 
-// In the store slice (transient, not persisted — see partialize note):
+// In the store slice (transient, not persisted — see PERSISTED_KEYS note):
 type SessionRuntimeState = {
   sessionRuntimeById: Record<string /* sid */, SessionRuntime>;
 };
@@ -150,9 +152,20 @@ Notes on each variant:
   dispatches reducer step B which flips to
   `{kind:'reload', phase:'attaching'}` AND bumps `attemptId`. Only then
   does `usePtyAttach`'s effect (which depends on `attemptId`) re-run,
-  so we never re-attach to a dying PTY. This two-phase pattern is the
-  general principle for any action whose side-effect must complete
-  before attach re-runs.
+  so we never re-attach to a dying PTY.
+
+  **Kill-failure semantics.** `pty.kill` is best-effort today
+  (`sessionRuntimeSlice.reloadSession` bumps `reloadNonce` regardless
+  of kill outcome). The proposal preserves this: on kill failure the
+  runner still dispatches the phase-B reducer (flip to `'attaching'` +
+  bump `attemptId`) and logs a warning. The attach path then handles
+  whatever PTY state results — either the old PTY died after all and a
+  fresh spawn-on-null succeeds, or it is still alive and the attach
+  reuses it. We do NOT introduce a new error variant for kill failure;
+  doing so would diverge from current behavior for no observable user
+  benefit. This two-phase pattern is the general principle for any
+  action whose side-effect must complete (or be observed to have
+  failed) before attach re-runs.
 - **`copy`** is composite: a single `pendingAction` slot can't
   represent "copy AND rename" if they were separate variants, so the
   variant carries an `andThenRename` flag. The right-click "Copy
@@ -160,11 +173,26 @@ Notes on each variant:
   where `copySession` sets both `pendingForkSource[newId]` and
   `pendingRenameId = newId`). A hypothetical "copy without rename"
   UX would set it false.
-- **`archive`** is parameter-less in the user-action sense. Current
-  `archiveSession` / `unarchiveSession` create or reuse archive
-  containers — they don't move to arbitrary groups. The target-group
-  resolution stays in the side-effect runner (or a helper), not in
-  the intent.
+
+  **Target-sid ownership.** Today, `pendingForkSource` is keyed by the
+  NEW sid (see `src/stores/slices/sessionCrudSlice.ts` —
+  `pendingForkSource[newId] = sourceId`). The proposal mirrors this:
+  the `{kind:'copy', sourceSid, andThenRename}` action is stored on
+  the NEW session's runtime slot
+  (`sessionRuntimeById[newSid].pendingAction`), NOT on the source sid.
+  The source session does not need to know it is being copied — only
+  the new session needs to know where to fork from on first attach.
+  `usePtyAttach` for the new sid reads its own runtime slot, sees
+  `kind === 'copy'`, and passes `action.sourceSid` to the
+  spawn-on-null fallback.
+- **`archive` / `unarchive`** are parameter-less in the user-action
+  sense. They are split into two variants (rather than one variant with
+  a `mode` field) because they are semantically opposite operations and
+  the discriminated union reads cleaner that way — the runner has two
+  obviously-paired cases. Current `archiveSession` / `unarchiveSession`
+  create or reuse archive containers — they don't move to arbitrary
+  groups. The target-group resolution stays in the side-effect runner
+  (or a helper), not in the intent.
 - **`retry`** is the no-kill analogue of `reload`: reducer bumps
   `attemptId` synchronously; runner has nothing to do.
 
@@ -194,15 +222,18 @@ one nonce, one IPC call.
 
 **Deliverables:**
 - `src/stores/slices/sessionActionSlice.ts` (new) — holds
-  `sessionRuntimeById` (transient, see partialize note) + the reducer
+  `sessionRuntimeById` (transient; deliberately NOT added to
+  `PERSISTED_KEYS` — see the persistence note) + the reducer
   + `dispatchSessionAction(intent)` action
 - `SessionAction` + `SessionRuntime` types in `types.ts`
 - Side-effect runner for `reload` in a new `useSessionActionRunner` hook
   mounted at App level. Implements the two-phase reload: reducer sets
   phase `'killing'` (no attemptId bump) → runner awaits `pty.kill` →
   runner dispatches phase-B reducer that flips to `'attaching'` and
-  bumps `attemptId`. `usePtyAttach`'s effect depends only on
-  `attemptId`, so it cannot re-attach to a dying PTY.
+  bumps `attemptId`. On kill failure the runner ALSO dispatches phase-B
+  (best-effort, mirrors current `reloadSession` behavior) and logs a
+  warning. `usePtyAttach`'s effect depends only on `attemptId`, so it
+  cannot re-attach to a dying PTY.
 - `usePtyAttach` reads `attemptId` from `sessionRuntimeById[sid]`
   instead of `reloadNonce`
 - Delete `reloadNonce` + `_clearReloadNonce` after migration
@@ -233,6 +264,36 @@ reorganizes where state lives. Existing fork tests catch regressions.
     ? action.sourceSid : undefined`
   instead of reaching into the global map
 
+**Explicit step-by-step for `copy` (the composite case):**
+
+The runtime slot for the copy action lives on the NEW sid, mirroring
+how `pendingForkSource` is keyed today. End-to-end:
+
+1. UI handler calls `dispatchSessionAction({kind:'copy', sessionId:
+   sourceSid, payload:{andThenRename:true}})`.
+2. Reducer creates the new session row (same shape as today's
+   `copySession`) with a fresh `newSid`, and sets
+   `sessionRuntimeById[newSid].pendingAction =
+   {kind:'copy', sourceSid, andThenRename:true}`. The source sid's
+   runtime slot is untouched.
+3. Reducer sets `activeId = newSid`, which causes the terminal pane to
+   mount/attach for `newSid` (same trigger as today).
+4. `usePtyAttach` runs for `newSid`. The spawn-on-null fallback reads
+   `sessionRuntimeById[newSid]?.pendingAction`; sees
+   `kind === 'copy'`; calls `pty.spawn` with
+   `--fork-session=action.sourceSid`.
+5. On spawn success, the runner observes the spawn completed and
+   transitions `sessionRuntimeById[newSid].pendingAction` from
+   `{kind:'copy', ...}` to `{kind:'rename'}` (only when
+   `andThenRename:true`; otherwise clears to `null`).
+6. The RenameInput, watching the new sid's `pendingAction` slot for
+   `{kind:'rename'}`, focuses itself. On submit, the reducer clears
+   the slot to `null`.
+
+This matches the current observable behavior; only the storage shape
+moves (one `pendingAction` slot on `sessionRuntimeById[newSid]` instead
+of two parallel maps `pendingForkSource[newSid]` + `pendingRenameId`).
+
 ### Phase 3 — Migrate `retry` and `archive`
 
 **Goal:** consolidate the remaining two action paths.
@@ -243,8 +304,10 @@ mostly a store mutation today.
 **Deliverables:**
 - Move `Retry` handler in `TerminalPane` to dispatch `{kind: 'retry'}`
   instead of bumping local `attachNonce` state
-- Move archive/unarchive context-menu handlers to dispatch
-  `{kind: 'archive'}`
+- Move the archive context-menu handler to dispatch
+  `{kind: 'archive'}` and the unarchive context-menu handler to
+  dispatch `{kind: 'unarchive'}` (two distinct variants — see the
+  variant notes above for the rationale)
 - Delete `attachNonce` from `usePtyAttach`
 - Final cleanup of sidebar handlers — every right-click action now
   goes through one dispatch call, no slice-reaching
@@ -289,7 +352,9 @@ After all three phases ship:
 
 - `types.ts`'s coordination-map zoo (`reloadNonce`, `pendingForkSource`,
   `pendingRenameId`, `attachNonce` references) collapses to one
-  `pendingAction: SessionAction | null` field on the session entity
+  `pendingAction: SessionAction | null` slot in
+  `sessionRuntimeById[sid]` — a transient parallel map, never on the
+  persisted `SessionEntity`
 - "How does the right-click reload work?" answered by reading 2 files
   (the reducer + the runner) instead of 5
 - New session actions are additive: add a variant to the union, add
@@ -326,18 +391,24 @@ rest back.
 Both this proposal and the TerminalRuntime proposal introduce new
 in-memory state (`sessionRuntimeById` here; FSM state + replay buffers
 in the runtime). **None of it belongs in the persisted store.**
-Sessions are persisted by `src/stores/persist.ts` (zustand `persist`
-middleware). Anything we add for action coordination or runtime state
-must be excluded from the persisted snapshot — typically via
-`partialize` in the persist config, or by living in a slice that the
-persist config does not opt in.
+Persistence in this codebase is NOT zustand's `persist` middleware —
+it is a custom allowlist in `src/stores/persist.ts`: the
+`PERSISTED_KEYS` array enumerates the top-level state keys that flow
+into the snapshot written via `schedulePersist` / `flushNow`. A
+compile-time assertion in `src/stores/store.ts`
+(`_AssertPersistedKeysOnState` / `_AssertPersistedKeysOnPersisted`)
+guarantees every key in `PERSISTED_KEYS` exists on both the runtime
+state type and the on-disk `PersistedState` shape. Anything we add
+for action coordination or runtime state must therefore be excluded
+from persistence by **not being added to `PERSISTED_KEYS`** — the
+allowlist is the single switch.
 
 Concretely:
 
-- `sessionRuntimeById` must be omitted from `partialize`. A reloaded
-  app should start with an empty runtime map; pending actions don't
-  survive a restart (the IPC side-effect they were driving is also
-  gone).
+- `sessionRuntimeById` must NOT appear in `PERSISTED_KEYS` and must
+  NOT be added to `PersistedState`. A reloaded app should start with
+  an empty runtime map; pending actions don't survive a restart (the
+  IPC side-effect they were driving is also gone).
 - The TerminalRuntime's FSM state, buffered writes, and snapshot
   sequence numbers are renderer-process lifetime only and never
   touch the persistor — already true today, must remain true.
