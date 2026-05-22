@@ -23,6 +23,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { getClaudeConfigDir } from './shared/claudePaths';
+import { warn } from './shared/log';
 
 // Six logical sources surfaced by the slash-command palette. `skill` and
 // `agent` were previously folded into `user`; splitting them lets the picker
@@ -113,7 +114,7 @@ function listMdFiles(dir: string): string[] {
       .filter((f) => f.toLowerCase().endsWith('.md'))
       .map((f) => path.join(dir, f));
   } catch (err) {
-    console.warn(`[commands-loader] readdir failed for ${dir}:`, err);
+    warn('commands', `readdir failed for ${dir}:`, err);
     return [];
   }
 }
@@ -128,21 +129,22 @@ function readEntry(
   try {
     raw = fs.readFileSync(file, 'utf8');
   } catch (err) {
-    console.warn(`[commands-loader] read failed for ${file}:`, err);
+    warn('commands', `read failed for ${file}:`, err);
     return null;
   }
   const { data } = parseFrontmatter(raw);
   const fallbackName = path.basename(file).replace(/\.md$/i, '');
   // Names containing `/` or whitespace are illegal at the slash-prompt; skip.
   if (!/^[a-zA-Z0-9._-]+$/.test(fallbackName)) {
-    console.warn(`[commands-loader] skipping ${file}: basename has invalid chars`);
+    warn('commands', `skipping ${file}: basename has invalid chars`);
     return null;
   }
   const declaredName = (data['name'] || '').trim();
   const baseName = declaredName || fallbackName;
   if (!/^[a-zA-Z0-9._-]+$/.test(baseName)) {
-    console.warn(
-      `[commands-loader] skipping ${file}: name "${baseName}" has invalid chars`
+    warn(
+      'commands',
+      `skipping ${file}: name "${baseName}" has invalid chars`,
     );
     return null;
   }
@@ -217,8 +219,9 @@ function collectSkillEntries(
         continue; // no SKILL.md — not a skill dir
       }
       if (!/^[a-zA-Z0-9._-]+$/.test(subdirName)) {
-        console.warn(
-          `[commands-loader] skipping plugin skill ${skillFile}: subdir name has invalid chars`
+        warn(
+          'commands',
+          `skipping plugin skill ${skillFile}: subdir name has invalid chars`,
         );
         continue;
       }
@@ -343,13 +346,15 @@ export function loadCommands(opts: LoadOpts = {}): LoadedCommand[] {
       continue;
     }
     if (entry.priority < existing.priority) {
-      console.warn(
-        `[commands-loader] /${entry.name}: ${existing.file} shadowed by ${entry.file}`
+      warn(
+        'commands',
+        `/${entry.name}: ${existing.file} shadowed by ${entry.file}`,
       );
       byName.set(entry.name, entry);
     } else {
-      console.warn(
-        `[commands-loader] /${entry.name}: ${entry.file} shadowed by ${existing.file}`
+      warn(
+        'commands',
+        `/${entry.name}: ${entry.file} shadowed by ${existing.file}`,
       );
     }
   }

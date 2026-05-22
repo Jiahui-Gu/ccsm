@@ -35,6 +35,7 @@ import { resolveSpawnCwd } from './cwdResolver';
 import { emitPtyData } from './dataFanout';
 import { loadScrollbackLines } from '../prefs/scrollback';
 import { PTY_CHANNELS } from '../shared/ipcChannels';
+import { warn } from '../shared/log';
 
 export const DEFAULT_COLS = 120;
 export const DEFAULT_ROWS = 30;
@@ -170,8 +171,9 @@ export function dispatchPtyChunk(sid: string, entry: Entry, chunk: string): void
     !entry.backpressureWarned
   ) {
     entry.backpressureWarned = true;
-    console.warn(
-      `[ptyHost] backpressure: sid=${sid} pendingHeadlessWrites=${entry.pendingHeadlessWrites} ` +
+    warn(
+      'ptyHost',
+      `backpressure: sid=${sid} pendingHeadlessWrites=${entry.pendingHeadlessWrites} ` +
         `(>${BACKPRESSURE_WARN_THRESHOLD}); visible xterm or headless mirror is lagging. ` +
         `No data dropped — this is observe-only.`,
     );
@@ -272,8 +274,9 @@ export function makeEntry(
       try {
         deps.onCwdRedirect(spawnCwd);
       } catch (err) {
-        console.warn(
-          `[ptyHost] cwd-redirect notify for ${sid} threw: ${err instanceof Error ? err.message : String(err)}`,
+        warn(
+          'ptyHost',
+          `cwd-redirect notify for ${sid} threw: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
     }

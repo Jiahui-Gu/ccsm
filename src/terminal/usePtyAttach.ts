@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../stores/store';
 import { classifyPtyExit } from '../lib/ptyExitClassifier';
+import { warn } from '../shared/log';
 import {
   getTerm,
   getFit,
@@ -375,7 +376,7 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
               seq: number;
             };
           } catch (e) {
-            console.warn('[TerminalPane] resize snapshot failed', e);
+            warn('attach', 'resize snapshot failed', e);
             // Re-arm so the listener resumes writing live chunks even
             // if the snapshot fetch failed — better stale grid than
             // permanent buffer-stall.
@@ -388,7 +389,7 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
             try {
               tReplay.reset();
             } catch (e) {
-              console.warn('[TerminalPane] resize reset failed', e);
+              warn('attach', 'resize reset failed', e);
             }
             if (snap2.snapshot) await writeAsync(tReplay, snap2.snapshot);
           }
@@ -509,10 +510,10 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
                   const tFit = getTerm();
                   if (tFit) writeAndScrollToBottom(tFit);
                 })
-                .catch((e) => console.warn('[TerminalPane] post-attach replay failed', e));
+                .catch((e) => warn('attach', 'post-attach replay failed', e));
             }
           } catch (e) {
-            console.warn('[TerminalPane] post-attach fit failed', e);
+            warn('attach', 'post-attach fit failed', e);
           }
         }
 
@@ -530,7 +531,7 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
           try {
             t5.focus();
           } catch (e) {
-            console.warn('[TerminalPane] term.focus failed', e);
+            warn('attach', 'term.focus failed', e);
           }
         }
 

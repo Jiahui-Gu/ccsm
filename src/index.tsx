@@ -8,6 +8,18 @@ import App from './App';
 import { hydrateStore, type HydrationTrace } from './stores/store';
 import { flushNow, setPersistErrorHandler } from './stores/persist';
 import './styles/global.css';
+import { error as logError } from './shared/log';
+
+// Renderer crash net. Without this, an unhandledrejection or an
+// uncaught error in event handlers / async code disappears into
+// devtools (or the void in production builds where devtools isn't
+// open). The shared log seam will later forward these to Sentry.
+window.addEventListener('unhandledrejection', (e) => {
+  logError('renderer', 'unhandled rejection', e.reason);
+});
+window.addEventListener('error', (e) => {
+  logError('renderer', 'uncaught error', e.error ?? e.message);
+});
 
 // All knobs (DSN, environment, opt-out gating) live in the main process
 // init. The renderer SDK auto-discovers them via the IPC bridge that
