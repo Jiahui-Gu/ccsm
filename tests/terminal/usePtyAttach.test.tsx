@@ -1,83 +1,37 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
+import {
+  createFakeTerminal,
+  createFakeFit,
+  createXtermSingletonMock,
+  createPtyBridge,
+  installCcsmPty,
+  uninstallCcsmPty,
+  resetFakeTerminalSpies,
+  settleAttach,
+} from '../util/terminalHarness';
 
-// Spy on the Terminal so usePtyAttach can call write/reset/resize/onData/focus.
-// `write` accepts an optional callback (xterm's WriteBuffer drain rendezvous)
-// which `writeAndScrollToBottom` relies on — invoke it synchronously so the
-// scrollToBottom side-effect lands during the same act() flush. Tracks the
-// ORDER of write -> scrollToBottom calls via `callLog` for the scroll-after-
-// drain assertion.
-const callLog: string[] = [];
-const scrollToBottomSpy = vi.fn(() => {
-  callLog.push('scrollToBottom');
-});
-const scrollToLineSpy = vi.fn();
-const writeSpy = vi.fn((data: string, cb?: () => void) => {
-  callLog.push(`write:${data}`);
-  if (cb) cb();
-});
-const resetSpy = vi.fn();
-const resizeSpy = vi.fn();
-const focusSpy = vi.fn();
-const inputDisposableDispose = vi.fn();
-const onDataDisposable = { dispose: inputDisposableDispose };
-const onDataSpy = vi.fn(() => onDataDisposable);
-const fakeTerm = {
-  write: writeSpy,
-  reset: resetSpy,
-  resize: resizeSpy,
-  focus: focusSpy,
-  scrollToBottom: scrollToBottomSpy,
-  scrollToLine: scrollToLineSpy,
-  onData: onDataSpy,
-  buffer: { active: { baseY: 0, viewportY: 0 } },
-  cols: 80,
-  rows: 24,
-};
-const fitFitSpy = vi.fn();
-const proposeDimensionsSpy = vi.fn(() => ({ cols: 134, rows: 51 }));
-const fakeFit = { fit: fitFitSpy, proposeDimensions: proposeDimensionsSpy };
+// Shared terminal-hook test harness — see tests/util/terminalHarness.ts.
+// `fakeTerm` and `fakeFit` are the assertion targets; `createXtermSingletonMock`
+// is the factory for vi.mock's replacement of `xtermSingleton`.
+const fakeTerm = createFakeTerminal();
+const fakeFit = createFakeFit({ cols: 134, rows: 51 });
 
-// We bypass ensureTerminal by mocking the singleton module directly.
-vi.mock('../../src/terminal/xtermSingleton', async () => {
-  let activeSid: string | null = null;
-  let unsub: (() => void) | null = null;
-  let inDisp: { dispose: () => void } | null = null;
-  let snapReplay: (() => Promise<void>) | null = null;
-  return {
-    ensureTerminal: vi.fn(),
-    getTerm: vi.fn(() => fakeTerm),
-    getFit: vi.fn(() => fakeFit),
-    getActiveSid: vi.fn(() => activeSid),
-    setActiveSid: vi.fn((s: string | null) => {
-      activeSid = s;
-    }),
-    getUnsubscribeData: vi.fn(() => unsub),
-    setUnsubscribeData: vi.fn((fn: (() => void) | null) => {
-      unsub = fn;
-    }),
-    getInputDisposable: vi.fn(() => inDisp),
-    setInputDisposable: vi.fn((d: { dispose: () => void } | null) => {
-      inDisp = d;
-    }),
-    getSnapshotReplay: vi.fn(() => snapReplay),
-    setSnapshotReplay: vi.fn((fn: (() => Promise<void>) | null) => {
-      snapReplay = fn;
-    }),
-    // Mirror the real helper: `term.write('', cb)` then `cb()` scrolls.
-    // The fake `write` invokes its cb synchronously, so this also runs
-    // the scroll spy synchronously — perfect for ordering assertions.
-    writeAndScrollToBottom: vi.fn((t: any) => {
-      t.write('', () => t.scrollToBottom());
-    }),
-    __resetSingletonForTests: vi.fn(() => {
-      activeSid = null;
-      unsub = null;
-      inDisp = null;
-      snapReplay = null;
-    }),
-  };
-});
+vi.mock('../../src/terminal/xtermSingleton', () =>
+  createXtermSingletonMock(() => fakeTerm, () => fakeFit),
+);
+
+// Convenience locals so the assertion bodies below read naturally.
+const writeSpy = fakeTerm.write;
+const resetSpy = fakeTerm.reset;
+const resizeSpy = fakeTerm.resize;
+const focusSpy = fakeTerm.focus;
+const scrollToBottomSpy = fakeTerm.scrollToBottom;
+const onDataSpy = fakeTerm.onData;
+const inputDisposableDispose = fakeTerm.inputDisposableDispose;
+const callLog = fakeTerm.callLog;
+const fitFitSpy = fakeFit.fit;
+const proposeDimensionsSpy = fakeFit.proposeDimensions;
 
 // Mock store — _clearPtyExit is the only piece usePtyAttach reads via the
 // hook selector. The fork-on-spawn path (right-click "Copy session") also
@@ -115,76 +69,24 @@ import {
   getActiveSid,
 } from '../../src/terminal/xtermSingleton';
 
-type AttachResp = { snapshot: string; cols: number; rows: number; pid: number } | null;
+// `makePtyBridge` used to live in this file; it's now in the harness as
+// `createPtyBridge`. Keep the legacy name as a thin alias so the test
+// bodies below don't all have to be rewritten in this PR.
+const makePtyBridge = createPtyBridge;
 
-function makePtyBridge(opts: { attach?: AttachResp; snapshot?: { snapshot: string; seq: number } } = {}) {
-  const attachResp: AttachResp =
-    opts.attach === undefined
-      ? { snapshot: 'snap', cols: 80, rows: 24, pid: 1234 }
-      : opts.attach;
-  // L4 PR-B (#865): the snapshot the visible terminal actually paints
-  // comes from `getBufferSnapshot`, NOT from `attach.snapshot` (which is
-  // now only kept for cols/rows/pid). Default to the same string so
-  // existing assertions (`writeSpy was called with 'snap'`) still pass.
-  const snapshotResp: { snapshot: string; seq: number } =
-    opts.snapshot ?? { snapshot: 'snap', seq: 0 };
-  let onDataHandler: ((p: { sid: string; chunk: string; seq: number }) => void) | null = null;
-  let onExitHandler:
-    | ((evt: { sessionId: string; code?: number | null; signal?: string | number | null }) => void)
-    | null = null;
-  const detach = vi.fn(async (_sid: string) => undefined);
-  const attach = vi.fn(async (_sid: string) => attachResp);
-  const spawn = vi.fn(async (_sid: string, _cwd: string) => ({
-    ok: true as const,
-    sid: _sid,
-    pid: 999,
-    cols: 80,
-    rows: 24,
-  }));
-  const input = vi.fn();
-  const resize = vi.fn();
-  const onDataUnsub = vi.fn();
-  const onData = vi.fn((cb: (p: { sid: string; chunk: string; seq: number }) => void) => {
-    onDataHandler = cb;
-    return onDataUnsub;
-  });
-  const onExitUnsub = vi.fn();
-  const onExit = vi.fn((cb: typeof onExitHandler) => {
-    onExitHandler = cb;
-    return onExitUnsub;
-  });
-  const getBufferSnapshot = vi.fn(async (_sid: string) => snapshotResp);
-  return {
-    bridge: { attach, detach, spawn, input, resize, onData, onExit, getBufferSnapshot },
-    spies: { attach, detach, spawn, onData, onDataUnsub, onExit, onExitUnsub, input, resize, getBufferSnapshot },
-    fire: {
-      data: (p: { sid: string; chunk: string; seq: number }) => onDataHandler?.(p),
-      exit: (e: Parameters<NonNullable<typeof onExitHandler>>[0]) => onExitHandler?.(e),
-    },
-  };
-}
-
-const flush = () => new Promise((r) => setTimeout(r, 0));
-const flushAll = async () => {
-  await act(async () => {
-    await flush();
-    await flush();
-    await flush();
-  });
-};
+// `flushAll` is a thin wrapper around the named harness helper — same
+// behavior (three setTimeout-0 yields inside an `act`), but the harness
+// version documents what's being drained (usePtyAttach's await chain).
+const flushAll = (): Promise<void> => settleAttach({ wrap: act });
+// One-shot microtask yield, used inline in tests for "let one await tick".
+const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
 describe('usePtyAttach', () => {
   beforeEach(() => {
     __resetSingletonForTests();
-    writeSpy.mockClear();
-    resetSpy.mockClear();
-    resizeSpy.mockClear();
-    focusSpy.mockClear();
-    scrollToBottomSpy.mockClear();
-    scrollToLineSpy.mockClear();
-    callLog.length = 0;
-    onDataSpy.mockClear();
-    inputDisposableDispose.mockClear();
+    resetFakeTerminalSpies(fakeTerm);
+    fakeTerm.cols = 80;
+    fakeTerm.rows = 24;
     fitFitSpy.mockClear();
     proposeDimensionsSpy.mockClear();
     proposeDimensionsSpy.mockReturnValue({ cols: 134, rows: 51 });
@@ -193,13 +95,13 @@ describe('usePtyAttach', () => {
   });
 
   afterEach(() => {
-    delete (window as any).ccsmPty;
+    uninstallCcsmPty();
     __resetSingletonForTests();
   });
 
   it('attaches on mount: writes snapshot, subscribes onData, sets activeSid, ready state', async () => {
     const { bridge, spies } = makePtyBridge();
-    (window as any).ccsmPty = bridge;
+    installCcsmPty(bridge);
 
     const { result } = renderHook(() => usePtyAttach('sid-A', '/tmp'));
     expect(result.current.state.kind).toBe('attaching');
@@ -217,7 +119,7 @@ describe('usePtyAttach', () => {
 
   it('on sessionId change: detaches previous, unsubscribes, re-attaches new', async () => {
     const { bridge, spies } = makePtyBridge();
-    (window as any).ccsmPty = bridge;
+    installCcsmPty(bridge);
 
     const { rerender, result } = renderHook(({ sid }) => usePtyAttach(sid, '/tmp'), {
       initialProps: { sid: 'sid-A' },
@@ -249,7 +151,7 @@ describe('usePtyAttach', () => {
       if (calls === 1) return null;
       return { snapshot: 'ignored-now', cols: 80, rows: 24, pid: 1 };
     });
-    (window as any).ccsmPty = bridge;
+    installCcsmPty(bridge);
 
     renderHook(() => usePtyAttach('sid-C', '/cwd'));
     await flushAll();
@@ -274,7 +176,7 @@ describe('usePtyAttach', () => {
       if (calls === 1) return null;
       return { snapshot: 'ignored', cols: 80, rows: 24, pid: 1 };
     });
-    (window as any).ccsmPty = bridge;
+    installCcsmPty(bridge);
     mockStoreState.pendingForkSource = { 'sid-FORK': 'sid-SOURCE' };
 
     renderHook(() => usePtyAttach('sid-FORK', '/cwd'));
@@ -302,7 +204,7 @@ describe('usePtyAttach', () => {
       if (calls === 1) return null;
       return { snapshot: 'ignored-now', cols: 120, rows: 30, pid: 1 };
     });
-    (window as any).ccsmPty = bridge;
+    installCcsmPty(bridge);
 
     renderHook(() => usePtyAttach('sid-867', '/cwd'));
     await flushAll();
@@ -319,7 +221,7 @@ describe('usePtyAttach', () => {
 
   it('post-attach fit is a no-op when container size is stable: no replay, snapshot fetched once (#888)', async () => {
     const { bridge, spies } = makePtyBridge({ snapshot: { snapshot: 'snap', seq: 0 } });
-    (window as any).ccsmPty = bridge;
+    installCcsmPty(bridge);
 
     // fitFitSpy default = does NOT mutate cols/rows → no size delta.
     renderHook(() => usePtyAttach('sid-867s', '/cwd'));
@@ -335,7 +237,7 @@ describe('usePtyAttach', () => {
 
   it('post-attach fit triggers backend resize + snapshot replay when container size differs (#867 / #852)', async () => {
     const { bridge, spies } = makePtyBridge({ snapshot: { snapshot: 'snap', seq: 0 } });
-    (window as any).ccsmPty = bridge;
+    installCcsmPty(bridge);
 
     // Simulate the real #852 case: visible viewport differs from spawn-time
     // 80x24 — fit.fit() reflows the term to a new size.
@@ -371,7 +273,7 @@ describe('usePtyAttach', () => {
 
   it('classifies pty exit: clean (code 0, no signal)', async () => {
     const { bridge, fire } = makePtyBridge();
-    (window as any).ccsmPty = bridge;
+    installCcsmPty(bridge);
     const { result } = renderHook(() => usePtyAttach('sid-D', ''));
     await flushAll();
     fire.exit({ sessionId: 'sid-D', code: 0, signal: null });
@@ -383,7 +285,7 @@ describe('usePtyAttach', () => {
 
   it('classifies pty exit: crashed (signal set)', async () => {
     const { bridge, fire } = makePtyBridge();
-    (window as any).ccsmPty = bridge;
+    installCcsmPty(bridge);
     const { result } = renderHook(() => usePtyAttach('sid-E', ''));
     await flushAll();
     fire.exit({ sessionId: 'sid-E', code: null, signal: 'SIGKILL' });
