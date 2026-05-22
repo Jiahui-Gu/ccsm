@@ -10,12 +10,13 @@
 // OR main becomes a TypeScript error (`as const` gives literal types) rather
 // than a silent IPC dead-letter at runtime.
 //
-// Scope intentionally limited (per task brief) to the five high-churn
+// Scope intentionally limited (per task brief) to the six high-churn
 // namespaces:
 //   - pty:*       — node-pty bridge (lifecycle + data fan-out)
 //   - session:*   — sessionWatcher signals + renderer→main mirrors
 //   - window:*    — title-bar controls + close-action dialog
-//   - updates:*   — electron-updater status / actions
+//   - updates:*   — electron-updater status / actions (renderer↔main invokes)
+//   - update:*    — fan-out events from electron-updater (main→renderer sends)
 //   - db:*        — app_state key/value persistence
 //
 // Renderer-side `.d.ts` files (`src/pty.d.ts`, `src/session.d.ts`) deliberately
@@ -71,6 +72,16 @@ export const UPDATES_CHANNELS = {
   install: 'updates:install',
   getAutoCheck: 'updates:getAutoCheck',
   setAutoCheck: 'updates:setAutoCheck',
+} as const;
+
+// Fan-out events emitted by `electron/updater.ts` alongside the aggregated
+// `updates:status` channel. All three are main → renderer sends so renderer
+// listeners can subscribe to a single transition without switching on kind.
+export const UPDATE_CHANNELS = {
+  // main → renderer
+  available: 'update:available',
+  downloaded: 'update:downloaded',
+  error: 'update:error',
 } as const;
 
 export const DB_CHANNELS = {

@@ -7,6 +7,7 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 import {
   DB_CHANNELS,
+  UPDATE_CHANNELS,
   UPDATES_CHANNELS,
   WINDOW_CHANNELS,
 } from '../../shared/ipcChannels';
@@ -140,8 +141,8 @@ const api = {
   },
   onUpdateDownloaded: (handler: (info: { version: string }) => void): (() => void) => {
     const wrap = (_e: IpcRendererEvent, payload: { version: string }) => handler(payload);
-    ipcRenderer.on('update:downloaded', wrap);
-    return () => ipcRenderer.removeListener('update:downloaded', wrap);
+    ipcRenderer.on(UPDATE_CHANNELS.downloaded, wrap);
+    return () => ipcRenderer.removeListener(UPDATE_CHANNELS.downloaded, wrap);
   },
 
   window: {

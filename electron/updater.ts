@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain } from 'electron';
 import { autoUpdater } from 'electron-updater';
-import { UPDATES_CHANNELS } from './shared/ipcChannels';
+import { UPDATE_CHANNELS, UPDATES_CHANNELS } from './shared/ipcChannels';
 
 // All status updates flow through one channel so the renderer doesn't have to
 // subscribe to N separate event names. The shape mirrors electron-updater's
@@ -26,11 +26,8 @@ const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
 
 // Named event channels — requested in the release infra spec in addition to
 // the aggregated `updates:status` channel. Keeping both channels is cheap and
-// makes renderer code (e.g. "show a toast on downloaded") trivial.
-const CHAN_AVAILABLE = 'update:available';
-const CHAN_DOWNLOADED = 'update:downloaded';
-const CHAN_ERROR = 'update:error';
-const CHAN_STATUS = UPDATES_CHANNELS.status;
+// makes renderer code (e.g. "show a toast on downloaded") trivial. See
+// `UPDATE_CHANNELS` (singular) in shared/ipcChannels.ts.
 
 function sendAll(channel: string, payload: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -40,15 +37,15 @@ function sendAll(channel: string, payload: unknown): void {
 
 function broadcast(status: UpdateStatus): void {
   lastStatus = status;
-  sendAll(CHAN_STATUS, status);
+  sendAll(UPDATES_CHANNELS.status, status);
   // Fan out to the specific channels too so renderer listeners that only
   // care about one transition don't have to switch on kind themselves.
   if (status.kind === 'available') {
-    sendAll(CHAN_AVAILABLE, { version: status.version, releaseDate: status.releaseDate });
+    sendAll(UPDATE_CHANNELS.available, { version: status.version, releaseDate: status.releaseDate });
   } else if (status.kind === 'downloaded') {
-    sendAll(CHAN_DOWNLOADED, { version: status.version });
+    sendAll(UPDATE_CHANNELS.downloaded, { version: status.version });
   } else if (status.kind === 'error') {
-    sendAll(CHAN_ERROR, { message: status.message });
+    sendAll(UPDATE_CHANNELS.error, { message: status.message });
   }
 }
 

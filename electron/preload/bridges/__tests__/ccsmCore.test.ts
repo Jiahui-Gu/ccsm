@@ -12,7 +12,7 @@
 // `invoke` to resolve.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { DB_CHANNELS, UPDATES_CHANNELS, WINDOW_CHANNELS } from '../../../shared/ipcChannels';
+import { DB_CHANNELS, UPDATE_CHANNELS, UPDATES_CHANNELS, WINDOW_CHANNELS } from '../../../shared/ipcChannels';
 
 const { exposeSpy, invokeSpy, sendSpy, onSpy, removeListenerSpy } = vi.hoisted(() => ({
   exposeSpy: vi.fn(),
@@ -214,7 +214,7 @@ describe('ccsmCore preload bridge', () => {
   // open / window-state change.
   it.each<[string, string]>([
     ['onUpdateStatus', UPDATES_CHANNELS.status],
-    ['onUpdateDownloaded', 'update:downloaded'],
+    ['onUpdateDownloaded', UPDATE_CHANNELS.downloaded],
   ])('%s registers and cleanly unsubscribes on "%s"', (m, chan) => {
     const api = getApi();
     const cb = vi.fn();

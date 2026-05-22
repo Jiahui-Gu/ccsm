@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { EventEmitter } from 'events';
-import { UPDATES_CHANNELS } from '../shared/ipcChannels';
+import { UPDATE_CHANNELS, UPDATES_CHANNELS } from '../shared/ipcChannels';
 
 // ----------------------------------------------------------------------------
 // Mocks
@@ -156,7 +156,7 @@ describe('updater: IPC wiring', () => {
       releaseDate: '2026-01-01'
     });
 
-    const availableSends = sendsFor('update:available');
+    const availableSends = sendsFor(UPDATE_CHANNELS.available);
     expect(availableSends).toContainEqual({ version: '1.2.3', releaseDate: '2026-01-01' });
   });
 
@@ -164,14 +164,14 @@ describe('updater: IPC wiring', () => {
     autoUpdaterEmitter.emit('update-downloaded', { version: '1.2.3' });
 
     expect(sendsFor(UPDATES_CHANNELS.status)).toContainEqual({ kind: 'downloaded', version: '1.2.3' });
-    expect(sendsFor('update:downloaded')).toContainEqual({ version: '1.2.3' });
+    expect(sendsFor(UPDATE_CHANNELS.downloaded)).toContainEqual({ version: '1.2.3' });
   });
 
   it('broadcasts status on error and fires update:error channel', () => {
     autoUpdaterEmitter.emit('error', new Error('network down'));
 
     expect(sendsFor(UPDATES_CHANNELS.status)).toContainEqual({ kind: 'error', message: 'network down' });
-    expect(sendsFor('update:error')).toContainEqual({ message: 'network down' });
+    expect(sendsFor(UPDATE_CHANNELS.error)).toContainEqual({ message: 'network down' });
   });
 
   it('updates:check returns not-available in dev (unpackaged) without calling autoUpdater', async () => {
