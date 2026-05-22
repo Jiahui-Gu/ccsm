@@ -3,7 +3,25 @@ import { renderHook } from '@testing-library/react';
 
 const fitFitSpy = vi.fn();
 const fakeFit = { fit: fitFitSpy };
-const fakeTerm = { cols: 100, rows: 30 };
+// Mutable buffer state so individual tests can set up pre-resize
+// atBottom vs scrolled-up scenarios.
+const fakeBuffer = { active: { baseY: 0, viewportY: 0 } };
+const scrollToBottomSpy = vi.fn();
+const scrollToLineSpy = vi.fn();
+// `write` invokes its drain callback synchronously so the post-write
+// scroll restoration lands in the same microtask sequence as the test's
+// awaits — mirrors the usePtyAttach test fake.
+const writeSpy = vi.fn((data: string, cb?: () => void) => {
+  if (cb) cb();
+});
+const fakeTerm = {
+  cols: 100,
+  rows: 30,
+  buffer: fakeBuffer,
+  scrollToBottom: scrollToBottomSpy,
+  scrollToLine: scrollToLineSpy,
+  write: writeSpy,
+};
 
 let snapshotReplayFn: (() => Promise<void>) | null = null;
 
@@ -56,6 +74,11 @@ describe('useTerminalResize', () => {
     fitFitSpy.mockClear();
     observeSpy.mockClear();
     disconnectSpy.mockClear();
+    scrollToBottomSpy.mockClear();
+    scrollToLineSpy.mockClear();
+    writeSpy.mockClear();
+    fakeBuffer.active.baseY = 0;
+    fakeBuffer.active.viewportY = 0;
     lastObserverCb = null;
     snapshotReplayFn = null;
     originalRO = globalThis.ResizeObserver;
@@ -132,5 +155,61 @@ describe('useTerminalResize', () => {
     vi.advanceTimersByTime(80);
     // Resize still pushed to backend; absence of replay handler is non-fatal.
     expect(resizeBridge).toHaveBeenCalledWith('sid-A', 100, 30);
+  });
+
+  // Scroll-restoration gating (fix/attach-scroll-to-bottom): the replay
+  // handler unconditionally parks the viewport at the bottom, which is
+  // the right behaviour for attach but hostile on resize when the user
+  // was scrolled up reading scrollback. The hook must snapshot
+  // `atBottom` BEFORE the backend resize and only let the bottom-park
+  // stand when it was true; otherwise it should restore the saved
+  // viewportY via `scrollToLine`.
+  it('resize when user WAS at bottom pre-resize: no scrollToLine, replay-side scroll stands', async () => {
+    const replaySpy = vi.fn(async () => {});
+    snapshotReplayFn = replaySpy;
+    // baseY === viewportY → atBottom.
+    fakeBuffer.active.baseY = 500;
+    fakeBuffer.active.viewportY = 500;
+
+    const host = document.createElement('div');
+    const ref = { current: host };
+    renderHook(() => useTerminalResize(ref));
+    lastObserverCb!([] as unknown as ResizeObserverEntry[], {} as ResizeObserver);
+    vi.advanceTimersByTime(80);
+
+    await vi.runAllTimersAsync();
+    vi.useRealTimers();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(replaySpy).toHaveBeenCalledTimes(1);
+    // Pre-resize atBottom → don't restore a prior line.
+    expect(scrollToLineSpy).not.toHaveBeenCalled();
+  });
+
+  it('resize when user was scrolled UP pre-resize: scrollToLine restores saved viewportY after replay', async () => {
+    const replaySpy = vi.fn(async () => {});
+    snapshotReplayFn = replaySpy;
+    // baseY far ahead of viewportY → user scrolled up; gap > 1.
+    fakeBuffer.active.baseY = 500;
+    fakeBuffer.active.viewportY = 120;
+
+    const host = document.createElement('div');
+    const ref = { current: host };
+    renderHook(() => useTerminalResize(ref));
+    lastObserverCb!([] as unknown as ResizeObserverEntry[], {} as ResizeObserver);
+    vi.advanceTimersByTime(80);
+
+    await vi.runAllTimersAsync();
+    vi.useRealTimers();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(replaySpy).toHaveBeenCalledTimes(1);
+    // The rendezvous write('') fires its cb synchronously in our fake,
+    // so scrollToLine should land with the saved pre-resize viewportY.
+    expect(scrollToLineSpy).toHaveBeenCalledWith(120);
   });
 });
