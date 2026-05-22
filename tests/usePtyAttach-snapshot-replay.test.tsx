@@ -62,7 +62,8 @@ function newPendingSnapshot(): MockState['pendingSnapshot'] {
 
 function installMockTerminal(): void {
   const term = {
-    write: (s: string) => { M.writes.push(s); },
+    // empty writes are drain-rendezvous markers (writeAndScrollToBottom)
+    write: (s: string) => { if (s !== '') M.writes.push(s); },
     reset: () => { /* no-op for the mock */ },
     resize: (_c: number, _r: number) => { /* no-op */ },
     focus: () => { /* no-op */ },
