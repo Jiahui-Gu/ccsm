@@ -81,8 +81,15 @@ export function createGroupsSlice(set: SetFn, get: GetFn): GroupsSlice {
     },
 
     renameGroup: (id, name) => {
+      // Clear `nameKey` so the user-supplied name wins over the i18n default.
+      // Default groups seed both `name` and `nameKey` (so language switches
+      // re-localize), but once the user renames, that's explicit intent —
+      // the renderer (`GroupRow`) prefers `nameKey` when present, so leaving
+      // it set would make the rename invisible.
       set((s) => ({
-        groups: s.groups.map((g) => (g.id === id ? { ...g, name } : g)),
+        groups: s.groups.map((g) =>
+          g.id === id ? { ...g, name, nameKey: undefined } : g
+        ),
       }));
     },
 

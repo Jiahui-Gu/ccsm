@@ -71,6 +71,20 @@ describe('groupsSlice', () => {
     expect(h.state().groups.find((g) => g.id === 'g-default')!.name).toBe('Renamed');
   });
 
+  it('renameGroup clears nameKey so user input overrides i18n default', () => {
+    // The bootstrap "Sessions" group seeds both `name` and `nameKey`. The
+    // renderer prefers `nameKey` when set, so a rename that only updates
+    // `name` is invisible. Verify that `renameGroup` drops `nameKey`.
+    const h = harness();
+    expect(h.state().groups.find((g) => g.id === 'g-default')!.nameKey).toBe(
+      'sidebar.defaultGroupName'
+    );
+    h.slice.renameGroup('g-default', 'Renamed');
+    const renamed = h.state().groups.find((g) => g.id === 'g-default')!;
+    expect(renamed.name).toBe('Renamed');
+    expect(renamed.nameKey).toBeUndefined();
+  });
+
   it('archiveGroup / unarchiveGroup flips kind', () => {
     const h = harness();
     h.slice.archiveGroup('g-default');
