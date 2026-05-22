@@ -72,6 +72,12 @@ jobs:
       # failed runs of this workflow attach check-runs to the same PR head
       # and would fail the gate. See: failing run 26205515547.
       # When adding a new required CI check, append it here.
+      # NOTE: check-source is intentionally NOT listed here. It is defined
+      # in main-source-guard.yml with `on.pull_request.branches: [main]`,
+      # so it only fires on PRs targeting `main` and never on feature →
+      # working PRs (which is what this gate inspects). The later
+      # "Wait for check-source on promote PR" step covers check-source on
+      # the working → main promote PR where it does fire.
       EXPECTED_CHECKS: |
         e2e (macos-latest)
         e2e (ubuntu-latest)
@@ -80,7 +86,6 @@ jobs:
         lint + typecheck + test (ubuntu-latest)
         lint + typecheck + test (windows-latest)
         no-silent-drops
-        check-source
     steps:
       - name: Checkout
         uses: actions/checkout@v4
