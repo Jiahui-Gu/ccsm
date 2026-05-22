@@ -6,6 +6,7 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { CanvasAddon } from '@xterm/addon-canvas';
 import { useStore } from '../stores/store';
 import { SCROLLBACK_LINES_DEFAULT } from '../stores/slices/types';
+import { warn } from '../shared/log';
 
 // Module-scope singleton state for the renderer's xterm view.
 //
@@ -297,18 +298,18 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
       }),
     );
   } catch (e) {
-    console.warn('[TerminalPane] web-links addon failed', e);
+    warn('xterm', 'web-links addon failed', e);
   }
   try {
     term.loadAddon(new ClipboardAddon());
   } catch (e) {
-    console.warn('[TerminalPane] clipboard addon failed', e);
+    warn('xterm', 'clipboard addon failed', e);
   }
   try {
     term.loadAddon(new Unicode11Addon());
     term.unicode.activeVersion = '11';
   } catch (e) {
-    console.warn('[TerminalPane] unicode11 addon failed', e);
+    warn('xterm', 'unicode11 addon failed', e);
   }
   // Canvas renderer is the safe middle ground (DOM is slow on dense
   // output, WebGL flakes under RDP). Fall back silently to default DOM
@@ -316,7 +317,7 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
   try {
     term.loadAddon(new CanvasAddon());
   } catch (e) {
-    console.warn('[TerminalPane] canvas addon failed, falling back to DOM', e);
+    warn('xterm', 'canvas addon failed, falling back to DOM', e);
   }
 
   term.open(host);
