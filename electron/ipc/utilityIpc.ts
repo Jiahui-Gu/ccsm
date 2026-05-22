@@ -30,9 +30,13 @@ export interface UtilityIpcDeps {
 // The CLI transcripts under ~/.claude/projects can run into hundreds of
 // files; the head-parse is fast per file but the cumulative latency makes
 // the ImportDialog's "Scanning…" state visible for several seconds on cold
-// open. Eager-load the scan at app `ready` and serve cached results to
-// renderers, refreshing in the background on each request so newly-recorded
-// sessions show up without a manual reload.
+// open. Eager-load the scan at app `ready` via `primeImportableCache()` so
+// the first user open just awaits the already-resolved priming promise;
+// subsequent opens always await a fresh scan so newly-recorded sessions
+// show up without a manual reload (bug: stale list on second open).
+//
+// `importablePending` is a single-flight mutex: concurrent IPCs share the
+// in-flight scan rather than each triggering their own filesystem walk.
 let importableCache: ScannableSession[] = [];
 let importablePending: Promise<ScannableSession[]> | null = null;
 
@@ -54,13 +58,11 @@ function refreshImportableCache(): Promise<ScannableSession[]> {
 }
 
 async function getImportableSessions(): Promise<ScannableSession[]> {
-  // Hot cache: serve instantly and refresh in the background so the next
-  // call sees fresher data. Cold cache: await the in-flight (or new) scan
-  // so the renderer never gets [].
-  if (importableCache.length > 0) {
-    void refreshImportableCache();
-    return importableCache;
-  }
+  // Always await a fresh scan. Concurrent callers share the in-flight
+  // promise via `importablePending` so opening the dialog never double-
+  // scans. Cold-open latency is mitigated by `primeImportableCache()`
+  // running at app `ready`: by the time the user opens the dialog the
+  // priming scan has typically already resolved.
   return refreshImportableCache();
 }
 
