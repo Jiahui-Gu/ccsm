@@ -62,8 +62,13 @@ function newPendingSnapshot(): MockState['pendingSnapshot'] {
 
 function installMockTerminal(): void {
   const term = {
-    // empty writes are drain-rendezvous markers (writeAndScrollToBottom)
-    write: (s: string) => { if (s !== '') M.writes.push(s); },
+    // empty writes are drain-rendezvous markers (writeAsync / writeAndScrollToBottom).
+    // The 2-arg form takes a flush callback — invoke it synchronously so the
+    // `await writeAsync(t, s)` promise resolves and the hook proceeds.
+    write: (s: string, cb?: () => void) => {
+      if (s !== '') M.writes.push(s);
+      if (cb) cb();
+    },
     reset: () => { /* no-op for the mock */ },
     resize: (_c: number, _r: number) => { /* no-op */ },
     focus: () => { /* no-op */ },
