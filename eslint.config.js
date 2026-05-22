@@ -67,6 +67,8 @@ export default [
         FocusEvent: 'readonly',
         DragEvent: 'readonly',
         ClipboardEvent: 'readonly',
+        ErrorEvent: 'readonly',
+        PromiseRejectionEvent: 'readonly',
         DataTransfer: 'readonly',
         File: 'readonly',
         FileList: 'readonly',
