@@ -113,8 +113,11 @@ muddy the discriminated union for no win.
 │    - reload (phase 'killing'):  ptyKill → on success dispatch     │
 │        follow-up reducer step that flips to phase 'attaching'     │
 │        AND bumps attemptId; usePtyAttach re-runs on attemptId     │
-│    - copy:   createNewSid → spawn(fork); if andThenRename, then   │
-│        flip pendingAction to {kind:'rename'} on the new sid       │
+│    - copy:   (reducer already created newSid + stored             │
+│        pendingAction on sessionRuntimeById[newSid]); on first     │
+│        attach, spawn-on-null fallback reads pendingAction and     │
+│        calls pty.spawn with sourceSid; on spawn success, runner   │
+│        flips pendingAction to {kind:'rename'} on the new sid      │
 │    - rename: focus the rename input → clear pending on submit     │
 │    - archive / unarchive: store mutation only → clear pending     │
 │    - retry: same shape as reload but no kill phase                │
@@ -294,7 +297,7 @@ This matches the current observable behavior; only the storage shape
 moves (one `pendingAction` slot on `sessionRuntimeById[newSid]` instead
 of two parallel maps `pendingForkSource[newSid]` + `pendingRenameId`).
 
-### Phase 3 — Migrate `retry` and `archive`
+### Phase 3 — Migrate `retry`, `archive`, and `unarchive`
 
 **Goal:** consolidate the remaining two action paths.
 
