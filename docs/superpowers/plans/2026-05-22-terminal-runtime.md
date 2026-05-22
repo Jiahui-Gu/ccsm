@@ -12,7 +12,7 @@
 The renderer-side terminal is conceptually one thing — "a visible xterm that
 mirrors a server-side authoritative PTY buffer, attaches to one session at a
 time, survives container resizes, and stays at the prompt on attach." In
-practice it is implemented as **three React hooks + one mutable module
+practice it is implemented as **four React hooks + one mutable module
 singleton + a callback handshake between them**:
 
 - `useXtermSingleton` constructs the Terminal once.
@@ -26,10 +26,11 @@ singleton + a callback handshake between them**:
   a manual getter/setter pair, with no invariants enforced between them.
 
 This shape has accreted across 8+ PRs (#852, #864–#867, #888, #1263, #1268,
-#1273, #1290, #1291, #1293, #1308) and the latest one (#1308) added two
-*more* coordination flags (`replayInFlight`, `replayPending`) because the
-two replay drivers raced. Future bugs in this layer will keep adding more
-flags unless we collapse the implicit state machine into an explicit one.
+#1273, #1290, #1291, #1293, #1308) and the in-flight scroll-bottom fix
+PR (#1308) adds yet two *more* coordination flags (`replayInFlight`,
+`replayPending`) because the two replay drivers raced. Future bugs in
+this layer will keep adding more flags unless we collapse the implicit
+state machine into an explicit one.
 
 ## What this proposal replaces
 
@@ -134,6 +135,25 @@ These are exactly the rules that #1308's flag soup + scattered
 single object makes them testable in isolation and removes the cross-hook
 callback handshake.
 
+### Error transitions
+
+The happy path above is half the story. The runtime must also encode the
+failure modes that the current hook scatters across try/catch sites:
+
+- **`pty.attach` returns null AND `spawn` fails** → FSM goes to a new
+  `error` state with `{message: string}`; UI renders Retry.
+- **`getBufferSnapshot` throws during initial attach** → `error`.
+- **`getBufferSnapshot` throws during a replay** → stay in `live`, log
+  warning, do **not** reset. Mirrors current behavior at
+  `usePtyAttach.ts:325-332`: a stale grid beats a dropped session.
+- **`pty.resize` IPC throws** → log, stay in current state, do not run
+  replay.
+- **Stale attach resolves AFTER a session switch** → discarded by the
+  runtime's "current attempt id" check (the equivalent of today's
+  `requestedSidRef`).
+- **`detach()` called while in `replaying`** → cancel the in-flight
+  replay (best-effort), transition to `detached`.
+
 ## Implementation phases (each = 1 PR)
 
 The total surface (4 files in `src/terminal/`, 3 test files, no IPC
@@ -146,14 +166,26 @@ changes) is small enough to do in 3 PRs, each shippable on its own.
 is unchanged externally. Hooks become thin adapters; `xtermSingleton.ts`
 shrinks to a module-singleton holder for the runtime itself.
 
-**Risk:** low — internal refactor, behavior preserved, harness (#1309)
-already covers the assertion surface.
+**Risk:** medium — phase 1 touches the entire renderer attach/resize/
+input/paste surface (rewriting `usePtyAttach.ts` and `xtermSingleton.ts`
+means touching attach, spawn-on-null, fork source, resize replay, input,
+exit overlay, focus, AND paste lifecycle — paste glue lives in
+`xtermSingleton.ts`); the test harness (#1309) is a hard prerequisite
+for keeping behavior pinned.
+
+**Hard prerequisite:** `#1309 (test harness)` must be merged before
+phase 1 starts. If #1309 is not merged when phase 1 starts, the harness
+migration must be done first.
 
 **Deliverables:**
 - `src/terminal/TerminalRuntime.ts` (new)
 - `src/terminal/xtermSingleton.ts` reduced to `getRuntime()` accessor +
   deprecated re-exports of `getTerm/getFit/...` that delegate to the
   runtime for one transitional release
+- **`setSnapshotReplay`/`getSnapshotReplay` are KEPT during Phase 1 as
+  deprecated compatibility seams that delegate to the runtime** —
+  `useTerminalResize` continues to call them unchanged. Phase 2 deletes
+  these seams. This is what keeps phase 1 a pure internal refactor.
 - Hooks rewritten as `runtime.attach(sid, cwd)` / `runtime.resize()` /
   `runtime.subscribe(setState)` adapters
 - Tests at two levels:

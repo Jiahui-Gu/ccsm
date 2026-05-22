@@ -41,17 +41,30 @@ parallel maps means too many subtrees re-rendering on every action.
 
 | Current | Replaced by |
 |---|---|
-| `reloadNonce`, `attachNonce`, retry counter logic | One `attemptId` field on the session entity; `usePtyAttach`'s `useEffect` depends on `attemptId`, no separate nonce |
-| `pendingForkSource: Record<sid, sid>` | `pendingAction: SessionAction \| null` on the new session entity, with discriminated union variants |
+| `reloadNonce`, `attachNonce`, retry counter logic | One `attemptId` field in a **parallel runtime map** (`sessionRuntimeById`); `usePtyAttach`'s `useEffect` depends on `attemptId`, no separate nonce |
+| `pendingForkSource: Record<sid, sid>` | `pendingAction: SessionAction \| null` in the same parallel runtime map, with discriminated union variants |
 | `pendingRenameId: sid \| null` | Same `pendingAction` slot — `{kind: 'rename'}` variant — consumed by RenameInput |
 | Imperative store mutators that orchestrate IPC + multiple `set` calls (`reloadSession`, `copySession`) | A thin `dispatchSessionAction(intent)` reducer that produces the new state synchronously; an effect layer reads the pending action and performs IPC |
 | Each action's UI handler reaching into 3 slices | UI just dispatches `SessionActionIntent` |
+
+**Out of scope** (not migrated by this proposal):
+- `flashStates: Record<sid, FlashState>` — UI attention derived from
+  session state, not a session-action intent.
+- `disconnectedSessions: Record<sid, ExitInfo>` — runtime exit state
+  written by the ptyExit classifier, not an action the user dispatched.
+
+Both stay where they are; conflating them with action intents would
+muddy the discriminated union for no win.
 
 ## What this proposal does NOT change
 
 - **The `SessionEntity` data model.** Audit #2 (sidebar agent) flagged
   this as a larger refactor; this proposal **does not** normalize the
-  entity. It only reduces the number of parallel maps. If we want to
+  entity. It only reduces the number of parallel maps. The new
+  `pendingAction` + `attemptId` fields live in a **parallel runtime
+  map** (`sessionRuntimeById: Record<sid, SessionRuntime>`), NOT on the
+  `SessionEntity` itself. This keeps the persisted entity untouched
+  (see "Transient state — must not be persisted" below). If we want to
   normalize later, it's an independent step.
 - **IPC contracts.** `window.ccsmPty.spawn / kill / etc.` keep their
   current shape.
@@ -81,11 +94,14 @@ parallel maps means too many subtrees re-rendering on every action.
 ┌───────────────────────────────────────────────────────────────────┐
 │  Intent reducer (in store)                                        │
 │                                                                   │
-│  Synchronously updates state:                                     │
-│    - sessions[sid].pendingAction = {kind, payload}                │
-│    - sessions[sid].attemptId += 1 (if action implies re-attach)   │
+│  Synchronously updates state in a parallel runtime map:           │
+│    - sessionRuntimeById[sid].pendingAction = {kind, payload}      │
+│    - sessionRuntimeById[sid].attemptId += 1 (only AFTER any       │
+│        side-effect that must precede re-attach has completed —    │
+│        see "two-phase actions" below)                             │
 │                                                                   │
 │  This is the entire store-side of an action. No IPC calls here.   │
+│  sessionRuntimeById is NOT persisted (see transient-state note).  │
 └───────────────────────────────────────────────────────────────────┘
                             │
                             ▼
@@ -93,12 +109,14 @@ parallel maps means too many subtrees re-rendering on every action.
 │  Side-effect runner (a hook in App.tsx, or a small effect file)   │
 │                                                                   │
 │  Subscribes to pendingAction changes; for each pending action:    │
-│    - reload: ptyKill → wait → clear pending; usePtyAttach's       │
-│        attemptId-dependent effect re-runs and re-attaches         │
-│    - copy:   createNewSid → spawn(fork) → clear pending           │
+│    - reload (phase 'killing'):  ptyKill → on success dispatch     │
+│        follow-up reducer step that flips to phase 'attaching'     │
+│        AND bumps attemptId; usePtyAttach re-runs on attemptId     │
+│    - copy:   createNewSid → spawn(fork); if andThenRename, then   │
+│        flip pendingAction to {kind:'rename'} on the new sid       │
 │    - rename: focus the rename input → clear pending on submit     │
 │    - archive: store mutation only → clear pending                 │
-│    - retry: same as reload but no kill                            │
+│    - retry: same shape as reload but no kill phase                │
 └───────────────────────────────────────────────────────────────────┘
 ```
 
@@ -106,19 +124,49 @@ parallel maps means too many subtrees re-rendering on every action.
 
 ```ts
 type SessionAction =
-  | { kind: 'reload' }
-  | { kind: 'copy'; sourceSid: string }
+  | { kind: 'reload'; phase: 'killing' | 'attaching' }
+  | { kind: 'copy'; sourceSid: string; andThenRename: boolean }
   | { kind: 'rename' }
-  | { kind: 'archive'; toGroupId: string | null }
+  | { kind: 'archive' }
   | { kind: 'retry' };
 
-// On the session entity:
-type SessionUiState = {
+// Parallel runtime map — NOT on the persisted SessionEntity:
+type SessionRuntime = {
   pendingAction: SessionAction | null;
   attemptId: number;
-  // existing fields stay
+};
+
+// In the store slice (transient, not persisted — see partialize note):
+type SessionRuntimeState = {
+  sessionRuntimeById: Record<string /* sid */, SessionRuntime>;
 };
 ```
+
+Notes on each variant:
+
+- **`reload`** is two-phase. Reducer step A sets
+  `{kind:'reload', phase:'killing'}` and does NOT bump `attemptId`.
+  The side-effect runner awaits `pty.kill`. On kill success, the runner
+  dispatches reducer step B which flips to
+  `{kind:'reload', phase:'attaching'}` AND bumps `attemptId`. Only then
+  does `usePtyAttach`'s effect (which depends on `attemptId`) re-run,
+  so we never re-attach to a dying PTY. This two-phase pattern is the
+  general principle for any action whose side-effect must complete
+  before attach re-runs.
+- **`copy`** is composite: a single `pendingAction` slot can't
+  represent "copy AND rename" if they were separate variants, so the
+  variant carries an `andThenRename` flag. The right-click "Copy
+  session" path uses `andThenRename: true` (matches today's behavior
+  where `copySession` sets both `pendingForkSource[newId]` and
+  `pendingRenameId = newId`). A hypothetical "copy without rename"
+  UX would set it false.
+- **`archive`** is parameter-less in the user-action sense. Current
+  `archiveSession` / `unarchiveSession` create or reuse archive
+  containers — they don't move to arbitrary groups. The target-group
+  resolution stays in the side-effect runner (or a helper), not in
+  the intent.
+- **`retry`** is the no-kill analogue of `reload`: reducer bumps
+  `attemptId` synchronously; runner has nothing to do.
 
 **Why one slot, not one map per action:** today each map is sparse and
 mostly empty; their union semantics are "at most one pending action per
@@ -128,10 +176,10 @@ auto-enforces the "one outstanding action per session" rule.
 
 **`attemptId` instead of `reloadNonce`+`attachNonce`:** the existing
 two-nonce setup splits "things that re-run attach" between a store nonce
-(reload) and a hook-local nonce (Retry). A single `attemptId` on the
-entity is incremented by the reducer for any action that needs re-attach.
-`usePtyAttach`'s effect depends on `attemptId`; both reload and retry
-just increment it.
+(reload) and a hook-local nonce (Retry). A single `attemptId` in the
+parallel runtime map is incremented by the reducer for any action that
+needs re-attach. `usePtyAttach`'s effect depends on `attemptId`; both
+reload (after kill completes) and retry just increment it.
 
 ## Implementation phases (each = 1 PR)
 
@@ -145,15 +193,22 @@ one nonce, one IPC call.
 `pendingAction` runs in parallel; once tests pass, old nonce removed.
 
 **Deliverables:**
-- `src/stores/slices/sessionActionSlice.ts` (new) — the reducer +
-  `dispatchSessionAction(intent)` action
-- `SessionAction` type in `types.ts`
+- `src/stores/slices/sessionActionSlice.ts` (new) — holds
+  `sessionRuntimeById` (transient, see partialize note) + the reducer
+  + `dispatchSessionAction(intent)` action
+- `SessionAction` + `SessionRuntime` types in `types.ts`
 - Side-effect runner for `reload` in a new `useSessionActionRunner` hook
-  mounted at App level
-- `usePtyAttach` depends on `session.attemptId` instead of `reloadNonce`
+  mounted at App level. Implements the two-phase reload: reducer sets
+  phase `'killing'` (no attemptId bump) → runner awaits `pty.kill` →
+  runner dispatches phase-B reducer that flips to `'attaching'` and
+  bumps `attemptId`. `usePtyAttach`'s effect depends only on
+  `attemptId`, so it cannot re-attach to a dying PTY.
+- `usePtyAttach` reads `attemptId` from `sessionRuntimeById[sid]`
+  instead of `reloadNonce`
 - Delete `reloadNonce` + `_clearReloadNonce` after migration
 - Tests at the reducer level (pure, no React) + integration test that
-  asserts the full reload flow
+  asserts the full reload flow, including a test that asserts attach
+  does NOT re-run between phase-A and phase-B
 
 ### Phase 2 — Migrate `copy / pendingForkSource` and `rename / pendingRenameId`
 
@@ -166,11 +221,16 @@ Mitigation: the reducer doesn't change the side-effect logic, it just
 reorganizes where state lives. Existing fork tests catch regressions.
 
 **Deliverables:**
-- Reducer handles `{kind: 'copy', sourceSid}` and `{kind: 'rename'}`
-- Side-effect runner for both
+- Reducer handles `{kind: 'copy', sourceSid, andThenRename}` and
+  `{kind: 'rename'}`
+- Side-effect runner for both. For `copy` with `andThenRename:true`,
+  on spawn-success the runner sets the new sid's `pendingAction` to
+  `{kind:'rename'}` (sequential composite, second step driven by the
+  same runner — no action chaining magic).
 - Delete `pendingForkSource: Record<...>` and `pendingRenameId`
 - `usePtyAttach`'s spawn-on-null fallback reads
-  `session.pendingAction?.kind === 'copy' ? action.sourceSid : undefined`
+  `sessionRuntimeById[sid]?.pendingAction?.kind === 'copy'
+    ? action.sourceSid : undefined`
   instead of reaching into the global map
 
 ### Phase 3 — Migrate `retry` and `archive`
@@ -243,19 +303,47 @@ After all three phases ship:
 
 ## Sequencing with the terminal runtime proposal
 
-Recommended order:
+Recommended order (revised — fewer interleavings, more stability):
 
-1. **TerminalRuntime phase 1** (introduce runtime, hooks still adapters)
-2. **SessionActionIntent phase 1** (reload migrated; uses
-   `runtime.reload()`)
-3. **TerminalRuntime phase 2** (drop snapshotReplay callback)
-4. **SessionActionIntent phase 2** (copy + rename migrated)
-5. **TerminalRuntime phase 3** (retire deprecated accessors)
-6. **SessionActionIntent phase 3** (retry + archive migrated)
+1. **TerminalRuntime phase 1 + 2 first.** The runtime is the stable
+   target API; alternating six PRs before that API settles increases
+   churn for both proposals.
+2. **SessionActionIntent phase 1** (reload — the simplest action,
+   built against the now-stable runtime).
+3. **Revisit interleaving** for the remaining phases based on how
+   Phase 1 went. We may find Phase 2/3 of either proposal can ship
+   independently, or that bundling them is cleaner — that call is
+   better made with one phase of evidence in hand.
 
-Total: 6 PRs over ~3 weeks, each shippable and behavior-equivalent on its
-own. No big-bang. Every PR can be reverted without dragging the rest
-back.
+Total still ~6 PRs over ~3 weeks, each shippable and behavior-equivalent
+on its own. No big-bang. Every PR can be reverted without dragging the
+rest back.
+
+---
+
+## Cross-cutting concern: transient state must NOT be persisted
+
+Both this proposal and the TerminalRuntime proposal introduce new
+in-memory state (`sessionRuntimeById` here; FSM state + replay buffers
+in the runtime). **None of it belongs in the persisted store.**
+Sessions are persisted by `src/stores/persist.ts` (zustand `persist`
+middleware). Anything we add for action coordination or runtime state
+must be excluded from the persisted snapshot — typically via
+`partialize` in the persist config, or by living in a slice that the
+persist config does not opt in.
+
+Concretely:
+
+- `sessionRuntimeById` must be omitted from `partialize`. A reloaded
+  app should start with an empty runtime map; pending actions don't
+  survive a restart (the IPC side-effect they were driving is also
+  gone).
+- The TerminalRuntime's FSM state, buffered writes, and snapshot
+  sequence numbers are renderer-process lifetime only and never
+  touch the persistor — already true today, must remain true.
+
+This is the single source of truth for the constraint; both proposals
+defer to it.
 
 ---
 
