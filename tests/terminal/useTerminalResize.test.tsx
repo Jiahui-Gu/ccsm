@@ -1,50 +1,30 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook } from '@testing-library/react';
+import { createFakeTerminal, createFakeFit, createXtermSingletonMock } from '../util/terminalHarness';
 
-const fitFitSpy = vi.fn();
-const fakeFit = { fit: fitFitSpy };
-// Mutable buffer state so individual tests can set up pre-resize
-// atBottom vs scrolled-up scenarios.
-const fakeBuffer = { active: { baseY: 0, viewportY: 0 } };
-const scrollToBottomSpy = vi.fn();
-const scrollToLineSpy = vi.fn();
-// `write` invokes its drain callback synchronously so the post-write
-// scroll restoration lands in the same microtask sequence as the test's
-// awaits — mirrors the usePtyAttach test fake.
-const writeSpy = vi.fn((data: string, cb?: () => void) => {
-  if (cb) cb();
-});
-const fakeTerm = {
-  cols: 100,
-  rows: 30,
-  buffer: fakeBuffer,
-  scrollToBottom: scrollToBottomSpy,
-  scrollToLine: scrollToLineSpy,
-  write: writeSpy,
-};
+// Shared terminal-hook test harness (see tests/util/terminalHarness.ts).
+// useTerminalResize reads cols/rows + buffer (for atBottom detection) +
+// write/scrollToBottom/scrollToLine (for the post-replay scroll restoration).
+// The harness covers all of these via createFakeTerminal.
+const fakeTerm = createFakeTerminal({ cols: 100, rows: 30 });
+const fakeFit = createFakeFit();
+const fitFitSpy = fakeFit.fit;
+const scrollToBottomSpy = fakeTerm.scrollToBottom;
+const scrollToLineSpy = fakeTerm.scrollToLine;
+const writeSpy = fakeTerm.write;
+const fakeBuffer = fakeTerm.buffer;
 
-let snapshotReplayFn: (() => Promise<void>) | null = null;
+vi.mock('../../src/terminal/xtermSingleton', () =>
+  createXtermSingletonMock(() => fakeTerm, () => fakeFit),
+);
 
-vi.mock('../../src/terminal/xtermSingleton', () => {
-  let activeSid: string | null = 'sid-A';
-  return {
-    ensureTerminal: vi.fn(),
-    getTerm: vi.fn(() => fakeTerm),
-    getFit: vi.fn(() => fakeFit),
-    getActiveSid: vi.fn(() => activeSid),
-    setActiveSid: vi.fn((s: string | null) => {
-      activeSid = s;
-    }),
-    getUnsubscribeData: vi.fn(() => null),
-    setUnsubscribeData: vi.fn(),
-    getInputDisposable: vi.fn(() => null),
-    setInputDisposable: vi.fn(),
-    getSnapshotReplay: vi.fn(() => snapshotReplayFn),
-    setSnapshotReplay: vi.fn((fn: (() => Promise<void>) | null) => { snapshotReplayFn = fn; }),
-    __resetSingletonForTests: vi.fn(),
-  };
-});
-
+// useTerminalResize reads `getSnapshotReplay()` and we need to control its
+// return value per-test. The harness's mock factory wires `setSnapshotReplay`
+// to a module-internal mutable, so we use the real (mocked) setter.
+import {
+  setSnapshotReplay,
+  setActiveSid,
+} from '../../src/terminal/xtermSingleton';
 import { useTerminalResize } from '../../src/terminal/useTerminalResize';
 
 // Capture the ResizeObserver callback so the test can fire it manually.
@@ -80,7 +60,10 @@ describe('useTerminalResize', () => {
     fakeBuffer.active.baseY = 0;
     fakeBuffer.active.viewportY = 0;
     lastObserverCb = null;
-    snapshotReplayFn = null;
+    // Harness default is `null`; this hook reads `getActiveSid()` and
+    // skips the resize IPC if there's no attached session, so prime it.
+    setActiveSid('sid-A');
+    setSnapshotReplay(null);
     originalRO = globalThis.ResizeObserver;
     (globalThis as any).ResizeObserver = ROStub;
     resizeBridge = vi.fn(async () => {});
@@ -122,7 +105,7 @@ describe('useTerminalResize', () => {
   // by usePtyAttach AFTER the backend resize IPC settles.
   it('PR-D: invokes the snapshot-replay handler after the resize IPC resolves', async () => {
     const replaySpy = vi.fn(async () => {});
-    snapshotReplayFn = replaySpy;
+    setSnapshotReplay(replaySpy);
     let resolveResize!: () => void;
     const resizePromise = new Promise<void>((r) => { resolveResize = r; });
     resizeBridge.mockImplementationOnce(() => resizePromise);
@@ -147,7 +130,7 @@ describe('useTerminalResize', () => {
   });
 
   it('PR-D: skips the replay when no handler is installed (no session attached)', () => {
-    snapshotReplayFn = null;
+    setSnapshotReplay(null);
     const host = document.createElement('div');
     const ref = { current: host };
     renderHook(() => useTerminalResize(ref));
@@ -166,7 +149,7 @@ describe('useTerminalResize', () => {
   // viewportY via `scrollToLine`.
   it('resize when user WAS at bottom pre-resize: no scrollToLine, replay-side scroll stands', async () => {
     const replaySpy = vi.fn(async () => {});
-    snapshotReplayFn = replaySpy;
+    setSnapshotReplay(replaySpy);
     // baseY === viewportY → atBottom.
     fakeBuffer.active.baseY = 500;
     fakeBuffer.active.viewportY = 500;
@@ -190,7 +173,7 @@ describe('useTerminalResize', () => {
 
   it('resize when user was scrolled UP pre-resize: scrollToLine restores saved viewportY after replay', async () => {
     const replaySpy = vi.fn(async () => {});
-    snapshotReplayFn = replaySpy;
+    setSnapshotReplay(replaySpy);
     // baseY far ahead of viewportY → user scrolled up; gap > 1.
     fakeBuffer.active.baseY = 500;
     fakeBuffer.active.viewportY = 120;
