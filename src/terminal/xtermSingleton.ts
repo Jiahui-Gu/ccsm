@@ -54,6 +54,40 @@ export function getTerm(): Terminal | null {
   return term;
 }
 
+/**
+ * Park the viewport at the bottom AFTER all queued writes have drained.
+ *
+ * xterm's `Terminal.write` is asynchronous: it pushes into an internal
+ * `WriteBuffer` that's flushed on the next microtask/raf. A synchronous
+ * `scrollToBottom()` immediately after `write(snapshot)` runs BEFORE the
+ * snapshot has actually advanced `baseY`, so the viewport ends up parked
+ * at the OLD bottom (which, after `term.reset()`, is row 0 — i.e. the
+ * top of the now-populated transcript). This is the bug behind "attach a
+ * session and the scrollbar lands at the middle/top of the transcript".
+ *
+ * The fix is the documented xterm idiom: pass a callback to `write`, which
+ * fires after the WriteBuffer has drained THIS chunk, and only THEN call
+ * `scrollToBottom()`. Empty-string writes are cheap (no parsing) and still
+ * cause the callback to be queued behind any prior pending writes, so we
+ * use `term.write('', cb)` as the rendezvous point regardless of how many
+ * `term.write(...)` calls preceded it.
+ *
+ * Used by `usePtyAttach` at every attach-path call site that paints into
+ * the terminal: initial snapshot + buffered drain, snapshot-replay tail,
+ * and the post-attach fit branch's replay. The resize path (in
+ * `useTerminalResize`) is gated on the user's prior atBottom state so a
+ * scrolled-up viewport isn't yanked down by a SIGWINCH.
+ */
+export function writeAndScrollToBottom(t: Terminal): void {
+  t.write('', () => {
+    try {
+      t.scrollToBottom();
+    } catch {
+      // best-effort — xterm may have been torn down between queue and drain.
+    }
+  });
+}
+
 export function getFit(): FitAddon | null {
   return fit;
 }
