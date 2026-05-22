@@ -103,6 +103,21 @@ export function resetFakeTerminalSpies(t: FakeTerminal): void {
   t.callLog.length = 0;
   t.buffer.active.baseY = 0;
   t.buffer.active.viewportY = 0;
+  // Restore default implementations — individual tests may have called
+  // `mockImplementation(...)` to capture async-schedule / event-ordering
+  // semantics for the specific assertion they need. Without restoring,
+  // those overrides leak into the NEXT test and break harness-level
+  // callLog ordering assertions.
+  t.write.mockImplementation((data: string, cb?: () => void) => {
+    t.callLog.push(`write:${data}`);
+    if (cb) cb();
+  });
+  t.scrollToBottom.mockImplementation(() => {
+    t.callLog.push('scrollToBottom');
+  });
+  t.scrollToLine.mockImplementation((line: number) => {
+    t.callLog.push(`scrollToLine:${line}`);
+  });
 }
 
 // ---------------------------------------------------------------------------

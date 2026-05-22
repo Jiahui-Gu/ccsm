@@ -491,8 +491,8 @@ describe('usePtyAttach', () => {
     renderHook(() => usePtyAttach('sid-scroll', '/tmp'));
     await flushAll();
 
-    // Snapshot was written.
-    expect(writeSpy).toHaveBeenCalledWith('snap-body');
+    // Snapshot was written (writeAsync passes a 2nd callback arg).
+    expect(writeSpy).toHaveBeenCalledWith('snap-body', expect.any(Function));
     // Scroll happened at least once.
     expect(scrollToBottomSpy).toHaveBeenCalled();
     // Crucial ordering: the rendezvous write('') landed BEFORE its cb
@@ -530,7 +530,7 @@ describe('usePtyAttach', () => {
       renderHook(() => usePtyAttach('sid-replay', '/tmp'));
       await flushAll();
 
-      expect(writeSpy).toHaveBeenCalledWith('replayed');
+      expect(writeSpy).toHaveBeenCalledWith('replayed', expect.any(Function));
       const replayIdx = callLog.lastIndexOf('write:replayed');
       const scrollIdx = callLog.indexOf('scrollToBottom', replayIdx);
       expect(replayIdx).toBeGreaterThanOrEqual(0);
