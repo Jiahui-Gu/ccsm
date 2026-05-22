@@ -127,7 +127,7 @@ This file is the reconciliation table for what's actually implemented in CCSM. E
 
 ## PR roadmap
 
-PRs land into `working`, then `working` → `main` via release-tag CI. See git log for the most recent landings.
+PRs land directly into `main`. Releases are cut by pushing `vX.Y.Z` tags on `main` (see Release flow in README). See git log for the most recent landings.
 
 Most recent landings (newest first):
 - PR #22 — P1 state toast on background sessions + Cmd+N / Cmd+Shift+N shortcuts
