@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as http from 'http';
 import * as crypto from 'crypto';
+import * as net from 'net';
 import type { AddressInfo } from 'net';
 import type { Socket } from 'net';
 
@@ -436,7 +437,6 @@ function rawUpgradeProbe(
   path: string
 ): Promise<{ status: number; raw: string }> {
   return new Promise((resolve, reject) => {
-    const net = require('net') as typeof import('net');
     const socket = net.connect(port, '127.0.0.1', () => {
       socket.write(
         [
