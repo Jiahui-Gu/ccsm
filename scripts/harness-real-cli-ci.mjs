@@ -31,7 +31,7 @@
 //   5. Runs each selected case against the shared launch, summarizes,
 //      exits non-zero on any failure.
 //
-// Subset (10 cases):
+// Subset (9 cases):
 //   - agent-icon-active-session-no-halo
 //   - cwd-picker-no-shortcut
 //   - sidebar-group-no-newsession-cluster
@@ -40,7 +40,6 @@
 //   - cwd-picker-top-chevron
 //   - cwd-picker-browse
 //   - caseSpacesInCwdSpawnsCorrectly
-//   - new-session-focus-cli
 //   - attach-replay-from-headless-buffer
 //
 // Excluded cases (with reason):
@@ -90,6 +89,14 @@
 //                                       CI setup; covered by the full
 //                                       harness in dogfood against a real
 //                                       claude binary.
+//   - new-session-focus-cli           : depends on shell-mode pty echo of
+//                                       marker; consumed by TUI on flaky
+//                                       windows runs. Same root cause as
+//                                       `pty-pid-stable-across-switch` —
+//                                       writes `FOCUS_PROBE_xxx` into a pty
+//                                       hosting the claude TUI and waits
+//                                       for it in xterm buffer. Covered by
+//                                       the full harness in dogfood.
 //
 // Run locally:
 //   node scripts/harness-real-cli-ci.mjs                # all CI subset
@@ -120,7 +127,6 @@ const CI_SUBSET = new Set([
   'cwd-picker-top-chevron',
   'cwd-picker-browse',
   'caseSpacesInCwdSpawnsCorrectly',
-  'new-session-focus-cli',
   'attach-replay-from-headless-buffer',
 ]);
 
