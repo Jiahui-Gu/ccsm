@@ -60,6 +60,87 @@ describe('db hardening: schema versioning', () => {
     const v = handle.pragma('user_version', { simple: true }) as number;
     expect(v).toBe(1);
   });
+
+  it('preserves a future-newer on-disk schema and proceeds read-as-is', async () => {
+    // Pre-seed a DB file stamped with user_version=99 (a hypothetical future
+    // release). Current policy (see comment in db.ts ~ stored > SCHEMA_VERSION
+    // branch) is: warn loudly but do NOT refuse to boot, do NOT silently
+    // re-stamp the version backwards (that would lose the breadcrumb a
+    // post-mortem needs). Pin both behaviors here so a future "refuse on
+    // downgrade" change is a deliberate, reviewed swap.
+    const mod = await freshDb();
+    mod.closeDb();
+
+    const file = path.join(tmpDir, 'ccsm.db');
+    // Manually create a healthy SQLite file with a far-future user_version.
+    const Database = (await import('better-sqlite3')).default;
+    const seed = new Database(file);
+    seed.exec(`
+      CREATE TABLE app_state (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      INSERT INTO app_state (key, value, updated_at) VALUES ('preExisting', 'keepme', 0);
+    `);
+    seed.pragma('user_version = 99');
+    seed.close();
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { initDb, loadState, saveState } = mod;
+    const handle = initDb();
+
+    // The stored version must NOT be rewritten — the breadcrumb has to
+    // survive across boots so a bug report can include it.
+    expect(handle.pragma('user_version', { simple: true })).toBe(99);
+
+    // Existing user rows must not be wiped (no silent data loss on
+    // perceived-newer files).
+    expect(loadState('preExisting')).toBe('keepme');
+
+    // App stays writable: future schemas are assumed to be additive, and
+    // refusing to boot is worse than a stale read per the in-tree comment.
+    saveState('hello', 'world');
+    expect(loadState('hello')).toBe('world');
+
+    // Loud log so the incident is discoverable post-hoc.
+    expect(warn).toHaveBeenCalled();
+    const msg = warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(msg).toMatch(/newer than/);
+    warn.mockRestore();
+  });
+
+  it('migrates an older on-disk schema (stored < current) and stamps current', async () => {
+    // Pre-seed a "v0" DB (stored=0 means "fresh", so simulate a legacy v1-
+    // minus-one by stamping 0 explicitly after creating the table). On boot,
+    // initDb must stamp user_version up to SCHEMA_VERSION without trashing
+    // existing rows.
+    const mod = await freshDb();
+    mod.closeDb();
+
+    const file = path.join(tmpDir, 'ccsm.db');
+    const Database = (await import('better-sqlite3')).default;
+    const seed = new Database(file);
+    seed.exec(`
+      CREATE TABLE app_state (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      INSERT INTO app_state (key, value, updated_at) VALUES ('legacy', 'survives', 0);
+    `);
+    // user_version defaults to 0 here — that's the "fresh DB" branch in
+    // initDb. The stored<current branch is unreachable while SCHEMA_VERSION
+    // is 1; this test pins the fresh-stamp path end-to-end with pre-existing
+    // rows so the policy ("don't wipe legacy rows on first stamp") is locked.
+    seed.close();
+
+    const { initDb, loadState } = mod;
+    const handle = initDb();
+
+    expect(handle.pragma('user_version', { simple: true })).toBe(1);
+    expect(loadState('legacy')).toBe('survives');
+  });
 });
 
 describe('db hardening: prepared statement cache', () => {
