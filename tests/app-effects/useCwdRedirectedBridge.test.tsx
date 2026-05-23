@@ -45,8 +45,24 @@ describe('useCwdRedirectedBridge', () => {
     expect(apply).not.toHaveBeenCalled();
   });
 
-  it('is a no-op when the bridge is missing', () => {
+  it('is a no-op when the bridge is missing: never invokes apply, mount + unmount clean', () => {
     delete (window as unknown as { ccsmSession?: unknown }).ccsmSession;
-    expect(() => renderHook(() => useCwdRedirectedBridge(vi.fn()))).not.toThrow();
+    const apply = vi.fn();
+    const { unmount } = renderHook(() => useCwdRedirectedBridge(apply));
+    expect(onCwdRedirected).not.toHaveBeenCalled();
+    expect(apply).not.toHaveBeenCalled();
+    unmount();
+    // Cleanup path must not have invoked the (absent) unsubscribe spy
+    // either — the early-return guards both subscribe and teardown.
+    expect(unsubscribe).not.toHaveBeenCalled();
+    expect(apply).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op when onCwdRedirected is not a function on the bridge', () => {
+    (window as unknown as { ccsmSession: unknown }).ccsmSession = { onCwdRedirected: 42 };
+    const apply = vi.fn();
+    const { unmount } = renderHook(() => useCwdRedirectedBridge(apply));
+    unmount();
+    expect(apply).not.toHaveBeenCalled();
   });
 });

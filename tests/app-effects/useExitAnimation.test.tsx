@@ -62,8 +62,32 @@ describe('useExitAnimation', () => {
     expect(document.documentElement.style.transition).toBe('');
   });
 
-  it('is a no-op when the bridge is missing', () => {
+  it('is a no-op when the bridge is missing: opacity/transition never touched', () => {
     delete (window as unknown as { ccsm?: unknown }).ccsm;
-    expect(() => renderHook(() => useExitAnimation())).not.toThrow();
+    document.documentElement.style.opacity = '';
+    document.documentElement.style.transition = '';
+    const { unmount } = renderHook(() => useExitAnimation());
+    // Without bridge, the hook returns before installing listeners; doc
+    // styles must remain untouched and the subscribe spies were never
+    // even reached.
+    expect(onBeforeHide).not.toHaveBeenCalled();
+    expect(onAfterShow).not.toHaveBeenCalled();
+    expect(document.documentElement.style.opacity).toBe('');
+    expect(document.documentElement.style.transition).toBe('');
+    unmount();
+    expect(offHide).not.toHaveBeenCalled();
+    expect(offShow).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op when only one of onBeforeHide / onAfterShow is missing', () => {
+    (window as unknown as { ccsm: unknown }).ccsm = {
+      window: { onBeforeHide },
+    };
+    document.documentElement.style.opacity = '';
+    const { unmount } = renderHook(() => useExitAnimation());
+    expect(onBeforeHide).not.toHaveBeenCalled();
+    unmount();
+    expect(offHide).not.toHaveBeenCalled();
+    expect(document.documentElement.style.opacity).toBe('');
   });
 });

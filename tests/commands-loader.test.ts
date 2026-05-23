@@ -192,7 +192,12 @@ describe('loadCommands', () => {
       `---\n---\n`
     );
     // No skills dir created.
-    expect(() => loadCommands({ homeDir: tmpHome, cwd: tmpCwd })).not.toThrow();
+    const cmds = loadCommands({ homeDir: tmpHome, cwd: tmpCwd });
+    // Loader must still return the command from ~/.claude/commands, AND
+    // contribute zero skill entries (sentinel: missing dir → empty bucket,
+    // not a throw, not a partial result that drops `a`).
+    expect(cmds.map((c) => c.name)).toEqual(['a']);
+    expect(cmds.find((c) => c.source === 'skill')).toBeUndefined();
   });
 
   it('skips files with invalid basename or declared name', () => {
@@ -347,8 +352,11 @@ describe('loadCommands', () => {
       path.join(tmpHome, '.claude', 'commands', 'plain.md'),
       `---\n---\n`
     );
-    expect(() => loadCommands({ homeDir: tmpHome, cwd: tmpCwd })).not.toThrow();
+    // Loader must return the plain command AND contribute zero agent
+    // entries — sentinel for "missing dir → empty bucket", not a throw
+    // and not a partial result that drops `plain`.
     const cmds = loadCommands({ homeDir: tmpHome, cwd: tmpCwd });
+    expect(cmds.map((c) => c.name)).toContain('plain');
     expect(cmds.find((c) => c.source === 'agent')).toBeUndefined();
   });
 

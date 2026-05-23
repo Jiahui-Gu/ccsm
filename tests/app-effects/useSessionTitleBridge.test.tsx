@@ -45,8 +45,21 @@ describe('useSessionTitleBridge', () => {
     expect(apply).not.toHaveBeenCalled();
   });
 
-  it('is a no-op when the bridge is missing', () => {
+  it('is a no-op when the bridge is missing: subscribe + apply never called', () => {
     delete (window as unknown as { ccsmSession?: unknown }).ccsmSession;
-    expect(() => renderHook(() => useSessionTitleBridge(vi.fn()))).not.toThrow();
+    const apply = vi.fn();
+    const { unmount } = renderHook(() => useSessionTitleBridge(apply));
+    expect(onTitle).not.toHaveBeenCalled();
+    expect(apply).not.toHaveBeenCalled();
+    unmount();
+    expect(unsubscribe).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op when onTitle is not a function on the bridge', () => {
+    (window as unknown as { ccsmSession: unknown }).ccsmSession = { onTitle: undefined };
+    const apply = vi.fn();
+    const { unmount } = renderHook(() => useSessionTitleBridge(apply));
+    unmount();
+    expect(apply).not.toHaveBeenCalled();
   });
 });

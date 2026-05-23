@@ -162,7 +162,10 @@ describe('claude-probe race gate (#900 / #852)', () => {
       fireEvent.click(newBtn);
     });
 
-    expect(useStore.getState().sessions.length).toBeGreaterThan(0);
+    const sessions = useStore.getState().sessions;
+    // Exactly one new session was created by the single newBtn click.
+    expect(sessions).toHaveLength(1);
+    expect(useStore.getState().activeId).toBe(sessions[0].id);
   });
 
   it('probing-spacer surfaces a visible "Checking Claude CLI…" affordance', async () => {
@@ -264,7 +267,9 @@ describe('claude-probe race gate (#900 / #852)', () => {
 
     expect(pickCwd).toHaveBeenCalledTimes(1);
     const sessions = useStore.getState().sessions;
-    expect(sessions.length).toBeGreaterThan(0);
+    // Exactly one session was created via the chevron path.
+    expect(sessions).toHaveLength(1);
     expect(sessions[0].cwd).toBe('/picked/path');
+    expect(useStore.getState().activeId).toBe(sessions[0].id);
   });
 });

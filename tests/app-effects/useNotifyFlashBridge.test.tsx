@@ -47,8 +47,19 @@ describe('useNotifyFlashBridge', () => {
     expect(setFlashSpy).not.toHaveBeenCalled();
   });
 
-  it('is a no-op when the bridge is missing', () => {
+  it('is a no-op when the bridge is missing: subscribe + store action never called', () => {
     delete (window as unknown as { ccsmNotify?: unknown }).ccsmNotify;
-    expect(() => renderHook(() => useNotifyFlashBridge())).not.toThrow();
+    const { unmount } = renderHook(() => useNotifyFlashBridge());
+    expect(onFlash).not.toHaveBeenCalled();
+    expect(setFlashSpy).not.toHaveBeenCalled();
+    unmount();
+    expect(unsubscribe).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op when onFlash is not a function on the bridge', () => {
+    (window as unknown as { ccsmNotify: unknown }).ccsmNotify = { onFlash: 'nope' };
+    const { unmount } = renderHook(() => useNotifyFlashBridge());
+    unmount();
+    expect(setFlashSpy).not.toHaveBeenCalled();
   });
 });
