@@ -242,15 +242,22 @@ const api = {
     warmXterm: process.env.CCSM_WARM_XTERM === '1',
     /**
      * Optional integer override for the warm-xterm LRU cap. Parsed
-     * permissively: `Number()` + clamp to [1, 100]; falsy / NaN returns
+     * permissively: `Number()` + clamp to [2, 100]; falsy / NaN returns
      * `null` so the consumer falls back to its hard-coded default (20).
+     *
+     * Floor is 2 (not 1) — see WARM_CAP_MIN in
+     * `src/terminal/xtermWarmRegistry.ts`. A cap of 1 leaves the LRU
+     * eviction loop with no non-exempt victim when the user switches
+     * sessions (active sid and incoming sid are both exempt), and the
+     * warm cache is semantically pointless at size 1 anyway. The
+     * renderer re-applies the same floor — defense in depth.
      */
     warmXtermCap: (() => {
       const raw = process.env.CCSM_WARM_XTERM_CAP;
       if (!raw) return null;
       const n = Number(raw);
       if (!Number.isFinite(n) || n <= 0) return null;
-      return Math.min(100, Math.max(1, Math.floor(n)));
+      return Math.min(100, Math.max(2, Math.floor(n)));
     })(),
   },
 };

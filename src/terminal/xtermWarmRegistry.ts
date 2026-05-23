@@ -30,6 +30,26 @@ import { SCROLLBACK_LINES_DEFAULT } from '../stores/slices/types';
 import { warn, log } from '../shared/log';
 
 const DEFAULT_WARM_CAP = 20;
+/**
+ * Minimum WARM_CAP. Hard floor of 2 (not 1).
+ *
+ * Rationale (Major 3 from cold review): with `cap === 1`, the
+ * `allocEntry` eviction loop simultaneously exempts the incoming sid AND
+ * the current active sid. When the only map entry IS the active sid and
+ * the user switches to a new sid, BOTH candidates are exempt → loop
+ * finds no victim → we `set()` past cap and overflow to size 2. A
+ * `cap === 1` warm cache is also semantically pointless: the warm
+ * cache's only value is keeping ≥1 OTHER session's Terminal alive while
+ * the user is on the active one. So we refuse caps below 2.
+ *
+ * `CCSM_WARM_XTERM_CAP=1` is clamped UP to 2 with no error — friendlier
+ * than crashing on a config typo. The clamp happens in two places (env
+ * parser in `electron/preload/bridges/ccsmCore.ts` AND `getWarmCap()`
+ * below); the renderer-side clamp is the authoritative floor since the
+ * preload value is purely advisory.
+ */
+const WARM_CAP_MIN = 2;
+const WARM_CAP_MAX = 100;
 
 /** Look up the runtime LRU cap. Honours `CCSM_WARM_XTERM_CAP` (surfaced via
  *  `window.ccsm.featureFlags.warmXtermCap`, clamped to [1,100] at preload).
@@ -38,7 +58,7 @@ export function getWarmCap(): number {
   try {
     const override = window.ccsm?.featureFlags?.warmXtermCap;
     if (typeof override === 'number' && Number.isFinite(override) && override > 0) {
-      return Math.min(100, Math.max(1, Math.floor(override)));
+      return Math.min(WARM_CAP_MAX, Math.max(WARM_CAP_MIN, Math.floor(override)));
     }
   } catch {
     // window.ccsm absent in headless tests — fall through to default.
@@ -74,23 +94,114 @@ export type WarmEntry = {
   lastAccessedAt: number;
 };
 
+/**
+ * Per-entry chunk-routing state (Major 1 fix from cold review).
+ *
+ * The legacy `usePtyAttach` cold path serializes the headless buffer and
+ * uses an entry-local `snapSeq` to drop chunks already represented in
+ * the serialized snapshot. The warm registry has the same race: between
+ * `pty.attach` resolving (main starts broadcasting chunks to our
+ * webContents) and the cold-path snapshot being written, the per-entry
+ * listener receives live chunks. The previous implementation wrote them
+ * straight to `term`, then the cold path called `term.reset()` —
+ * silently dropping those chunks forever. They were never replayed.
+ *
+ * Fix: the listener has three modes.
+ *   1. `buffering` (default at alloc): chunks land in {@link buffered}
+ *      with their seq, NOT written to term. This is the mode while the
+ *      cold path is still in flight.
+ *   2. `live`: chunks past `snapSeq` are written directly to term;
+ *      chunks <= `snapSeq` are dropped (already in the snapshot, which
+ *      the cold path has by now applied). This is the steady state.
+ *   3. The transition is driven by {@link applySnapshot}, called by
+ *      the cold-attach hook AFTER it has called `term.reset()` and
+ *      `term.write(snapshot)`: it sets `snapSeq`, drains
+ *      `buffered`-with-`seq > snapSeq` into term in arrival order, and
+ *      flips mode to `live`.
+ *
+ * Warm-cache hits never alloc — they reuse an entry that's already in
+ * `live` mode, so warm switching has zero buffering overhead.
+ */
+type EntryRouter = {
+  mode: 'buffering' | 'live';
+  snapSeq: number | null;
+  buffered: Array<{ seq: number; chunk: string }>;
+};
+
+const entryRouters: Map<string, EntryRouter> = new Map();
+
 const warm: Map<string, WarmEntry> = new Map();
 let activeSid: string | null = null;
 let offscreenHolder: HTMLDivElement | null = null;
 
-// Module-level reset listener — fires once when the renderer unloads so
-// addons release their canvas atlases / WebGL contexts cleanly. Best-effort
-// only; the OS reclaims memory either way.
-let beforeUnloadInstalled = false;
+// Global PTY exit subscription (Major 2 fix from cold review).
+//
+// The legacy `usePtyAttach.ts` installed an `onExit` listener per hook
+// instance that filtered `evt.sessionId !== getActiveSid()` and silently
+// returned for hidden sessions — meaning a backgrounded session that
+// crashed left no trace: the user switched back to a "ready" UI with no
+// terminal content and no exit overlay. Under the warm model that's a
+// much bigger gap because hidden sessions are EXPECTED to keep running.
+//
+// Fix: install a single module-level listener that calls
+// `useStore.getState()._applyPtyExit(sid, ...)` for EVERY sid
+// unconditionally. The per-hook effect then reads
+// `disconnectedSessions[sessionId]` and flips local state to `exit` when
+// it sees an entry — including the case where the user switches back to
+// a session that already crashed while hidden.
+//
+// The listener is installed lazily on first registry use (alongside the
+// unload cleanup) so test setups that don't construct the warm path
+// don't get a phantom subscription. Idempotent — only one listener
+// across the renderer's lifetime.
+let exitUnsubscribe: (() => void) | null = null;
+function installExitListenerOnce(): void {
+  if (exitUnsubscribe) return;
+  const pty = typeof window !== 'undefined' ? window.ccsmPty : undefined;
+  if (!pty?.onExit) return;
+  exitUnsubscribe = pty.onExit(
+    (evt: { sessionId: string; code?: number | null; signal?: string | number | null }) => {
+      const sid = evt.sessionId;
+      if (!sid) return;
+      try {
+        // Coerce signal to number|null — the store slice accepts that
+        // shape (see sessionRuntimeSlice._applyPtyExit). String signals
+        // ('SIGTERM' etc.) coerce via the classifier; null/undefined
+        // both land as null.
+        const code = evt.code ?? null;
+        const rawSignal = evt.signal ?? null;
+        const signal =
+          typeof rawSignal === 'number'
+            ? rawSignal
+            : rawSignal == null
+              ? null
+              : // string signal — store/classifier expects number|null, so
+                // pass null and let the code field carry the diagnostic.
+                null;
+        useStore.getState()._applyPtyExit(sid, { code, signal });
+      } catch (e) {
+        warn('xterm-warm', 'exit dispatch failed', e);
+      }
+    },
+  );
+}
+// Module-level renderer-unload cleanup — fires once when the renderer
+// unloads so addons release their canvas atlases / WebGL contexts
+// cleanly. Best-effort only; the OS reclaims memory either way.
+// Captured into a module-scope variable so `__resetRegistryForTests`
+// can detach it on cleanup (Minor 7 from cold review) — a leftover
+// listener across vitest re-imports would otherwise pile up
+// disposed-entry references.
+let beforeUnloadHandler: (() => void) | null = null;
 function installUnloadCleanupOnce(): void {
-  if (beforeUnloadInstalled) return;
+  if (beforeUnloadHandler) return;
   if (typeof window === 'undefined') return;
-  beforeUnloadInstalled = true;
-  window.addEventListener('beforeunload', () => {
+  beforeUnloadHandler = () => {
     for (const sid of Array.from(warm.keys())) {
       disposeEntry(sid, 'unload');
     }
-  });
+  };
+  window.addEventListener('beforeunload', beforeUnloadHandler);
 }
 
 function getOffscreenHolder(): HTMLDivElement {
@@ -137,6 +248,7 @@ export function getActiveEntry(): WarmEntry | undefined {
  */
 function allocEntry(sid: string): WarmEntry {
   installUnloadCleanupOnce();
+  installExitListenerOnce();
 
   // LRU eviction: trim BEFORE allocating so we never exceed cap.
   const cap = getWarmCap();
@@ -209,11 +321,33 @@ function allocEntry(sid: string): WarmEntry {
   // Per-entry PTY data subscription. Filters by sid (NOT by the global
   // active sid) so hidden sessions keep ingesting live output. The bytes
   // are passed through to `term.write` unmodified — transparent transport.
+  //
+  // Routing modes (see EntryRouter docs above):
+  //   - 'buffering' (default until applySnapshot): chunks accumulate in
+  //     router.buffered with their seq. NOT written to term yet, because
+  //     the cold-attach path is about to call term.reset() + write the
+  //     snapshot; writing live chunks before then would be silently
+  //     dropped by reset(). This is the Major 1 fix from cold review.
+  //   - 'live': chunks with seq > router.snapSeq are written immediately;
+  //     chunks <= snapSeq are dropped (already represented in the
+  //     snapshot the cold path applied). Warm-cache hits stay in this
+  //     mode for the entry's whole life — the first cold path flipped it.
+  const router: EntryRouter = { mode: 'buffering', snapSeq: null, buffered: [] };
+  entryRouters.set(sid, router);
   const pty = window.ccsmPty;
   let dataUnsubscribe = () => {};
   if (pty?.onData) {
-    dataUnsubscribe = pty.onData((payload: { sid: string; chunk: string }) => {
+    dataUnsubscribe = pty.onData((payload: { sid: string; chunk: string; seq: number }) => {
       if (payload.sid !== sid) return;
+      if (router.mode === 'buffering') {
+        // Stash with seq so applySnapshot can drop dupes vs. the
+        // serialized snapshot it's about to land.
+        router.buffered.push({ seq: payload.seq, chunk: payload.chunk });
+        return;
+      }
+      // 'live' mode: drop pre-snap chunks (defensive — should be empty
+      // by here since applySnapshot drained them), write the rest.
+      if (router.snapSeq != null && payload.seq <= router.snapSeq) return;
       try {
         term.write(payload.chunk);
       } catch {
@@ -326,6 +460,51 @@ export function ensureAndShowEntry(
 }
 
 /**
+ * Cold-attach rendezvous (Major 1 fix from cold review).
+ *
+ * Called by the warm `usePtyAttach` hook AFTER it has:
+ *   1. `await pty.attach(sid)`     (main starts broadcasting chunks)
+ *   2. `await pty.getBufferSnapshot(sid)`   (gives us `{snapshot, seq}`)
+ *   3. `entry.term.reset()` + `entry.term.write(snapshot)`
+ *
+ * At this point the per-entry data listener has been buffering live
+ * chunks since alloc. We:
+ *   a. Set `router.snapSeq = snapSeq` so future late chunks dedupe.
+ *   b. Drain `router.buffered` — chunks with `seq > snapSeq` get
+ *      written in arrival order; chunks `<= snapSeq` are already in
+ *      the snapshot we just wrote and would duplicate.
+ *   c. Flip `router.mode` to 'live'. Subsequent chunks bypass the
+ *      buffer entirely and write straight to term.
+ *
+ * Idempotent if the router is missing (entry was disposed mid-attach).
+ * Idempotent if mode is already 'live' (e.g. retry path re-calls into
+ * a now-warm entry).
+ */
+export function applySnapshot(sid: string, snapSeq: number): void {
+  const router = entryRouters.get(sid);
+  if (!router) return;
+  const entry = warm.get(sid);
+  if (!entry) return;
+  router.snapSeq = snapSeq;
+  // Drain in arrival order. Chunks <= snapSeq are baked into the
+  // snapshot the cold path just wrote — drop them. The rest is the
+  // "live tail" that arrived between attach-resolve and snapshot-land.
+  if (router.buffered.length > 0) {
+    for (const b of router.buffered) {
+      if (b.seq > snapSeq) {
+        try {
+          entry.term.write(b.chunk);
+        } catch {
+          // best-effort — term may have been disposed mid-drain.
+        }
+      }
+    }
+    router.buffered.length = 0;
+  }
+  router.mode = 'live';
+}
+
+/**
  * Tear down the entry for `sid`: unsubscribe PTY data, dispose the xterm
  * Terminal (which detaches all addons and frees the canvas atlas), remove
  * the wrapper from DOM, and drop the map entry. Emits
@@ -336,11 +515,15 @@ export function ensureAndShowEntry(
  */
 export function disposeEntry(
   sid: string,
-  cause: 'lru' | 'session-deleted' | 'reset' | 'unload',
+  cause: 'lru' | 'session-deleted' | 'reset' | 'unload' | 'cancelled-mid-cold-attach',
 ): void {
   const entry = warm.get(sid);
   if (!entry) return;
   warm.delete(sid);
+  // Drop the router so a future re-alloc for this sid starts fresh in
+  // 'buffering' mode (Major 1) rather than inheriting a half-applied
+  // snapSeq from the disposed entry.
+  entryRouters.delete(sid);
   if (activeSid === sid) {
     activeSid = null;
     try {
@@ -396,6 +579,7 @@ export function __resetRegistryForTests(): void {
     }
   }
   warm.clear();
+  entryRouters.clear();
   activeSid = null;
   if (offscreenHolder) {
     try {
@@ -405,7 +589,28 @@ export function __resetRegistryForTests(): void {
     }
   }
   offscreenHolder = null;
-  beforeUnloadInstalled = false;
+  // Detach the beforeunload listener — leaving it attached across vitest
+  // re-imports leaks stale closures that reference disposed entries
+  // (Minor 7 from cold review).
+  if (beforeUnloadHandler && typeof window !== 'undefined') {
+    try {
+      window.removeEventListener('beforeunload', beforeUnloadHandler);
+    } catch {
+      /* ignore */
+    }
+  }
+  beforeUnloadHandler = null;
+  // Drop the global PTY exit subscription so the next test starts with
+  // no listener (Major 2 fix). Without this, a stale subscription would
+  // dispatch into the previous test's store stub.
+  if (exitUnsubscribe) {
+    try {
+      exitUnsubscribe();
+    } catch {
+      /* ignore */
+    }
+  }
+  exitUnsubscribe = null;
   if (typeof window !== 'undefined') {
     try {
       delete window.__ccsmTerm;

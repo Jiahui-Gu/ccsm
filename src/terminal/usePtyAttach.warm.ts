@@ -53,9 +53,10 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../stores/store';
-import { classifyPtyExit } from '../lib/ptyExitClassifier';
 import { warn, log } from '../shared/log';
 import {
+  applySnapshot,
+  disposeEntry,
   ensureAndShowEntry,
   getActiveSid,
   getEntry,
@@ -234,14 +235,21 @@ export function usePtyAttachWarm(
         }
 
         // ===== COLD PATH (entry just allocated) =====
-        // Mirror the legacy `usePtyAttach` cold attach flow but target
-        // `entry.term` instead of the singleton. The per-entry pty.onData
-        // listener (installed in allocEntry) is ALREADY writing live
-        // chunks to entry.term. We treat the snapshot as authoritative
-        // and reset the term before writing it — the live tail that the
-        // subscription has been writing into the term up to this point
-        // will be a strict prefix of (or identical to) the snapshot, so
-        // resetting + writing snapshot produces the correct end state.
+        // The per-entry data listener installed by allocEntry is in
+        // 'buffering' mode (Major 1 fix from cold review) — chunks for
+        // this sid that arrive between `pty.attach` resolving and the
+        // snapshot landing accumulate in the entry's router buffer with
+        // their seq, NOT written to term yet. We:
+        //   1. attach + spawn-on-null (legacy semantics, unchanged)
+        //   2. getBufferSnapshot → `{ snapshot, seq }`
+        //   3. term.reset() (clears any pre-listener state; the listener
+        //      hasn't written anything yet so reset is safe)
+        //   4. term.write(snapshot)
+        //   5. registry.applySnapshot(sid, snap.seq) — drains buffered
+        //      chunks with seq > snap.seq into term in arrival order,
+        //      then flips the listener to 'live' mode (direct write).
+        // This is the same dedupe-by-seq contract the legacy path uses,
+        // adapted to the per-entry buffering listener.
         let res = (await pty.attach(sessionId)) as
           | { cols: number; rows: number; pid: number }
           | null;
@@ -270,7 +278,17 @@ export function usePtyAttachWarm(
           if (!res) throw new Error('attach_failed_after_spawn');
         }
         const { cols, rows } = res;
-        if (cancelled || requestedSidRef.current !== sessionId) return;
+        if (cancelled || requestedSidRef.current !== sessionId) {
+          // Minor 4 (cold review): cold attach was cancelled mid-flight
+          // (user clicked a different session). The half-initialized
+          // entry still holds a buffering listener that's accumulating
+          // chunks into router.buffered forever — leaking memory and
+          // stranding the next attach in a stale router state. Force-
+          // dispose so the next attach to this sid walks the cold path
+          // from scratch with a fresh entry+router.
+          disposeEntry(sessionId, 'cancelled-mid-cold-attach');
+          return;
+        }
 
         // Resize entry's term to PTY's current size BEFORE snapshot write
         // so the cell grid matches the snapshot dimensions.
@@ -284,13 +302,17 @@ export function usePtyAttachWarm(
           snapshot: string;
           seq: number;
         };
-        if (cancelled || requestedSidRef.current !== sessionId) return;
+        if (cancelled || requestedSidRef.current !== sessionId) {
+          // See Minor 4 rationale above.
+          disposeEntry(sessionId, 'cancelled-mid-cold-attach');
+          return;
+        }
 
-        // Reset to drop the prefix that the per-entry listener wrote
-        // before the snapshot arrived, then write the snapshot as the
-        // authoritative starting buffer. Subsequent live chunks (from
-        // the registry's per-entry subscription) continue to flow into
-        // the term naturally — no second listener needed.
+        // Cold-attach paint sequence. The listener is still in 'buffering'
+        // mode at this point — nothing it received has been written to
+        // term yet. So `term.reset()` is purely defensive (term is fresh
+        // from allocEntry); we write the snapshot as the authoritative
+        // initial buffer.
         try {
           entry.term.reset();
         } catch {
@@ -300,6 +322,12 @@ export function usePtyAttachWarm(
         const snapWriteStart = Date.now();
         if (snap.snapshot) await writeAsync(entry.term, snap.snapshot);
         const snapWriteEnd = Date.now();
+
+        // Apply the snapshot rendezvous: drains buffered chunks with
+        // seq > snap.seq into term, flips listener to 'live'. From this
+        // point on, late chunks bypass the buffer and write directly.
+        applySnapshot(sessionId, snap.seq);
+
         const bufA = entry.term.buffer?.active;
         try {
           log.event('attach.snapshot.applied', {
@@ -424,6 +452,13 @@ export function usePtyAttachWarm(
         clearPtyExitRef.current(sessionId);
       } catch (err) {
         if (cancelled || requestedSidRef.current !== sessionId) return;
+        // Minor 4 (cold review): if the cold path threw (spawn_failed,
+        // attach_failed_after_spawn, etc.), the entry is half-initialized
+        // and its listener is still buffering. Dispose so the next Retry
+        // walks a clean cold path.
+        if (isCold) {
+          disposeEntry(sessionId, 'cancelled-mid-cold-attach');
+        }
         const message = err instanceof Error ? err.message : String(err);
         setState({ kind: 'error', message }, 'attach-threw');
       }
@@ -439,32 +474,37 @@ export function usePtyAttachWarm(
     };
   }, [sessionId, attachNonce, reloadNonce, cwd, setState, hostRef]);
 
+  // PTY exit watcher (Major 2 fix from cold review).
+  //
+  // The registry installs a single module-level `pty.onExit` listener
+  // that calls `_applyPtyExit(sid, ...)` for EVERY sid unconditionally
+  // — so a backgrounded session that crashes lands in
+  // `disconnectedSessions[sid]` even though no hook for that sid is
+  // visible. Here in the per-hook effect we subscribe to that store
+  // slice and flip our local state to `exit` when:
+  //   * the current sessionId crashes while visible, OR
+  //   * the user switches back to a session that already crashed while
+  //     hidden — `disconnectedSessions[sessionId]` is already populated
+  //     when this effect first runs, so the state flips immediately.
+  //
+  // The legacy hook's filter `evt.sessionId !== getActiveSid()` is the
+  // exact bug this replaces: it discarded hidden-session exits.
+  const disconnect = useStore((s) => s.disconnectedSessions[sessionId]);
   useEffect(() => {
-    const pty = window.ccsmPty;
-    if (!pty?.onExit) return;
-    const unsubscribe = pty.onExit(
-      (evt: { sessionId: string; code?: number | null; signal?: string | number | null }) => {
-        if (evt.sessionId !== getActiveSid()) return;
-        const signal = evt.signal ?? null;
-        const code = evt.code ?? null;
-        const exitKind = classifyPtyExit({ code, signal });
-        const detail =
-          signal != null
-            ? `signal ${signal}`
-            : code != null
-              ? `exit code ${code}`
-              : 'unknown';
-        setState({ kind: 'exit', exitKind, detail }, 'pty-exit');
-      },
-    );
-    return () => {
-      try {
-        unsubscribe?.();
-      } catch {
-        /* already torn down */
-      }
-    };
-  }, [setState]);
+    if (!disconnect) return;
+    // Only flip out of 'ready' / 'attaching' to 'exit' — if we're
+    // already in 'exit' or 'error' for this sid leave it alone (Retry
+    // will clear via _clearPtyExit on success).
+    const detail =
+      disconnect.signal != null
+        ? `signal ${disconnect.signal}`
+        : disconnect.code != null
+          ? `exit code ${disconnect.code}`
+          : 'unknown';
+    setState({ kind: 'exit', exitKind: disconnect.kind, detail }, 'pty-exit-watched');
+    // disconnect identity changes only when _applyPtyExit / _clearPtyExit
+    // fires for this sid — safe dep.
+  }, [disconnect, setState]);
 
   // NOTE: session-deletion is NOT explicitly wired to `disposeEntry` in
   // this initial dogfood version. A deleted session's warm entry will sit

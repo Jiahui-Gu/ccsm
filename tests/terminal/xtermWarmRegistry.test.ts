@@ -51,8 +51,25 @@ vi.mock('../../src/shared/log', () => ({
   error: vi.fn(),
 }));
 
+// Mock the store — the registry calls `useStore.getState()._applyPtyExit`
+// from its module-level onExit listener (Major 2 fix). The spy lets us
+// assert that exits for ALL sids (including hidden ones) reach the store.
+const { applyPtyExitSpy } = vi.hoisted(() => ({ applyPtyExitSpy: vi.fn() }));
+vi.mock('../../src/stores/store', () => {
+  const state = {
+    scrollbackLines: 1000,
+    _applyPtyExit: applyPtyExitSpy,
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const useStore = ((selector: (s: any) => any) => selector(state)) as any;
+  useStore.getState = () => state;
+  useStore.setState = () => undefined;
+  return { useStore };
+});
+
 import {
   ensureAndShowEntry,
+  applySnapshot,
   disposeEntry,
   getEntry,
   getActiveSid,
@@ -62,22 +79,32 @@ import {
 
 describe('xtermWarmRegistry', () => {
   let host: HTMLDivElement;
-  let onDataListeners: Array<(p: { sid: string; chunk: string }) => void>;
+  let onDataListeners: Array<(p: { sid: string; chunk: string; seq: number }) => void>;
+  let onExitListeners: Array<(p: { sessionId: string; code: number | null; signal: number | null }) => void>;
 
   beforeEach(() => {
     onDataListeners = [];
+    onExitListeners = [];
     (window as unknown as { ccsmPty: unknown }).ccsmPty = {
-      onData: (cb: (p: { sid: string; chunk: string }) => void) => {
+      onData: (cb: (p: { sid: string; chunk: string; seq: number }) => void) => {
         onDataListeners.push(cb);
         return () => {
           const i = onDataListeners.indexOf(cb);
           if (i >= 0) onDataListeners.splice(i, 1);
         };
       },
+      onExit: (cb: (p: { sessionId: string; code: number | null; signal: number | null }) => void) => {
+        onExitListeners.push(cb);
+        return () => {
+          const i = onExitListeners.indexOf(cb);
+          if (i >= 0) onExitListeners.splice(i, 1);
+        };
+      },
     };
     host = document.createElement('div');
     document.body.appendChild(host);
     terminalCtor.mockClear();
+    applyPtyExitSpy.mockClear();
   });
 
   afterEach(() => {
@@ -153,25 +180,82 @@ describe('xtermWarmRegistry', () => {
     nowSpy.mockRestore();
   });
 
-  it('per-entry pty.onData subscription writes ONLY chunks for the entry\'s sid', () => {
+  it('per-entry pty.onData subscription buffers chunks until applySnapshot, then drains seq > snapSeq', () => {
     ensureAndShowEntry('sid-a', host);
     ensureAndShowEntry('sid-b', host);
     // Two listeners installed — one per entry.
     expect(onDataListeners.length).toBe(2);
-    // The Terminal instances are returned in order: index 0 is sid-a, 1 is sid-b.
     const termA = terminalCtor.mock.results[0].value as { write: ReturnType<typeof vi.fn> };
     const termB = terminalCtor.mock.results[1].value as { write: ReturnType<typeof vi.fn> };
     termA.write.mockClear();
     termB.write.mockClear();
-    // Fan out a chunk for sid-a: only termA receives it.
-    for (const cb of onDataListeners) cb({ sid: 'sid-a', chunk: 'hello' });
-    expect(termA.write).toHaveBeenCalledWith('hello');
-    expect(termB.write).not.toHaveBeenCalled();
-    // Fan out a chunk for sid-b: only termB receives it.
-    termA.write.mockClear();
-    for (const cb of onDataListeners) cb({ sid: 'sid-b', chunk: 'world' });
-    expect(termB.write).toHaveBeenCalledWith('world');
+    // Fan out two chunks for sid-a in 'buffering' mode (default at alloc).
+    // NOTHING should be written to either term yet — Major 1 fix: the
+    // listener stashes by seq instead of writing-then-being-reset.
+    for (const cb of onDataListeners) cb({ sid: 'sid-a', chunk: 'pre1', seq: 1 });
+    for (const cb of onDataListeners) cb({ sid: 'sid-a', chunk: 'pre2', seq: 2 });
     expect(termA.write).not.toHaveBeenCalled();
+    expect(termB.write).not.toHaveBeenCalled();
+    // Also confirm the sid filter still routes correctly: a sid-b chunk
+    // is buffered ONLY against entry-b's router (we can't peek directly,
+    // but post-applySnapshot drain proves it).
+    for (const cb of onDataListeners) cb({ sid: 'sid-b', chunk: 'bee1', seq: 1 });
+    expect(termA.write).not.toHaveBeenCalled();
+    expect(termB.write).not.toHaveBeenCalled();
+    // Apply snap with snapSeq=1: drains buffered chunks with seq > 1
+    // (i.e. just 'pre2'), drops 'pre1' as already-in-snapshot.
+    applySnapshot('sid-a', 1);
+    expect(termA.write).toHaveBeenCalledTimes(1);
+    expect(termA.write).toHaveBeenCalledWith('pre2');
+    // sid-b is still in 'buffering' mode — applySnapshot is per-sid.
+    expect(termB.write).not.toHaveBeenCalled();
+    // After applySnapshot, sid-a is in 'live' mode: a new chunk with
+    // seq > 1 writes directly; seq <= 1 is dropped.
+    termA.write.mockClear();
+    for (const cb of onDataListeners) cb({ sid: 'sid-a', chunk: 'live3', seq: 3 });
+    expect(termA.write).toHaveBeenCalledWith('live3');
+    // A late chunk with seq <= snapSeq is defensively dropped.
+    termA.write.mockClear();
+    for (const cb of onDataListeners) cb({ sid: 'sid-a', chunk: 'stale', seq: 1 });
+    expect(termA.write).not.toHaveBeenCalled();
+    // sid-b's buffer is preserved; applySnapshot for sid-b drains it.
+    applySnapshot('sid-b', 0);
+    expect(termB.write).toHaveBeenCalledWith('bee1');
+  });
+
+  // Major 1 from cold review — the critical regression: live chunks that
+  // arrive between `pty.attach` resolve and snapshot-land must NOT be
+  // dropped. Before the fix, the listener wrote them straight to term,
+  // then the cold path called term.reset() — silently consuming the
+  // chunks. Now they're buffered, and `applySnapshot` drains them.
+  it('Major 1: chunks arriving after attach but before snapshot are NOT lost across term.reset', () => {
+    ensureAndShowEntry('sid-a', host);
+    const termA = terminalCtor.mock.results[0].value as {
+      write: ReturnType<typeof vi.fn>;
+      reset: ReturnType<typeof vi.fn>;
+    };
+    termA.write.mockClear();
+    termA.reset.mockClear();
+
+    // Simulate the cold-attach window: chunks arrive while listener is
+    // still buffering.
+    for (const cb of onDataListeners) cb({ sid: 'sid-a', chunk: 'live-tail-A', seq: 5 });
+    for (const cb of onDataListeners) cb({ sid: 'sid-a', chunk: 'live-tail-B', seq: 6 });
+
+    // Cold attach: reset, write snapshot, applySnapshot.
+    termA.reset();
+    // (snapshot is hypothetically captured at seq=4 — chunks with seq > 4
+    // are live tail after the snapshot's atomic capture point.)
+    termA.write('SNAPSHOT_CONTENT');
+    applySnapshot('sid-a', 4);
+
+    // After the rendezvous, term must have received: SNAPSHOT_CONTENT,
+    // then live-tail-A, then live-tail-B (the dedupe gate keeps both —
+    // their seq 5 and 6 are > snapSeq 4).
+    const writeCalls = termA.write.mock.calls.map((c) => c[0]);
+    expect(writeCalls).toEqual(['SNAPSHOT_CONTENT', 'live-tail-A', 'live-tail-B']);
+    // Critically: the chunks survived the reset() call sandwiched in
+    // between — they were never silently dropped.
   });
 
   it('disposeEntry disposes the term, unsubs the data listener, and removes from the map', () => {
@@ -207,6 +291,53 @@ describe('xtermWarmRegistry', () => {
     expect(getEntry('sid-0')).toBeUndefined();
     expect(getEntry('sid-20')).toBeDefined();
     expect(getEntry('sid-19')).toBeDefined();
+    nowSpy.mockRestore();
+  });
+
+  // Major 2 from cold review — backgrounded sessions that crash must
+  // still land in `disconnectedSessions[sid]` so the user sees the exit
+  // overlay on switch-back. The registry installs a single module-level
+  // onExit listener that dispatches `_applyPtyExit` for EVERY sid,
+  // including ones whose hook isn't currently mounted.
+  it('Major 2: module-level onExit listener dispatches store._applyPtyExit for ALL sids', () => {
+    // Trigger registry init by allocating an entry.
+    ensureAndShowEntry('sid-foreground', host);
+    expect(onExitListeners.length).toBe(1);
+    // Exit for the foreground sid — recorded.
+    onExitListeners[0]({ sessionId: 'sid-foreground', code: 0, signal: null });
+    expect(applyPtyExitSpy).toHaveBeenCalledTimes(1);
+    expect(applyPtyExitSpy).toHaveBeenLastCalledWith('sid-foreground', { code: 0, signal: null });
+    // Exit for a DIFFERENT sid (e.g. a session that was switched away
+    // from before crashing) — MUST also be recorded. The legacy hook
+    // filtered these out via `evt.sessionId !== getActiveSid()` and is
+    // the precise bug Major 2 fixes.
+    onExitListeners[0]({ sessionId: 'sid-hidden-and-crashed', code: 1, signal: null });
+    expect(applyPtyExitSpy).toHaveBeenCalledTimes(2);
+    expect(applyPtyExitSpy).toHaveBeenLastCalledWith('sid-hidden-and-crashed', { code: 1, signal: null });
+  });
+
+  // Major 3 from cold review — `CCSM_WARM_XTERM_CAP=1` is unsafe because
+  // both the incoming sid AND the active sid are exempt from LRU
+  // eviction, leaving no viable victim when the user switches to a new
+  // sid against a full cache. We clamp UP to 2 (silently — friendlier
+  // than crashing on a config typo).
+  it('cap override of 1 is clamped up to WARM_CAP_MIN=2 (Major 3 fix)', () => {
+    (window as unknown as { ccsm: unknown }).ccsm = {
+      featureFlags: { warmXterm: true, warmXtermCap: 1 },
+    };
+    let now = 0;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => ++now);
+    ensureAndShowEntry('sid-1', host);
+    ensureAndShowEntry('sid-2', host);
+    expect(getWarmCacheSize()).toBe(2);
+    // Adding a 3rd evicts the LRU non-active (sid-1; sid-2 is active),
+    // leaving size === 2. With the broken clamp (floor=1) the eviction
+    // loop would find no victim and `set()` would push size to 3.
+    ensureAndShowEntry('sid-3', host);
+    expect(getWarmCacheSize()).toBe(2);
+    expect(getEntry('sid-1')).toBeUndefined();
+    expect(getEntry('sid-2')).toBeDefined();
+    expect(getEntry('sid-3')).toBeDefined();
     nowSpy.mockRestore();
   });
 });
