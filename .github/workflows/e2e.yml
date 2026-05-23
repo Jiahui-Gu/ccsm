@@ -99,16 +99,24 @@ jobs:
         run: npx electron-rebuild
       - name: Build
         run: npm run build
+      # Install the real `claude` binary so `harness-real-cli-ci` can drive
+      # it (the full `harness-real-cli` stays skipped — only the curated CI
+      # subset runs here). The full harness asserts on LLM-generated reply
+      # content and would need real Anthropic credentials; the CI subset is
+      # picked to avoid that and points the binary at a localhost fake
+      # Anthropic Messages API that the CI harness spins up in-process.
+      - name: Install claude CLI globally
+        run: npm i -g @anthropic-ai/claude-code
+      - name: Verify claude binary
+        run: claude --version
       - name: Run e2e (Linux with xvfb)
         if: runner.os == 'Linux'
-        # E2E_SKIP=harness-real-cli,harness-ime-overflow — public CI runners
-        # have no `claude` CLI installed AND no Anthropic auth tokens, so
-        # every harness that calls waitForTerminalReady deterministically
-        # times out (the renderer falls through to ClaudeMissingGuide and
-        # never mounts <TerminalPane>). Both harnesses stay runnable locally
-        # via `node scripts/harness-*.mjs` (or `npm run probe:e2e` without
-        # the env var) for the dev / dogfood loop, where the user's
-        # ~/.claude is real. (#726, #1324)
+        # E2E_SKIP=harness-real-cli,harness-ime-overflow — the full real-cli
+        # harness stays skipped because its remaining cases assert on real
+        # LLM reply content (ALPHA / PONG / 180s notify waits etc.) which
+        # the CI fake API cannot satisfy deterministically. The CI subset
+        # in `harness-real-cli-ci.mjs` runs the cases that don't need real
+        # model responses. `harness-ime-overflow` stays skipped per #1324.
         run: xvfb-run -a npm run probe:e2e
         env:
           E2E_SKIP: harness-real-cli,harness-ime-overflow

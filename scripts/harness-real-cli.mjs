@@ -3323,7 +3323,11 @@ async function caseAltScreenFitsVisibleViewport({ electronApp, win, tempDir }) {
 // Registry
 // ============================================================================
 
-const CASE_REGISTRY = [
+// Exported so `harness-real-cli-ci.mjs` (the CI subset runner) can import
+// the case table without copy-pasting case functions or the registry.
+// Imports of this module are gated by the `isMain` guard at the bottom so
+// importing does not auto-run `main()`.
+export const CASE_REGISTRY = [
   { name: 'new-session-chat',            group: 'shared', run: caseNewSessionChat },
   { name: 'attach-replay-from-headless-buffer', group: 'shared', run: caseAttachReplayFromHeadlessBuffer },
   { name: 'alt-screen-fits-visible-viewport', group: 'shared', run: caseAltScreenFitsVisibleViewport },
@@ -3446,7 +3450,15 @@ async function main() {
   process.exit(failed === 0 ? 0 : 1);
 }
 
-main().catch((err) => {
-  console.error('[HARNESS] unhandled top-level error:', err?.stack || err);
-  process.exit(1);
-});
+// Only run `main()` when this file is the entry point. When imported by
+// `harness-real-cli-ci.mjs` for CASE_REGISTRY access, we skip auto-run.
+// `import.meta.url` is a `file://` URL; `process.argv[1]` is an absolute
+// path. Normalize both sides for the comparison (Windows path separators).
+const _entryUrlMain =
+  process.argv[1] && new URL(`file://${process.argv[1].replace(/\\/g, '/')}`).href;
+if (_entryUrlMain && import.meta.url === _entryUrlMain) {
+  main().catch((err) => {
+    console.error('[HARNESS] unhandled top-level error:', err?.stack || err);
+    process.exit(1);
+  });
+}
