@@ -169,7 +169,13 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
   term = new Terminal({
     fontFamily: 'Cascadia Mono, Consolas, "Courier New", monospace',
     fontSize: 13,
-    cursorBlink: true,
+    // cursorBlink:false is deliberate. xterm-canvas CursorRenderLayer
+    // restarts the blink phase on every grid change (see
+    // node_modules/@xterm/addon-canvas/src/CursorRenderLayer.ts:107-113),
+    // so a TUI that rewrites a status line each second (e.g. claude code's
+    // "1m 28s" tool timer) produces visible cursor strobing. VS Code's
+    // integrated terminal defaults to blink-off for the same reason.
+    cursorBlink: false,
     allowProposedApi: true,
     scrollback,
     theme: { background: '#000000' },
