@@ -258,15 +258,24 @@ function encodeFrameBytes(firstByte: number, body: Buffer): Buffer {
 }
 
 function closeSocket(socket: Duplex, code: number): void {
-  if (socket.destroyed) return;
+  // `writableEnded` guards re-entry: when the client streams a payload that
+  // arrives in multiple TCP chunks, each chunk re-enters the 'data' handler
+  // and may trip the same fatal limit again. Without this guard the second
+  // call would `socket.end()` again, throw "write after end", and the catch
+  // would `destroy()` the socket — losing the framed close payload we just
+  // queued. Checking `writableEnded` keeps the first close frame intact.
+  if (socket.destroyed || socket.writableEnded) return;
   const body = Buffer.allocUnsafe(2);
   body.writeUInt16BE(code, 0);
   try {
-    socket.write(encodeControlFrame(0x8, body));
+    // Use `end()` so the close frame is flushed before FIN. `destroy()` does
+    // not wait for pending writes, so on Windows the framed close payload can
+    // be dropped and the peer never sees the close reason.
+    socket.end(encodeControlFrame(0x8, body));
   } catch {
     /* socket already gone */
+    socket.destroy();
   }
-  socket.destroy();
 }
 
 type DecodeResult =
