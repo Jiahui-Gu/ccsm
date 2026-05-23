@@ -139,12 +139,22 @@ export function resize(
   }
 }
 
-// Max wait for pty.onExit to fire after kill() before we give up and resolve
-// the kill promise anyway. The renderer awaits `kill(sid)` before bumping
-// reloadNonce; if the pty is wedged we still want the renderer to fall through
-// to the spawn-on-null fallback rather than hanging the UI. 3s comfortably
-// covers ConPTY teardown + processKiller subtree walk on slow Windows boxes
-// while staying short enough that a stuck kill doesn't feel broken.
+// Graceful-flush + teardown budget. Reload now sends a soft signal (Ctrl+C
+// via PTY — see `\x03` write in `kill()`) instead of going straight to
+// `pty.kill()`, which on Windows ConPTY translates to `TerminateProcess` and
+// delivers no signal to the child. The claude CLI's transcript writer
+// (`Km_`) buffers JSONL entries with a 100 ms `setTimeout` → `appendFile`
+// (no fsync), and its SIGINT/SIGTERM/SIGBREAK/SIGHUP handlers each await a
+// flush with a ~2 s internal budget. Without a graceful signal those queued
+// entries (plus any mid-stream tokens) are lost — after respawn
+// `claude --resume <sid>` reads JSONL from disk, so the missing tail is gone
+// permanently.
+//
+// 3 s comfortably covers claude's 2 s flush window plus margin for OS
+// write-back / processKiller subtree walk on slow Windows boxes, while
+// staying short enough that a wedged kill doesn't feel broken (renderer
+// still falls through to the spawn-on-null fallback via the timer-branch
+// hard-kill below).
 export const KILL_EXIT_TIMEOUT_MS = 3000;
 
 // Dedupe re-entrant kills for the same sid (e.g. user spam-clicks Reload).
@@ -225,10 +235,11 @@ export function kill(sessions: Map<string, Entry>, sid: string): Promise<boolean
     // register the viewer on a dead pty → crash overlay, manual Retry.
     //
     // Force-evict the entry so attach returns null and the renderer gets
-    // a transparent fresh PTY. The process is still live (kill signal
-    // was sent but the OS never reaped it); attempt SIGKILL as a last
-    // resort. On Windows node-pty emulates signals so SIGKILL may be a
-    // no-op — at minimum we've logged the leak so it's visible.
+    // a transparent fresh PTY. The soft `\x03` signal didn't reap the
+    // process inside the flush budget — escalate to hard kill + subtree
+    // walk. On Windows node-pty emulates signals so SIGKILL may be a
+    // no-op, in which case `killProcessSubtree` (platform-native: taskkill
+    // /T /F on Windows, killpg on Unix) is what actually reaps the tree.
     try {
       entry.pty.kill('SIGKILL');
     } catch (e) {
@@ -236,23 +247,37 @@ export function kill(sessions: Map<string, Entry>, sid: string): Promise<boolean
         `[ptyHost] kill ${sid} wedged: SIGKILL also failed (${e instanceof Error ? e.message : String(e)}); pid ${pid} may leak`,
       );
     }
+    // ConPTY's kill only terminates the cmd.exe / OpenConsole wrapper; on
+    // Windows the claude.exe child (and its grandchildren) survive as
+    // orphans. On mac/linux the pgid may also have stragglers. Walk the
+    // tree via a platform-native call to guarantee a clean shutdown.
+    // Deferred to the hard-fallback branch ONLY — running this on the
+    // graceful path would kill claude mid-flush and defeat the soft-signal
+    // strategy.
+    killProcessSubtree(pid);
     if (sessions.get(sid) === entry) sessions.delete(sid);
     settle(false);
   }, KILL_EXIT_TIMEOUT_MS);
 
+  // Soft signal: write Ctrl+C (`\x03`) to the PTY. On Windows ConPTY this is
+  // translated on stdin into a console CTRL_C_EVENT → SIGINT to the child;
+  // on Unix the terminal line discipline converts `\x03` to SIGINT for the
+  // foreground process group. One code path, both platforms — no FFI, no
+  // `process.kill` differences. claude registers SIGINT/SIGTERM/SIGBREAK/
+  // SIGHUP handlers that all funnel into `nK(code)` → awaits `dWH.flush()`
+  // (2 s internal budget), so this is the signal that lets the 100 ms
+  // buffered transcript writer drain before exit. If the process is already
+  // dead the write throws — the onExit listener or the timer covers us.
   try {
-    entry.pty.kill();
+    entry.pty.write('\x03');
   } catch {
     /* already dead — onExit may or may not fire; timeout covers us */
   }
-  // ConPTY's kill only terminates the cmd.exe / OpenConsole wrapper; on Windows
-  // the claude.exe child (and its grandchildren) survive as orphans. On
-  // mac/linux the pgid may also have stragglers. Walk the tree via a
-  // platform-native call to guarantee a clean shutdown.
-  killProcessSubtree(pid);
-  // Belt-and-braces: also stop the watcher synchronously here so a
-  // pty.kill that races with onExit can't leak the fs.watch handle.
-  // sessionWatcher.stopWatching is idempotent.
+  // Belt-and-braces: stop the watcher synchronously here so a write that
+  // races with onExit can't leak the fs.watch handle.
+  // sessionWatcher.stopWatching is idempotent. Stopping the JSONL watcher
+  // does not interfere with claude's own writes — it just closes our
+  // observer-side fs.watch handle.
   try { sessionWatcher.stopWatching(sid); } catch { /* never throws */ }
 
   return promise;
@@ -334,9 +359,10 @@ export async function getBufferSnapshot(
 
 // Kill every running pty. Call from app `before-quit` so renderer-side
 // claude processes don't leak past Electron exit. Fire-and-forget — we don't
-// block app teardown on the per-pty onExit/timeout dance; the kill signal +
-// processKiller subtree walk dispatch synchronously inside `kill()` before
-// the awaited onExit, which is what actually reaps the children.
+// block app teardown on the per-pty graceful-flush dance. Each `kill()`
+// writes `\x03` synchronously; if claude doesn't drain within the 3 s
+// budget the per-session timer escalates to SIGKILL + processKiller subtree
+// walk, which is what reaps any survivors.
 export function killAll(sessions: Map<string, Entry>): void {
   for (const sid of [...sessions.keys()]) {
     void kill(sessions, sid);

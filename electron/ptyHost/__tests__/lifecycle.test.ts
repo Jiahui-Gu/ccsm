@@ -347,41 +347,67 @@ describe('lifecycle.kill', () => {
     expect(bus().watcherStopCalls).toEqual([]);
   });
 
-  it('captures pid BEFORE pty.kill (binding may zero pid post-kill)', async () => {
+  it('writes \\x03 (Ctrl+C) to the pty as the soft signal — NOT pty.kill() on the graceful path', async () => {
+    // Root-cause fix for context-loss on reload: on Windows ConPTY,
+    // `pty.kill()` becomes TerminateProcess and claude never runs its
+    // SIGINT handler → 100 ms buffered JSONL writes are lost. We send
+    // `\x03` instead, which ConPTY translates to CTRL_C_EVENT → SIGINT,
+    // letting claude's flush (2 s budget) drain before exit.
     const sessions = new Map<string, FakeEntry>();
     const entry = makeFakeEntry();
-    entry.pty.pid = 4242;
-    // simulate the binding zeroing pid on kill, then firing onExit (the
-    // production race-fix path: kill() awaits onExit before resolving).
-    entry.pty.kill = vi.fn(() => { entry.pty.pid = 0; entry.pty.__fireExit!(); });
+    entry.pty.pid = 111;
+    // Fire onExit synchronously to simulate claude exiting promptly after SIGINT.
+    entry.pty.write = vi.fn(() => entry.pty.__fireExit!());
     sessions.set('s', entry);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await expect(L.kill(sessions as any, 's')).resolves.toBe(true);
-    expect(bus().killCalls).toEqual([4242]);
+    expect(entry.pty.write).toHaveBeenCalledWith('\x03');
+    // Hard kill MUST NOT have been called on the graceful path — that
+    // defeats the soft-signal strategy and tears down claude mid-flush.
+    expect(entry.pty.kill).not.toHaveBeenCalled();
   });
 
-  it('always invokes killProcessSubtree even if pty.kill throws', async () => {
+  it('graceful path: onExit before timeout — processKiller NOT called, subtree left alone', async () => {
+    // The whole point of the soft signal: if claude exits cleanly within
+    // the flush budget, we MUST NOT walk the process tree (killing it
+    // mid-flush would defeat the purpose).
+    const sessions = new Map<string, FakeEntry>();
+    const entry = makeFakeEntry();
+    entry.pty.pid = 4242;
+    entry.pty.write = vi.fn(() => { entry.pty.__fireExit!(); });
+    sessions.set('s', entry);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await expect(L.kill(sessions as any, 's')).resolves.toBe(true);
+    expect(bus().killCalls).toEqual([]);
+    // Watcher still stopped (idempotent, doesn't interfere with claude's writes).
+    expect(bus().watcherStopCalls).toEqual(['s']);
+  });
+
+  it('still resolves cleanly when pty.write throws (already-exited race)', async () => {
     const sessions = new Map<string, FakeEntry>();
     const entry = makeFakeEntry();
     entry.pty.pid = 7;
-    entry.pty.kill = vi.fn(() => { throw new Error('already dead'); });
+    entry.pty.write = vi.fn(() => { throw new Error('EPIPE'); });
     sessions.set('s', entry);
-    // pty.kill threw, no onExit fired → resolves false via timeout
+    // write threw, no onExit fired → resolves false via timeout (and
+    // escalates to hard kill in the timer branch).
     vi.useFakeTimers();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const p = L.kill(sessions as any, 's');
-    expect(bus().killCalls).toEqual([7]);
     await vi.advanceTimersByTimeAsync(L.KILL_EXIT_TIMEOUT_MS + 10);
     await expect(p).resolves.toBe(false);
+    // Hard fallback fired the subtree walk.
+    expect(bus().killCalls).toEqual([7]);
     vi.useRealTimers();
   });
 
   it('always invokes sessionWatcher.stopWatching (belt-and-braces, swallows throws)', async () => {
     const sessions = new Map<string, FakeEntry>();
     const entry = makeFakeEntry();
-    // Fire onExit synchronously inside kill so the promise resolves promptly.
-    entry.pty.kill = vi.fn(() => entry.pty.__fireExit!());
+    // Fire onExit synchronously on the soft signal so the promise resolves promptly.
+    entry.pty.write = vi.fn(() => entry.pty.__fireExit!());
     sessions.set('s', entry);
     bus().watcherStopShouldThrow = true;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -395,18 +421,20 @@ describe('lifecycle.kill', () => {
     const sessions = new Map<string, FakeEntry>();
     const entry = makeFakeEntry();
     entry.pty.pid = 100;
-    // pty.kill() does NOT auto-fire onExit (the production node-pty contract:
-    // kill dispatches a signal; onExit fires when the OS reaps the process).
-    entry.pty.kill = vi.fn();
+    // pty.write dispatches the soft signal but does NOT auto-fire onExit
+    // (claude is still flushing).
+    entry.pty.write = vi.fn();
     sessions.set('s', entry);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const p = L.kill(sessions as any, 's');
-    // pty.kill + processKiller already ran synchronously (kill signal dispatched).
-    expect(entry.pty.kill).toHaveBeenCalled();
-    expect(bus().killCalls).toEqual([100]);
+    // Soft signal sent synchronously, watcher stopped — but the hard
+    // kill / subtree walk MUST NOT have run yet (graceful path).
+    expect(entry.pty.write).toHaveBeenCalledWith('\x03');
+    expect(entry.pty.kill).not.toHaveBeenCalled();
+    expect(bus().killCalls).toEqual([]);
 
-    // But the promise must NOT have resolved yet — the renderer awaits this
+    // The promise must NOT have resolved yet — the renderer awaits this
     // before bumping reloadNonce, and the entry hasn't been removed.
     let resolved: boolean | 'pending' = 'pending';
     void p.then((v) => { resolved = v; });
@@ -424,10 +452,10 @@ describe('lifecycle.kill', () => {
     const sessions = new Map<string, FakeEntry>();
     const entry = makeFakeEntry();
     entry.pty.pid = 200;
-    // Simulates a wedged pty: kill signal dispatched but the process never
-    // exits (onExit silent). Without the timeout the renderer would hang
-    // forever on `await ccsmPty.kill(sid)`.
-    entry.pty.kill = vi.fn();
+    // Simulates a wedged pty: soft signal sent but the process never exits
+    // (claude hung in flush, or the SIGINT was lost). Without the timeout
+    // the renderer would hang forever on `await ccsmPty.kill(sid)`.
+    entry.pty.write = vi.fn();
     sessions.set('s', entry);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -446,30 +474,31 @@ describe('lifecycle.kill', () => {
     vi.useRealTimers();
   });
 
-  it('evicts the zombie entry on timeout so subsequent attach returns null (spawn-on-null unblocked)', async () => {
-    // #1277 follow-up: when KILL_EXIT_TIMEOUT_MS fires, kill() resolves false
-    // but the entry was still in the map — a subsequent pty:attach would
-    // return the zombie and bypass the spawn-on-null fallback, leaving the
-    // renderer registered on a dead pty (crash overlay → manual Retry).
-    // Fix: force SIGKILL + delete from map on timeout.
+  it('wedged fallback: timeout escalates to pty.kill(SIGKILL) + killProcessSubtree', async () => {
+    // When the graceful flush budget elapses without onExit, we escalate
+    // to the hard kill path: pty.kill('SIGKILL') AND processKiller subtree
+    // walk (ConPTY emulates signals, so the subtree walk is what actually
+    // reaps claude.exe + its grandchildren on Windows).
     vi.useFakeTimers();
     const sessions = new Map<string, FakeEntry>();
     const entry = makeFakeEntry();
     entry.pty.pid = 500;
-    // Track SIGKILL escalation — pty.kill called twice (first signal-less in
-    // production code, second with 'SIGKILL' on timeout).
-    entry.pty.kill = vi.fn();
+    entry.pty.write = vi.fn();
     sessions.set('s', entry);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const p = L.kill(sessions as any, 's');
 
-    // Cross the timeout — SIGKILL escalation + zombie eviction.
+    // Before timeout: no hard kill yet, no subtree walk.
+    expect(entry.pty.kill).not.toHaveBeenCalled();
+    expect(bus().killCalls).toEqual([]);
+
     await vi.advanceTimersByTimeAsync(L.KILL_EXIT_TIMEOUT_MS + 10);
     await expect(p).resolves.toBe(false);
 
-    // SIGKILL escalation attempted on the wedged pty.
+    // Hard escalation fired.
     expect(entry.pty.kill).toHaveBeenCalledWith('SIGKILL');
+    expect(bus().killCalls).toEqual([500]);
     // Zombie removed from registry — attach now returns null, letting the
     // renderer's reloadNonce → spawn-on-null fallback create a fresh PTY.
     expect(sessions.has('s')).toBe(false);
@@ -478,18 +507,16 @@ describe('lifecycle.kill', () => {
     vi.useRealTimers();
   });
 
-  it('swallows SIGKILL throws on timeout (still evicts the zombie + logs)', async () => {
+  it('swallows SIGKILL throws on timeout (still evicts the zombie + walks subtree + logs)', async () => {
     // On Windows node-pty emulates signals; SIGKILL may throw. The timeout
     // path must still delete the entry from the map (else the zombie blocks
-    // spawn-on-null forever) and must not propagate the throw.
+    // spawn-on-null forever), still walk the subtree, and not propagate.
     vi.useFakeTimers();
     const sessions = new Map<string, FakeEntry>();
     const entry = makeFakeEntry();
     entry.pty.pid = 600;
-    let calls = 0;
+    entry.pty.write = vi.fn();
     entry.pty.kill = vi.fn((signal?: string) => {
-      calls += 1;
-      // First call (signal-less production kill) succeeds; SIGKILL throws.
       if (signal === 'SIGKILL') throw new Error('signal not supported');
     });
     sessions.set('s', entry);
@@ -499,7 +526,9 @@ describe('lifecycle.kill', () => {
     await vi.advanceTimersByTimeAsync(L.KILL_EXIT_TIMEOUT_MS + 10);
     await expect(p).resolves.toBe(false);
 
-    expect(calls).toBe(2); // initial kill + SIGKILL escalation
+    expect(entry.pty.kill).toHaveBeenCalledWith('SIGKILL');
+    // Subtree walk still happens — it's what actually reaps the tree on Windows.
+    expect(bus().killCalls).toEqual([600]);
     expect(sessions.has('s')).toBe(false);
     expect(console.warn).toHaveBeenCalledWith(
       expect.stringContaining('SIGKILL also failed'),
@@ -511,7 +540,7 @@ describe('lifecycle.kill', () => {
     const sessions = new Map<string, FakeEntry>();
     const entry = makeFakeEntry();
     entry.pty.pid = 300;
-    entry.pty.kill = vi.fn();
+    entry.pty.write = vi.fn();
     sessions.set('s', entry);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -519,10 +548,10 @@ describe('lifecycle.kill', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const p2 = L.kill(sessions as any, 's');
     // Same promise — second call is a no-op short-circuit, no extra
-    // pty.kill / processKiller / stopWatching invocations.
+    // soft-signal writes or watcher-stop calls.
     expect(p1).toBe(p2);
-    expect(entry.pty.kill).toHaveBeenCalledTimes(1);
-    expect(bus().killCalls).toEqual([300]);
+    expect(entry.pty.write).toHaveBeenCalledTimes(1);
+    expect(entry.pty.write).toHaveBeenCalledWith('\x03');
     expect(bus().watcherStopCalls).toEqual(['s']);
 
     // Drain.
@@ -534,7 +563,7 @@ describe('lifecycle.kill', () => {
     const sessions = new Map<string, FakeEntry>();
     const entry = makeFakeEntry();
     entry.pty.pid = 400;
-    entry.pty.kill = vi.fn(() => entry.pty.__fireExit!());
+    entry.pty.write = vi.fn(() => entry.pty.__fireExit!());
     sessions.set('s', entry);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -544,20 +573,30 @@ describe('lifecycle.kill', () => {
     sessions.set('s', entry);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await L.kill(sessions as any, 's');
-    expect(entry.pty.kill).toHaveBeenCalledTimes(2);
+    expect(entry.pty.write).toHaveBeenCalledTimes(2);
   });
 });
 
 describe('lifecycle.killAll', () => {
-  it('kills every entry via the kill op', () => {
+  it('sends the soft signal to every entry via the kill op', () => {
     const sessions = new Map<string, FakeEntry>();
-    sessions.set('a', makeFakeEntry({ pty: makeFakePty({ pid: 1 }) }));
-    sessions.set('b', makeFakeEntry({ pty: makeFakePty({ pid: 2 }) }));
-    sessions.set('c', makeFakeEntry({ pty: makeFakePty({ pid: 3 }) }));
+    const a = makeFakeEntry({ pty: makeFakePty({ pid: 1 }) });
+    const b = makeFakeEntry({ pty: makeFakePty({ pid: 2 }) });
+    const c = makeFakeEntry({ pty: makeFakePty({ pid: 3 }) });
+    sessions.set('a', a);
+    sessions.set('b', b);
+    sessions.set('c', c);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     L.killAll(sessions as any);
-    expect(bus().killCalls.sort()).toEqual([1, 2, 3]);
+    // Each pty received the Ctrl+C soft signal synchronously.
+    expect(a.pty.write).toHaveBeenCalledWith('\x03');
+    expect(b.pty.write).toHaveBeenCalledWith('\x03');
+    expect(c.pty.write).toHaveBeenCalledWith('\x03');
+    // Watcher stopped synchronously for each sid.
     expect(bus().watcherStopCalls.sort()).toEqual(['a', 'b', 'c']);
+    // No hard kill / subtree walk yet — those only fire on the wedged
+    // timeout fallback.
+    expect(bus().killCalls).toEqual([]);
   });
 
   it('snapshots the keys before iterating — safe against concurrent mutation', () => {
@@ -569,12 +608,13 @@ describe('lifecycle.killAll', () => {
     // is "iterates over a snapshot of keys".
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     L.killAll(sessions as any);
-    expect(bus().killCalls).toHaveLength(2);
+    expect(bus().watcherStopCalls).toHaveLength(2);
   });
 
   it('killAll over an empty map is a no-op', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     L.killAll(new Map() as any);
     expect(bus().killCalls).toEqual([]);
+    expect(bus().watcherStopCalls).toEqual([]);
   });
 });
