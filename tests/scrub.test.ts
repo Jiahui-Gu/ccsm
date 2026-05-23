@@ -1,0 +1,313 @@
+// Unit tests for the shared PII / secret scrubber.
+//
+// Lives under `tests/` per project convention (renderer-side tests are not
+// colocated with src files). The design doc specifies
+// `src/shared/__tests__/log.scrub.test.ts` "or equivalent" — `tests/` is the
+// equivalent here and matches vitest.config.ts's include glob.
+//
+// Reverse-verify: each branch has positive + negative cases. To confirm a
+// test is non-tautological, comment out the corresponding regex in
+// `src/shared/scrub.ts` and run the suite — those tests should fail.
+
+import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+import {
+  scrub,
+  normalizeError,
+  setHomeDir,
+  scrubConsoleArgs,
+} from '../src/shared/scrub';
+
+describe('scrub: env-var key masking', () => {
+  beforeEach(() => setHomeDir(null));
+
+  it('redacts ANTHROPIC_* prefix (case-insensitive)', () => {
+    expect(scrub({ ANTHROPIC_API_KEY: 'sk-abc' })).toEqual({ ANTHROPIC_API_KEY: '[redacted]' });
+    expect(scrub({ anthropic_secret: 'x' })).toEqual({ anthropic_secret: '[redacted]' });
+  });
+  it('redacts CLAUDE_* prefix', () => {
+    expect(scrub({ CLAUDE_MODEL_OVERRIDE: 'x' })).toEqual({ CLAUDE_MODEL_OVERRIDE: '[redacted]' });
+  });
+  it('redacts AWS_* prefix', () => {
+    expect(scrub({ AWS_ACCESS_KEY_ID: 'AKIA...' })).toEqual({
+      AWS_ACCESS_KEY_ID: '[redacted]',
+    });
+    expect(scrub({ AWS_REGION: 'us-east-1' })).toEqual({ AWS_REGION: '[redacted]' });
+  });
+  it('redacts TOKEN / KEY / SECRET / PASSWORD / AUTH / COOKIE suffixes', () => {
+    expect(scrub({ GITHUB_TOKEN: 'ghp_x' })).toEqual({ GITHUB_TOKEN: '[redacted]' });
+    expect(scrub({ OPENAI_API_KEY: 'sk-x' })).toEqual({ OPENAI_API_KEY: '[redacted]' });
+    expect(scrub({ MY_SECRET: 's' })).toEqual({ MY_SECRET: '[redacted]' });
+    expect(scrub({ DB_PASSWORD: 'p' })).toEqual({ DB_PASSWORD: '[redacted]' });
+    expect(scrub({ BASIC_AUTH: 'u:p' })).toEqual({ BASIC_AUTH: '[redacted]' });
+    expect(scrub({ SESSION_COOKIE: 'c' })).toEqual({ SESSION_COOKIE: '[redacted]' });
+  });
+  it('redacts _PASS / _URI / _URL / _CREDENTIALS suffixes', () => {
+    expect(scrub({ DB_PASS: 'x' })).toEqual({ DB_PASS: '[redacted]' });
+    expect(scrub({ REDIS_URI: 'x' })).toEqual({ REDIS_URI: '[redacted]' });
+    expect(scrub({ REDIS_URL: 'redis://localhost' })).toEqual({
+      REDIS_URL: '[redacted]',
+    });
+    expect(scrub({ GCP_CREDENTIALS: '{}' })).toEqual({ GCP_CREDENTIALS: '[redacted]' });
+  });
+  it('does NOT redact unrelated keys', () => {
+    expect(scrub({ sid: 'abc-123', count: 5 })).toEqual({ sid: 'abc-123', count: 5 });
+    expect(scrub({ debug: true })).toEqual({ debug: true });
+  });
+});
+
+describe('scrub: home-dir replacement', () => {
+  it('replaces Windows-style homedir with ~', () => {
+    setHomeDir('C:\\Users\\Jiahui');
+    const out = scrub({ reason: 'C:\\Users\\Jiahui\\projects\\ccsm' });
+    // Path regex *also* matches `C:\Users\…`, so the leading drive prefix
+    // ends up as `[path]`. The home-dir scrub runs first → leaves `~\…`.
+    // The `~\…` no longer matches the path regex (no drive letter / system
+    // dir prefix). End state: `~\projects\ccsm`.
+    expect(out).toEqual({ reason: '~\\projects\\ccsm' });
+  });
+  it('replaces POSIX homedir with ~', () => {
+    setHomeDir('/Users/jiahui');
+    expect(scrub({ reason: '/Users/jiahui/repo/file.ts' })).toEqual({
+      reason: '~/repo/file.ts',
+    });
+  });
+  it('handles WSL paths via the path regex (no homedir match needed)', () => {
+    setHomeDir(null);
+    const out = scrub({ reason: '/mnt/c/Users/jiahui/repo' }) as { reason: string };
+    expect(out.reason).toBe('[path]');
+  });
+  it('handles UNC paths', () => {
+    setHomeDir(null);
+    const out = scrub({ reason: '\\\\?\\C:\\Users\\j\\file' }) as { reason: string };
+    expect(out.reason).toBe('[path]');
+  });
+});
+
+describe('scrub: connection-string detection', () => {
+  it('catches mongodb / mongodb+srv', () => {
+    expect(scrub({ conn: 'mongodb://u:p@host:27017/db' })).toEqual({
+      conn: '[connection-string]',
+    });
+    expect(scrub({ conn: 'mongodb+srv://u:p@cluster.example.com/db' })).toEqual({
+      conn: '[connection-string]',
+    });
+  });
+  it('catches postgres / postgresql', () => {
+    expect(scrub({ conn: 'postgres://u:p@host/db' })).toEqual({
+      conn: '[connection-string]',
+    });
+    expect(scrub({ conn: 'postgresql://u:p@host/db' })).toEqual({
+      conn: '[connection-string]',
+    });
+  });
+  it('catches mysql / redis', () => {
+    expect(scrub({ conn: 'mysql://u:p@host/db' })).toEqual({
+      conn: '[connection-string]',
+    });
+    expect(scrub({ conn: 'redis://localhost:6379' })).toEqual({
+      conn: '[connection-string]',
+    });
+  });
+  it('catches userinfo-bearing http(s) URLs', () => {
+    expect(scrub({ conn: 'https://user:pw@example.com/x' })).toEqual({
+      conn: '[connection-string]',
+    });
+    expect(scrub({ conn: 'http://api_user:secret@internal.local/' })).toEqual({
+      conn: '[connection-string]',
+    });
+  });
+  it('does NOT catch plain https URLs without userinfo', () => {
+    const out = scrub({ conn: 'https://example.com/path' });
+    expect(out).toEqual({ conn: 'https://example.com/path' });
+  });
+});
+
+describe('scrub: forbidden field drops', () => {
+  it('drops every forbidden key, keeps allowlisted scalars', () => {
+    const input = {
+      sid: 'abc',
+      bytes: 42,
+      content: 'this is the actual clipboard content',
+      data: 'whatever',
+      buffer: Buffer.from('x').toString(),
+      text: 'pasted text',
+      clipboard: 'clip',
+      composition: 'こん',
+      name: 'My Session',
+      env: { ANTHROPIC_API_KEY: 'x' },
+      body: 'http body',
+      payload: 'p',
+      raw: 'r',
+      input: 'i',
+      output: 'o',
+      stdin: 's',
+      stdout: 's',
+      stderr: 's',
+      args: ['claude', '--resume'],
+      argv: [],
+      cmdline: 'claude --resume',
+      command: 'claude',
+      query: 'select 1',
+      params: { a: 1 },
+      headers: { auth: 'x' },
+      cookies: 'k=v',
+      authorization: 'Bearer x',
+      message: 'user-supplied content',
+    };
+    const out = scrub(input) as Record<string, unknown>;
+    expect(out).toEqual({ sid: 'abc', bytes: 42 });
+  });
+});
+
+describe('scrub: recursion depth limit', () => {
+  it('terminates at depth 4 with a sentinel', () => {
+    const deep: Record<string, unknown> = { sid: 'a' };
+    deep.next = { sid: 'b', next: { sid: 'c', next: { sid: 'd', next: { sid: 'e' } } } };
+    const out = scrub(deep) as { next: { next: { next: { next: unknown } } } };
+    // Each level decrements depth by 1; the 5th level should hit the sentinel.
+    expect(out.next.next.next.next).toBe('[depth-limit]');
+  });
+});
+
+describe('scrub: Error.stack scrubbing', () => {
+  beforeEach(() => setHomeDir('C:\\Users\\Jiahui'));
+
+  it('scrubs paths from a multi-frame stack', () => {
+    const e = new Error('boom');
+    e.stack =
+      'Error: boom\n' +
+      '    at fn (C:\\Users\\Jiahui\\repos\\ccsm\\src\\foo.ts:10:5)\n' +
+      '    at other (/Users/jiahui/x.ts:1:1)';
+    const norm = normalizeError(e);
+    expect(norm.name).toBe('Error');
+    expect(norm.message).toBe('boom');
+    expect(norm.stack).toContain('~');
+    expect(norm.stack).not.toContain('C:\\Users\\Jiahui\\repos');
+    expect(norm.stack).not.toContain('/Users/jiahui');
+  });
+
+  it('preserves error class name (TypeError etc.) — NOT treated as PII', () => {
+    const e = new TypeError('bad');
+    const norm = normalizeError(e);
+    expect(norm.name).toBe('TypeError');
+  });
+});
+
+describe('normalizeError: cause chains', () => {
+  it('walks `cause` recursively', () => {
+    const inner = new Error('inner-cause');
+    const outer = new Error('outer');
+    (outer as Error & { cause?: unknown }).cause = inner;
+    const norm = normalizeError(outer);
+    expect(norm.cause?.message).toBe('inner-cause');
+    expect(norm.cause?.name).toBe('Error');
+  });
+  it('handles non-Error inputs gracefully', () => {
+    const norm = normalizeError('a string');
+    expect(norm.name).toBe('NonError');
+    expect(norm.message).toBe('a string');
+  });
+});
+
+describe('scrub: passthrough of allowed scalars + booleans', () => {
+  it('keeps numbers, booleans, null, undefined', () => {
+    expect(scrub({ cols: 80, rows: 24, ok: true, bad: false, n: null })).toEqual({
+      cols: 80,
+      rows: 24,
+      ok: true,
+      bad: false,
+      n: null,
+    });
+  });
+  it('recurses through arrays', () => {
+    setHomeDir(null);
+    const out = scrub({ items: ['/Users/x/a', 'plain'] }) as { items: string[] };
+    expect(out.items[0]).toBe('[path]');
+    expect(out.items[1]).toBe('plain');
+  });
+});
+
+describe('scrubConsoleArgs: back-compat shim leak regression', () => {
+  // Cold review finding #1c: the back-compat `warn(tag, msg, ...rest)` /
+  // `error(...)` shims call `console.warn` / `console.error` directly so
+  // legacy `vi.spyOn(console, …)` test contracts keep working. Without
+  // `scrubConsoleArgs`, an `Error` passed in `rest` would leak its raw
+  // `stack` (with absolute paths) to dev stderr while the structured file
+  // sink stayed clean — a transparent-transport violation.
+  //
+  // These tests exercise the shim end-to-end: spy console, call `warn` /
+  // `error` with an Error containing a path-bearing stack, assert the spy
+  // received a NORMALIZED Error object (stack scrubbed, message scrubbed,
+  // class name preserved).
+  beforeEach(() => setHomeDir(null));
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('scrubConsoleArgs replaces an Error with normalized form (stack scrubbed)', () => {
+    const e = new Error('failed at /Users/jiahui/secret/file.ts');
+    e.stack =
+      'Error: failed at /Users/jiahui/secret/file.ts\n' +
+      '    at fn (C:\\Users\\Jiahui\\repos\\ccsm\\src\\foo.ts:10:5)';
+    const [scrubbed] = scrubConsoleArgs([e]) as [
+      { name: string; message: string; stack: string },
+    ];
+    expect(scrubbed.name).toBe('Error');
+    expect(scrubbed.message).toBe('failed at [path]');
+    expect(scrubbed.stack).not.toContain('/Users/jiahui');
+    expect(scrubbed.stack).not.toContain('C:\\Users\\Jiahui');
+    expect(scrubbed.stack).toContain('[path]');
+  });
+
+  it('scrubConsoleArgs scrubs plain objects (forbidden fields, paths)', () => {
+    const out = scrubConsoleArgs([
+      { sid: 'abc', cwd: '/Users/jiahui/x', content: 'leak me', cols: 80 },
+    ]) as [{ sid: string; cwd: string; content?: string; cols: number }];
+    expect(out[0].sid).toBe('abc');
+    expect(out[0].cols).toBe(80);
+    expect(out[0].content).toBeUndefined(); // forbidden field dropped
+    expect(out[0].cwd).toBe('[path]');
+  });
+
+  it('back-compat warn() shim does NOT leak Error.stack absolute paths to console', async () => {
+    // Import via dynamic require so we exercise the actual production shim,
+    // not a re-derived copy. The shim's `electron-log/renderer` import
+    // short-circuits to a no-op stub under VITEST=true (see src/shared/log.ts),
+    // so the test isolates the direct-to-console path we care about.
+    const { warn } = await import('../src/shared/log');
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const e = new Error('boom at /Users/jiahui/repos/ccsm/src/leak.ts:42');
+    e.stack =
+      'Error: boom at /Users/jiahui/repos/ccsm/src/leak.ts:42\n' +
+      '    at fn (C:\\Users\\Jiahui\\repos\\ccsm\\src\\leak.ts:42:7)';
+    warn('test', 'something bad', e);
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const args = warnSpy.mock.calls[0];
+    // First arg is the formatted `[tag] msg` string — must NOT contain the
+    // raw path (msg itself is scalar, no leak there, but defensively check).
+    expect(args[0]).toBe('[test] something bad');
+    // Second arg is the scrubbed error. The whole serialized form must not
+    // mention either the POSIX or the Windows absolute path. Stringifying
+    // covers both `stack` and `message` regardless of object shape.
+    const serialized = JSON.stringify(args[1]);
+    expect(serialized).not.toContain('/Users/jiahui');
+    expect(serialized).not.toContain('C:\\\\Users\\\\Jiahui'); // JSON-escaped
+    expect(serialized).toContain('[path]');
+  });
+
+  it('back-compat error() shim normalizes Error before console.error', async () => {
+    const { error } = await import('../src/shared/log');
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const e = new TypeError('bad arg at /home/x/file.ts');
+    e.stack = 'TypeError: bad arg at /home/x/file.ts\n    at f (/home/x/file.ts:1:1)';
+    error('test', 'oh no', e);
+
+    expect(errSpy).toHaveBeenCalledTimes(1);
+    const args = errSpy.mock.calls[0];
+    const serialized = JSON.stringify(args[1]);
+    expect(serialized).not.toContain('/home/x');
+    // Class name preserved per normalizeError contract.
+    expect(serialized).toContain('TypeError');
+  });
+});

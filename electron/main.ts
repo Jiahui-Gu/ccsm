@@ -29,22 +29,27 @@ import { app, BrowserWindow, ipcMain, type Tray } from 'electron';
 import { initDb, closeDb } from './db';
 import { buildTrayIcon } from './branding/icon';
 import { initSentry } from './sentry/init';
+import { initLog, log, normalizeError, syncPersistedLevelFromDb } from './shared/log';
 import { createWindow as createMainWindowFactory, installContextMenuSuppressIpc } from './window/createWindow';
 import { createTray, type TrayController } from './tray/createTray';
+
+// Initialize structured logger before anything else. Idempotent; safe to
+// call pre-`app.whenReady` because the file path is resolved lazily on the
+// first write (electron-log's `transports.file.resolvePathFn`).
+initLog();
 
 // safety net — escaped main-proc rejections kill app on Node 20+ default
 // (audit tech-debt-03-errors.md risk #2). Registered BEFORE app.whenReady so
 // any throw during bootstrap (initSentry, IPC registration, db open) lands
 // in the logger instead of silently terminating the process. We deliberately
 // do NOT call app.exit() — preserves current default-throw behavior in tests
-// and mirrors the renderer's "log + degrade" stance. TODO: forward to Sentry
-// once main-process Sentry transport is wired (currently renderer-only per
-// audit).
+// and mirrors the renderer's "log + degrade" stance.
 process.on('unhandledRejection', (reason, _promise) => {
-  console.error('[main] unhandledRejection:', reason);
+  const err = reason instanceof Error ? reason : new Error(String(reason));
+  log.error('main', 'unhandledRejection', { error: normalizeError(err) });
 });
 process.on('uncaughtException', (err) => {
-  console.error('[main] uncaughtException:', err);
+  log.error('main', 'uncaughtException', { error: normalizeError(err) });
 });
 
 // Sentry init reads SENTRY_DSN and wires up beforeSend → opt-out check. The
@@ -183,6 +188,15 @@ app.whenReady().then(() => {
   }
 
   initDb();
+
+  // initLog() ran at module-load (before app.whenReady) when db wasn't yet
+  // open, so it could only see `CCSM_LOG_LEVEL` or the `info` default. Now
+  // that the db is up, re-read the persisted choice and (if it differs)
+  // apply + rebuild the menu so Help → Set Log Level shows the correct
+  // radio checkmark on first paint. Cold review finding #3c / #9.
+  if (syncPersistedLevelFromDb()) {
+    applyAppMenuLocale();
+  }
 
   // ─────────────────────────── IPC registration ──────────────────────────
   // Wire prefs cache invalidation to the stateSavedBus BEFORE registering

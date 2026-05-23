@@ -17,7 +17,58 @@
 // Extracting it would just create a giant deps bag with no real win.
 
 import type { App } from 'electron';
-import { BrowserWindow, Menu } from 'electron';
+import { BrowserWindow, Menu, app, shell } from 'electron';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { getLogLevel, setLogLevel, getLogFilePath, log } from '../shared/log';
+
+type LogLevelChoice = 'debug' | 'info' | 'warn' | 'error';
+
+/** "Pin current log" flow used by the Help → Reveal Logs item. Copies the
+ *  live rotating files into `logs/pinned-<ISO-timestamp>/` so subsequent
+ *  rotation can't shred the user's bug-report snapshot, then opens the logs
+ *  folder in the OS file browser.
+ *
+ *  Pinned snapshots are NEVER auto-pruned (parent resolution v2 §7). The
+ *  user can delete them manually if disk pressure becomes an issue. */
+export async function revealLogsAndPin(): Promise<void> {
+  let logsDir: string;
+  try {
+    logsDir = app.getPath('logs');
+  } catch (e) {
+    log.error('menu', 'reveal-logs: getPath failed', e instanceof Error ? e : undefined);
+    return;
+  }
+  try {
+    if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const pinDir = path.join(logsDir, `pinned-${stamp}`);
+    fs.mkdirSync(pinDir, { recursive: true });
+    // Copy every regular file directly under logsDir (NOT subdirs — we don't
+    // want to recurse into prior pinned-* snapshots). `*.log` covers main
+    // + rotated archives; we also pick up any sibling files electron-log
+    // happens to write.
+    for (const name of fs.readdirSync(logsDir)) {
+      const full = path.join(logsDir, name);
+      try {
+        const st = fs.statSync(full);
+        if (st.isFile() && name.endsWith('.log')) {
+          fs.copyFileSync(full, path.join(pinDir, name));
+        }
+      } catch {
+        /* skip individual file failures */
+      }
+    }
+    log.info('menu', 'logs pinned', { stage: 'pin' });
+  } catch (e) {
+    log.error('menu', 'reveal-logs: pin failed', e instanceof Error ? e : undefined);
+  }
+  try {
+    await shell.openPath(logsDir);
+  } catch (e) {
+    log.error('menu', 'reveal-logs: openPath failed', e instanceof Error ? e : undefined);
+  }
+}
 
 /** Build + install the hidden app accelerator menu. We don't want a visible
  *  File/Edit/View menu bar — CCSM is a single-window tool and those menus
@@ -50,6 +101,8 @@ export function applyAppMenuLocale(): void {
   // through means it never reaches DOM keydown at all (the menu consumes
   // it first); removing the menu entry lets the keydown propagate
   // normally to the renderer.
+  const currentLevel = getLogLevel();
+  const levels: LogLevelChoice[] = ['debug', 'info', 'warn', 'error'];
   const accelMenu = Menu.buildFromTemplate([
     {
       label: i18n.tMenu('edit'),
@@ -60,6 +113,40 @@ export function applyAppMenuLocale(): void {
         { role: 'cut' },
         { role: 'copy' },
         { role: 'selectAll' },
+      ],
+    },
+    // Help submenu: Reveal Logs (with pin) + Set Level. Always visible per
+    // parent resolution (v2 §7) — not gated on CCSM_DEV=1. The Set Level
+    // submenu uses radio-style checkmarks reflecting the persisted choice.
+    {
+      label: 'Help',
+      submenu: [
+        {
+          label: 'Reveal Logs in Folder',
+          click: () => {
+            void revealLogsAndPin();
+          },
+        },
+        {
+          label: `Log File: ${getLogFilePath() || '(uninitialized)'}`,
+          enabled: false,
+        },
+        { type: 'separator' },
+        {
+          label: 'Set Log Level',
+          submenu: levels.map((lvl) => ({
+            label: lvl.charAt(0).toUpperCase() + lvl.slice(1),
+            type: 'radio' as const,
+            checked: lvl === currentLevel,
+            click: () => {
+              setLogLevel(lvl);
+              log.info('menu', 'log level changed', { stage: lvl });
+              // Rebuild so the checkmark moves. Cheap; runs at most a few
+              // times per session.
+              applyAppMenuLocale();
+            },
+          })),
+        },
       ],
     },
   ]);
