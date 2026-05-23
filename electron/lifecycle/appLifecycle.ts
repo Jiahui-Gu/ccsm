@@ -285,8 +285,21 @@ export function registerLifecycleHandlers(deps: LifecycleDeps): void {
     // user explicitly chose minimize-to-tray. Real quit goes through tray
     // Quit / Ctrl-Q.
     if (getIsQuitting()) {
-      closeDb();
-      app.quit();
+      // Each disposer is wrapped in its own try/catch so a throw from one
+      // (e.g. closeDb() on a busy/locked SQLite handle, or a schema-corruption
+      // throw) does NOT skip the rest. `app.quit()` MUST run unconditionally
+      // — without it Electron stays alive with no windows. Mirrors the
+      // pattern PR #1329 used for disposeNotifyPipeline in main.ts.
+      try {
+        closeDb();
+      } catch (err) {
+        console.warn('[appLifecycle] disposer closeDb threw', err);
+      }
+      try {
+        app.quit();
+      } catch (err) {
+        console.warn('[appLifecycle] disposer app.quit threw', err);
+      }
     }
   });
 
