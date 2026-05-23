@@ -17,7 +17,7 @@
 // Extracting it would just create a giant deps bag with no real win.
 
 import type { App } from 'electron';
-import { Menu } from 'electron';
+import { BrowserWindow, Menu } from 'electron';
 
 /** Build + install the hidden app accelerator menu. We don't want a visible
  *  File/Edit/View menu bar — CCSM is a single-window tool and those menus
@@ -76,8 +76,12 @@ export interface LifecycleDeps {
   setIsQuitting: (v: boolean) => void;
   /** Best-effort reap of any live node-pty children spawned through
    *  ptyHost. Idempotent; critical on Windows where conpty can otherwise
-   *  leak the claude child past Electron quit. */
-  killAllPtySessions: () => void;
+   *  leak the claude child past Electron quit. Returns a Promise that
+   *  resolves after every session's graceful-flush + kill settles (or
+   *  the 3 s wedged-fallback fires) — `before-quit` awaits this so claude
+   *  has time to drain its 100 ms-buffered JSONL writer before the
+   *  Electron process exits. See `ptyHost/lifecycle.ts:killAll`. */
+  killAllPtySessions: () => Promise<void>;
   /** Tear down the notify pipeline + its app-level listeners (focus/blur,
    *  sessionWatcher 'unwatched') and any pending flash timers. Optional
    *  because `before-quit` may fire before the pipeline is constructed
@@ -93,6 +97,20 @@ export interface LifecycleDeps {
   getWindowCount: () => number;
 }
 
+// Quit-after-flush latch. Set on the FIRST `before-quit` we intercept so
+// the SECOND `before-quit` (re-fired via `app.quit()` after the async
+// flush settles) falls through without re-running the graceful path.
+// Module-level (like the now-unused `isQuitting` pattern in main.ts) so
+// the handler closure reads the live value.
+let flushingForQuit = false;
+
+/** Test hook — reset the quit latch between tests. NOT exported on the
+ *  public surface (no entry in the barrel); imported only by the unit
+ *  test file via the relative path. */
+export function __resetFlushingForQuitForTests(): void {
+  flushingForQuit = false;
+}
+
 export function registerLifecycleHandlers(deps: LifecycleDeps): void {
   const {
     app,
@@ -105,20 +123,58 @@ export function registerLifecycleHandlers(deps: LifecycleDeps): void {
     disposeNotifyPipeline,
   } = deps;
 
-  app.on('before-quit', () => {
+  app.on('before-quit', (event) => {
     setIsQuitting(true);
+
+    // Second-pass: we already ran the graceful flush and re-fired
+    // `app.quit()`. Let Electron tear down normally.
+    if (flushingForQuit) return;
+
+    // First-pass: the graceful kill path in `ptyHost/lifecycle.ts` writes
+    // `\x03` and waits up to 3 s per session for claude to drain its
+    // 100 ms-buffered JSONL writer. If we let Electron exit synchronously
+    // here, the OS would reap claude before the flush completed — worse
+    // than the pre-graceful hard-kill path. So:
+    //   1. Hide every window immediately so the user sees the app "quit"
+    //      with zero perceptible latency. We DON'T `close()` them — close
+    //      would re-enter the tray-resident hide-to-tray logic and other
+    //      window listeners; hide is a pure visibility flip.
+    //   2. `event.preventDefault()` to abort THIS quit pass.
+    //   3. Latch `flushingForQuit = true`.
+    //   4. Await `killAllPtySessions()` (now Promise-returning) and
+    //      `disposeNotifyPipeline()`.
+    //   5. Re-fire `app.quit()`; the handler re-enters with the latch set
+    //      and falls through, Electron walks `window-all-closed` →
+    //      `closeDb()` → process exit.
     try {
-      killAllPtySessions();
+      for (const w of BrowserWindow.getAllWindows()) {
+        try { w.hide(); } catch { /* window may already be destroyed */ }
+      }
     } catch {
-      /* ignore — best-effort cleanup on quit */
+      /* getAllWindows itself can throw on partial-init paths; flush
+         must still run even if the UI hide failed. */
     }
-    if (disposeNotifyPipeline) {
+
+    event.preventDefault();
+    flushingForQuit = true;
+
+    void (async () => {
       try {
-        disposeNotifyPipeline();
+        await killAllPtySessions();
       } catch {
         /* ignore — best-effort cleanup on quit */
       }
-    }
+      if (disposeNotifyPipeline) {
+        try {
+          disposeNotifyPipeline();
+        } catch {
+          /* ignore — best-effort cleanup on quit */
+        }
+      }
+      // Re-fire quit. The handler closure reads `flushingForQuit` live
+      // (module-level) and returns early on this second pass.
+      app.quit();
+    })();
   });
 
   app.on('window-all-closed', () => {

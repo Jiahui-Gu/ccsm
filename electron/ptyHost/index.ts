@@ -86,7 +86,7 @@ export const killPtySession = (sid: string): Promise<boolean> => L.kill(sessions
 export const getPtySession = (sid: string): L.PtySessionInfo | null =>
   L.get(sessions, sid);
 
-export const killAllPtySessions = (): void => L.killAll(sessions);
+export const killAllPtySessions = (): Promise<void> => L.killAll(sessions);
 
 // L4 PR-A (#861) + PR-B (#865): async chunked snapshot of the per-session
 // authoritative headless buffer paired with the per-entry chunk seq.

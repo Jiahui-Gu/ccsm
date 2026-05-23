@@ -178,7 +178,8 @@ export function kill(sessions: Map<string, Entry>, sid: string): Promise<boolean
   const entry = sessions.get(sid);
   if (!entry) return Promise.resolve(false);
 
-  // Capture pid BEFORE pty.kill() — the binding may zero it after kill.
+  // Capture pid BEFORE pty.write/kill — the binding may zero it after either
+  // (signal dispatch and explicit kill both can clear pid in node-pty).
   const pid = entry.pty.pid;
 
   // Race fix (#1277 review): pty.kill() returns synchronously but the entry
@@ -268,6 +269,12 @@ export function kill(sessions: Map<string, Entry>, sid: string): Promise<boolean
   // (2 s internal budget), so this is the signal that lets the 100 ms
   // buffered transcript writer drain before exit. If the process is already
   // dead the write throws — the onExit listener or the timer covers us.
+  //
+  // NOTE: this assumes interactive claude. Claude's `-p` / `--print`
+  // non-interactive mode ignores SIGINT (it's designed to run to completion
+  // for scripting). CCSM never spawns claude in print mode — every PTY
+  // session is a fully interactive REPL — but if that ever changes the
+  // graceful path here needs to be reconsidered.
   try {
     entry.pty.write('\x03');
   } catch {
@@ -357,14 +364,19 @@ export async function getBufferSnapshot(
   return { snapshot: out.join('\n'), seq };
 }
 
-// Kill every running pty. Call from app `before-quit` so renderer-side
-// claude processes don't leak past Electron exit. Fire-and-forget — we don't
-// block app teardown on the per-pty graceful-flush dance. Each `kill()`
-// writes `\x03` synchronously; if claude doesn't drain within the 3 s
-// budget the per-session timer escalates to SIGKILL + processKiller subtree
-// walk, which is what reaps any survivors.
-export function killAll(sessions: Map<string, Entry>): void {
-  for (const sid of [...sessions.keys()]) {
-    void kill(sessions, sid);
-  }
+// Kill every running pty. Returns a Promise that resolves after every
+// per-session `kill()` has settled (graceful onExit or 3 s wedged-fallback).
+// Callers that need to block app teardown on the flush (e.g. `before-quit`)
+// MUST `await` this; legacy fire-and-forget call sites can `void killAll(...)`.
+//
+// Rationale: `kill()` now writes `\x03` and waits up to KILL_EXIT_TIMEOUT_MS
+// for claude to drain its 100 ms-buffered JSONL writer. If `before-quit`
+// returned synchronously the way the pre-graceful code did, the Electron
+// process would exit before the timer ran and claude would be killed by
+// process teardown without ever flushing — worse than the old hard-kill
+// path. The hide-the-window-then-await-quit dance in `appLifecycle.ts`
+// keeps the UX instant while honoring the flush budget in the background.
+export function killAll(sessions: Map<string, Entry>): Promise<void> {
+  const sids = [...sessions.keys()];
+  return Promise.all(sids.map((sid) => kill(sessions, sid))).then(() => undefined);
 }

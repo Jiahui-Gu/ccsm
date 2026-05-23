@@ -415,6 +415,35 @@ describe('lifecycle.kill', () => {
     expect(bus().watcherStopCalls).toEqual(['s']);
   });
 
+  it('registers pty.onExit BEFORE writing \\x03 — regression guard for sync-onExit mocks', async () => {
+    // If a future refactor swaps the order, a synchronous onExit fired
+    // from inside pty.write (test fakes do this; the real binding can do
+    // similar tricks under fast-exit races) would land before the
+    // listener was registered → settle never runs → the kill promise
+    // either times out (3 s wedge) or worse, the renderer hangs. Lock
+    // the order with an explicit call-order assertion.
+    const sessions = new Map<string, FakeEntry>();
+    const calls: string[] = [];
+    const entry = makeFakeEntry();
+    entry.pty.pid = 800;
+    // Wrap onExit so we record registration order alongside writes.
+    const realOnExit = entry.pty.onExit;
+    entry.pty.onExit = (cb: () => void) => {
+      calls.push('onExit');
+      return realOnExit(cb);
+    };
+    entry.pty.write = vi.fn(() => {
+      calls.push('write');
+      entry.pty.__fireExit!();
+    });
+    sessions.set('s', entry);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await expect(L.kill(sessions as any, 's')).resolves.toBe(true);
+    expect(calls[0]).toBe('onExit');
+    expect(calls[1]).toBe('write');
+  });
+
   // ─── #1277 review race fix ─────────────────────────────────────────────
 
   it('awaits pty.onExit before resolving — renderer-attach race fix', async () => {
@@ -578,42 +607,77 @@ describe('lifecycle.kill', () => {
 });
 
 describe('lifecycle.killAll', () => {
-  it('sends the soft signal to every entry via the kill op', () => {
+  it('sends the soft signal to every entry and returns a Promise that resolves when all kills settle', async () => {
     const sessions = new Map<string, FakeEntry>();
     const a = makeFakeEntry({ pty: makeFakePty({ pid: 1 }) });
     const b = makeFakeEntry({ pty: makeFakePty({ pid: 2 }) });
     const c = makeFakeEntry({ pty: makeFakePty({ pid: 3 }) });
+    // Fire onExit synchronously inside the soft-signal write so every per-sid
+    // kill resolves promptly — the killAll Promise should resolve after
+    // ALL of them settle.
+    a.pty.write = vi.fn(() => a.pty.__fireExit!());
+    b.pty.write = vi.fn(() => b.pty.__fireExit!());
+    c.pty.write = vi.fn(() => c.pty.__fireExit!());
     sessions.set('a', a);
     sessions.set('b', b);
     sessions.set('c', c);
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    L.killAll(sessions as any);
-    // Each pty received the Ctrl+C soft signal synchronously.
+    const result = L.killAll(sessions as any);
+    // killAll must return a Promise (before-quit awaits it to give claude
+    // time to flush before Electron tears down — see appLifecycle.ts).
+    expect(result).toBeInstanceOf(Promise);
+    await expect(result).resolves.toBeUndefined();
+
+    // Each pty received the Ctrl+C soft signal.
     expect(a.pty.write).toHaveBeenCalledWith('\x03');
     expect(b.pty.write).toHaveBeenCalledWith('\x03');
     expect(c.pty.write).toHaveBeenCalledWith('\x03');
     // Watcher stopped synchronously for each sid.
     expect(bus().watcherStopCalls.sort()).toEqual(['a', 'b', 'c']);
-    // No hard kill / subtree walk yet — those only fire on the wedged
-    // timeout fallback.
+    // No hard kill / subtree walk — graceful path completed for all.
     expect(bus().killCalls).toEqual([]);
   });
 
-  it('snapshots the keys before iterating — safe against concurrent mutation', () => {
+  it('killAll Promise does NOT resolve until every per-session kill settles', async () => {
     const sessions = new Map<string, FakeEntry>();
-    sessions.set('a', makeFakeEntry());
-    sessions.set('b', makeFakeEntry());
-    // killAll calls kill() which doesn't itself mutate the map (the onExit
-    // hook does, but it isn't wired in this test). The contract under test
-    // is "iterates over a snapshot of keys".
+    const fast = makeFakeEntry({ pty: makeFakePty({ pid: 10 }) });
+    const slow = makeFakeEntry({ pty: makeFakePty({ pid: 11 }) });
+    // fast exits immediately; slow stays wedged until we manually fire onExit.
+    fast.pty.write = vi.fn(() => fast.pty.__fireExit!());
+    slow.pty.write = vi.fn();
+    sessions.set('fast', fast);
+    sessions.set('slow', slow);
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    L.killAll(sessions as any);
+    const p = L.killAll(sessions as any);
+    let resolved: 'pending' | 'done' = 'pending';
+    void p.then(() => { resolved = 'done'; });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(resolved).toBe('pending');
+
+    slow.pty.__fireExit!();
+    await expect(p).resolves.toBeUndefined();
+    expect(resolved).toBe('done');
+  });
+
+  it('snapshots the keys before iterating — safe against concurrent mutation', async () => {
+    const sessions = new Map<string, FakeEntry>();
+    const a = makeFakeEntry();
+    const b = makeFakeEntry();
+    a.pty.write = vi.fn(() => a.pty.__fireExit!());
+    b.pty.write = vi.fn(() => b.pty.__fireExit!());
+    sessions.set('a', a);
+    sessions.set('b', b);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await L.killAll(sessions as any);
     expect(bus().watcherStopCalls).toHaveLength(2);
   });
 
-  it('killAll over an empty map is a no-op', () => {
+  it('killAll over an empty map resolves immediately with no side effects', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    L.killAll(new Map() as any);
+    await expect(L.killAll(new Map() as any)).resolves.toBeUndefined();
     expect(bus().killCalls).toEqual([]);
     expect(bus().watcherStopCalls).toEqual([]);
   });
