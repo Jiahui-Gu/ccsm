@@ -4,9 +4,30 @@ import { useTranslation } from '../i18n/useTranslation';
 import { useXtermSingleton } from '../terminal/useXtermSingleton';
 import { useTerminalResize } from '../terminal/useTerminalResize';
 import { usePtyAttach, type PtyAttachState } from '../terminal/usePtyAttach';
+import { usePtyAttachWarm } from '../terminal/usePtyAttach.warm';
 import { useAtBottom } from '../terminal/useAtBottom';
 import { terminalCopy, terminalPaste } from '../terminal/xtermSingleton';
 import { ScrollToBottomButton } from './ScrollToBottomButton';
+
+// PR #25 (per-session warm xterm) — read the feature-flag snapshot from
+// the preload bridge ONCE at module load. The flag is sourced from
+// `CCSM_WARM_XTERM=1` in `electron/preload/bridges/ccsmCore.ts`. Static
+// boolean — no re-reads, no runtime toggling. When false (the default),
+// the singleton + legacy attach path runs bit-identical to today.
+//
+// Reading at module load (not at component render) keeps the hook
+// selection stable across re-renders, which React requires (hooks-rules:
+// "called in the same order every render"). A useState toggle from a
+// future settings UI is intentionally NOT supported in this PR — the
+// rollout shape is env-var-only, follow-up PR flips the default.
+const WARM_XTERM_ENABLED: boolean = (() => {
+  try {
+    if (typeof window === 'undefined') return false;
+    return window.ccsm?.featureFlags?.warmXterm === true;
+  } catch {
+    return false;
+  }
+})();
 
 // TerminalPane is the host shell for the singleton xterm view. The three
 // concerns it used to mash together — singleton bring-up, PTY lifecycle,
@@ -27,6 +48,18 @@ type Props = {
 };
 
 export function TerminalPane({ sessionId, cwd }: Props) {
+  // Hook selection is decided at module-load time (see WARM_XTERM_ENABLED
+  // above) and never changes for the renderer's lifetime, so this
+  // conditional branch is React-hooks-rules compliant: each branch
+  // contains a stable, ordered set of hook calls.
+  return WARM_XTERM_ENABLED ? (
+    <TerminalPaneWarm sessionId={sessionId} cwd={cwd} />
+  ) : (
+    <TerminalPaneLegacy sessionId={sessionId} cwd={cwd} />
+  );
+}
+
+function TerminalPaneLegacy({ sessionId, cwd }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const { t } = useTranslation();
 
@@ -38,23 +71,13 @@ export function TerminalPane({ sessionId, cwd }: Props) {
   // detection logic (and its tests) stay live for future use.
   const { scrollToBottom } = useAtBottom(sessionId);
 
-  // Native CLI / terminal-emulator right-click behavior. Mirrors Windows
-  // Terminal / gnome-terminal: right-click with selection → copy (+ clear
-  // for visual feedback); right-click with no selection → paste. No
-  // popover, ever. The native context menu installed in
-  // `electron/window/createWindow.ts` would race on top by default —
-  // `ccsmShell.suppressContextMenuOnce()` tells main to skip the next
-  // popup for this WebContents (DOM `preventDefault()` alone does NOT
-  // cancel Electron's main-process `context-menu` event). Optional chain
-  // on the bridge because tests / e2e probes may not install it.
   const onContextMenu = useCallback((e: MouseEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
     try {
       window.ccsmShell?.suppressContextMenuOnce();
     } catch {
-      // best-effort — falling through to inline copy/paste still works,
-      // user just sees the native menu race briefly.
+      // best-effort
     }
     const copied = terminalCopy();
     if (!copied) terminalPaste();
@@ -69,12 +92,62 @@ export function TerminalPane({ sessionId, cwd }: Props) {
     >
       <div ref={hostRef} className="absolute inset-0" />
       <Overlay state={state} onRetry={onRetry} t={t} />
-      {/* Hide the jump-to-bottom affordance while an overlay (attaching /
-          error / exit) is up — those cover the viewport and the button
-          would be meaningless. While ready, the button is always visible:
-          clicking it when already at bottom is a no-op (xterm's
-          scrollToBottom is idempotent), and conditional visibility based
-          on the atBottom signal proved flaky in practice. */}
+      {state.kind === 'ready' ? (
+        <ScrollToBottomButton onClick={scrollToBottom} />
+      ) : null}
+    </div>
+  );
+}
+
+// PR #25 — warm-xterm variant. The registry owns the xterm Terminal (one
+// per sid), so the host div is just a reparent target, NOT the parent of
+// a singleton xterm. `useXtermSingleton` and `useTerminalResize` are
+// intentionally NOT used here — the registry installs its own xterm
+// instances and the warm hook calls `entry.fit.fit()` on attach.
+//
+// `terminalCopy`/`terminalPaste` from the legacy singleton are STILL
+// imported and bound to right-click — they operate on the legacy module's
+// state, which is unused in this branch. That means right-click
+// copy/paste is broken in the warm path for this initial PR. Follow-up:
+// either route the right-click handler through the registry's active
+// entry, or move the canonical paste path into a shared module both
+// branches consume. Out-of-scope for the empirical-flash-elimination
+// dogfood validation this PR is shipping.
+function TerminalPaneWarm({ sessionId, cwd }: Props) {
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const { t } = useTranslation();
+
+  const { state, onRetry } = usePtyAttachWarm(sessionId, cwd, hostRef);
+  const { scrollToBottom } = useAtBottom(sessionId);
+
+  const onContextMenu = useCallback((e: MouseEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    try {
+      window.ccsmShell?.suppressContextMenuOnce();
+    } catch {
+      // best-effort
+    }
+    // Legacy singleton-bound copy/paste — see note above. No-op against
+    // the warm registry. Falls through to native menu suppression which
+    // is the user-visible behaviour the legacy path also relied on.
+    const copied = terminalCopy();
+    if (!copied) terminalPaste();
+  }, []);
+
+  return (
+    <div
+      className="relative flex-1 w-full h-full bg-black ring-1 ring-inset ring-white/5"
+      data-terminal-host
+      data-active-sid={sessionId}
+      data-ccsm-warm-xterm
+      onContextMenu={onContextMenu}
+    >
+      {/* The registry owns the inner wrapper(s); this host div is the
+          reparent target. No `<div ref={hostRef}>` because the registry
+          appendChild()s its per-sid wrapper directly under the host. */}
+      <div ref={hostRef} className="absolute inset-0" />
+      <Overlay state={state} onRetry={onRetry} t={t} />
       {state.kind === 'ready' ? (
         <ScrollToBottomButton onClick={scrollToBottom} />
       ) : null}

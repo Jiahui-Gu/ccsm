@@ -229,6 +229,30 @@ const api = {
     },
     platform: process.platform
   },
+
+  /**
+   * Renderer-readable feature flag snapshot. Read once at preload init from
+   * `process.env` (the preload script runs in a node-capable context).
+   * Used by `src/terminal/*` to select between the legacy cold-only
+   * xterm path (default) and the per-session warm-xterm path (PR #25)
+   * when `CCSM_WARM_XTERM=1` is set. Static booleans only — no methods,
+   * no dynamic re-reads.
+   */
+  featureFlags: {
+    warmXterm: process.env.CCSM_WARM_XTERM === '1',
+    /**
+     * Optional integer override for the warm-xterm LRU cap. Parsed
+     * permissively: `Number()` + clamp to [1, 100]; falsy / NaN returns
+     * `null` so the consumer falls back to its hard-coded default (20).
+     */
+    warmXtermCap: (() => {
+      const raw = process.env.CCSM_WARM_XTERM_CAP;
+      if (!raw) return null;
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n <= 0) return null;
+      return Math.min(100, Math.max(1, Math.floor(n)));
+    })(),
+  },
 };
 
 export type CCSMAPI = typeof api;
