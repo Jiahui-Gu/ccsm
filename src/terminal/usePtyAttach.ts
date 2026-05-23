@@ -13,7 +13,6 @@ import {
   setInputDisposable,
   setSnapshotReplay,
   getSnapshotReplay,
-  writeAndScrollToBottom,
   writeOrBuffer,
 } from './xtermSingleton';
 
@@ -29,6 +28,71 @@ const writeAsync = (
   t: { write: (s: string, cb?: () => void) => void },
   s: string,
 ): Promise<void> => new Promise((resolve) => t.write(s, resolve));
+
+// Structural shape we need from xterm.Terminal at the attach-complete
+// rendezvous. Kept narrow so the unit test can drive the helper with a
+// fake. The real `Terminal` from xterm satisfies this.
+type PinnableTerminal = {
+  write: (s: string, cb?: () => void) => void;
+  scrollToBottom: () => void;
+  buffer: {
+    active: {
+      viewportY: number;
+      baseY: number;
+      cursorY: number;
+      length: number;
+      type: 'normal' | 'alternate';
+    };
+  };
+};
+
+// Attach-complete rendezvous. Single source of truth for the invariant
+// "when `usePtyAttach` reports state:ready, the visible xterm viewport
+// equals baseY (view pinned at bottom of scrollback)".
+//
+// Anything that runs AFTER the snapshot write — xterm parsing buffered
+// ANSI, claude's first chunks landing on `pty.onData`, cursor moves, a
+// late `fit.fit()` reflow, alt-screen transitions — can move the viewport
+// off bottom. Nothing else in the flow brings it back unconditionally:
+// the prior code only scrolled inside `runReplay()` (gated on
+// `ptyResized=true`) and inside the post-snap scroll which fires BEFORE
+// the fit. So an idle-target attach (small `firstWrite`, no resize)
+// landed with the viewport stranded at the top.
+//
+// Sync primitive: `writeAsync(term, '')` drains xterm's parser queue —
+// the same drain primitive used inside `runReplay()`. NO timers, NO
+// requestAnimationFrame; xterm's `write` callback is the documented
+// synchronization point and resolves once everything queued before it
+// has been processed.
+async function pinViewportToBottom(
+  term: PinnableTerminal,
+  sid: string,
+): Promise<void> {
+  try {
+    await writeAsync(term, '');
+  } catch {
+    /* drain best-effort — fall through to scroll anyway */
+  }
+  try {
+    term.scrollToBottom();
+  } catch {
+    /* best-effort — scrollToBottom rarely throws */
+  }
+  try {
+    const buf = term.buffer.active;
+    log.event('attach.invariant.pinned', {
+      sid,
+      viewportY: buf.viewportY,
+      baseY: buf.baseY,
+      bufferType: buf.type,
+      cursorY: buf.cursorY,
+      length: buf.length,
+      atBottom: buf.viewportY === buf.baseY,
+    });
+  } catch {
+    /* probe failure must not break attach */
+  }
+}
 
 export type PtyAttachState =
   | { kind: 'attaching' }
@@ -388,11 +452,16 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
         const tAfterSnap = getTerm();
         if (tAfterSnap) {
           try {
+            const bufA = tAfterSnap.buffer?.active;
             log.event('attach.scrollToBottom.invoked', {
               sid: sessionId,
               callsite: 'post-snap',
-              viewportY: tAfterSnap.buffer?.active?.viewportY ?? 0,
-              baseY: tAfterSnap.buffer?.active?.baseY ?? 0,
+              viewportY: bufA?.viewportY ?? 0,
+              baseY: bufA?.baseY ?? 0,
+              bufferType: bufA?.type ?? 'normal',
+              cursorY: bufA?.cursorY ?? 0,
+              length: bufA?.length ?? 0,
+              atBottom: (bufA?.viewportY ?? 0) === (bufA?.baseY ?? 0),
             });
           } catch {
             /* probe must not block scroll */
@@ -490,11 +559,16 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
           const tBottom = getTerm();
           if (tBottom) {
             try {
+              const bufB = tBottom.buffer?.active;
               log.event('attach.scrollToBottom.invoked', {
                 sid: sessionId,
                 callsite: 'post-fit',
-                viewportY: tBottom.buffer?.active?.viewportY ?? 0,
-                baseY: tBottom.buffer?.active?.baseY ?? 0,
+                viewportY: bufB?.viewportY ?? 0,
+                baseY: bufB?.baseY ?? 0,
+                bufferType: bufB?.type ?? 'normal',
+                cursorY: bufB?.cursorY ?? 0,
+                length: bufB?.length ?? 0,
+                atBottom: (bufB?.viewportY ?? 0) === (bufB?.baseY ?? 0),
               });
             } catch {
               /* probe must not block scroll */
@@ -583,29 +657,24 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
               /* probe must not block fit */
             }
             if (ptyResized) {
-              const resizePromise = window.ccsmPty.resize(sid4, newCols, newRows);
-              const p = resizePromise && typeof (resizePromise as Promise<void>).then === 'function'
-                ? (resizePromise as Promise<void>)
-                : Promise.resolve();
-              void p
-                .then(() => {
-                  const replay = getSnapshotReplay();
-                  return replay ? replay() : undefined;
-                })
-                .then(() => {
-                  // Post-attach fit branch: even though the replay
-                  // handler itself scrolls to bottom after its drain,
-                  // we re-assert here as a defensive rendezvous. The
-                  // replay queues writes against the live xterm and
-                  // its internal scroll happens once THAT WriteBuffer
-                  // drains; an unrelated chunk that landed between the
-                  // fit and the replay (e.g. claude reacting to the
-                  // resize) could otherwise leave baseY advanced past
-                  // viewportY again. Cheap empty-write rendezvous.
-                  const tFit = getTerm();
-                  if (tFit) writeAndScrollToBottom(tFit);
-                })
-                .catch((e) => warn('attach', 'post-attach replay failed', e));
+              // Awaited (not fire-and-forget) so the attach-complete
+              // rendezvous below truly runs LAST. Previously this branch
+              // was `void p.then(...)`, which meant the `state:ready`
+              // transition could fire before the replay's scrollToBottom
+              // had run — and when ptyResized=false, the replay branch
+              // didn't run at all, leaving viewport pinning to chance.
+              try {
+                const resizePromise = window.ccsmPty.resize(sid4, newCols, newRows);
+                const p =
+                  resizePromise && typeof (resizePromise as Promise<void>).then === 'function'
+                    ? (resizePromise as Promise<void>)
+                    : Promise.resolve();
+                await p;
+                const replay = getSnapshotReplay();
+                if (replay) await replay();
+              } catch (e) {
+                warn('attach', 'post-attach replay failed', e);
+              }
             }
           } catch (e) {
             warn('attach', 'post-attach fit failed', e);
@@ -644,7 +713,23 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
           }
         }
 
-        if (!cancelled) setState({ kind: 'ready' }, 'attach-complete');
+        if (!cancelled) {
+          // Attach-complete rendezvous: invariant — viewport pinned to
+          // baseY at the moment we report `state:ready`. Runs AFTER
+          // snapshot+drain, AFTER fit, AFTER the awaited ptyResized
+          // resize+replay branch. This is the single source of truth
+          // for bottom-pinning; the scattered scroll calls in
+          // `runReplay` and the post-snap callsite are defensive only.
+          //
+          // Rationale: the prior code only re-scrolled inside
+          // `runReplay()`, which was gated on ptyResized=true. An
+          // idle-target re-attach (no resize, tiny firstWrite) had no
+          // unconditional post-fit scroll and landed with viewport
+          // stranded at scroll-top.
+          const tPin = getTerm();
+          if (tPin) await pinViewportToBottom(tPin as unknown as PinnableTerminal, sessionId);
+          if (!cancelled) setState({ kind: 'ready' }, 'attach-complete');
+        }
         // Successful (re-)attach means whatever pty is running for this
         // sid is healthy — drop any stale disconnect entry so the
         // sidebar red dot clears and a future crash starts from a clean
