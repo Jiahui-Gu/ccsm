@@ -372,12 +372,9 @@ describe('mobileRemoteServer: 1 MiB message cap', () => {
       ws.closeCode,
       new Promise<number>((_, rej) => setTimeout(() => rej(new Error('no close')), 2000)),
     ]);
-    // On a clean shutdown the server writes the close frame (code 1009) and
-    // then destroys; on Windows the FIN occasionally races the framed body
-    // so we accept either the exact code or a hard socket close as evidence
-    // the cap was enforced. The crucial assertion is "didn't get parsed and
-    // routed as a normal text message", which a hard close demonstrates.
-    expect(code === 1009 || code === null).toBe(true);
+    // Server flushes the close frame (via socket.end) before FIN, so the peer
+    // must observe the exact 1009 reason on every OS.
+    expect(code).toBe(1009);
   });
 });
 
