@@ -135,7 +135,7 @@ declare global {
         /** `CCSM_WARM_XTERM === '1'` — per-session warm Terminal cache. */
         warmXterm: boolean;
         /**
-         * `CCSM_WARM_XTERM_CAP` parsed as an integer, clamped to [1,100].
+         * `CCSM_WARM_XTERM_CAP` parsed as an integer, clamped to [2,100].
          * `null` when unset or unparseable; consumer falls back to its
          * own default (20).
          */
