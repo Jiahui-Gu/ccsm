@@ -337,6 +337,45 @@ export async function getBufferSnapshot(
 ): Promise<BufferSnapshot> {
   const entry = sessions.get(sid);
   if (!entry) return { snapshot: '', seq: 0 };
+
+  // Round-4 fix (PR #1355 dogfood): `entry.seq` is bumped synchronously
+  // by `dispatchPtyChunk` BEFORE the chunk is fully absorbed by
+  // `entry.headless.write` (xterm.js `write` is async — the chunk goes
+  // into an internal WriteBuffer that drains on a parser tick). Under a
+  // fast-burst producer, `entry.seq` can advance past what
+  // `entry.serialize.serialize()` will produce, because the headless
+  // buffer hasn't parsed those bytes yet. The renderer's dedupe gate
+  // (`seq > snapSeq` drops buffered chunks at or below snapSeq) then
+  // discards live chunks whose content was supposed to be in the
+  // snapshot but in fact wasn't — every byte from those chunks vanishes.
+  //
+  // Verified empirically: dogfood validator with a stub bursting 200
+  // lines reproduces "23 chunks / 14650 bytes broadcast, 0 visible in
+  // the warm entry's buffer." Real claude doesn't reproduce because
+  // its inter-chunk pacing exceeds the headless parser tick.
+  //
+  // Fix: drain the headless parser queue BEFORE capturing seq. Write a
+  // zero-length chunk; xterm processes writes in FIFO order, so its
+  // callback fires only after every previously-queued chunk has been
+  // parsed into the buffer. THEN read `entry.seq` and serialize — at
+  // that point seq reflects "the seq of the last chunk fully
+  // represented in the serialize output." Node main is single-threaded
+  // JS, so no `dispatchPtyChunk` can interleave between the drain
+  // resolving and the synchronous seq+serialize read on the next line.
+  //
+  // The drain await is bounded by the parser's per-chunk cost (~µs per
+  // KB), so on typical buffers this adds well under a millisecond.
+  await new Promise<void>((resolve) => {
+    try {
+      entry.headless.write('', () => resolve());
+    } catch {
+      // headless was disposed mid-call — resolve so the caller can
+      // proceed with whatever serialize() can still produce. The
+      // surrounding caller handles `snapshot === ''` gracefully.
+      resolve();
+    }
+  });
+
   // Capture seq + serialized string atomically (both sync, no awaits).
   const seq = entry.seq;
   // PR-B contract: serialize captures whatever lives in the headless buffer

@@ -64,7 +64,17 @@ function fakeEntry(
 ): Entry {
   return {
     pty: { pid: 0 } as Entry['pty'],
-    headless: {} as Entry['headless'],
+    // Round-4 fix: `getBufferSnapshot` now drains the headless parser
+    // queue before reading seq + serializing (see lifecycle.ts comment
+    // on the dispatch/seq race). The fake must implement
+    // `write('', cb)` so the drain await resolves; the actual chunk is
+    // unused — serialize() returns the snapshot string the test
+    // configured.
+    headless: {
+      write: (_chunk: string, cb?: () => void) => {
+        if (cb) cb();
+      },
+    } as unknown as Entry['headless'],
     serialize: {
       serialize: (opts?: unknown) => {
         if (optsCapture) optsCapture.push(opts);
@@ -237,4 +247,75 @@ describe('lifecycle.getBufferSnapshot (PR-A async chunking + PR-B seq capture)',
     // escapes and trailing rows. We just assert "much less than TOTAL".
     expect(result.snapshot.split('\n').length).toBeLessThan(700);
   });
+
+  // Round-4 (PR #1355 dogfood): the snapshot.seq vs. serialize-content
+  // race that breaks the warm-xterm dedupe gate under fast bursts.
+  //
+  // Setup: real headless + serialize. Burst many chunks via
+  // `headless.write` WITHOUT awaiting their callbacks — exactly what
+  // `dispatchPtyChunk` does in production (it issues write+cb and bumps
+  // entry.seq synchronously before the write has been parsed). Then
+  // immediately await `getBufferSnapshot`.
+  //
+  // BEFORE the fix:
+  //   * `entry.seq` is N (we bumped it N times).
+  //   * `serialize.serialize()` reads the headless buffer SYNCHRONOUSLY
+  //     and returns whatever has been parsed so far — under burst, this
+  //     may be 0 bytes because the parser hasn't drained yet.
+  //   * Returned `{snapshot: '', seq: N}` is a lie — it claims "I
+  //     contain everything through seq N" but contains nothing.
+  //   * In the warm path, buffered chunks with seq ≤ N are dropped and
+  //     the content vanishes.
+  //
+  // AFTER the fix:
+  //   * `getBufferSnapshot` writes a zero-length chunk through xterm's
+  //     FIFO WriteBuffer and awaits its callback — by xterm's contract
+  //     every earlier write has been parsed by then.
+  //   * `serialize.serialize()` now sees all N chunks' content.
+  //   * Returned snapshot.seq correctly corresponds to the visible
+  //     content; warm-path dedupe behaves as designed.
+  it('Round 4: snapshot drains parser queue so seq is in-sync with serialize content', async () => {
+    _stubbedCap = 1500;
+    const { term, serialize } = makeRealHeadless();
+    const sessions = new Map<string, Entry>();
+    sessions.set('burst', {
+      pty: { pid: 0 } as Entry['pty'],
+      headless: term as unknown as Entry['headless'],
+      serialize: serialize as unknown as Entry['serialize'],
+      attached: new Map(),
+      cols: 80,
+      rows: 24,
+      cwd: '/tmp',
+      seq: 0,
+    } as Entry);
+    const entry = sessions.get('burst')!;
+
+    // Simulate dispatchPtyChunk burst: bump seq + queue headless.write,
+    // do NOT await the callback. Use a meaningful payload so we can
+    // assert it survives.
+    const N = 50;
+    for (let i = 0; i < N; i++) {
+      entry.seq += 1;
+      // Fire-and-forget — the chunk goes into WriteBuffer; the callback
+      // will fire on a future parser tick. We intentionally don't await.
+      term.write(`burst-${i}\r\n`);
+    }
+    // Synchronous state at this point: entry.seq === N, but
+    // `serialize.serialize()` would return very little because the
+    // parser hasn't ticked. The fix's drain await inside
+    // getBufferSnapshot is what aligns the two.
+
+    const result = await getBufferSnapshot(sessions, 'burst');
+
+    // Contract: snapshot must contain every chunk's content. With the
+    // pre-fix code, the snapshot was empty / partial.
+    expect(result.snapshot).toContain('burst-0');
+    expect(result.snapshot).toContain(`burst-${N - 1}`);
+    expect(result.snapshot).toContain('burst-25');
+    // seq matches the dispatch count — entry.seq was bumped to N by
+    // our synchronous loop, and the drain rendezvous ensures the
+    // serialize output reflects all N chunks before seq is read.
+    expect(result.seq).toBe(N);
+  });
 });
+
