@@ -331,8 +331,28 @@ registerLifecycleHandlers({
   },
   getWindowCount: () => BrowserWindow.getAllWindows().length,
   disposeNotifyPipeline: () => {
-    mobileRemoteServer?.close();
-    mobileRemoteServer = null;
-    notifyPipelineDispose?.();
+    // Each disposer is wrapped in its own try/catch so a throw from one
+    // (e.g. mobileRemoteServer.close() on an already-closed server) does
+    // NOT skip the rest. The original audit #876 cluster 1.14 fix
+    // (notifyPipelineDispose) depends on running unconditionally — without
+    // isolation a node fs error in the http close path would silently
+    // resurrect the focus/blur + sessionWatcher 'unwatched' leak past
+    // quit. Order is preserved: server close before clearing the handle
+    // before pipeline disposal.
+    try {
+      mobileRemoteServer?.close();
+    } catch (err) {
+      console.warn('[main] disposer mobileRemoteServer.close threw', err);
+    }
+    try {
+      mobileRemoteServer = null;
+    } catch (err) {
+      console.warn('[main] disposer clear mobileRemoteServer threw', err);
+    }
+    try {
+      notifyPipelineDispose?.();
+    } catch (err) {
+      console.warn('[main] disposer notifyPipelineDispose threw', err);
+    }
   },
 });
