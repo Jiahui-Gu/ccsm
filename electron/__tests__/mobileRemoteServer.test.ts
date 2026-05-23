@@ -426,3 +426,80 @@ describe('mobileRemoteServer: message handling', () => {
     expect(code).toBe(1003);
   });
 });
+
+// Raw upgrade probe that, unlike wsConnect(), returns the literal HTTP
+// reject response the server wrote. Lets us assert the peer actually
+// receives the 401/400 status line + body — the bug a bare destroy()
+// would have hidden on Windows.
+function rawUpgradeProbe(
+  port: number,
+  path: string
+): Promise<{ status: number; raw: string }> {
+  return new Promise((resolve, reject) => {
+    const net = require('net') as typeof import('net');
+    const socket = net.connect(port, '127.0.0.1', () => {
+      socket.write(
+        [
+          `GET ${path} HTTP/1.1`,
+          'Host: 127.0.0.1',
+          'Connection: Upgrade',
+          'Upgrade: websocket',
+          'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==',
+          'Sec-WebSocket-Version: 13',
+          '',
+          '',
+        ].join('\r\n')
+      );
+    });
+    const chunks: Buffer[] = [];
+    socket.on('data', (c) => chunks.push(c));
+    socket.on('end', () => {
+      const raw = Buffer.concat(chunks).toString('utf8');
+      const m = raw.match(/^HTTP\/1\.1 (\d+)/);
+      resolve({ status: m ? Number(m[1]) : 0, raw });
+    });
+    socket.on('close', () => {
+      const raw = Buffer.concat(chunks).toString('utf8');
+      const m = raw.match(/^HTTP\/1\.1 (\d+)/);
+      resolve({ status: m ? Number(m[1]) : 0, raw });
+    });
+    socket.on('error', reject);
+  });
+}
+
+describe('mobileRemoteServer: upgrade reject delivery', () => {
+  it('peer receives the 401 status line on bad token (socket.end flush)', async () => {
+    active = await startServer();
+    const result = await rawUpgradeProbe(active.port, '/ws?token=wrong');
+    expect(result.status).toBe(401);
+    expect(result.raw).toMatch(/401 Unauthorized/);
+  });
+
+  it('peer receives the 401 status line on non-/ws path', async () => {
+    active = await startServer();
+    const result = await rawUpgradeProbe(active.port, `/elsewhere?token=${active.token}`);
+    expect(result.status).toBe(401);
+    expect(result.raw).toMatch(/401 Unauthorized/);
+  });
+});
+
+describe('mobileRemoteServer: server shutdown', () => {
+  it('sends a 1001 close frame to live clients on close() (no raw RST)', async () => {
+    active = await startServer();
+    const ws = await wsConnect(active.port, `/ws?token=${active.token}`);
+    await ws.recvText;
+
+    // Trigger server shutdown; live clients should receive a 1001 close
+    // frame followed by a normal FIN, not a bare TCP RST.
+    active.close();
+    active = null;
+
+    const code = await Promise.race([
+      ws.closeCode,
+      new Promise<number>((_, rej) => setTimeout(() => rej(new Error('no close')), 2000)),
+    ]);
+    // 1001 = going-away. A bare destroy() would have surfaced as null
+    // (no close frame parsed).
+    expect(code).toBe(1001);
+  });
+});

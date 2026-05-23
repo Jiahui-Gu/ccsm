@@ -60,15 +60,17 @@ export function startMobileRemoteServer(): MobileRemoteServer | null {
   server.on('upgrade', (req, socket) => {
     const url = parseRequestUrl(req.url);
     if (!url || url.pathname !== '/ws' || url.searchParams.get('token') !== token) {
-      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-      socket.destroy();
+      // socket.end() flushes the HTTP response before sending FIN; a bare
+      // destroy() would race the kernel and the peer may miss the 401 body
+      // on Windows. Same pattern PR #1341 applied to closeSocket().
+      socket.end('HTTP/1.1 401 Unauthorized\r\n\r\n');
       return;
     }
 
     const key = req.headers['sec-websocket-key'];
     if (typeof key !== 'string') {
-      socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
-      socket.destroy();
+      // See 401 path above — flush before FIN so the peer sees the 400 body.
+      socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
       return;
     }
 
@@ -129,7 +131,12 @@ export function startMobileRemoteServer(): MobileRemoteServer | null {
   return {
     close: () => {
       offPtyData();
-      for (const client of clients) client.socket.destroy();
+      // Send a 1001 (going-away) close frame per client and let the FIN
+      // follow naturally via socket.end() inside closeSocket(). A bare
+      // destroy() would emit a raw TCP RST and peers would never see the
+      // close reason — same anti-pattern PR #1341 fixed in the fatal-frame
+      // path.
+      for (const client of clients) closeSocket(client.socket, 1001);
       clients.clear();
       server.close();
     },
