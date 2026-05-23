@@ -30,10 +30,14 @@ vi.mock('electron', () => {
 // Mock the log module to avoid pulling in electron-log (which requires
 // the electron binary). appLifecycle imports getLogLevel / getLogFilePath
 // to render the Help submenu — stub them with deterministic values.
+// Mutable backing for the file-sink-enabled gate so individual tests can
+// flip it without rebuilding the whole mock module.
+let _logFileEnabled = true;
 vi.mock('../../shared/log', () => ({
   getLogLevel: () => 'info',
   setLogLevel: vi.fn(),
   getLogFilePath: () => '/tmp/logs/main.log',
+  getLogFileEnabled: () => _logFileEnabled,
   log: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), event: vi.fn() },
 }));
 
@@ -200,6 +204,57 @@ describe('applyAppMenuLocale', () => {
     applyAppMenuLocale();
     expect(Menu.buildFromTemplate).toHaveBeenCalledTimes(2);
     expect(Menu.setApplicationMenu).toHaveBeenCalledTimes(2);
+  });
+
+  describe('file-sink gate', () => {
+    afterAll(() => {
+      _logFileEnabled = true;
+    });
+
+    it('enables Reveal Logs + Set Log Level when file sink is on (dev runtime)', () => {
+      _logFileEnabled = true;
+      applyAppMenuLocale();
+      const template = vi.mocked(Menu.buildFromTemplate).mock.calls.at(-1)![0];
+      const help = template[1].submenu as Array<{
+        label?: string;
+        enabled?: boolean;
+        submenu?: unknown;
+      }>;
+      const reveal = help.find((it) => typeof it.label === 'string' && it.label.startsWith('Reveal'));
+      const setLevel = help.find((it) => it.label === 'Set Log Level');
+      expect(reveal?.enabled).toBe(true);
+      expect(setLevel?.enabled).toBe(true);
+    });
+
+    it('disables Reveal Logs + Set Log Level when file sink is off (packaged default)', () => {
+      _logFileEnabled = false;
+      applyAppMenuLocale();
+      const template = vi.mocked(Menu.buildFromTemplate).mock.calls.at(-1)![0];
+      const help = template[1].submenu as Array<{
+        label?: string;
+        enabled?: boolean;
+        toolTip?: string;
+        submenu?: Array<{ enabled?: boolean }>;
+      }>;
+      const reveal = help.find((it) => typeof it.label === 'string' && it.label.startsWith('Reveal'));
+      const setLevel = help.find((it) => it.label === 'Set Log Level');
+      expect(reveal?.enabled).toBe(false);
+      expect(reveal?.toolTip).toMatch(/CCSM_LOG_ENABLE_FILE/);
+      expect(setLevel?.enabled).toBe(false);
+      expect(setLevel?.toolTip).toMatch(/CCSM_LOG_ENABLE_FILE/);
+      // Each radio child must ALSO be disabled — Electron renders the
+      // submenu parent state, but child enabled=true could still allow
+      // keyboard navigation on some platforms.
+      for (const child of setLevel?.submenu ?? []) {
+        expect(child.enabled).toBe(false);
+      }
+      // Log File label should hint at the opt-in env var instead of an
+      // uninitialized path.
+      const logFileLabel = help.find(
+        (it) => typeof it.label === 'string' && it.label.startsWith('Log File'),
+      );
+      expect(logFileLabel?.label).toMatch(/CCSM_LOG_ENABLE_FILE/);
+    });
   });
 });
 

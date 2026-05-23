@@ -20,7 +20,7 @@ import type { App } from 'electron';
 import { BrowserWindow, Menu, app, shell } from 'electron';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { getLogLevel, setLogLevel, getLogFilePath, log } from '../shared/log';
+import { getLogLevel, setLogLevel, getLogFilePath, getLogFileEnabled, log } from '../shared/log';
 
 type LogLevelChoice = 'debug' | 'info' | 'warn' | 'error';
 
@@ -103,6 +103,13 @@ export function applyAppMenuLocale(): void {
   // normally to the renderer.
   const currentLevel = getLogLevel();
   const levels: LogLevelChoice[] = ['debug', 'info', 'warn', 'error'];
+  // File sink may be off in packaged builds (default) — the Reveal Logs +
+  // Set Log Level items have nothing to act on in that case. Disable them
+  // (greyed out) and surface a tooltip pointing at the opt-in env var, so
+  // the menu doesn't silently no-op. See `electron/shared/log.ts` for the
+  // gating logic. The Edit submenu + log-file path readout are unchanged.
+  const fileSinkEnabled = getLogFileEnabled();
+  const disabledTooltip = 'Enable diagnostic logging via CCSM_LOG_ENABLE_FILE=1';
   const accelMenu = Menu.buildFromTemplate([
     {
       label: i18n.tMenu('edit'),
@@ -118,26 +125,35 @@ export function applyAppMenuLocale(): void {
     // Help submenu: Reveal Logs (with pin) + Set Level. Always visible per
     // parent resolution (v2 §7) — not gated on CCSM_DEV=1. The Set Level
     // submenu uses radio-style checkmarks reflecting the persisted choice.
+    // When the file sink is disabled (production default), both items are
+    // greyed out — no files to reveal, no file-level to change.
     {
       label: 'Help',
       submenu: [
         {
           label: 'Reveal Logs in Folder',
+          enabled: fileSinkEnabled,
+          toolTip: fileSinkEnabled ? undefined : disabledTooltip,
           click: () => {
             void revealLogsAndPin();
           },
         },
         {
-          label: `Log File: ${getLogFilePath() || '(uninitialized)'}`,
+          label: fileSinkEnabled
+            ? `Log File: ${getLogFilePath() || '(uninitialized)'}`
+            : 'Log File: (disabled — set CCSM_LOG_ENABLE_FILE=1)',
           enabled: false,
         },
         { type: 'separator' },
         {
           label: 'Set Log Level',
+          enabled: fileSinkEnabled,
+          toolTip: fileSinkEnabled ? undefined : disabledTooltip,
           submenu: levels.map((lvl) => ({
             label: lvl.charAt(0).toUpperCase() + lvl.slice(1),
             type: 'radio' as const,
             checked: lvl === currentLevel,
+            enabled: fileSinkEnabled,
             click: () => {
               setLogLevel(lvl);
               log.info('menu', 'log level changed', { stage: lvl });

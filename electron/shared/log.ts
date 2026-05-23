@@ -6,7 +6,17 @@
 //   * the IPC sink that catches renderer logs (electron-log's built-in
 //     `ipc` transport — wired by `log.initialize()` in main.ts)
 //   * runtime log-level changes (`setLevel` persisted via sqlite app_state)
-//   * `CCSM_LOG_LEVEL` / `CCSM_LOG_DISABLE_FILE` env overrides
+//   * `CCSM_LOG_LEVEL` / `CCSM_LOG_ENABLE_FILE` env overrides
+//
+// FILE SINK DEFAULT: the file transport is gated on `app.isPackaged === false`
+// (i.e. dev runs `npm run dev` get full JSONL on disk automatically) OR an
+// explicit opt-in via `CCSM_LOG_ENABLE_FILE=1`. In packaged production builds
+// with no env opt-in, the file transport is silenced (`elog.transports.file
+// .level = false`) and the renderer-mirror file ring is skipped. Production
+// users don't want diagnostic JSONL accumulating on disk for sessions they
+// never asked to record; only the developer (dogfooding) needs it. Console +
+// Sentry sinks are unchanged — console is free in production (no attached
+// terminal) and Sentry init is governed separately.
 //   * a tiny ring file for renderer-local fallback at
 //     `app.getPath('userData')/renderer-logs/` (1MB × 2 = 2MB) — written by
 //     the renderer's electron-log instance through the IPC bridge if main
@@ -116,11 +126,21 @@ function getElog(): ElogLike | null {
 
 /** Lazily resolve `electron.app`. Same rationale as `getElog`. Returns
  *  null outside Electron. */
-function getApp(): { getVersion?: () => string; getPath?: (name: string) => string } | null {
+function getApp(): {
+  getVersion?: () => string;
+  getPath?: (name: string) => string;
+  isPackaged?: boolean;
+} | null {
   if (!isElectronRuntime()) return null;
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const electron = require('electron') as { app?: { getVersion?: () => string; getPath?: (name: string) => string } };
+    const electron = require('electron') as {
+      app?: {
+        getVersion?: () => string;
+        getPath?: (name: string) => string;
+        isPackaged?: boolean;
+      };
+    };
     return electron.app ?? null;
   } catch {
     return null;
@@ -129,15 +149,43 @@ function getApp(): { getVersion?: () => string; getPath?: (name: string) => stri
 
 type EnvFlags = {
   level: LogLevel | null;
-  disableFile: boolean;
+  enableFile: boolean;
 };
 
 function readEnvFlags(): EnvFlags {
   const raw = process.env.CCSM_LOG_LEVEL?.toLowerCase();
   const valid: LogLevel[] = ['debug', 'info', 'warn', 'error'];
   const level = raw && (valid as string[]).includes(raw) ? (raw as LogLevel) : null;
-  const disableFile = process.env.CCSM_LOG_DISABLE_FILE === '1';
-  return { level, disableFile };
+  const enableFile = process.env.CCSM_LOG_ENABLE_FILE === '1';
+  return { level, enableFile };
+}
+
+/** Module-level latch tracking whether the file sink actually got wired in
+ *  `initLog()`. The menu builder reads this via `getLogFileEnabled()` to grey
+ *  out the Reveal Logs / Set Log Level items in packaged builds with no opt-
+ *  in — there are no log files to reveal and no file-level to change. */
+let _fileSinkEnabled = false;
+
+/** True iff the file transport is active (dev runtime, or production with
+ *  `CCSM_LOG_ENABLE_FILE=1`). Called by `electron/lifecycle/appLifecycle.ts`
+ *  to gate the Help submenu items. Returns false before `initLog()` runs. */
+export function getLogFileEnabled(): boolean {
+  return _fileSinkEnabled;
+}
+
+/** Decide whether to wire the file sink. Dev (unpackaged) always gets it;
+ *  packaged builds need explicit opt-in via `CCSM_LOG_ENABLE_FILE=1`. If we
+ *  can't even resolve `app.isPackaged` (e.g. mid-vitest with the electron
+ *  binary stubbed), default to disabled — vitest doesn't need on-disk JSONL
+ *  and the IPC + Sentry sinks already gracefully no-op. */
+function shouldEnableFileSink(env: EnvFlags): boolean {
+  if (env.enableFile) return true;
+  const a = getApp();
+  // `app.isPackaged === false` is dev runtime; true (or unresolvable) is
+  // packaged. We explicitly check `=== false` rather than `!a.isPackaged`
+  // so the unresolvable case (null app, undefined isPackaged) defaults to
+  // disabled — safer for tests + paranoid prod fallback.
+  return a?.isPackaged === false;
 }
 
 /** Reads persisted log level from sqlite app_state. Imported lazily to avoid
@@ -300,8 +348,13 @@ export function initLog(): void {
     return [`[${m.level}] ${m.data.map((d) => String(d)).join(' ')}`];
   };
 
-  // File transport.
-  if (env.disableFile) {
+  // File transport. Gated on dev-runtime (`app.isPackaged === false`) OR
+  // explicit `CCSM_LOG_ENABLE_FILE=1` opt-in. Packaged builds with no opt-in
+  // silence the file transport entirely — no rotation, no header, no on-disk
+  // JSONL. The IPC bridge for renderer records stays wired (it's cheap) but
+  // electron-log silently drops records routed to a level=false transport.
+  _fileSinkEnabled = shouldEnableFileSink(env);
+  if (!_fileSinkEnabled) {
     elog.transports.file.level = false;
   } else {
     elog.transports.file.level = _currentLevel;
@@ -356,7 +409,11 @@ export function initLog(): void {
   // we ALSO want a local file so a mid-crash renderer still has tail
   // evidence if the IPC bridge has died. This transport on the MAIN side
   // captures the IPC-shipped renderer records into a separate file.
-  try {
+  //
+  // Follows the same dev-vs-packaged gate as the primary file transport —
+  // production users without `CCSM_LOG_ENABLE_FILE=1` get no on-disk JSONL
+  // anywhere.
+  if (_fileSinkEnabled) try {
     const userData = getApp()?.getPath?.('userData');
     if (!userData) throw new Error('userData unavailable');
     const rendererLogDir = path.join(userData, 'renderer-logs');
