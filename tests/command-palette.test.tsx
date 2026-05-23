@@ -97,7 +97,9 @@ describe('<CommandPalette /> empty / no-matches / kbd hints', () => {
     const input = within(dialog).getByPlaceholderText(/Search/i);
     fireEvent.change(input, { target: { value: 'alpha' } });
     const options = within(dialog).getAllByRole('option');
-    expect(options.length).toBeGreaterThanOrEqual(1);
+    // Seeded exactly one session whose name matches 'alpha'.
+    expect(options.length).toBe(1);
+    expect(options[0].textContent || '').toMatch(/Alpha session/);
     expect(within(dialog).getByText(/Alpha session/)).toBeInTheDocument();
   });
 
@@ -139,9 +141,12 @@ describe('<CommandPalette /> keyboard navigation', () => {
     const input = within(dialog).getByPlaceholderText(/Search/i) as HTMLInputElement;
     fireEvent.change(input, { target: { value: 'session' } });
 
-    // After typing, expect ≥2 option rows; first is active.
+    // After typing 'session', expect 3 option rows: the two seeded
+    // sessions ('session alpha', 'session bravo') AND the default group
+    // 'Sessions' (group label contains the substring). The first option
+    // is active by default.
     let options = within(dialog).getAllByRole('option');
-    expect(options.length).toBeGreaterThanOrEqual(2);
+    expect(options.length).toBe(3);
     expect(options[0].getAttribute('aria-selected')).toBe('true');
 
     // ArrowDown → index 1 active.
@@ -192,7 +197,10 @@ describe('<CommandPalette /> keyboard navigation', () => {
     const input = within(dialog).getByPlaceholderText(/Search/i) as HTMLInputElement;
     fireEvent.change(input, { target: { value: 'enter' } });
     const options = within(dialog).getAllByRole('option');
-    expect(options.length).toBeGreaterThanOrEqual(1);
+    // Only the seeded 'enter target' session matches 'enter'; no command
+    // label/hint and no group name contains the substring.
+    expect(options.length).toBe(1);
+    expect(options[0].textContent || '').toMatch(/enter target/);
     fireEvent.keyDown(input, { key: 'Enter' });
     expect(onSelect).toHaveBeenCalledWith('s-enter');
     // Dialog should have unmounted as a side effect of the selection.

@@ -46,8 +46,21 @@ describe('usePtyExitBridge', () => {
     expect(apply).not.toHaveBeenCalled();
   });
 
-  it('is a no-op when the bridge is missing', () => {
+  it('is a no-op when the bridge is missing: subscribe + apply never called', () => {
     delete (window as unknown as { ccsmPty?: unknown }).ccsmPty;
-    expect(() => renderHook(() => usePtyExitBridge(vi.fn()))).not.toThrow();
+    const apply = vi.fn();
+    const { unmount } = renderHook(() => usePtyExitBridge(apply));
+    expect(onExit).not.toHaveBeenCalled();
+    expect(apply).not.toHaveBeenCalled();
+    unmount();
+    expect(unsubscribe).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op when ccsmPty.onExit is missing on a partial bridge', () => {
+    (window as unknown as { ccsmPty: unknown }).ccsmPty = {};
+    const apply = vi.fn();
+    const { unmount } = renderHook(() => usePtyExitBridge(apply));
+    unmount();
+    expect(apply).not.toHaveBeenCalled();
   });
 });

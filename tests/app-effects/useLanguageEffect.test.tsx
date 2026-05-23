@@ -32,8 +32,26 @@ describe('useLanguageEffect', () => {
     expect(setLanguage).toHaveBeenCalledTimes(2);
   });
 
-  it('is a no-op when the preload bridge is missing', () => {
+  it('is a no-op when the preload bridge is missing: setLanguage never called', () => {
+    // Capture the spy reference first, then delete the bridge. The hook
+    // optional-chains through `window.ccsm?.i18n?.setLanguage`, so the
+    // captured spy should never be invoked after the delete.
+    const capturedSpy = setLanguage;
     delete (window as unknown as { ccsm?: unknown }).ccsm;
-    expect(() => renderHook(() => useLanguageEffect('en'))).not.toThrow();
+    const { rerender, unmount } = renderHook(
+      ({ lang }: { lang: string }) => useLanguageEffect(lang as 'en' | 'zh'),
+      { initialProps: { lang: 'en' } }
+    );
+    expect(capturedSpy).not.toHaveBeenCalled();
+    rerender({ lang: 'zh' });
+    expect(capturedSpy).not.toHaveBeenCalled();
+    unmount();
+    expect(capturedSpy).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op when ccsm.i18n is missing (partial bridge)', () => {
+    (window as unknown as { ccsm: unknown }).ccsm = {};
+    renderHook(() => useLanguageEffect('en'));
+    expect(setLanguage).not.toHaveBeenCalled();
   });
 });

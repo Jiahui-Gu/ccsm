@@ -166,16 +166,24 @@ describe('App composition root wires extracted effect hooks (Task #732)', () => 
   it('passes the resolved language to useLanguageEffect', () => {
     render(<App />);
     const calls = (useLanguageEffect as unknown as { mock: { calls: unknown[][] } }).mock.calls;
-    expect(calls.length).toBeGreaterThan(0);
-    // First positional arg is the resolved language ('en' from stubCCSM
-    // setSystemLocale + initI18n).
-    expect(typeof calls[0][0]).toBe('string');
+    // App renders twice during boot: initial render, then a re-render
+    // triggered by a setState landing from the boot effect chain (e.g.
+    // claudeAvailable resolution, settings load). Each hook fires exactly
+    // once per render → exact count is 2, not >0. Pinning the exact count
+    // would catch a regression that adds a stray render or double-fires
+    // a hook.
+    expect(useLanguageEffect).toHaveBeenCalledTimes(2);
+    // jsdom navigator.language is 'en-US' → resolveLanguage('system', 'en-US')
+    // returns 'en'. Assert the EXACT resolved value, not just "is a string"
+    // (which would pass for '' or 'fr' — both of which would be bugs).
+    expect(calls[0][0]).toBe('en');
+    expect(calls[1][0]).toBe('en');
   });
 
   it('passes selectSession to useSessionActivateBridge', () => {
     render(<App />);
     const calls = (useSessionActivateBridge as unknown as { mock: { calls: unknown[][] } }).mock.calls;
-    expect(calls.length).toBeGreaterThan(0);
+    expect(useSessionActivateBridge).toHaveBeenCalledTimes(2);
     expect(typeof calls[0][0]).toBe('function');
   });
 
@@ -183,8 +191,8 @@ describe('App composition root wires extracted effect hooks (Task #732)', () => 
     render(<App />);
     const updateCalls = (useUpdateDownloadedBridge as unknown as { mock: { calls: Array<Array<{ push: unknown }>> } }).mock.calls;
     const persistCalls = (usePersistErrorBridge as unknown as { mock: { calls: Array<Array<{ push: unknown }>> } }).mock.calls;
-    expect(updateCalls.length).toBeGreaterThan(0);
-    expect(persistCalls.length).toBeGreaterThan(0);
+    expect(useUpdateDownloadedBridge).toHaveBeenCalledTimes(2);
+    expect(usePersistErrorBridge).toHaveBeenCalledTimes(2);
     expect(typeof updateCalls[0][0].push).toBe('function');
     expect(typeof persistCalls[0][0].push).toBe('function');
   });
@@ -192,7 +200,7 @@ describe('App composition root wires extracted effect hooks (Task #732)', () => 
   it('passes the current theme to useThemeEffect', () => {
     render(<App />);
     const calls = (useThemeEffect as unknown as { mock: { calls: unknown[][] } }).mock.calls;
-    expect(calls.length).toBeGreaterThan(0);
+    expect(useThemeEffect).toHaveBeenCalledTimes(2);
     expect(['light', 'dark', 'system']).toContain(calls[0][0]);
   });
 });
@@ -213,17 +221,18 @@ describe('App composition root wires Phase C effect hooks (Task #758)', () => {
   it('passes activeId (string or null/empty) to useSessionActiveBridge', () => {
     render(<App />);
     const calls = (useSessionActiveBridge as unknown as { mock: { calls: unknown[][] } }).mock.calls;
-    expect(calls.length).toBeGreaterThan(0);
-    // activeId is '' on the empty fixture; the hook accepts string|null|undefined.
-    const first = calls[0][0];
-    expect(typeof first === 'string' || first === null || first === undefined).toBe(true);
+    expect(useSessionActiveBridge).toHaveBeenCalledTimes(2);
+    // activeId is '' on the empty fixture; assert the exact value passed
+    // (the empty-string sentinel for "no active session").
+    expect(calls[0][0]).toBe('');
   });
 
   it('passes the sessions array to useSessionNameBridge', () => {
     render(<App />);
     const calls = (useSessionNameBridge as unknown as { mock: { calls: unknown[][] } }).mock.calls;
-    expect(calls.length).toBeGreaterThan(0);
-    expect(Array.isArray(calls[0][0])).toBe(true);
+    expect(useSessionNameBridge).toHaveBeenCalledTimes(2);
+    // Empty fixture → empty sessions array.
+    expect(calls[0][0]).toEqual([]);
   });
 
   it('passes store action functions to the IPC-bridge hooks that take a callback', () => {
@@ -232,6 +241,10 @@ describe('App composition root wires Phase C effect hooks (Task #758)', () => {
     const titleCalls = (useSessionTitleBridge as unknown as { mock: { calls: unknown[][] } }).mock.calls;
     const cwdCalls = (useCwdRedirectedBridge as unknown as { mock: { calls: unknown[][] } }).mock.calls;
     const hydrateCalls = (useHydrateSystemLocale as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    expect(usePtyExitBridge).toHaveBeenCalledTimes(2);
+    expect(useSessionTitleBridge).toHaveBeenCalledTimes(2);
+    expect(useCwdRedirectedBridge).toHaveBeenCalledTimes(2);
+    expect(useHydrateSystemLocale).toHaveBeenCalledTimes(2);
     expect(typeof ptyCalls[0][0]).toBe('function');
     expect(typeof titleCalls[0][0]).toBe('function');
     expect(typeof cwdCalls[0][0]).toBe('function');
@@ -242,8 +255,8 @@ describe('App composition root wires Phase C effect hooks (Task #758)', () => {
     render(<App />);
     const flashCalls = (useNotifyFlashBridge as unknown as { mock: { calls: unknown[][] } }).mock.calls;
     const exitCalls = (useExitAnimation as unknown as { mock: { calls: unknown[][] } }).mock.calls;
-    expect(flashCalls.length).toBeGreaterThan(0);
-    expect(exitCalls.length).toBeGreaterThan(0);
+    expect(useNotifyFlashBridge).toHaveBeenCalledTimes(2);
+    expect(useExitAnimation).toHaveBeenCalledTimes(2);
     expect(flashCalls[0].length).toBe(0);
     expect(exitCalls[0].length).toBe(0);
   });

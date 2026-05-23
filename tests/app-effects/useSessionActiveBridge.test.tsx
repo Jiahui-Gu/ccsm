@@ -39,8 +39,23 @@ describe('useSessionActiveBridge', () => {
     expect(setActive).toHaveBeenNthCalledWith(2, 'b');
   });
 
-  it('is a no-op when the bridge is missing', () => {
+  it('is a no-op when the bridge is missing: setActive never called', () => {
+    const capturedSpy = setActive;
     delete (window as unknown as { ccsmSession?: unknown }).ccsmSession;
-    expect(() => renderHook(() => useSessionActiveBridge('x'))).not.toThrow();
+    const { rerender, unmount } = renderHook(
+      ({ id }: { id: string | null }) => useSessionActiveBridge(id),
+      { initialProps: { id: 'x' as string | null } }
+    );
+    expect(capturedSpy).not.toHaveBeenCalled();
+    rerender({ id: 'y' });
+    expect(capturedSpy).not.toHaveBeenCalled();
+    unmount();
+    expect(capturedSpy).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op when bridge.setActive is not a function', () => {
+    (window as unknown as { ccsmSession: unknown }).ccsmSession = { setActive: null };
+    renderHook(() => useSessionActiveBridge('x'));
+    expect(setActive).not.toHaveBeenCalled();
   });
 });
