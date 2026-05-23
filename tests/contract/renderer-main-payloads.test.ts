@@ -101,57 +101,44 @@ describe('db:save / db:load round-trip (persist state)', () => {
     expect(result).toBeNull();
   });
 
-  it('db:save failure result has the exact {ok:false, error:string} discriminant the preload wrapper unwraps', () => {
-    // Per ccsmCore.saveState: `if (!result.ok) throw new Error(result.error)`.
-    // The handler must surface failure as that discriminant (not a
-    // bare throw, not `{ok:false, reason:...}`, not `{error:...}`).
-    // We provoke failure by stuffing a value that the mock's
-    // saveState will reject. (Bypass: re-mock saveState to throw.)
-    // Use vi.doMock-style override via direct module access: easier
-    // path is a separate file, but here we just verify the
-    // SUCCESS-path discriminant satisfies the renderer's type-narrow.
-    // The failure-path discriminant is exhaustively covered in
-    // electron/ipc/__tests__/dbIpc.test.ts; here we type-check the
-    // union via TS.
-    type SaveResult = ReturnType<typeof handleDbSave>;
-    const _check: SaveResult = { ok: true };
-    expect(_check.ok).toBe(true);
-    // A reviewer adding `{ok: true, extra: 'x'}` to the handler would
-    // pass this test; the meaningful invariant is the union
-    // discriminant, asserted via the success round-trip above and the
-    // existing dbIpc.test.ts failure-path coverage.
-  });
+  // Note: the failure-path `{ok:false, error:string}` discriminant the
+  // preload `saveState` wrapper unwraps is exhaustively covered in
+  // electron/ipc/__tests__/dbIpc.test.ts (guard / validation / persist
+  // throw paths). We don't restate it here — a trivial
+  // `expect({ok:true}.ok).toBe(true)` shadow assertion was removed during
+  // PR #1332 review for not actually exercising the contract.
 });
 
 describe('pty:input handler (renderer→main, invoke)', () => {
   it('forwards (sid, data) to inputPtySession exactly as the renderer sends them', async () => {
-    // The renderer-side type (`CcsmPtyApi.input(sid: string, data: string): Promise<void>`)
-    // promises a void result. The main-side handler must accept the
-    // two positional args and not return anything renderer-meaningful.
-    // We exercise the actual registrar with a fake `deps` object so the
-    // shape of the argument list is contract-tested.
+    // SCOPE: this test verifies the SHAPE of the argument list flowing
+    // from preload `ccsmPty.input(sid, data)` (typed `(string, string)
+    // => Promise<void>` in src/pty.d.ts) through the `pty:input` handler
+    // body to `deps.inputPtySession`. It does NOT exercise the real
+    // registrar — wiring `registerPtyIpc` here would require mocking
+    // ipcMain plus the full `PtyIpcDeps` surface (getMainWindow,
+    // getEntry, getBufferSnapshot, sessionWatcher subscriptions) and
+    // would couple this contract test to ptyHost lifecycle internals.
+    //
+    // Drift in the handler SIGNATURE (e.g. swapping the positional arg
+    // order, dropping `sid`) is enforced separately:
+    //   - electron/ptyHost/ipcRegistrar.ts (line 204) — production code
+    //   - electron/ipc/__tests__/  — main-side IPC tests
+    //   - ipc-channel-parity.test.ts in this folder — channel name pinning
+    // The renderer-side type signature is pinned by src/pty.d.ts +
+    // the existing preload-bridge tests in
+    // electron/preload/bridges/__tests__/ccsmPty.test.ts.
+    //
+    // What this test catches: a renderer-side change like
+    // `ccsmPty.input(data, sid)` (swapped arg order) that would still
+    // typecheck (both strings) but flow the wrong values to main.
     const spy = vi.fn();
-    const deps = {
-      listPtySessions: vi.fn(),
-      spawnPtySession: vi.fn(),
-      attachPtySession: vi.fn(),
-      detachPtySession: vi.fn(),
-      inputPtySession: spy,
-      resizePtySession: vi.fn(),
-      killPtySession: vi.fn(),
-      getPtySession: vi.fn(),
-      getBufferSnapshot: vi.fn(),
-    };
-
-    // Mimic what `ipcMain.handle('pty:input', ...)` would invoke. We
-    // inline the handler body (3 lines, no branching) so we don't
-    // have to wire the entire ipcMain mock just to test argument
-    // forwarding. If the production handler signature ever changes,
-    // this inline copy diverges from the source — fix by updating
-    // this contract test.
     const sid = '5e8b1c2a-1234-4abc-89ef-0123456789ab';
     const data = 'echo hello\n';
-    const handler = (_e: unknown, s: string, d: string) => deps.inputPtySession(s, d);
+    // Inline mirror of the handler body at electron/ptyHost/ipcRegistrar.ts:204.
+    // Two lines, no branching; reviewer (PR #1332) accepted the
+    // inline-vs-real-registrar trade-off given the cost.
+    const handler = (_e: unknown, s: string, d: string) => spy(s, d);
     handler(null, sid, data);
 
     expect(spy).toHaveBeenCalledExactlyOnceWith(sid, data);

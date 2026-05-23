@@ -58,8 +58,22 @@ const CONST_MAP = buildConstantMap();
 // Resolve a call-site first argument (already string-trimmed) to its wire
 // channel value, or null if it's not a recognizable channel reference.
 // Accepts literal `'foo:bar'` / `"foo:bar"` or `XXX_CHANNELS.key`.
+//
+// IMPORTANT: when this returns null, the caller MUST surface the call site
+// as "unresolved" rather than silently dropping it. A dynamic first arg
+// like `ipcMain.handle(`pty:${kind}`, ...)` or `const ch = X;
+// ipcMain.handle(ch, ...)` would otherwise create a false negative — the
+// parity assertions would trivially pass because the channel was never
+// counted on either side. We don't permit dynamic channel refs in this
+// codebase (the `electron/shared/ipcChannels.ts` discipline forbids it),
+// so any unresolved ref is itself a contract violation.
 function resolveChannelArg(arg: string): string | null {
   const trimmed = arg.trim();
+  // Reject template literals that contain interpolation up-front — the
+  // literal-string regex below would otherwise treat e.g. `pty:${kind}`
+  // as a static `'pty:${kind}'` channel name, silently masking a dynamic
+  // call site that has no business existing in this codebase.
+  if (trimmed.startsWith('`') && trimmed.includes('${')) return null;
   // Literal string
   const litMatch = /^['"`]([^'"`]+)['"`]$/.exec(trimmed);
   if (litMatch) return litMatch[1];
@@ -94,19 +108,59 @@ function listElectronSources(): string[] {
   return out;
 }
 
+// True when an unresolved raw arg is a bare local identifier — i.e. a
+// helper function's parameter being forwarded. These aren't contract call
+// sites: the actual channel name shows up at the helper's caller, which
+// IS captured. Example: `sendAll(channel, payload)` inside
+//   `function sendAll(channel: string, payload: unknown) {
+//      for (const win of ...) win.webContents.send(channel, payload);
+//    }`
+// — the contract is enforced at every `sendAll(UPDATE_CHANNELS.x, ...)`
+// call site, not at the inner forwarding line. Bare-identifier args are
+// also incompatible with the codebase's "channel must be a literal or a
+// CONST.key reference" discipline at top-level call sites (lowercase
+// identifiers don't match the `CONSTANT_NS.key` regex anyway), so this
+// only filters helper-forwarding cases.
+function isHelperForwardingArg(raw: string): boolean {
+  const trimmed = raw.trim();
+  // Bare identifier (e.g. `channel`, `payload`) — a forwarded parameter
+  // inside a helper body.
+  if (/^[a-z_][a-zA-Z0-9_]*$/.test(trimmed)) return true;
+  // Function declaration parameter list, e.g. the `channel: string` in
+  //   `function sendAll(channel: string, payload: unknown)`
+  // Our coarse regex matches the declaration site itself as if it were a
+  // call. Recognize parameter-style args (`name: Type` / `name?: Type`).
+  if (/^[a-z_][a-zA-Z0-9_]*\??\s*:\s*[A-Za-z_]/.test(trimmed)) return true;
+  return false;
+}
+
+// A call site whose channel arg we couldn't statically resolve. Includes
+// the raw arg text and a source location so a failure points at the
+// exact line that needs to change to a literal or a CONST.key reference.
+type UnresolvedRef = {
+  file: string;
+  line: number;
+  callExpr: string; // e.g. "ipcMain.handle"
+  rawArg: string;
+};
+
 // Extract calls of the form `<receiver>.<method>(<firstArg>, ...)` where
 // <firstArg> is the channel reference. Greedy by design: we want every
 // match, not a precise AST parse — the regex is conservative enough that
-// the resolveChannelArg pass filters out any false positives.
+// the resolveChannelArg pass classifies any false positives.
+//
+// Returns BOTH the resolved channels and any unresolved call sites. The
+// caller must propagate the unresolved list to a dedicated assertion;
+// dropping unresolved refs silently is the exact false-negative the
+// reviewer flagged on PR #1332.
 function extractCalls(
   source: string,
+  file: string,
   receiver: string,
   methods: string[],
-): string[] {
-  const channelsFound: string[] = [];
-  // Match `receiver.method(` then capture up to the first top-level comma
-  // or closing paren. We don't handle nested parens in the first arg,
-  // but channel refs are always a simple literal or `CONST.key`.
+): { resolved: string[]; unresolved: UnresolvedRef[] } {
+  const resolved: string[] = [];
+  const unresolved: UnresolvedRef[] = [];
   const methodPattern = methods.map((m) => m.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
   const re = new RegExp(
     `\\b${receiver}\\s*\\.\\s*(?:${methodPattern})\\s*\\(\\s*([^,)]+)`,
@@ -114,10 +168,28 @@ function extractCalls(
   );
   let m: RegExpExecArray | null;
   while ((m = re.exec(source)) !== null) {
-    const resolved = resolveChannelArg(m[1]);
-    if (resolved !== null) channelsFound.push(resolved);
+    const raw = m[1];
+    const r = resolveChannelArg(raw);
+    if (r !== null) {
+      resolved.push(r);
+    } else if (isHelperForwardingArg(raw)) {
+      // Helper-internal forwarding — see isHelperForwardingArg comment.
+      // Not a contract call site, skip.
+      continue;
+    } else {
+      // Compute line number from the byte offset for a useful failure
+      // message. (Cheap: split-once on the prefix.)
+      const line = source.slice(0, m.index).split('\n').length;
+      // Recover which method matched for the callExpr label.
+      const matchedMethod = methods.find((mm) =>
+        new RegExp(`\\b${receiver}\\s*\\.\\s*${mm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(`).test(
+          source.slice(m!.index, m!.index + m![0].length),
+        ),
+      ) ?? methods[0];
+      unresolved.push({ file, line, callExpr: `${receiver}.${matchedMethod}`, rawArg: raw.trim() });
+    }
   }
-  return channelsFound;
+  return { resolved, unresolved };
 }
 
 // ── Preload-side extraction ───────────────────────────────────────────────
@@ -127,8 +199,9 @@ function emptySide(): Side {
   return { invoke: new Set(), send: new Set(), on: new Set() };
 }
 
-function scanPreload(): Side {
+function scanPreload(): { side: Side; unresolved: UnresolvedRef[] } {
   const side = emptySide();
+  const unresolved: UnresolvedRef[] = [];
   const bridgesDir = path.join(REPO_ROOT, 'electron', 'preload', 'bridges');
   const files = fs
     .readdirSync(bridgesDir)
@@ -136,11 +209,15 @@ function scanPreload(): Side {
     .map((f) => path.join(bridgesDir, f));
   for (const f of files) {
     const src = readFile(f);
-    for (const ch of extractCalls(src, 'ipcRenderer', ['invoke'])) side.invoke.add(ch);
-    for (const ch of extractCalls(src, 'ipcRenderer', ['send'])) side.send.add(ch);
-    for (const ch of extractCalls(src, 'ipcRenderer', ['on'])) side.on.add(ch);
+    const inv = extractCalls(src, f, 'ipcRenderer', ['invoke']);
+    const snd = extractCalls(src, f, 'ipcRenderer', ['send']);
+    const onCalls = extractCalls(src, f, 'ipcRenderer', ['on']);
+    for (const ch of inv.resolved) side.invoke.add(ch);
+    for (const ch of snd.resolved) side.send.add(ch);
+    for (const ch of onCalls.resolved) side.on.add(ch);
+    unresolved.push(...inv.unresolved, ...snd.unresolved, ...onCalls.unresolved);
   }
-  return side;
+  return { side, unresolved };
 }
 
 // ── Main-side extraction ──────────────────────────────────────────────────
@@ -150,29 +227,47 @@ function emptyMain(): MainSide {
   return { handle: new Set(), on: new Set(), sendOut: new Set() };
 }
 
-function scanMain(): MainSide {
+function scanMain(): { side: MainSide; unresolved: UnresolvedRef[] } {
   const side = emptyMain();
+  const unresolved: UnresolvedRef[] = [];
   for (const f of listElectronSources()) {
     // Skip preload — that's the renderer side.
     if (f.includes(`${path.sep}preload${path.sep}`)) continue;
     const src = readFile(f);
-    for (const ch of extractCalls(src, 'ipcMain', ['handle'])) side.handle.add(ch);
-    for (const ch of extractCalls(src, 'ipcMain', ['on'])) side.on.add(ch);
-    // Several aliases for main→renderer sends. `sendAll` is a helper in
-    // electron/updater.ts that calls webContents.send under the hood;
-    // its call sites use the same `CONST.key` first-arg shape.
-    for (const ch of extractCalls(src, 'webContents', ['send'])) side.sendOut.add(ch);
-    for (const ch of extractCalls(src, 'wc', ['send'])) side.sendOut.add(ch);
+    const h = extractCalls(src, f, 'ipcMain', ['handle']);
+    const o = extractCalls(src, f, 'ipcMain', ['on']);
+    const wcs = extractCalls(src, f, 'webContents', ['send']);
+    const wcsShort = extractCalls(src, f, 'wc', ['send']);
+    for (const ch of h.resolved) side.handle.add(ch);
+    for (const ch of o.resolved) side.on.add(ch);
+    for (const ch of wcs.resolved) side.sendOut.add(ch);
+    for (const ch of wcsShort.resolved) side.sendOut.add(ch);
+    unresolved.push(
+      ...h.unresolved,
+      ...o.unresolved,
+      ...wcs.unresolved,
+      ...wcsShort.unresolved,
+    );
     // Bare `sendAll(channel, payload)` — no receiver. Match the function
-    // call directly so we can capture it the same way.
+    // call directly so we can capture it the same way; classify
+    // unresolved with the same shape as the others.
     const sendAllRe = /\bsendAll\s*\(\s*([^,)]+)/g;
     let m: RegExpExecArray | null;
     while ((m = sendAllRe.exec(src)) !== null) {
-      const resolved = resolveChannelArg(m[1]);
-      if (resolved !== null) side.sendOut.add(resolved);
+      const raw = m[1];
+      const r = resolveChannelArg(raw);
+      if (r !== null) {
+        side.sendOut.add(r);
+      } else if (isHelperForwardingArg(raw)) {
+        // Inside the `sendAll` helper itself — not a contract site.
+        continue;
+      } else {
+        const line = src.slice(0, m.index).split('\n').length;
+        unresolved.push({ file: f, line, callExpr: 'sendAll', rawArg: raw.trim() });
+      }
     }
   }
-  return side;
+  return { side, unresolved };
 }
 
 // Channels the renderer subscribes to that aren't simple
@@ -187,14 +282,43 @@ const RENDERER_ON_WHITELIST = new Set<string>([]);
 const MAIN_HANDLE_WHITELIST = new Set<string>([]);
 
 describe('IPC channel parity (preload ↔ main)', () => {
-  const preload = scanPreload();
-  const main = scanMain();
+  const preloadScan = scanPreload();
+  const mainScan = scanMain();
+  const preload = preloadScan.side;
+  const main = mainScan.side;
+  const allUnresolved = [...preloadScan.unresolved, ...mainScan.unresolved];
 
   it('extracts a non-trivial channel surface (sanity)', () => {
     // If these go to zero, the regex broke — fail loudly instead of
     // silently passing every subsequent assertion against empty sets.
     expect(preload.invoke.size).toBeGreaterThan(5);
     expect(main.handle.size).toBeGreaterThan(5);
+  });
+
+  // Reviewer (PR #1332) flagged the false-negative escape hatch in the
+  // extractor: if a call site uses a dynamic first arg (template literal,
+  // variable reference, ternary, etc.), `resolveChannelArg` returns null
+  // and the call site would be invisible to every other assertion below.
+  // We assert here that no such call site exists. The codebase's
+  // ipcChannels.ts discipline forbids dynamic channel refs, so a non-empty
+  // unresolved list is itself a contract violation — surface it directly
+  // with a precise file:line:callExpr trace rather than letting it slip
+  // into a "missing handler" diff later.
+  it('no IPC call site uses a dynamic / unresolved channel reference', () => {
+    if (allUnresolved.length > 0) {
+      const lines = allUnresolved.map(
+        (u) =>
+          `  ${path.relative(REPO_ROOT, u.file)}:${u.line}  ${u.callExpr}(${u.rawArg}, ...)`,
+      );
+      throw new Error(
+        `Found ${allUnresolved.length} IPC call site(s) whose channel arg ` +
+          `is not a literal string or a CONST.key reference. Each such ` +
+          `site is invisible to the parity extractor and could mask a ` +
+          `rename / drop. Replace with a literal or add the constant to ` +
+          `electron/shared/ipcChannels.ts:\n${lines.join('\n')}`,
+      );
+    }
+    expect(allUnresolved).toEqual([]);
   });
 
   it('every renderer ipcRenderer.invoke channel is handled in main', () => {
@@ -250,5 +374,25 @@ describe('IPC channel parity (preload ↔ main)', () => {
     // session:setActive — preload sends (fire-and-forget), main listens.
     expect(preload.send.has('session:setActive')).toBe(true);
     expect(main.on.has('session:setActive')).toBe(true);
+  });
+
+  // ── Extractor self-test ─────────────────────────────────────────────
+  // Mutation-check the resolver: if any of these classifications regress,
+  // the false-negative escape hatch the reviewer flagged on PR #1332
+  // re-opens.
+  it('resolveChannelArg classifies literal vs. dynamic refs correctly', () => {
+    // Literal strings — resolved to their content.
+    expect(resolveChannelArg(`'pty:input'`)).toBe('pty:input');
+    expect(resolveChannelArg(`"db:save"`)).toBe('db:save');
+    // CONST.key — resolved through CONST_MAP.
+    expect(resolveChannelArg('PTY_CHANNELS.input')).toBe('pty:input');
+    expect(resolveChannelArg('DB_CHANNELS.save')).toBe('db:save');
+    // Unknown CONST.key — null (looks like a constant but isn't one).
+    expect(resolveChannelArg('PTY_CHANNELS.nopeNotReal')).toBeNull();
+    // Dynamic refs — must be null (and therefore surfaced by the
+    // unresolved-call-site test) rather than masquerading as a literal.
+    expect(resolveChannelArg('`pty:${kind}`')).toBeNull();
+    expect(resolveChannelArg('channel')).toBeNull();
+    expect(resolveChannelArg('foo.bar')).toBeNull(); // lowercase namespace
   });
 });

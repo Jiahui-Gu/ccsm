@@ -83,6 +83,89 @@ describe('session/group id generators (audit finding 9)', () => {
     expect(ids.size).toBe(N);
   });
 
+  // Reviewer (PR #1332): the 10k uniqueness test above runs against jsdom
+  // where `globalThis.crypto.randomUUID` is always defined — so it only
+  // exercises the CRYPTO path of `newSessionId` and the Math.random
+  // fallback at sessionCrudSlice.ts:87-90 is never touched. That fallback
+  // synthesizes a v4-shaped string from `Math.random()` — same nominal
+  // 122 bits of entropy as the crypto path, so collisions over 10k
+  // samples should be vanishingly rare; but if the fallback ever loses
+  // a `4` in the version nibble or drops a hex digit, the shape regex
+  // catches it and uniqueness catches collisions. Stub crypto away to
+  // force the fallback branch.
+  it('session ids are unique over 10k samples (fallback path — no crypto.randomUUID)', () => {
+    const originalCrypto = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+    // jsdom's `crypto` is a getter-only property; `defineProperty` with
+    // `writable: true` + `configurable: true` lets us override and
+    // restore exactly. Pinning `value: undefined` (rather than removing
+    // the property) makes `g.crypto && ...` short-circuit to the
+    // fallback branch without changing the `'crypto' in globalThis`
+    // semantics that some libraries probe.
+    Object.defineProperty(globalThis, 'crypto', {
+      value: undefined,
+      configurable: true,
+      writable: true,
+    });
+    try {
+      const ids = new Set<string>();
+      const h = harness({
+        groups: [{ id: 'g-default', name: 'd', collapsed: false, kind: 'normal' }],
+      });
+      for (let i = 0; i < N; i++) {
+        h.sessions.createSession('/tmp');
+        const sid = h.state().activeId;
+        expect(sid).toBeTruthy();
+        // Same shape contract as the crypto path — the fallback
+        // synthesizes a v4-shaped string explicitly.
+        expect(sid).toMatch(UUID_V4_RE);
+        expect(ids.has(sid)).toBe(false);
+        ids.add(sid);
+      }
+      expect(ids.size).toBe(N);
+    } finally {
+      if (originalCrypto) Object.defineProperty(globalThis, 'crypto', originalCrypto);
+    }
+  });
+
+  // Group-id fallback (`nextId('g')`) uses only 4 base36 chars of
+  // randomness (~1.7M values per ms) — collisions ARE plausible within
+  // a single event-loop tick. The production code accepts this risk
+  // because group creation is user-driven and rate-limited by clicks;
+  // we don't assert strict uniqueness over 10k synchronous calls. We
+  // DO assert the shape stays valid (so a future tightening of the
+  // fallback to use more entropy doesn't accidentally drop the prefix
+  // discipline) and that the SAMPLE distribution isn't degenerate
+  // (>95% unique over 10k — catches a regression to e.g. a fixed value).
+  it('group id fallback (no crypto.randomUUID) produces correctly shaped ids without degenerate collisions', () => {
+    const originalCrypto = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+    Object.defineProperty(globalThis, 'crypto', {
+      value: undefined,
+      configurable: true,
+      writable: true,
+    });
+    try {
+      const ids = new Set<string>();
+      for (let i = 0; i < N; i++) {
+        const archive: Group = { id: 'g-arch', name: 'A', collapsed: false, kind: 'archive' };
+        const h = harness({ groups: [archive] });
+        h.sessions.createSession('/tmp');
+        const synth = h.state().groups.find((g) => g.kind === 'normal');
+        expect(synth).toBeDefined();
+        expect(synth!.id).toMatch(GROUP_ID_RE);
+        ids.add(synth!.id);
+      }
+      // Degenerate-collision guard. 10k samples with 4 base36 chars
+      // per millisecond timestamp: even if every sample landed in the
+      // same ms the unique count would be ~min(10k, 1.7M-paradox). We
+      // set a loose floor at 95% to catch a real regression
+      // (e.g. someone shortens to 2 base36 chars, or drops the time
+      // component) without flaking on natural tick-bucket collisions.
+      expect(ids.size).toBeGreaterThan(N * 0.95);
+    } finally {
+      if (originalCrypto) Object.defineProperty(globalThis, 'crypto', originalCrypto);
+    }
+  });
+
   it('session ids match the canonical UUID-v4 shape', () => {
     const h = harness({ groups: [{ id: 'g-default', name: 'd', collapsed: false, kind: 'normal' }] });
     // Sample a smaller N for shape — the shape regex is cheap but the
