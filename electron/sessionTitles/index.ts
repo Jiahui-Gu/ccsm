@@ -133,6 +133,15 @@ function chain<T>(sid: string, fn: () => Promise<T>): Promise<T> {
 type PendingRename = { title: string; dir?: string; attempts: number };
 const pendingRenames = new Map<string, PendingRename>();
 
+// Per-sid generation counter. Bumped by `forgetSid` so a `getSessionTitle`
+// call that started before the forget can detect it happened during its
+// await window and skip the cache write-back. Without this, the post-await
+// `titleCache.set` would repopulate the map for a sid the rest of the
+// module considers forgotten (S1 in the concurrency audit). Generations
+// are never recycled — an absent key reads as 0 via `?? 0`, and forgetting
+// then re-querying a sid just starts a fresh count from 1.
+const sidGenerations = new Map<string, number>();
+
 // Bound for non-ENOENT replays. 2 = initial attempt + 1 retry. Rationale:
 // the realistic transient causes (file briefly locked by the SDK's own
 // write, antivirus scan, momentary EACCES on Windows) clear within a
@@ -164,6 +173,11 @@ export async function getSessionTitle(
     return cached.result;
   }
 
+  // Capture the sid's generation before we enter the chain. If `forgetSid`
+  // bumps it during our await, we'll detect it post-await and skip the
+  // cache write-back (S1 guard).
+  const genAtEntry = sidGenerations.get(sid) ?? 0;
+
   const result = await chain(sid, async (): Promise<SummaryResult> => {
     try {
       const { getSessionInfo } = await loadSdk();
@@ -184,7 +198,37 @@ export async function getSessionTitle(
     }
   });
 
-  titleCache.set(sid, { result, expiresAt: Date.now() + CACHE_TTL_MS });
+  // Write-back-after-invalidation guard (follow-up to #1340).
+  //
+  // Between chain entry and here we awaited the SDK; concurrent operations
+  // on the same sid can have completed in the meantime and invalidated the
+  // result we are about to cache:
+  //
+  //   S1 (cache leak): `forgetSid(sid)` ran during the await. It cleared
+  //   titleCache; an unconditional write here would repopulate the map for
+  //   a sid the rest of the module considers forgotten, surviving until
+  //   the TTL expires.
+  //
+  //   S2 (stale read window): a `renameSessionTitle(sid, "new")` queued
+  //   behind us in the chain ran second, succeeded, and deleted
+  //   titleCache. Our `result` was captured BEFORE the rename and carries
+  //   the pre-rename summary; writing it back here would serve a stale
+  //   value for up to CACHE_TTL_MS.
+  //
+  // Both cases are covered by a single invariant: only write if the cache
+  // is STILL absent (nobody invalidated it), no pending rename is queued
+  // (nothing that would imminently invalidate it again), AND the sid's
+  // generation hasn't been bumped by `forgetSid` since we entered. If any
+  // guard trips we leave the cache cleared; the next caller pays for a
+  // fresh SDK read, which is the correct behavior.
+  const genNow = sidGenerations.get(sid) ?? 0;
+  if (
+    genNow === genAtEntry &&
+    !titleCache.has(sid) &&
+    !pendingRenames.has(sid)
+  ) {
+    titleCache.set(sid, { result, expiresAt: Date.now() + CACHE_TTL_MS });
+  }
   return result;
 }
 
@@ -328,6 +372,11 @@ export function forgetSid(sid: string): void {
   titleCache.delete(sid);
   opChains.delete(sid);
   pendingRenames.delete(sid);
+  // Bump generation so any in-flight `getSessionTitle` for this sid
+  // (currently awaiting the SDK inside its chain) skips its post-await
+  // cache write-back instead of repopulating titleCache for a sid that's
+  // supposed to be forgotten. Closes S1 in the concurrency audit.
+  sidGenerations.set(sid, (sidGenerations.get(sid) ?? 0) + 1);
   if (!pending) return;
   void (async () => {
     // Defer to a microtask so the synchronous caller observes a fully
@@ -383,6 +432,7 @@ export function __resetForTests(): void {
   titleCache.clear();
   opChains.clear();
   pendingRenames.clear();
+  sidGenerations.clear();
   sdkPromise = null;
 }
 

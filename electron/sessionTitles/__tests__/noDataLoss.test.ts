@@ -464,3 +464,86 @@ describe('listProjectSummaries returns [] on SDK throw', () => {
     ]);
   });
 });
+
+// ─────────────────────── I10: cache write-back-after-invalidation ───────
+//
+// Follow-up to PR #1340: `getSessionTitle` performs an unconditional
+// `titleCache.set` after awaiting the SDK. If state was invalidated during
+// that await window (by `forgetSid` or a concurrent `renameSessionTitle`),
+// the post-await write re-introduces a value that should not be in the
+// cache — either repopulating a forgotten sid (S1, cache leak bounded by
+// TTL) or shadowing a fresh value with the pre-rename one (S2, user-visible
+// stale read window). Both tests below would fail if the guards in
+// `getSessionTitle` were removed (mutation check).
+
+describe('getSessionTitle does not write back to cache after invalidation', () => {
+  it('does not repopulate cache after forgetSid during await (S1)', async () => {
+    // Hold the SDK on a deferred promise so we can force `forgetSid` to
+    // run strictly between chain entry and the post-await write.
+    let resolveSdk!: (v: unknown) => void;
+    sdkMocks.getSessionInfo.mockReturnValue(
+      new Promise((res) => {
+        resolveSdk = res;
+      })
+    );
+
+    const sid = 'sid-i10a';
+    const inFlight = getSessionTitle(sid);
+    // Yield once to let `getSessionTitle` enter `chain()` and start the
+    // SDK await (it's `await loadSdk()` then `await getSessionInfo(...)`;
+    // two microtasks is enough on Node).
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Forget the sid while the SDK is still in flight.
+    forgetSid(sid);
+    expect(__hasSidStateForTests(sid)).toBe(false);
+
+    // Now let the SDK resolve. The post-await write must NOT repopulate
+    // titleCache for a forgotten sid.
+    resolveSdk({ sessionId: sid, summary: 'late', lastModified: 1 });
+    await inFlight;
+
+    expect(__hasSidStateForTests(sid)).toBe(false);
+  });
+
+  it('does not overwrite a freshly-cleared cache after a concurrent rename (S2)', async () => {
+    // S2 variant: while `getSessionTitle` is mid-await on the SDK, the
+    // renderer enqueues a pending rename for the same sid (user typed a
+    // new title in the sidebar before the JSONL flushed). Once the SDK
+    // returns, the read's post-await cache write would otherwise stash
+    // the pre-rename value — but the pending rename means that value is
+    // already known-stale. The guard skips the write so the next read
+    // re-fetches fresh after the pending rename flushes.
+    let resolveSdk!: (v: unknown) => void;
+    sdkMocks.getSessionInfo.mockReturnValue(
+      new Promise((res) => {
+        resolveSdk = res;
+      })
+    );
+
+    const sid = 'sid-i10b';
+    const inFlight = getSessionTitle(sid);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Pending rename arrives during the await window.
+    enqueuePendingRename(sid, 'new-title');
+
+    // SDK resolves with the now-stale pre-rename summary.
+    resolveSdk({ sessionId: sid, summary: 'old-summary', lastModified: 100 });
+    const result = await inFlight;
+    expect(result.summary).toBe('old-summary'); // the in-flight read still returns what it got
+
+    // But the cache must NOT have been repopulated — a fresh read must
+    // go back to the SDK (which will now serve post-rename data).
+    sdkMocks.getSessionInfo.mockResolvedValueOnce({
+      sessionId: sid,
+      summary: 'new-summary',
+      lastModified: 200,
+    });
+    const fresh = await getSessionTitle(sid);
+    expect(fresh.summary).toBe('new-summary');
+    expect(sdkMocks.getSessionInfo).toHaveBeenCalledTimes(2);
+  });
+});
