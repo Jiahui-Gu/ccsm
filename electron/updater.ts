@@ -77,12 +77,14 @@ async function safeCheck(reason: 'startup' | 'poll' | 'manual' | 'toggle'): Prom
     // electron-updater returns `null` if a check is already in progress; in
     // that case treat as a no-op result rather than a phantom "no update".
     const latestVersion = res?.updateInfo?.version;
+    const releaseDate = res?.updateInfo?.releaseDate;
     const available =
       typeof latestVersion === 'string' && latestVersion !== currentVersion;
     log.event('updater.check.result', {
       reason,
       currentVersion,
       latestVersion: typeof latestVersion === 'string' ? latestVersion : undefined,
+      releaseDate: typeof releaseDate === 'string' ? releaseDate : undefined,
       available,
     });
   } catch (e) {

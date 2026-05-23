@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { EventEmitter } from 'events';
 import { UPDATE_CHANNELS, UPDATES_CHANNELS } from '../shared/ipcChannels';
 
@@ -315,5 +315,74 @@ describe('updater: IPC wiring', () => {
       code: 'ERR_UPDATER_INVALID_UPDATE_INFO',
       currentVersion: '0.1.2',
     });
+  });
+
+  it('emits releaseDate on updater.check.result when electron-updater reports it', async () => {
+    state.checkForUpdatesImpl = async () => ({
+      updateInfo: { version: '9.9.9', releaseDate: '2026-05-24T00:00:00Z' },
+    });
+    const handler = ipcHandlers.get(UPDATES_CHANNELS.check)!;
+    await handler({});
+    const result = [...logEventCalls]
+      .reverse()
+      .find((c) => c.name === 'updater.check.result');
+    expect(result).toBeTruthy();
+    expect(result!.fields).toMatchObject({
+      reason: 'manual',
+      currentVersion: '0.1.2',
+      latestVersion: '9.9.9',
+      releaseDate: '2026-05-24T00:00:00Z',
+      available: true,
+    });
+  });
+});
+
+// Separate describe with fake timers so the wider IPC-wiring suite above
+// doesn't pay the timer-mocking cost. Verifies the recurring poll actually
+// fires at CHECK_INTERVAL_MS — guards against future regressions where the
+// interval value diverges from the call-site or the timer never gets armed.
+describe('updater: periodic poll', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('fires a fresh updater.check.start { reason: "poll" } every CHECK_INTERVAL_MS', async () => {
+    await freshModule();
+    const mod = await import('../updater');
+
+    // Drain microtasks for the startup `safeCheck('startup')` without
+    // ticking the interval timer (which would loop forever — setInterval
+    // re-arms itself so `runAllTimersAsync` aborts with an infinite-loop
+    // guard). Two microtask flushes cover the await in `safeCheck`.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const startupStarts = logEventCalls.filter(
+      (c) => c.name === 'updater.check.start',
+    );
+    expect(startupStarts).toHaveLength(1);
+    expect(startupStarts[0]!.fields).toMatchObject({ reason: 'startup' });
+
+    // Advance exactly one interval — the setInterval callback fires
+    // `safeCheck('poll')`.
+    await vi.advanceTimersByTimeAsync(mod.CHECK_INTERVAL_MS);
+    let pollStarts = logEventCalls.filter(
+      (c) => c.name === 'updater.check.start' && c.fields?.reason === 'poll',
+    );
+    expect(pollStarts).toHaveLength(1);
+
+    // Second interval — proves it's a recurring setInterval, not a
+    // one-shot setTimeout. This is the regression we care about: a
+    // future refactor that accidentally swaps setInterval for setTimeout
+    // would pass the single-tick assertion but fail here.
+    await vi.advanceTimersByTimeAsync(mod.CHECK_INTERVAL_MS);
+    pollStarts = logEventCalls.filter(
+      (c) => c.name === 'updater.check.start' && c.fields?.reason === 'poll',
+    );
+    expect(pollStarts).toHaveLength(2);
   });
 });
