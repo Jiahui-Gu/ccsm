@@ -36,17 +36,45 @@ type ElogLike = {
 };
 
 // Detect a non-Electron runtime (vitest under plain Node OR webpack
-// dev-server's SSR shim) and short-circuit electron-log entirely. We check
-// BOTH the Electron-runtime flag (`process.versions.electron`) AND the
-// `VITEST` env so that:
-//   * `isElectronRuntime === false` covers any non-Electron host (CI vitest
-//     on Node with no binary, future SSR experiments) — most robust signal.
-//   * `isVitest === true` covers the renderer-test case where webpack/jsdom
-//     does set up a `window.process` polyfill that DOES claim
-//     `versions.electron` (vite-plugin-electron emulates it). Belt and
-//     suspenders, mirroring the cold-review recommendation.
-const isElectronRuntime =
-  typeof process !== 'undefined' && typeof process.versions?.electron === 'string';
+// dev-server's SSR shim) and short-circuit electron-log entirely.
+//
+// Detection note: under contextIsolation:true (ccsm's setting, see
+// electron/window/createWindow.ts), the renderer has NO `window.process`
+// and the webpack-bundled module-scope `process` is a polyfill that has
+// `process.env` (via DefinePlugin) but LACKS `process.versions.electron`.
+// So the old `process.versions.electron` check returned false for every
+// renderer build, causing `loadElog()` to return the no-op stub and every
+// renderer-side `log.event(...)` call to be silently discarded.
+//
+// The robust signal that survives both contextIsolation and webpack
+// polyfilling is `navigator.userAgent` — Electron always appends
+// `Electron/<version>` to the renderer's UA string regardless of
+// isolation/sandbox flags. We probe UA first, then fall through to the
+// module process for the main-process path (electron/shared/log.ts has
+// its own detection that uses module process; this fallback covers
+// shared-code reuse).
+export function detectElectronRuntime(deps: {
+  navigator?: { userAgent?: string } | undefined;
+  process?: { versions?: { electron?: string } } | undefined;
+}): boolean {
+  const nav = deps.navigator;
+  if (nav && typeof nav.userAgent === 'string' && /Electron\//.test(nav.userAgent)) {
+    return true;
+  }
+  const proc = deps.process;
+  return !!proc && typeof proc.versions?.electron === 'string';
+}
+
+const isElectronRuntime = detectElectronRuntime({
+  navigator: typeof navigator !== 'undefined' ? navigator : undefined,
+  // Node's `Process` type and the renderer's webpack-polyfilled process are
+  // structurally different from our narrow inline shape; cast to the helper's
+  // expected dep type at the boundary.
+  process:
+    typeof process !== 'undefined'
+      ? (process as unknown as { versions?: { electron?: string } })
+      : undefined,
+});
 const isVitest =
   typeof process !== 'undefined' &&
   (process.env?.VITEST === 'true' || process.env?.NODE_ENV === 'test');
