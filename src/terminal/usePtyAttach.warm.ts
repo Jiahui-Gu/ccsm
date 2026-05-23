@@ -111,6 +111,53 @@ async function pinViewportToBottom(
   }
 }
 
+/**
+ * Compute the post-attach terminal state for `sid`, accounting for the
+ * case where the session ALREADY crashed (either while hidden, or before
+ * the attach effect's async chain finished resolving).
+ *
+ * Second-round cold-review fix (Major): the disconnect-watch effect sets
+ * `'exit'` when `disconnectedSessions[sid]` appears, but the attach
+ * effect's async tail unconditionally overwrote it with `'ready'`. The
+ * `disconnect` object's identity doesn't change across that overwrite, so
+ * the watcher's `useEffect([disconnect])` did NOT re-fire — the user
+ * was stranded in a `ready` UI for a dead session.
+ *
+ * The fix is to make the attach effect ALSO read the exit slice
+ * synchronously right before its ready transition, and emit `'exit'`
+ * instead when an entry exists. Both warm and cold completion paths
+ * route through here.
+ *
+ * Returns the next state plus a flag indicating whether `_clearPtyExit`
+ * should fire — we MUST NOT clear when transitioning to 'exit' (it would
+ * delete the diagnostic AND make the watcher unable to re-fire because
+ * the disconnect object would become undefined → ready → still no
+ * re-firing).
+ */
+function resolveReadyOrExit(
+  sessionId: string,
+): { next: PtyAttachState; clearExit: boolean; reason: string } {
+  const exitInfo = useStore.getState().disconnectedSessions[sessionId];
+  if (exitInfo) {
+    const detail =
+      exitInfo.signal != null
+        ? `signal ${exitInfo.signal}`
+        : exitInfo.code != null
+          ? `exit code ${exitInfo.code}`
+          : 'unknown';
+    return {
+      next: { kind: 'exit', exitKind: exitInfo.kind, detail },
+      clearExit: false,
+      reason: 'attach-found-existing-exit',
+    };
+  }
+  return {
+    next: { kind: 'ready' },
+    clearExit: true,
+    reason: 'attach-complete',
+  };
+}
+
 export type PtyAttachState =
   | { kind: 'attaching' }
   | { kind: 'ready' }
@@ -229,8 +276,18 @@ export function usePtyAttachWarm(
             entry.term as unknown as PinnableTerminal,
             sessionId,
           );
-          if (!cancelled) setState({ kind: 'ready' }, 'attach-warm-complete');
-          clearPtyExitRef.current(sessionId);
+          if (!cancelled) {
+            // Major (round 2): if the session already crashed (either
+            // while hidden, or while this effect was awaiting), prefer
+            // 'exit' over 'ready'. Otherwise the disconnect-watch effect
+            // had set 'exit' and we'd be racing it back to 'ready' here
+            // with no signal that would re-fire the watcher.
+            const decision = resolveReadyOrExit(sessionId);
+            setState(decision.next, decision.reason);
+            if (decision.clearExit) {
+              clearPtyExitRef.current(sessionId);
+            }
+          }
           return;
         }
 
@@ -446,10 +503,20 @@ export function usePtyAttachWarm(
             } catch {
               /* probe failure tolerated */
             }
-            setState({ kind: 'ready' }, 'attach-cold-complete');
+            // Major (round 2): same race as the warm path — if a crash
+            // landed in the store while we were in the cold-attach
+            // async chain (or fired during the chain itself via the
+            // module-level onExit listener), prefer 'exit' over 'ready'.
+            // The disconnect-watch effect cannot re-fire on identity-
+            // unchanged objects, so the attach effect is the only place
+            // that can recover the right state on this path.
+            const decision = resolveReadyOrExit(sessionId);
+            setState(decision.next, decision.reason);
+            if (decision.clearExit) {
+              clearPtyExitRef.current(sessionId);
+            }
           }
         }
-        clearPtyExitRef.current(sessionId);
       } catch (err) {
         if (cancelled || requestedSidRef.current !== sessionId) return;
         // Minor 4 (cold review): if the cold path threw (spawn_failed,

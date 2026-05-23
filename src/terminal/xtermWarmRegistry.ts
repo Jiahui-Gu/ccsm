@@ -52,7 +52,7 @@ const WARM_CAP_MIN = 2;
 const WARM_CAP_MAX = 100;
 
 /** Look up the runtime LRU cap. Honours `CCSM_WARM_XTERM_CAP` (surfaced via
- *  `window.ccsm.featureFlags.warmXtermCap`, clamped to [1,100] at preload).
+ *  `window.ccsm.featureFlags.warmXtermCap`, clamped to [2,100] at preload).
  *  Falls back to {@link DEFAULT_WARM_CAP} when the override is absent. */
 export function getWarmCap(): number {
   try {
@@ -164,21 +164,17 @@ function installExitListenerOnce(): void {
       const sid = evt.sessionId;
       if (!sid) return;
       try {
-        // Coerce signal to number|null — the store slice accepts that
-        // shape (see sessionRuntimeSlice._applyPtyExit). String signals
-        // ('SIGTERM' etc.) coerce via the classifier; null/undefined
-        // both land as null.
-        const code = evt.code ?? null;
-        const rawSignal = evt.signal ?? null;
-        const signal =
-          typeof rawSignal === 'number'
-            ? rawSignal
-            : rawSignal == null
-              ? null
-              : // string signal — store/classifier expects number|null, so
-                // pass null and let the code field carry the diagnostic.
-                null;
-        useStore.getState()._applyPtyExit(sid, { code, signal });
+        // Pass code + signal through unchanged. The store slice's
+        // `disconnectedSessions[sid].signal` field accepts
+        // `string | number | null` — see `src/stores/slices/types.ts` —
+        // so string signals ('SIGTERM' / 'SIGKILL' / etc.) flow through
+        // to `classifyPtyExit` for the crashed-vs-clean overlay
+        // distinction. Nullifying them here (as the prior fix did)
+        // silently lost the diagnostic the legacy hook relied on.
+        useStore.getState()._applyPtyExit(sid, {
+          code: evt.code ?? null,
+          signal: evt.signal ?? null,
+        });
       } catch (e) {
         warn('xterm-warm', 'exit dispatch failed', e);
       }
