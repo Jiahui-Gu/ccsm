@@ -181,11 +181,27 @@ export function setSnapshotReplay(fn: (() => Promise<void>) | null): void {
  * the parser as the app sends DECSET 2004 h/l). Falls back to "no wrap" if
  * the singleton hasn't been constructed yet (e.g. paste fired before the
  * terminal mounted — shouldn't happen, but the early-return is cheap).
+ *
+ * Exported as a pure 2-arg function so the contract property test
+ * (`tests/contract/paste-normalization.property.test.ts`) can exercise the
+ * production normalizer directly instead of mirroring the algorithm. The
+ * production call site reads `bracketed` from the live singleton (see
+ * `getCurrentBracketedPasteMode` below) immediately before invocation, so
+ * extracting the read keeps behaviour identical while breaking the
+ * implicit module-state dependency for testing.
  */
-function preparePastePayload(text: string): string {
+export function preparePastePayload(text: string, bracketed: boolean): string {
   const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  const bracketed = term?.modes?.bracketedPasteMode === true;
   return bracketed ? `\x1b[200~${normalized}\x1b[201~` : normalized;
+}
+
+/**
+ * Read the live bracketed-paste mode from the singleton Terminal. Returns
+ * `false` when the singleton hasn't been constructed yet (paste fired
+ * before mount — shouldn't happen, but cheap to guard).
+ */
+function getCurrentBracketedPasteMode(): boolean {
+  return term?.modes?.bracketedPasteMode === true;
 }
 
 export async function pasteIntoActivePty(fallbackText: string | undefined): Promise<void> {
@@ -205,13 +221,13 @@ export async function pasteIntoActivePty(fallbackText: string | undefined): Prom
       // the same prep so bracketed-paste wrapping applies — claude must see
       // the path as one atomic paste, not as keystrokes that could collide
       // with TUI keybindings while the path streams in.
-      window.ccsmPty.input(sid, preparePastePayload(imagePath));
+      window.ccsmPty.input(sid, preparePastePayload(imagePath, getCurrentBracketedPasteMode()));
       return;
     }
   } catch {
     // best-effort — fall through to text paste on IPC failure.
   }
-  if (fallbackText) window.ccsmPty.input(sid, preparePastePayload(fallbackText));
+  if (fallbackText) window.ccsmPty.input(sid, preparePastePayload(fallbackText, getCurrentBracketedPasteMode()));
 }
 
 /**
