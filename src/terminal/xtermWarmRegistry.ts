@@ -11,7 +11,14 @@
 // `CCSM_WARM_XTERM=1` env flag is set (read at preload init, surfaced via
 // `window.ccsm.featureFlags.warmXterm`). The legacy singleton
 // (`./xtermSingleton.ts`) remains the default path. When the flag is off
-// nothing in this file is imported.
+// this file IS imported (TerminalPane references `usePtyAttachWarm`
+// statically so both branches type-check), but all side effects — the
+// `beforeunload` cleanup and the module-level `pty.onExit` subscription —
+// are lazy behind `installUnloadCleanupOnce` / `installExitListenerOnce`,
+// which are ONLY invoked from `allocEntry`. `allocEntry` itself is only
+// reached via `ensureAndShowEntry`, called exclusively by the warm hook.
+// Net effect with flag off: importing this file allocates no listeners
+// and runs no DOM work.
 //
 // Transparent-transport invariant: this module fans out PTY data to the
 // per-session xterm via `window.ccsmPty.onData` (multi-subscriber, see
