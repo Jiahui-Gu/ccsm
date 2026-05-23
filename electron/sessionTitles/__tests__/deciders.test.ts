@@ -2,7 +2,7 @@
 // per #677 SRP cleanup. These functions are pure: no I/O, no mocks needed.
 import { describe, it, expect } from 'vitest';
 
-import { classifyError, decideRetry, decideRequeue } from '../deciders';
+import { classifyError, decideRetry } from '../deciders';
 
 describe('classifyError', () => {
   it('returns no_jsonl when err.code === ENOENT', () => {
@@ -85,35 +85,5 @@ describe('decideRetry', () => {
 
   it('returns false for non-Error object with no message', () => {
     expect(decideRetry({}, '/Users/x')).toBe(false);
-  });
-});
-
-describe('decideRequeue', () => {
-  it('returns true when result is { ok: false, reason: "no_jsonl" }', () => {
-    expect(decideRequeue({ ok: false, reason: 'no_jsonl' })).toBe(true);
-  });
-
-  it('returns false when result is { ok: true }', () => {
-    expect(decideRequeue({ ok: true })).toBe(false);
-  });
-
-  it('returns false when result is { ok: false, reason: "sdk_threw" }', () => {
-    expect(decideRequeue({ ok: false, reason: 'sdk_threw' })).toBe(false);
-  });
-
-  it('returns false for null', () => {
-    expect(decideRequeue(null)).toBe(false);
-  });
-
-  it('returns false for undefined', () => {
-    expect(decideRequeue(undefined)).toBe(false);
-  });
-
-  it('returns false for non-object', () => {
-    expect(decideRequeue('no_jsonl')).toBe(false);
-  });
-
-  it('returns false for malformed result missing ok', () => {
-    expect(decideRequeue({ reason: 'no_jsonl' })).toBe(false);
   });
 });

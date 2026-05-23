@@ -139,6 +139,12 @@ const pendingRenames = new Map<string, PendingRename>();
 // single frame. Anything that persists past one retry is a hard failure
 // we'd rather surface (via console.warn) than mask with an unbounded
 // retry loop that hides bugs behind silent eventual success.
+//
+// Retry cadence: retries fire on subsequent watcher ticks (i.e. the
+// next time PR3's sessionWatcher calls flushPendingRename), not as an
+// immediate in-loop retry. In practice that means seconds between
+// attempts, which is exactly the window transient fs locks need to
+// clear.
 const MAX_SDK_THREW_ATTEMPTS = 2;
 
 // ─────────────────────────── Helpers ─────────────────────────────────────
@@ -330,6 +336,14 @@ export function forgetSid(sid: string): void {
     // returns, no per-sid Map holds an entry for sid"; the async flush
     // is a best-effort recovery that must not appear to violate it.)
     await Promise.resolve();
+    // Race guard mirroring flushPendingRename: if a newer enqueue arrived
+    // in the same tick (between the synchronous delete above and this
+    // microtask), the renderer's most recent typed title is now the
+    // source of truth. Writing the captured OLDER pending.title here
+    // would briefly stale-write to disk before the next watcher tick
+    // overwrites it with the newer value. Bail and let the watcher
+    // handle the newer entry.
+    if (pendingRenames.has(sid)) return;
     try {
       const result = await renameSessionTitle(sid, pending.title, pending.dir);
       if (!result.ok) {
@@ -347,8 +361,13 @@ export function forgetSid(sid: string): void {
     } finally {
       // renameSessionTitle re-populates opChains via chain(); drop it so
       // the sid is fully forgotten as the public contract advertises.
-      opChains.delete(sid);
-      titleCache.delete(sid);
+      // BUT: only clear if no newer enqueue has arrived — otherwise we'd
+      // delete the opChain entry that a concurrent flushPendingRename for
+      // the newer title is using to serialize against.
+      if (!pendingRenames.has(sid)) {
+        opChains.delete(sid);
+        titleCache.delete(sid);
+      }
     }
   })();
 }

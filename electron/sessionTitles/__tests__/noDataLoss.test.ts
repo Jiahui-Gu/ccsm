@@ -370,6 +370,41 @@ describe('forgetSid flushes any queued title intent before clearing state', () =
       warn.mockRestore();
     }
   });
+
+  it('bails the deferred flush if a newer enqueue arrives in the same tick (race)', async () => {
+    // forgetSid race mirror of the I5 requeue-race. Between forgetSid's
+    // synchronous `pendingRenames.delete(sid)` and the microtask that
+    // calls `renameSessionTitle(sid, capturedOlderTitle)`, the renderer
+    // may call `enqueuePendingRename(sid, newerTitle)`. If the deferred
+    // flush ran unconditionally, it would write the OLD title to disk
+    // for a moment before the next watcher tick overwrites it with the
+    // newer value — a brief stale write the user can observe.
+    //
+    // Expected: the microtask sees the newer entry already present and
+    // bails. No SDK call happens for the old title. The next flush
+    // (simulating the watcher tick) writes the newer title.
+    sdkMocks.renameSession.mockResolvedValue(undefined);
+
+    enqueuePendingRename('sid-i7c', 'older-title', '/cwd');
+    forgetSid('sid-i7c');
+    // Same-tick re-enqueue, before the microtask fires.
+    enqueuePendingRename('sid-i7c', 'newer-title', '/cwd');
+
+    // Drain microtasks; the deferred flush should bail without calling SDK.
+    for (let i = 0; i < 100; i++) {
+      await Promise.resolve();
+    }
+    expect(sdkMocks.renameSession).not.toHaveBeenCalled();
+
+    // Next watcher tick: the newer entry is the one that gets written.
+    await flushPendingRename('sid-i7c');
+    expect(sdkMocks.renameSession).toHaveBeenCalledTimes(1);
+    expect(sdkMocks.renameSession).toHaveBeenCalledWith(
+      'sid-i7c',
+      'newer-title',
+      { dir: '/cwd' }
+    );
+  });
 });
 
 // ─────────────────────── I8: read-side never hallucinates ───────────────

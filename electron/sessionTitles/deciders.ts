@@ -63,19 +63,3 @@ export function decideRetry(err: unknown, dir: string | undefined): boolean {
     cls.message.includes('not found in project directory')
   );
 }
-
-/**
- * Decide whether a failed rename should be re-queued for the next flush
- * attempt. Used by `flushPendingRename` after a pending replay: if the JSONL
- * still does not exist on disk, the watcher will fire again on the next
- * frame and we want the same pending entry to be retried.
- *
- * Returns true iff `result` is a `RenameResult`-shaped failure with reason
- * `'no_jsonl'`. Anything else (success, sdk_threw, malformed) → false.
- */
-export function decideRequeue(result: unknown): boolean {
-  if (!result || typeof result !== 'object') return false;
-  const r = result as { ok?: unknown; reason?: unknown };
-  if (r.ok !== false) return false;
-  return r.reason === 'no_jsonl';
-}
