@@ -40,7 +40,7 @@ import type {
   listSessions as ListSessionsFn,
 } from '@anthropic-ai/claude-agent-sdk';
 
-import { classifyError, decideRetry, decideRequeue } from './deciders';
+import { classifyError, decideRetry } from './deciders';
 
 // `@anthropic-ai/claude-agent-sdk` is published as ESM-only (sdk.mjs). Our
 // Electron main bundle compiles to CommonJS (tsconfig.electron.json:
@@ -124,8 +124,22 @@ function chain<T>(sid: string, fn: () => Promise<T>): Promise<T> {
 
 // Pending-rename queue (consumed by PR2). Stored verbatim and replayed by
 // `flushPendingRename` once the watcher reports the JSONL exists.
-type PendingRename = { title: string; dir?: string };
+//
+// `attempts` counts how many times the SDK has thrown a NON-ENOENT error
+// for this entry. `no_jsonl` (ENOENT) replays are unbounded — the watcher
+// keeps firing until JSONL materializes — but any other SDK throw
+// (EBUSY/EACCES/validation/transient project-mismatch retry) is a
+// signal we cannot ignore forever, so we bound it.
+type PendingRename = { title: string; dir?: string; attempts: number };
 const pendingRenames = new Map<string, PendingRename>();
+
+// Bound for non-ENOENT replays. 2 = initial attempt + 1 retry. Rationale:
+// the realistic transient causes (file briefly locked by the SDK's own
+// write, antivirus scan, momentary EACCES on Windows) clear within a
+// single frame. Anything that persists past one retry is a hard failure
+// we'd rather surface (via console.warn) than mask with an unbounded
+// retry loop that hides bugs behind silent eventual success.
+const MAX_SDK_THREW_ATTEMPTS = 2;
 
 // ─────────────────────────── Helpers ─────────────────────────────────────
 // Pure deciders (classifyError, decideRetry, decideRequeue) live in
@@ -233,7 +247,7 @@ export async function listProjectSummaries(
 // ─────────────────────────── Pending queue (PR2) ─────────────────────────
 
 export function enqueuePendingRename(sid: string, title: string, dir?: string): void {
-  pendingRenames.set(sid, { title, dir });
+  pendingRenames.set(sid, { title, dir, attempts: 0 });
 }
 
 export async function flushPendingRename(sid: string): Promise<void> {
@@ -241,11 +255,36 @@ export async function flushPendingRename(sid: string): Promise<void> {
   if (!pending) return;
   pendingRenames.delete(sid);
   const result = await renameSessionTitle(sid, pending.title, pending.dir);
-  if (decideRequeue(result)) {
+  if (result.ok) return;
+
+  // Requeue-race guard: while we awaited the SDK above, the renderer may
+  // have called `enqueuePendingRename(sid, newerTitle)` — that newer entry
+  // is the source of truth now, and replacing it with the captured `pending`
+  // would silently clobber the user's most recent intent. If a newer entry
+  // is already present, leave it untouched.
+  if (pendingRenames.has(sid)) return;
+
+  if (result.reason === 'no_jsonl') {
     // JSONL still not there — re-queue for the next flush attempt. PR3's
-    // watcher will retry on the next frame.
+    // watcher will retry on the next frame. ENOENT replays are unbounded
+    // because they are not errors, just "not ready yet".
     pendingRenames.set(sid, pending);
+    return;
   }
+
+  // result.reason === 'sdk_threw' — bounded retry. Anything beyond
+  // MAX_SDK_THREW_ATTEMPTS is a persistent failure; we drop the entry but
+  // LOG loudly so the loss is at least observable in production logs
+  // (rather than the silent discard this used to do).
+  const nextAttempts = pending.attempts + 1;
+  if (nextAttempts < MAX_SDK_THREW_ATTEMPTS) {
+    pendingRenames.set(sid, { ...pending, attempts: nextAttempts });
+    return;
+  }
+  console.warn(
+    `[sessionTitles] flushPendingRename(${sid}) gave up after ${nextAttempts} attempts; ` +
+      `user-typed title "${pending.title}" was NOT written (last SDK error: ${result.message ?? 'unknown'})`
+  );
 }
 
 // ─────────────────────────── Per-sid cleanup ─────────────────────────────
@@ -272,9 +311,46 @@ export async function flushPendingRename(sid: string): Promise<void> {
  */
 export function forgetSid(sid: string): void {
   if (typeof sid !== 'string' || sid.length === 0) return;
+  // Capture pending intent BEFORE we wipe state. If there is a user-typed
+  // title that has not yet been flushed to the JSONL (the watcher hasn't
+  // fired, or the JSONL is still missing), discarding it silently is a
+  // user-visible data-loss path (I7 in noDataLoss.test.ts). We attempt a
+  // best-effort flush; the call is fire-and-forget because the
+  // sessionWatcher 'unwatched' handler is synchronous, but we use
+  // `void (async … )()` rather than fully ignoring so failures get logged.
+  const pending = pendingRenames.get(sid);
   titleCache.delete(sid);
   opChains.delete(sid);
   pendingRenames.delete(sid);
+  if (!pending) return;
+  void (async () => {
+    // Defer to a microtask so the synchronous caller observes a fully
+    // cleaned-out state for this sid before chain() repopulates opChains
+    // for the rename op. (forgetSid's public contract is "after this call
+    // returns, no per-sid Map holds an entry for sid"; the async flush
+    // is a best-effort recovery that must not appear to violate it.)
+    await Promise.resolve();
+    try {
+      const result = await renameSessionTitle(sid, pending.title, pending.dir);
+      if (!result.ok) {
+        console.warn(
+          `[sessionTitles] forgetSid(${sid}): pending rename "${pending.title}" failed to flush ` +
+            `(${result.reason}${result.message ? `: ${result.message}` : ''}) — title intent LOST`
+        );
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[sessionTitles] forgetSid(${sid}): pending rename "${pending.title}" threw during flush — title intent LOST:`,
+        msg
+      );
+    } finally {
+      // renameSessionTitle re-populates opChains via chain(); drop it so
+      // the sid is fully forgotten as the public contract advertises.
+      opChains.delete(sid);
+      titleCache.delete(sid);
+    }
+  })();
 }
 
 // ─────────────────────────── Test-only helpers ───────────────────────────
