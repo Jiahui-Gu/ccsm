@@ -8,6 +8,7 @@
 
 import type { IpcMain } from 'electron';
 import { BrowserWindow } from 'electron';
+import { WINDOW_CHANNELS } from '../shared/ipcChannels';
 
 export interface WindowIpcDeps {
   ipcMain: IpcMain;
@@ -15,20 +16,20 @@ export interface WindowIpcDeps {
 
 export function registerWindowIpc(deps: WindowIpcDeps): void {
   const { ipcMain } = deps;
-  ipcMain.handle('window:minimize', (e) => {
+  ipcMain.handle(WINDOW_CHANNELS.minimize, (e) => {
     BrowserWindow.fromWebContents(e.sender)?.minimize();
   });
-  ipcMain.handle('window:toggleMaximize', (e) => {
+  ipcMain.handle(WINDOW_CHANNELS.toggleMaximize, (e) => {
     const win = BrowserWindow.fromWebContents(e.sender);
     if (!win) return false;
     if (win.isMaximized()) win.unmaximize();
     else win.maximize();
     return win.isMaximized();
   });
-  ipcMain.handle('window:close', (e) => {
+  ipcMain.handle(WINDOW_CHANNELS.close, (e) => {
     BrowserWindow.fromWebContents(e.sender)?.close();
   });
-  ipcMain.handle('window:isMaximized', (e) => {
+  ipcMain.handle(WINDOW_CHANNELS.isMaximized, (e) => {
     return BrowserWindow.fromWebContents(e.sender)?.isMaximized() ?? false;
   });
 }

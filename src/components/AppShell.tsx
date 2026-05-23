@@ -17,7 +17,7 @@ export function AppShell({
   main: React.ReactNode;
 }) {
   return (
-    <div className="app-shell flex h-full w-full bg-bg-app text-fg-primary">
+    <div className="app-shell flex h-full w-full min-w-0 overflow-hidden bg-bg-app text-fg-primary">
       {sidebar}
       <SidebarResizer />
       {main}

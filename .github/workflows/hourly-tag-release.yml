@@ -1,0 +1,156 @@
+# Hourly auto-tag on main.
+#
+# Purpose: when package.json.version is bumped on main (via a normal PR
+# merge), this workflow notices within an hour and pushes `v<version>` as
+# a git tag. The tag push triggers release.yml, which builds and drafts
+# the GitHub Release.
+#
+# Replaces the deleted nightly daily-promote-release.yml (#1254, removed
+# in #1298). Now that `working` is retired and all PRs target `main`
+# directly, no branch-promotion step is needed — just "tag if missing".
+#
+# Locked decisions:
+#   - PAT (RELEASE_TOKEN) is REQUIRED, not optional. Tags pushed using the
+#     default GITHUB_TOKEN do NOT fire downstream workflows, so release.yml
+#     would never run. We fail fast if the secret is missing instead of
+#     silently producing tags that go nowhere.
+#   - No "CI green on main" gate. ci.yml runs on pull_request only — there
+#     is no per-commit status on main HEAD we can query cheaply. The merge
+#     queue / branch protection on main is what ensures green-before-merge.
+#   - Blocker gate covers BOTH open issues AND open PRs labelled `blocker`,
+#     since either may indicate a release should be held.
+#   - cancel-in-progress: false — if an hourly run is mid-push and the next
+#     hour fires, we don't want to interrupt a tag push.
+
+name: hourly tag + release
+
+on:
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: hourly-tag-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: read
+  issues: read
+
+jobs:
+  tag-if-needed:
+    name: tag v<pkg.version> if missing
+    runs-on: ubuntu-latest
+    env:
+      OWNER: ${{ github.repository_owner }}
+      REPO: ${{ github.event.repository.name }}
+      # gh CLI uses GH_TOKEN. Prefer the PAT (so any API side-effects also
+      # carry "user" identity), fall back to GITHUB_TOKEN for read-only API.
+      GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Verify RELEASE_TOKEN is configured
+        # Fail fast and loud — silent fallback to GITHUB_TOKEN would push a
+        # tag that does not trigger release.yml, which is the whole point.
+        run: |
+          if [ -z "${{ secrets.RELEASE_TOKEN }}" ]; then
+            {
+              echo "### RELEASE_TOKEN missing"
+              echo ""
+              echo "This workflow requires a fine-grained PAT named \`RELEASE_TOKEN\`"
+              echo "with \`contents: write\` on this repo. Tags pushed by the default"
+              echo "\`GITHUB_TOKEN\` do **not** trigger downstream workflows, so"
+              echo "release.yml would never run."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error title=RELEASE_TOKEN missing::See job summary for setup."
+            exit 1
+          fi
+
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          # Checkout with the PAT so the later `git push` carries PAT auth
+          # and the tag-push event is delivered to release.yml.
+          token: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: Gate — blocker labels
+        id: blockers
+        run: |
+          set -euo pipefail
+          issues=$(gh issue list --repo "$OWNER/$REPO" --label blocker --state open --json number,title)
+          prs=$(gh pr list       --repo "$OWNER/$REPO" --label blocker --state open --json number,title)
+          n_issues=$(echo "$issues" | jq 'length')
+          n_prs=$(echo    "$prs"    | jq 'length')
+          total=$((n_issues + n_prs))
+          {
+            echo "### Blocker gate"
+            echo ""
+            echo "- open blocker issues: $n_issues"
+            echo "- open blocker PRs: $n_prs"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$total" -gt 0 ]; then
+            {
+              echo ""
+              echo "**Blocked — skipping tag.**"
+              echo ""
+              echo "Issues:"
+              echo "$issues" | jq -r '.[] | "  - #\(.number) \(.title)"'
+              echo ""
+              echo "PRs:"
+              echo "$prs" | jq -r '.[] | "  - #\(.number) \(.title)"'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "blocked=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "blocked=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Read package.json.version
+        id: pkg
+        if: steps.blockers.outputs.blocked == 'false'
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          tag="v$version"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Version"
+            echo ""
+            echo "- package.json: \`$version\`"
+            echo "- candidate tag: \`$tag\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check if tag already exists
+        id: tagcheck
+        if: steps.blockers.outputs.blocked == 'false'
+        env:
+          TAG: ${{ steps.pkg.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh api "repos/$OWNER/$REPO/git/refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag \`$TAG\` already exists — no-op." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Tag \`$TAG\` does not exist — will create." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Create and push tag
+        if: steps.blockers.outputs.blocked == 'false' && steps.tagcheck.outputs.exists == 'false'
+        env:
+          TAG: ${{ steps.pkg.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+          {
+            echo ""
+            echo "### Tagged"
+            echo ""
+            echo "Pushed \`$TAG\` -> [release.yml](../../actions/workflows/release.yml) should fire shortly."
+          } >> "$GITHUB_STEP_SUMMARY"

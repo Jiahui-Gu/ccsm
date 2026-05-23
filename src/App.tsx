@@ -22,6 +22,7 @@ import { initI18n } from './i18n';
 import { useTranslation } from './i18n/useTranslation';
 import { usePreferences } from './store/preferences';
 import { useThemeEffect } from './app-effects/useThemeEffect';
+import { useRendererCrashNet } from './app-effects/useRendererCrashNet';
 import { useLanguageEffect } from './app-effects/useLanguageEffect';
 import { useAgentEventBridge } from './app-effects/useAgentEventBridge';
 import { useShortcutHandlers } from './app-effects/useShortcutHandlers';
@@ -132,6 +133,12 @@ export default function App() {
   }, []);
 
   // ---- Extracted effect hooks (Task #732 Phase B + Task #758 Phase C) ----
+  // Renderer crash net — install window-level error / unhandledrejection
+  // listeners. Deferred to a `useEffect` (rather than module-eval in
+  // index.tsx) because boot-phase registration regressed harness-dnd Case 1
+  // on Linux Chromium / xvfb. See useRendererCrashNet.ts for details.
+  useRendererCrashNet();
+
   // Theme application — reactive to user choice + (when system) OS scheme.
   useThemeEffect(theme);
 

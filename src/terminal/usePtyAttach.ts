@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../stores/store';
 import { classifyPtyExit } from '../lib/ptyExitClassifier';
+import { warn } from '../shared/log';
 import {
   getTerm,
   getFit,
@@ -12,7 +13,22 @@ import {
   setInputDisposable,
   setSnapshotReplay,
   getSnapshotReplay,
+  writeAndScrollToBottom,
+  writeOrBuffer,
 } from './xtermSingleton';
+
+// xterm's `Terminal.write()` is asynchronous: bytes are appended to an
+// internal queue and processed on a parser tick, so synchronous code that
+// runs immediately after a `write()` call (notably `scrollToBottom()`) can
+// observe a stale `baseY`. The 2-arg form fires a callback after the chunk
+// is flushed through the parser; wrap it as a promise so callers can await
+// before reading viewport state. A 0-length string is a valid flush
+// sentinel — xterm processes writes in order, so awaiting an empty write
+// drains everything queued before it.
+const writeAsync = (
+  t: { write: (s: string, cb?: () => void) => void },
+  s: string,
+): Promise<void> => new Promise((resolve) => t.write(s, resolve));
 
 export type PtyAttachState =
   | { kind: 'attaching' }
@@ -262,7 +278,7 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
             // Post-snapshot: drop anything seq <= snapSeq (already in
             // the snapshot we wrote) and write the rest live.
             if (payload.seq > snapSeq) {
-              getTerm()?.write(payload.chunk);
+              writeOrBuffer(payload.chunk);
             }
           }),
         );
@@ -278,7 +294,7 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
 
         // Step 4: write snapshot to the visible terminal.
         const tSnap = getTerm();
-        if (tSnap && snap.snapshot) tSnap.write(snap.snapshot);
+        if (tSnap && snap.snapshot) await writeAsync(tSnap, snap.snapshot);
 
         // Step 5: drain buffered chunks with seq > snapSeq, in order.
         // Anything with seq <= snapSeq is already represented in the
@@ -289,8 +305,30 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
           for (const b of buffered) {
             if (b.seq > snapSeq) tDrain.write(b.chunk);
           }
+          // Flush the xterm write queue before reading viewport state.
+          // `write` is async; without this the scrollToBottom below races
+          // a not-yet-processed write and observes a stale baseY.
+          await writeAsync(tDrain, '');
         }
         buffered.length = 0;
+
+        // Attach-time invariant: end at bottom. xterm normally follows live
+        // output, but a `term.reset()` + `term.write(snapshot)` sequence
+        // does NOT guarantee viewportY ends at baseY (a wheel event landing
+        // in the middle of the snapshot write, or a scrollback truncation
+        // when the snapshot exceeds the configured cap, leaves the viewport
+        // stranded). Pin it explicitly — the user's mental model on session
+        // attach is "I'm caught up at the prompt". This runs AFTER the
+        // writeAsync above has flushed the parser queue, so baseY reflects
+        // the snapshot+drain content.
+        const tAfterSnap = getTerm();
+        if (tAfterSnap) {
+          try {
+            tAfterSnap.scrollToBottom();
+          } catch {
+            // best-effort — scroll API rarely fails, ignore.
+          }
+        }
 
         // L4 PR-D (#866): install the snapshot-replay handler used by
         // `useTerminalResize` after a SIGWINCH. The handler re-runs
@@ -312,7 +350,22 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
         // consistent with the listener installed at attach time — the
         // listener always reads `snapSeq` lazily so flipping it back
         // to null re-engages buffering.
-        setSnapshotReplay(async () => {
+        //
+        // Concurrency: two replay drivers exist — the post-attach fit
+        // gate below, and the ResizeObserver in `useTerminalResize`.
+        // They can fire close in time (post-attach gate + a layout
+        // settle that triggers the RO). Letting both run concurrently
+        // means two `reset()` + `write(snapshot)` pairs interleave;
+        // the second `reset()` can land mid-write of the first replay,
+        // and the visible viewport ends stranded (typically at the top
+        // — the user's "attach lands at scroll top" report). Coalesce
+        // overlapping calls: if a replay is in flight, mark a pending
+        // bit and return; the in-flight replay re-runs once more after
+        // it finishes. Only the latest snapshot matters — older
+        // pending requests are subsumed by the next fetch.
+        let replayInFlight = false;
+        let replayPending = false;
+        const runReplay = async (): Promise<void> => {
           if (cancelled || requestedSidRef.current !== sessionId) return;
           // Re-engage buffering — listener checks `snapSeq === null`.
           snapSeq = null;
@@ -323,7 +376,7 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
               seq: number;
             };
           } catch (e) {
-            console.warn('[TerminalPane] resize snapshot failed', e);
+            warn('attach', 'resize snapshot failed', e);
             // Re-arm so the listener resumes writing live chunks even
             // if the snapshot fetch failed — better stale grid than
             // permanent buffer-stall.
@@ -336,9 +389,9 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
             try {
               tReplay.reset();
             } catch (e) {
-              console.warn('[TerminalPane] resize reset failed', e);
+              warn('attach', 'resize reset failed', e);
             }
-            if (snap2.snapshot) tReplay.write(snap2.snapshot);
+            if (snap2.snapshot) await writeAsync(tReplay, snap2.snapshot);
           }
           snapSeq = snap2.seq;
           const tDrain2 = getTerm();
@@ -346,8 +399,48 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
             for (const b of buffered) {
               if (b.seq > snapSeq) tDrain2.write(b.chunk);
             }
+            // Flush the parser queue so the scrollToBottom below sees the
+            // post-replay baseY, not a stale pre-write one. xterm processes
+            // writes in order; awaiting a 0-length write drains everything
+            // queued before it.
+            await writeAsync(tDrain2, '');
           }
           buffered.length = 0;
+          // Once we've awaited the snapshot write + drain through xterm's
+          // queue, the visible buffer is rewritten from scratch. xterm's
+          // default "follow live output" is not re-engaged by `write`
+          // alone if the user-scroll latch was set, and `reset()` doesn't
+          // clear that latch reliably either. Pin viewport to bottom so
+          // the user sees the prompt — same invariant as the attach-time
+          // snapshot write above.
+          const tBottom = getTerm();
+          if (tBottom) {
+            try {
+              tBottom.scrollToBottom();
+            } catch {
+              // best-effort.
+            }
+          }
+        };
+        setSnapshotReplay(async () => {
+          if (replayInFlight) {
+            replayPending = true;
+            return;
+          }
+          replayInFlight = true;
+          try {
+            await runReplay();
+            // Drain any request that arrived while we were running.
+            // Loop (not a single re-run) because a third request could
+            // arrive during the drain run.
+            while (replayPending && !cancelled && requestedSidRef.current === sessionId) {
+              replayPending = false;
+              await runReplay();
+            }
+          } finally {
+            replayInFlight = false;
+            replayPending = false;
+          }
         });
 
         const t3 = getTerm();
@@ -404,10 +497,23 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
                   const replay = getSnapshotReplay();
                   return replay ? replay() : undefined;
                 })
-                .catch((e) => console.warn('[TerminalPane] post-attach replay failed', e));
+                .then(() => {
+                  // Post-attach fit branch: even though the replay
+                  // handler itself scrolls to bottom after its drain,
+                  // we re-assert here as a defensive rendezvous. The
+                  // replay queues writes against the live xterm and
+                  // its internal scroll happens once THAT WriteBuffer
+                  // drains; an unrelated chunk that landed between the
+                  // fit and the replay (e.g. claude reacting to the
+                  // resize) could otherwise leave baseY advanced past
+                  // viewportY again. Cheap empty-write rendezvous.
+                  const tFit = getTerm();
+                  if (tFit) writeAndScrollToBottom(tFit);
+                })
+                .catch((e) => warn('attach', 'post-attach replay failed', e));
             }
           } catch (e) {
-            console.warn('[TerminalPane] post-attach fit failed', e);
+            warn('attach', 'post-attach fit failed', e);
           }
         }
 
@@ -425,7 +531,7 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
           try {
             t5.focus();
           } catch (e) {
-            console.warn('[TerminalPane] term.focus failed', e);
+            warn('attach', 'term.focus failed', e);
           }
         }
 

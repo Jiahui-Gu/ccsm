@@ -9,6 +9,13 @@ import { hydrateStore, type HydrationTrace } from './stores/store';
 import { flushNow, setPersistErrorHandler } from './stores/persist';
 import './styles/global.css';
 
+// Renderer crash net (window-level `'error'` + `'unhandledrejection'`
+// listeners) is installed by `useRendererCrashNet` inside <App>, NOT here.
+// Module-eval registration in this file BEFORE `createRoot` regressed
+// harness-dnd Case 1 on Linux Chromium / xvfb (#1318 -> bisect). Deferring
+// until after React mounts loses no real coverage — there's no
+// user-triggerable code in the boot window before render.
+
 // All knobs (DSN, environment, opt-out gating) live in the main process
 // init. The renderer SDK auto-discovers them via the IPC bridge that
 // @sentry/electron/preload installs.

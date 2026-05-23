@@ -6,6 +6,7 @@
 // that's the whole reason the bridge exists in this shape.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { PTY_CHANNELS } from '../../../shared/ipcChannels';
 
 const {
   exposeSpy,
@@ -86,21 +87,21 @@ describe('ccsmPty preload bridge', () => {
 
   it('install registers fan-outs for "pty:data" and "pty:exit"', () => {
     const channels = onSpy.mock.calls.map((c) => c[0]).sort();
-    expect(channels).toEqual(['pty:data', 'pty:exit'].sort());
+    expect(channels).toEqual([PTY_CHANNELS.data, PTY_CHANNELS.exit].sort());
   });
 
   it.each<[string, string, unknown[]]>([
-    ['list', 'pty:list', []],
-    ['spawn', 'pty:spawn', ['s1', '/cwd']],
-    ['attach', 'pty:attach', ['s1']],
-    ['detach', 'pty:detach', ['s1']],
-    ['input', 'pty:input', ['s1', 'hello']],
-    ['resize', 'pty:resize', ['s1', 80, 24]],
-    ['kill', 'pty:kill', ['s1']],
-    ['get', 'pty:get', ['s1']],
-    ['getBufferSnapshot', 'pty:getBufferSnapshot', ['s1']],
+    ['list', PTY_CHANNELS.list, []],
+    ['spawn', PTY_CHANNELS.spawn, ['s1', '/cwd']],
+    ['attach', PTY_CHANNELS.attach, ['s1']],
+    ['detach', PTY_CHANNELS.detach, ['s1']],
+    ['input', PTY_CHANNELS.input, ['s1', 'hello']],
+    ['resize', PTY_CHANNELS.resize, ['s1', 80, 24]],
+    ['kill', PTY_CHANNELS.kill, ['s1']],
+    ['get', PTY_CHANNELS.get, ['s1']],
+    ['getBufferSnapshot', PTY_CHANNELS.getBufferSnapshot, ['s1']],
     // Task #42 — clipboard image autosave channel.
-    ['saveClipboardImage', 'pty:saveClipboardImage', []],
+    ['saveClipboardImage', PTY_CHANNELS.saveClipboardImage, []],
   ])('forwards %s -> ipcRenderer.invoke("%s", ...)', async (m, chan, args) => {
     const api = lastApi();
     await (api[m] as (...a: unknown[]) => Promise<unknown>)(...args);
@@ -112,13 +113,13 @@ describe('ccsmPty preload bridge', () => {
     await (
       api.spawn as (sid: string, cwd: string, forkSourceSid?: string) => Promise<unknown>
     )('s1', '/cwd', 'source-sid');
-    expect(invokeSpy).toHaveBeenCalledWith('pty:spawn', 's1', '/cwd', 'source-sid');
+    expect(invokeSpy).toHaveBeenCalledWith(PTY_CHANNELS.spawn, 's1', '/cwd', 'source-sid');
   });
 
   it('checkClaudeAvailable defaults its opts to {}', async () => {
     const api = lastApi();
     await (api.checkClaudeAvailable as (o?: unknown) => Promise<unknown>)();
-    expect(invokeSpy).toHaveBeenCalledWith('pty:checkClaudeAvailable', {});
+    expect(invokeSpy).toHaveBeenCalledWith(PTY_CHANNELS.checkClaudeAvailable, {});
   });
 
   it('checkClaudeAvailable forwards explicit opts', async () => {
@@ -126,7 +127,7 @@ describe('ccsmPty preload bridge', () => {
     await (
       api.checkClaudeAvailable as (o?: { force?: boolean }) => Promise<unknown>
     )({ force: true });
-    expect(invokeSpy).toHaveBeenCalledWith('pty:checkClaudeAvailable', {
+    expect(invokeSpy).toHaveBeenCalledWith(PTY_CHANNELS.checkClaudeAvailable, {
       force: true,
     });
   });
@@ -144,7 +145,7 @@ describe('ccsmPty preload bridge', () => {
     const api = lastApi();
     const cb = vi.fn();
     const off = (api.onData as (cb: unknown) => () => void)(cb);
-    const dispatch = onSpy.mock.calls.find((c) => c[0] === 'pty:data')![1] as (
+    const dispatch = onSpy.mock.calls.find((c) => c[0] === PTY_CHANNELS.data)![1] as (
       e: unknown,
       p: unknown,
     ) => void;
@@ -160,7 +161,7 @@ describe('ccsmPty preload bridge', () => {
     const api = lastApi();
     const cb = vi.fn();
     const off = (api.onExit as (cb: unknown) => () => void)(cb);
-    const dispatch = onSpy.mock.calls.find((c) => c[0] === 'pty:exit')![1] as (
+    const dispatch = onSpy.mock.calls.find((c) => c[0] === PTY_CHANNELS.exit)![1] as (
       e: unknown,
       p: unknown,
     ) => void;
@@ -181,7 +182,7 @@ describe('ccsmPty preload bridge', () => {
     const good = vi.fn();
     (api.onData as (cb: unknown) => () => void)(bad);
     (api.onData as (cb: unknown) => () => void)(good);
-    const dispatch = onSpy.mock.calls.find((c) => c[0] === 'pty:data')![1] as (
+    const dispatch = onSpy.mock.calls.find((c) => c[0] === PTY_CHANNELS.data)![1] as (
       e: unknown,
       p: unknown,
     ) => void;

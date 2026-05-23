@@ -34,6 +34,8 @@ import {
 import { resolveSpawnCwd } from './cwdResolver';
 import { emitPtyData } from './dataFanout';
 import { loadScrollbackLines } from '../prefs/scrollback';
+import { PTY_CHANNELS } from '../shared/ipcChannels';
+import { warn } from '../shared/log';
 
 export const DEFAULT_COLS = 120;
 export const DEFAULT_ROWS = 30;
@@ -169,8 +171,9 @@ export function dispatchPtyChunk(sid: string, entry: Entry, chunk: string): void
     !entry.backpressureWarned
   ) {
     entry.backpressureWarned = true;
-    console.warn(
-      `[ptyHost] backpressure: sid=${sid} pendingHeadlessWrites=${entry.pendingHeadlessWrites} ` +
+    warn(
+      'ptyHost',
+      `backpressure: sid=${sid} pendingHeadlessWrites=${entry.pendingHeadlessWrites} ` +
         `(>${BACKPRESSURE_WARN_THRESHOLD}); visible xterm or headless mirror is lagging. ` +
         `No data dropped — this is observe-only.`,
     );
@@ -185,13 +188,26 @@ export function dispatchPtyChunk(sid: string, entry: Entry, chunk: string): void
 
   // Sink 2: visible-xterm IPC fanout. Best-effort per attached webContents
   // — a destroyed sender or an IPC throw must not wedge the PTY pump.
-  for (const wc of entry.attached.values()) {
-    if (!wc.isDestroyed()) {
-      try {
-        wc.send('pty:data', { sid, chunk, seq });
-      } catch {
-        /* renderer gone — best effort */
-      }
+  //
+  // Also actively prune destroyed entries as we iterate. The primary
+  // cleanup path is the `wc.once('destroyed')` handler registered in
+  // `ipcRegistrar` (attach IPC), but if that ever races or fails the
+  // entry would otherwise leak until the entire session is killed —
+  // costing iteration time on every chunk and pinning the WebContents
+  // meta alive across renderer churn (window reopens, dev hot-reloads).
+  // Deleting from a Map during iteration is safe: the iterator only
+  // visits live entries at the time of each `next()`. This is defense
+  // in depth; the `entry.attached.size` check above (backpressure-warn
+  // suppression) also stays accurate as dead entries are evicted.
+  for (const [id, wc] of entry.attached) {
+    if (wc.isDestroyed()) {
+      entry.attached.delete(id);
+      continue;
+    }
+    try {
+      wc.send(PTY_CHANNELS.data, { sid, chunk, seq });
+    } catch {
+      /* renderer gone — best effort */
     }
   }
 
@@ -258,8 +274,9 @@ export function makeEntry(
       try {
         deps.onCwdRedirect(spawnCwd);
       } catch (err) {
-        console.warn(
-          `[ptyHost] cwd-redirect notify for ${sid} threw: ${err instanceof Error ? err.message : String(err)}`,
+        warn(
+          'ptyHost',
+          `cwd-redirect notify for ${sid} threw: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
     }
@@ -308,7 +325,7 @@ export function makeEntry(
     for (const wc of entry.attached.values()) {
       if (!wc.isDestroyed()) {
         try {
-          wc.send('pty:exit', {
+          wc.send(PTY_CHANNELS.exit, {
             sessionId: sid,
             code: exitCode ?? null,
             signal: signal ?? null,

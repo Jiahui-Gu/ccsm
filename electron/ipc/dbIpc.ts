@@ -17,6 +17,7 @@ import { loadState, saveState } from '../db';
 import { validateSaveStateInput } from '../db-validate';
 import { fromMainFrame } from '../security/ipcGuards';
 import { emitStateSaved } from '../shared/stateSavedBus';
+import { DB_CHANNELS } from '../shared/ipcChannels';
 
 export interface DbIpcDeps {
   ipcMain: IpcMain;
@@ -79,11 +80,11 @@ export function handleDbLoad(
 
 export function registerDbIpc(deps: DbIpcDeps): void {
   const { ipcMain } = deps;
-  ipcMain.handle('db:load', handleDbLoad);
+  ipcMain.handle(DB_CHANNELS.load, handleDbLoad);
   // Cap renderer-supplied state values. Mirrors the per-block cap in the
   // (now-retired) db:saveMessages handler but tighter (1 MB total): a single
   // app_state row holds drafts/persist snapshots that should never approach
   // this size — if one does, it's a bug in the persister and we refuse to
   // commit it rather than silently growing the WAL.
-  ipcMain.handle('db:save', handleDbSave);
+  ipcMain.handle(DB_CHANNELS.save, handleDbSave);
 }

@@ -786,3 +786,40 @@ html.theme-light ::-webkit-scrollbar-thumb:hover {
 .pane-resize-handle:focus-visible::after {
   background: var(--color-accent);
 }
+
+/*
+ * IME composition overflow guard. xterm.js 5.5.0 inflates the inline width
+ * of .xterm-helper-textarea and .composition-view to fit the composition
+ * string (measured 11200px for an 800-char run in scratch/diagnose-ime/ime.mjs).
+ * Although position:absolute, those widths propagate up to .app-shell's
+ * scrollWidth and push the sidebar off-screen.
+ *
+ * Upstream xterm.js fixes this inside CompositionHelper (PRs #5747 / #5763 —
+ * #5747's direction:rtl trick was reverted by #5763 because it broke bidi
+ * text order; the final upstream fix uses maxWidth + textarea repositioning,
+ * which we cannot replicate from CSS). PR #5747 is on milestone 7.0.0 and
+ * was NOT released in 6.0.0 (verified against the 6.0.0 tag's
+ * CompositionHelper.ts). We are pinned on 5.5.0 and apply equivalent
+ * containment at the helpers wrapper instead.
+ *
+ * .xterm-helpers from xterm.css:51-59 is position:absolute; top:0 with no
+ * width/height. We give it the terminal grid's footprint (its parent is
+ * .xterm-screen per xterm Terminal.ts:441, which is positioned and sized
+ * to the grid) so overflow:hidden has a real clip rect. contain:layout
+ * severs scrollWidth propagation per CSS Containment L2 §2.5 (Chromium
+ * since M52). We do NOT add contain:size — .xterm-helpers has no intrinsic
+ * size and size containment on a 0-sized element would produce a 0×0 clip
+ * rect that hides the composition visual entirely.
+ *
+ * Delete this rule when bumping @xterm/xterm to a release that contains
+ * PR #5747 (currently milestone 7.0.0, unreleased). The upstream fix is
+ * strictly better (tail-visible at cursor instead of head-visible
+ * truncated-at-right).
+ */
+.xterm .xterm-helpers {
+  left: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  contain: layout;
+}
