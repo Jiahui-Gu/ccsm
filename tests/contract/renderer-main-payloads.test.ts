@@ -1,42 +1,47 @@
 // Renderer ↔ main type-drift contract (audit finding 1b).
 //
-// For the most load-bearing IPC channels we pick a representative
-// payload, push it through the actual main-side handler (or the actual
-// type that flows over the wire), and assert it satisfies the renderer-
-// side type. A drift between the two sides — even an "innocuous" added
-// optional field — silently changes the wire format and can mask a
-// regression for entire releases. The TypeScript assertions in this file
-// fire at compile time; the runtime assertions cover the cases
-// TypeScript can't see (handler return-value discriminant tags, etc.).
+// For the most load-bearing IPC channels we drive the ACTUAL main-side
+// production code (registrar, handler, dispatch function) with stubbed
+// I/O boundaries (sqlite, node-pty, electron BrowserWindow). A drift in
+// argument order, payload field name, or return-value discriminant on
+// any of the five channels below makes a test in THIS file fail —
+// independent of whatever the renderer-side preload wrappers do.
 //
 // Channels covered (3 surfaces × 5 channels):
 //
-//   • persist state    — db:load, db:save                (renderer↔main, invoke)
-//   • pty lifecycle    — pty:input                        (renderer→main, invoke)
-//   • pty data fan-out — pty:data                         (main→renderer, event)
-//   • session lifecycle— session:state                    (main→renderer, event)
+//   • persist state    — db:save, db:load                  (renderer↔main, invoke)
+//   • pty input        — pty:input                          (renderer→main, invoke)
+//   • pty data fan-out — pty:data                           (main→renderer, event)
+//   • session lifecycle— session:state                      (main→renderer, event)
 //
-// We import the actual handler functions for the renderer↔main legs and
-// run them with stubbed deps; for the main→renderer legs we type the
-// payload as the main-side declared shape and assert it satisfies the
-// renderer-side declared shape (TS structural compatibility).
+// The previous version of this file (PR #1332) mocked the production
+// glue itself and asserted against test-local handlers / types, which
+// meant a real-handler arg-swap or field-rename could not make the
+// tests fail. This rewrite imports the real `handleDbSave/Load`,
+// `registerPtyIpc`, and `dispatchPtyChunk` and only mocks at the
+// SQLite / node-pty / electron-BrowserWindow boundary.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { IpcMainInvokeEvent } from 'electron';
+import type { IpcMain, IpcMainInvokeEvent, WebContents } from 'electron';
 
-// The renderer-side wire types — the single source of truth for what
-// the renderer expects to see on each channel.
+// Renderer-side wire types — single source of truth for what the
+// renderer expects to see on each channel.
 import type { PtyDataEvent } from '../../src/pty.d';
 import type { SessionStatePayload, SessionState } from '../../src/shared/sessionState';
+import { PTY_CHANNELS, SESSION_CHANNELS, DB_CHANNELS } from '../../electron/shared/ipcChannels';
 
-// ── Set up handler mocks BEFORE importing the handler ─────────────────
-// The dbIpc module reads its three concrete deps (db, validate,
-// security) on import. We stub all three so the handler's I/O is
-// deterministic; the contract here is the SHAPE of in/out, not the
-// real SQLite write.
+// ── Mocks at the I/O boundary ─────────────────────────────────────────
+// `electron` is unavailable in vitest. ipcRegistrar imports `app` and
+// `clipboard` at module load (used by other channels we don't exercise
+// here); stub them so the module loads.
+vi.mock('electron', () => ({
+  app: { getPath: () => '/tmp/contract-test' },
+  clipboard: { readImage: () => ({ isEmpty: () => true, toPNG: () => Buffer.alloc(0) }) },
+}));
 
-vi.mock('electron', () => ({}));
-
+// SQLite layer for dbIpc. Real `validateSaveStateInput` and `fromMainFrame`
+// are NOT mocked — the dbIpc handler's guard + validation + persist + emit
+// chain runs as in production.
 const store = new Map<string, string>();
 vi.mock('../../electron/db', () => ({
   saveState: (k: string, v: string) => {
@@ -45,32 +50,120 @@ vi.mock('../../electron/db', () => ({
   loadState: (k: string) => (store.has(k) ? store.get(k)! : null),
 }));
 
-vi.mock('../../electron/db-validate', () => ({
-  validateSaveStateInput: (_k: string, _v: string) => ({ ok: true }),
-}));
-
-vi.mock('../../electron/security/ipcGuards', () => ({
-  fromMainFrame: () => true,
-}));
-
+const emitStateSavedSpy = vi.fn();
 vi.mock('../../electron/shared/stateSavedBus', () => ({
-  emitStateSaved: vi.fn(),
+  emitStateSaved: (k: string) => emitStateSavedSpy(k),
 }));
 
-import { handleDbSave, handleDbLoad } from '../../electron/ipc/dbIpc';
+// claudeResolver is imported by ipcRegistrar at module load; pty:input
+// and session:state don't exercise the spawn handler so a no-op stub is
+// enough.
+vi.mock('../../electron/ptyHost/claudeResolver', () => ({
+  resolveClaude: vi.fn(async () => null),
+}));
 
-const fakeEvent = {} as IpcMainInvokeEvent;
+// sessionWatcher is an EventEmitter singleton; mock with a Map-of-callbacks
+// so we can drive `state-changed` listeners directly from the test.
+interface WatcherStub {
+  listeners: Map<string, Array<(evt: unknown) => void>>;
+  emit: (event: string, evt: unknown) => void;
+}
+const watcherStub: WatcherStub = {
+  listeners: new Map(),
+  emit(event, evt) {
+    for (const cb of this.listeners.get(event) ?? []) cb(evt);
+  },
+};
+vi.mock('../../electron/sessionWatcher', () => ({
+  sessionWatcher: {
+    on: (event: string, cb: (evt: unknown) => void) => {
+      const list = watcherStub.listeners.get(event) ?? [];
+      list.push(cb);
+      watcherStub.listeners.set(event, list);
+    },
+  },
+}));
+
+import { handleDbSave, handleDbLoad, registerDbIpc } from '../../electron/ipc/dbIpc';
+import { registerPtyIpc, type PtyIpcDeps } from '../../electron/ptyHost/ipcRegistrar';
+import { dispatchPtyChunk, type Entry } from '../../electron/ptyHost/entryFactory';
+
+// ── Helpers ───────────────────────────────────────────────────────────
+
+/** Build an IpcMainInvokeEvent that satisfies `fromMainFrame` (the
+ *  real guard checks `e.senderFrame === e.sender.mainFrame`). */
+function makeMainFrameEvent(): IpcMainInvokeEvent {
+  const mainFrame = {};
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return { senderFrame: mainFrame, sender: { mainFrame } } as any;
+}
+
+interface FakeIpcMain {
+  handlers: Map<string, (event: unknown, ...args: unknown[]) => unknown>;
+  ipcMain: IpcMain;
+}
+function makeFakeIpc(): FakeIpcMain {
+  const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>();
+  const ipcMain = {
+    handle: (channel: string, fn: (event: unknown, ...args: unknown[]) => unknown) => {
+      handlers.set(channel, fn);
+    },
+  } as unknown as IpcMain;
+  return { handlers, ipcMain };
+}
+
+interface FakeWc {
+  id: number;
+  send: ReturnType<typeof vi.fn>;
+  isDestroyed: () => boolean;
+}
+function makeWc(id = 1): FakeWc {
+  return { id, send: vi.fn(), isDestroyed: () => false };
+}
+
+// Shared registrar handle. `registerPtyIpc` installs its sessionWatcher
+// bridge once per module (module-level `stateBridgeInstalled` guard), so
+// we register exactly ONCE for the whole test file and swap the
+// per-test window / deps via these refs.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let currentWin: any = null;
+let currentInputSpy: ReturnType<typeof vi.fn> = vi.fn();
+let registrarHandlers: Map<string, (event: unknown, ...args: unknown[]) => unknown>;
+{
+  const { handlers, ipcMain } = makeFakeIpc();
+  registrarHandlers = handlers;
+  const deps: PtyIpcDeps = {
+    getMainWindow: () => currentWin,
+    getEntry: () => undefined,
+    listPtySessions: () => [],
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    spawnPtySession: vi.fn() as any,
+    inputPtySession: (sid: string, data: string) => currentInputSpy(sid, data),
+    resizePtySession: vi.fn(),
+    killPtySession: vi.fn(async () => true),
+    getPtySession: () => null,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    getBufferSnapshot: vi.fn() as any,
+  };
+  registerPtyIpc(ipcMain, deps);
+}
 
 beforeEach(() => {
   store.clear();
+  emitStateSavedSpy.mockClear();
+  // NOTE: do NOT clear watcherStub.listeners — the registrar's
+  // state-changed listener is installed once at file load (module
+  // singleton). Clearing would orphan it.
+  currentWin = null;
+  currentInputSpy = vi.fn();
 });
 
-describe('db:save / db:load round-trip (persist state)', () => {
+// ─────────────────────────────────────────────────────────────────────
+// db:save / db:load — real handler, real validator, real guard
+// ─────────────────────────────────────────────────────────────────────
+describe('db:save / db:load (real handler chain)', () => {
   it('save→load round-trips a representative renderer payload', () => {
-    // The renderer's persist layer writes JSON-stringified state under
-    // the `appState` key. Use a payload shaped like the real persist
-    // snapshot so we exercise a realistic size & character set
-    // (escapes, unicode, nested structures).
+    const e = makeMainFrameEvent();
     const key = 'appState';
     const payload = JSON.stringify({
       sessions: [{ id: 'a-b-c', name: 'Hello 中文 🙂', cwd: '/x', groupId: 'g1' }],
@@ -78,110 +171,152 @@ describe('db:save / db:load round-trip (persist state)', () => {
       version: 1,
     });
 
-    const saveResult = handleDbSave(fakeEvent, key, payload);
-    // Renderer's preload wrapper in ccsmCore.saveState requires this
-    // exact discriminant. A drift to e.g. `{success: true}` would
-    // throw at the renderer because the wrapper tests `result.ok`.
+    const saveResult = handleDbSave(e, key, payload);
+    // Preload wrapper tests `result.ok` — a drift to `{success: true}`
+    // would break the renderer. This passes through the REAL
+    // fromMainFrame guard + REAL validateSaveStateInput.
     expect(saveResult).toEqual({ ok: true });
+    // emitStateSaved bus contract — caches downstream subscribe to this.
+    expect(emitStateSavedSpy).toHaveBeenCalledExactlyOnceWith(key);
 
-    const loadResult = handleDbLoad(fakeEvent, key);
-    // Renderer's preload wrapper in ccsmCore.loadState types this as
-    // `Promise<string | null>` — must be exactly one of those two.
+    const loadResult = handleDbLoad(e, key);
     expect(loadResult).toBe(payload);
     expect(typeof loadResult === 'string' || loadResult === null).toBe(true);
   });
 
-  it('db:load returns null (NOT undefined) for missing keys — renderer signature is `string | null`', () => {
-    // Drift to `undefined` would still typecheck at the preload (the
-    // declared return is `Promise<string | null>`, but TypeScript
-    // doesn't enforce the discriminant past `unknown`), but every
-    // caller in src/stores/persist.ts pattern-matches `=== null`. An
-    // `undefined` would slip through and corrupt the hydration path.
-    const result = handleDbLoad(fakeEvent, 'never-set');
+  it('db:load returns null (NOT undefined) for missing keys', () => {
+    // Renderer signature is `Promise<string | null>`. `=== null` pattern
+    // match in src/stores/persist.ts would silently fail on `undefined`.
+    const result = handleDbLoad(makeMainFrameEvent(), 'never-set');
     expect(result).toBeNull();
   });
 
-  // Note: the failure-path `{ok:false, error:string}` discriminant the
-  // preload `saveState` wrapper unwraps is exhaustively covered in
-  // electron/ipc/__tests__/dbIpc.test.ts (guard / validation / persist
-  // throw paths). We don't restate it here — a trivial
-  // `expect({ok:true}.ok).toBe(true)` shadow assertion was removed during
-  // PR #1332 review for not actually exercising the contract.
+  it('db:save rejects with the real validator discriminant on oversized value', () => {
+    // Drives the REAL validateSaveStateInput. If the handler stopped
+    // surfacing `v` directly (e.g. renamed `error` to `reason`) this
+    // fails.
+    const huge = 'x'.repeat(10_000_001);
+    const res = handleDbSave(makeMainFrameEvent(), 'k', huge);
+    expect(res).toEqual({ ok: false, error: 'value_too_large' });
+    expect(emitStateSavedSpy).not.toHaveBeenCalled();
+  });
+
+  it('db:save rejects when sender is not the main frame (real guard)', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const badEvent = { senderFrame: {}, sender: { mainFrame: {} } } as any;
+    const res = handleDbSave(badEvent, 'k', 'v');
+    expect(res).toEqual({ ok: false, error: 'rejected' });
+  });
+
+  it('registerDbIpc wires DB_CHANNELS.save / DB_CHANNELS.load — channel names pinned', () => {
+    // Pins the channel-name → handler binding via the real
+    // registration function. A rename of either channel string in
+    // ipcChannels.ts surfaces here.
+    const { handlers, ipcMain } = makeFakeIpc();
+    registerDbIpc({ ipcMain });
+    expect(handlers.has(DB_CHANNELS.save)).toBe(true);
+    expect(handlers.has(DB_CHANNELS.load)).toBe(true);
+  });
 });
 
-describe('pty:input handler (renderer→main, invoke)', () => {
-  it('forwards (sid, data) to inputPtySession exactly as the renderer sends them', async () => {
-    // SCOPE: this test verifies the SHAPE of the argument list flowing
-    // from preload `ccsmPty.input(sid, data)` (typed `(string, string)
-    // => Promise<void>` in src/pty.d.ts) through the `pty:input` handler
-    // body to `deps.inputPtySession`. It does NOT exercise the real
-    // registrar — wiring `registerPtyIpc` here would require mocking
-    // ipcMain plus the full `PtyIpcDeps` surface (getMainWindow,
-    // getEntry, getBufferSnapshot, sessionWatcher subscriptions) and
-    // would couple this contract test to ptyHost lifecycle internals.
-    //
-    // Drift in the handler SIGNATURE (e.g. swapping the positional arg
-    // order, dropping `sid`) is enforced separately:
-    //   - electron/ptyHost/ipcRegistrar.ts (line 204) — production code
-    //   - electron/ipc/__tests__/  — main-side IPC tests
-    //   - ipc-channel-parity.test.ts in this folder — channel name pinning
-    // The renderer-side type signature is pinned by src/pty.d.ts +
-    // the existing preload-bridge tests in
-    // electron/preload/bridges/__tests__/ccsmPty.test.ts.
-    //
-    // What this test catches: a renderer-side change like
-    // `ccsmPty.input(data, sid)` (swapped arg order) that would still
-    // typecheck (both strings) but flow the wrong values to main.
-    const spy = vi.fn();
+// ─────────────────────────────────────────────────────────────────────
+// pty:input — drive the REAL registrar
+// ─────────────────────────────────────────────────────────────────────
+describe('pty:input handler (real registrar)', () => {
+  it('forwards (sid, data) to deps.inputPtySession in that order', () => {
+    const handler = registrarHandlers.get(PTY_CHANNELS.input);
+    expect(handler, 'pty:input handler must be registered').toBeDefined();
+
     const sid = '5e8b1c2a-1234-4abc-89ef-0123456789ab';
     const data = 'echo hello\n';
-    // Inline mirror of the handler body at electron/ptyHost/ipcRegistrar.ts:204.
-    // Two lines, no branching; reviewer (PR #1332) accepted the
-    // inline-vs-real-registrar trade-off given the cost.
-    const handler = (_e: unknown, s: string, d: string) => spy(s, d);
-    handler(null, sid, data);
-
-    expect(spy).toHaveBeenCalledExactlyOnceWith(sid, data);
+    // Real registrar's signature: `(event, sid, data) => deps.inputPtySession(sid, data)`.
+    // If a future change swaps the arg order this expectation fails.
+    handler!({}, sid, data);
+    expect(currentInputSpy).toHaveBeenCalledExactlyOnceWith(sid, data);
   });
 });
 
-// ── Main→renderer event contracts (compile-time + runtime) ─────────────
-describe('pty:data event payload (main→renderer)', () => {
-  it('main-side payload satisfies the renderer-side PtyDataEvent type', () => {
-    // The main side emits `wc.send(PTY_CHANNELS.data, { sid, chunk, seq })`
-    // (see electron/ptyHost/entryFactory.ts:208). Construct a value
-    // shaped that way and assert it satisfies the renderer-side type.
-    // The TS assignment is the load-bearing check — the test body just
-    // makes the assignment runtime-observable so a removed field at
-    // the value level (vs the type level) also fails.
-    type MainSidePayload = { sid: string; chunk: string; seq: number };
-    const fromMain: MainSidePayload = { sid: 'abc', chunk: 'hello', seq: 7 };
-    // Assignment to the renderer-side type — fails to compile if the
-    // shapes drift.
-    const toRenderer: PtyDataEvent = fromMain;
-    expect(toRenderer.sid).toBe('abc');
-    expect(toRenderer.chunk).toBe('hello');
-    expect(toRenderer.seq).toBe(7);
+// ─────────────────────────────────────────────────────────────────────
+// pty:data — drive the REAL dispatchPtyChunk
+// ─────────────────────────────────────────────────────────────────────
+describe('pty:data event payload (real dispatchPtyChunk)', () => {
+  it('emits PTY_CHANNELS.data with {sid, chunk, seq} on the wire', () => {
+    const wc = makeWc();
+    // Build a minimal Entry. Only `headless.write`, `attached`, and the
+    // backpressure counters are touched by dispatchPtyChunk.
+    const entry = {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      pty: {} as any,
+      headless: {
+        write: (_chunk: string, cb?: () => void) => {
+          cb?.();
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      serialize: {} as any,
+      attached: new Map<number, WebContents>([[wc.id, wc as unknown as WebContents]]),
+      cols: 80,
+      rows: 24,
+      cwd: '/tmp',
+      seq: 6,
+      pendingHeadlessWrites: 0,
+      backpressureWarned: false,
+    } satisfies Entry;
+
+    dispatchPtyChunk('abc', entry, 'hello');
+
+    // Channel name pinned via the real PTY_CHANNELS constant — a rename
+    // breaks this immediately.
+    expect(wc.send).toHaveBeenCalledExactlyOnceWith(PTY_CHANNELS.data, {
+      sid: 'abc',
+      chunk: 'hello',
+      seq: 7, // pre-bumped before broadcast (PR-B seq contract)
+    });
+
+    // Belt-and-braces: the payload object the production code sent must
+    // satisfy the renderer-side PtyDataEvent type (compile-time check).
+    // The `wc.send` mock captures the literal arg; cast it through
+    // PtyDataEvent and read each field so a field-rename at the
+    // production emit-site (e.g. `seq` → `sequence`) fails both at
+    // runtime (the toHaveBeenCalledExactlyOnceWith above) AND at
+    // compile time here.
+    const sent = wc.send.mock.calls[0]![1] as PtyDataEvent;
+    expect(sent.sid).toBe('abc');
+    expect(sent.chunk).toBe('hello');
+    expect(sent.seq).toBe(7);
   });
 });
 
-describe('session:state event payload (main→renderer)', () => {
-  it('main-side SessionStatePayload satisfies the canonical SessionState union', () => {
-    // Watcher emits `{sid, state: 'idle' | 'running' | 'requires_action'}`
-    // and the renderer maps the union to its 2-state UI model in
-    // src/agent/lifecycle.ts. Drift in the union (e.g. adding a 4th
-    // state without updating the map) is the failure mode this guards.
-    const states: SessionState[] = ['idle', 'running', 'requires_action'];
-    for (const s of states) {
-      const payload: SessionStatePayload = { sid: 'x', state: s };
-      expect(payload.state).toBe(s);
+// ─────────────────────────────────────────────────────────────────────
+// session:state — drive the REAL registrar's watcher bridge
+// ─────────────────────────────────────────────────────────────────────
+describe('session:state event payload (real registrar bridge)', () => {
+  it('forwards sessionWatcher state-changed evt through SESSION_CHANNELS.state', () => {
+    const wc = makeWc();
+    currentWin = {
+      isDestroyed: () => false,
+      webContents: { ...wc, isDestroyed: () => false } as unknown as WebContents,
+    };
+
+    const evt: SessionStatePayload = { sid: 'x', state: 'running' };
+    watcherStub.emit('state-changed', evt);
+
+    // Capture send call on the BrowserWindow's webContents.
+    const sendSpy = (currentWin.webContents as unknown as FakeWc).send;
+    expect(sendSpy).toHaveBeenCalledExactlyOnceWith(SESSION_CHANNELS.state, evt);
+
+    // Verify the union pins production's vocabulary. Compile-time check
+    // — a 4th SessionState added without updating the renderer's map in
+    // src/agent/lifecycle.ts would have to add it here (or break the
+    // build at the iteration below).
+    const allStates: SessionState[] = ['idle', 'running', 'requires_action'];
+    for (const s of allStates) {
+      const p: SessionStatePayload = { sid: 'x', state: s };
+      expect(p.state).toBe(s);
     }
     // @ts-expect-error — invented state must not satisfy the union.
     const bad: SessionStatePayload = { sid: 'x', state: 'completed' };
-    // Runtime defense in depth: even though the @ts-expect-error
-    // catches drift at compile time, a future `as SessionState` cast
-    // could slip past. Verify the literal is NOT one of the canonical
-    // members.
-    expect(['idle', 'running', 'requires_action']).not.toContain(bad.state);
+    expect(allStates).not.toContain(bad.state);
   });
 });
