@@ -109,6 +109,35 @@ jobs:
         run: npm i -g @anthropic-ai/claude-code
       - name: Verify claude binary
         run: claude --version
+      # Pre-seed `~/.claude.json` so the real CLI doesn't prompt on first
+      # launch in CI. When `ANTHROPIC_API_KEY=fake-ci-key` is set (see
+      # `scripts/harness-real-cli-ci.mjs`), an un-seeded `claude` shows an
+      # interactive "Detected a custom API key … Do you want to use this API
+      # key?" dialog that captures stdin. Harness probe markers (e.g.
+      # `echo FOCUS_PROBE_xxx`) then never reach a shell and
+      # `waitForXtermBuffer` times out (run 26330799428, windows-latest:
+      # `new-session-focus-cli`, `pty-pid-stable-across-switch`). macOS
+      # happened to pass but we seed defensively on every OS. Node is used
+      # for cross-platform portability (no pwsh/bash divergence).
+      - name: Pre-approve fake API key (all OS)
+        shell: bash
+        run: |
+          node -e "
+            const fs = require('fs');
+            const path = require('path');
+            const os = require('os');
+            const cfgPath = path.join(os.homedir(), '.claude.json');
+            let cfg = {};
+            if (fs.existsSync(cfgPath)) {
+              try { cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')); } catch {}
+            }
+            cfg.customApiKeyResponses = cfg.customApiKeyResponses || {};
+            cfg.customApiKeyResponses.approved = ['fake-ci-key'];
+            cfg.hasCompletedOnboarding = true;
+            cfg.bypassPermissionsModeAccepted = true;
+            fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+            console.log('seeded', cfgPath);
+          "
       - name: Run e2e (Linux with xvfb)
         if: runner.os == 'Linux'
         # E2E_SKIP=harness-real-cli,harness-ime-overflow — the full real-cli
