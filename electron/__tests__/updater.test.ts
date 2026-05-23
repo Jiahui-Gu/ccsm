@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { EventEmitter } from 'events';
 import { UPDATE_CHANNELS, UPDATES_CHANNELS } from '../shared/ipcChannels';
 
@@ -76,11 +76,28 @@ vi.mock('electron-updater', () => {
   return { autoUpdater };
 });
 
+// Stub the structured logger so test runs under plain Node don't try to
+// initialize electron-log (which requires the electron binary). We capture
+// `log.event` calls so the new observability probes can be asserted.
+const logEventCalls: Array<{ name: string; fields: Record<string, unknown> | undefined }> = [];
+vi.mock('../shared/log', () => ({
+  log: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    event: (name: string, fields?: Record<string, unknown>) => {
+      logEventCalls.push({ name, fields });
+    },
+  },
+}));
+
 function resetState() {
   ipcHandlers.clear();
   webContentsSends.length = 0;
   autoUpdaterEmitter.removeAllListeners();
   quitAndInstallCalls.length = 0;
+  logEventCalls.length = 0;
   state.appIsPackaged = true;
   state.appVersion = '0.1.2';
   state.appName = 'CCSM';
@@ -258,5 +275,114 @@ describe('updater: IPC wiring', () => {
     const handler = ipcHandlers.get(UPDATES_CHANNELS.status)!;
     const res = await handler({});
     expect(res).toEqual({ kind: 'available', version: '9.9.9', releaseDate: undefined });
+  });
+
+  it('exports CHECK_INTERVAL_MS as exactly 1 hour (matches hourly release cadence)', async () => {
+    const mod = await import('../updater');
+    // Match `.github/workflows/hourly-tag-release.yml` cron `0 * * * *`. Going
+    // lower hammers GitHub Releases; going higher (the prior 4h value) leaves
+    // long-running sessions stuck on stale builds. If this constant changes,
+    // double-check the release workflow's cadence still matches.
+    expect(mod.CHECK_INTERVAL_MS).toBe(60 * 60 * 1000);
+  });
+
+  it('emits updater.check.start + updater.check.result probes on startup', async () => {
+    // freshModule() in beforeEach already triggered installUpdaterIpc which
+    // calls safeCheck('startup'). Drain microtasks so the async probe lands.
+    await new Promise((r) => setImmediate(r));
+    const names = logEventCalls.map((c) => c.name);
+    expect(names).toContain('updater.check.start');
+    expect(names).toContain('updater.check.result');
+    expect(names).toContain('updater.poll.scheduled');
+    const start = logEventCalls.find((c) => c.name === 'updater.check.start')!;
+    expect(start.fields).toMatchObject({ reason: 'startup', currentVersion: '0.1.2' });
+    const scheduled = logEventCalls.find((c) => c.name === 'updater.poll.scheduled')!;
+    expect(scheduled.fields).toEqual({ intervalMs: 60 * 60 * 1000 });
+  });
+
+  it('emits updater.error probe when autoUpdater check rejects', async () => {
+    state.checkForUpdatesImpl = async () => {
+      const e = new Error('boom') as Error & { code?: string };
+      e.code = 'ERR_UPDATER_INVALID_UPDATE_INFO';
+      throw e;
+    };
+    const handler = ipcHandlers.get(UPDATES_CHANNELS.check)!;
+    await handler({});
+    const errProbe = logEventCalls.find((c) => c.name === 'updater.error');
+    expect(errProbe).toBeTruthy();
+    expect(errProbe!.fields).toMatchObject({
+      reason: 'manual',
+      code: 'ERR_UPDATER_INVALID_UPDATE_INFO',
+      currentVersion: '0.1.2',
+    });
+  });
+
+  it('emits releaseDate on updater.check.result when electron-updater reports it', async () => {
+    state.checkForUpdatesImpl = async () => ({
+      updateInfo: { version: '9.9.9', releaseDate: '2026-05-24T00:00:00Z' },
+    });
+    const handler = ipcHandlers.get(UPDATES_CHANNELS.check)!;
+    await handler({});
+    const result = [...logEventCalls]
+      .reverse()
+      .find((c) => c.name === 'updater.check.result');
+    expect(result).toBeTruthy();
+    expect(result!.fields).toMatchObject({
+      reason: 'manual',
+      currentVersion: '0.1.2',
+      latestVersion: '9.9.9',
+      releaseDate: '2026-05-24T00:00:00Z',
+      available: true,
+    });
+  });
+});
+
+// Separate describe with fake timers so the wider IPC-wiring suite above
+// doesn't pay the timer-mocking cost. Verifies the recurring poll actually
+// fires at CHECK_INTERVAL_MS — guards against future regressions where the
+// interval value diverges from the call-site or the timer never gets armed.
+describe('updater: periodic poll', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('fires a fresh updater.check.start { reason: "poll" } every CHECK_INTERVAL_MS', async () => {
+    await freshModule();
+    const mod = await import('../updater');
+
+    // Drain microtasks for the startup `safeCheck('startup')` without
+    // ticking the interval timer (which would loop forever — setInterval
+    // re-arms itself so `runAllTimersAsync` aborts with an infinite-loop
+    // guard). Two microtask flushes cover the await in `safeCheck`.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const startupStarts = logEventCalls.filter(
+      (c) => c.name === 'updater.check.start',
+    );
+    expect(startupStarts).toHaveLength(1);
+    expect(startupStarts[0]!.fields).toMatchObject({ reason: 'startup' });
+
+    // Advance exactly one interval — the setInterval callback fires
+    // `safeCheck('poll')`.
+    await vi.advanceTimersByTimeAsync(mod.CHECK_INTERVAL_MS);
+    let pollStarts = logEventCalls.filter(
+      (c) => c.name === 'updater.check.start' && c.fields?.reason === 'poll',
+    );
+    expect(pollStarts).toHaveLength(1);
+
+    // Second interval — proves it's a recurring setInterval, not a
+    // one-shot setTimeout. This is the regression we care about: a
+    // future refactor that accidentally swaps setInterval for setTimeout
+    // would pass the single-tick assertion but fail here.
+    await vi.advanceTimersByTimeAsync(mod.CHECK_INTERVAL_MS);
+    pollStarts = logEventCalls.filter(
+      (c) => c.name === 'updater.check.start' && c.fields?.reason === 'poll',
+    );
+    expect(pollStarts).toHaveLength(2);
   });
 });

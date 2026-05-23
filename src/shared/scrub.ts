@@ -126,6 +126,17 @@ export const EVENT_ALLOWED_FIELDS = new Set<string>([
   'cursorY',
   'length',
   'atBottom',
+  // Auto-updater observability probes (`updater.check.start`,
+  // `updater.check.result`, `updater.error`, `updater.poll.scheduled`,
+  // `updater.poll.tick`). All bounded scalars — version strings are user-
+  // visible semver (no paths/PII), `available` is a boolean, `code` is an
+  // electron-updater error code enum, `intervalMs` is our own constant.
+  'available',
+  'currentVersion',
+  'latestVersion',
+  'releaseDate',
+  'code',
+  'intervalMs',
 ]);
 
 const DEFAULT_DEPTH = 4;
