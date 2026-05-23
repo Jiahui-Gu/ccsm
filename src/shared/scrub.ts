@@ -112,6 +112,10 @@ export const EVENT_ALLOWED_FIELDS = new Set<string>([
   'bytesAfter',
   'updateCount',
   'elapsedMs',
+  // PR B Stage 2 additions:
+  //  - `branch`: discrete code-path tag for paste entry-points
+  //    ('ctrl-v' | 'right-click' | 'capture-dom'). Scalar string, no content.
+  'branch',
 ]);
 
 const DEFAULT_DEPTH = 4;

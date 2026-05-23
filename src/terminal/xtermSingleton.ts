@@ -6,7 +6,8 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { CanvasAddon } from '@xterm/addon-canvas';
 import { useStore } from '../stores/store';
 import { SCROLLBACK_LINES_DEFAULT } from '../stores/slices/types';
-import { warn } from '../shared/log';
+import { warn, log } from '../shared/log';
+import { normalizeError } from '../shared/scrub';
 
 // Module-scope singleton state for the renderer's xterm view.
 //
@@ -43,10 +44,26 @@ let keyboardPasteHandled = false;
 // composition preview box jump around. Buffer pty chunks until compositionend.
 let isComposing = false;
 let imeBuffer = '';
+// PR B Stage 2 IME probes: count buffered chunks/bytes per composition so
+// the `ime.composition.end` event can report buffer pressure. We track
+// chunk count separately from `imeBuffer.length` because the buffer is a
+// concatenated string — without a counter we couldn't reconstruct how many
+// PTY chunks arrived while the IME was composing. Reset on each
+// compositionstart.
+let imeBufferedChunks = 0;
+let imeBufferedBytes = 0;
+// `compositionupdate` fires once per IME edit; we sample every 10 to bound
+// log volume for long pinyin sessions (the v2 design addition). Reset on
+// compositionstart so each composition has its own counter.
+let imeUpdateCount = 0;
+let imeCompositionStartedAt = 0;
+const IME_UPDATE_SAMPLE_N = 10;
 
 export function writeOrBuffer(chunk: string): void {
   if (isComposing) {
     imeBuffer += chunk;
+    imeBufferedChunks += 1;
+    imeBufferedBytes += chunk.length;
     return;
   }
   term?.write(chunk);
@@ -214,6 +231,15 @@ export async function pasteIntoActivePty(fallbackText: string | undefined): Prom
   // looking at when they hit paste.
   const sid = activeSid;
   if (!sid) return;
+  // PR B Stage 2 probe: paste capture stage. Boundary metadata only —
+  // no clipboard content fields. `bytes` is the inbound text length
+  // (fallback path; image path is unknown at this point).
+  log.event('paste.hop', {
+    sid,
+    stage: 'capture',
+    bytes: fallbackText?.length ?? 0,
+    bracketed: getCurrentBracketedPasteMode(),
+  });
   try {
     const imagePath = await window.ccsmPty?.saveClipboardImage?.();
     if (imagePath) {
@@ -221,13 +247,53 @@ export async function pasteIntoActivePty(fallbackText: string | undefined): Prom
       // the same prep so bracketed-paste wrapping applies — claude must see
       // the path as one atomic paste, not as keystrokes that could collide
       // with TUI keybindings while the path streams in.
-      window.ccsmPty.input(sid, preparePastePayload(imagePath, getCurrentBracketedPasteMode()));
+      const bracketed = getCurrentBracketedPasteMode();
+      const payload = preparePastePayload(imagePath, bracketed);
+      log.event('paste.branch', { sid, branch: 'image' });
+      log.event('paste.hop', { sid, stage: 'prepare', bytes: payload.length, bracketed });
+      log.event('paste.hop', { sid, stage: 'ipc-send', bytes: payload.length, bracketed });
+      try {
+        window.ccsmPty.input(sid, payload);
+        log.event('paste.hop', { sid, stage: 'pty-write', bytes: payload.length, bracketed });
+      } catch (e) {
+        log.error('paste', 'pty-write failed', { sid, stage: 'pty-write', error: normalizeError(e) });
+      }
       return;
     }
-  } catch {
+  } catch (e) {
     // best-effort — fall through to text paste on IPC failure.
+    log.error('paste', 'saveClipboardImage failed', {
+      sid,
+      stage: 'ipc-send',
+      error: normalizeError(e),
+    });
   }
-  if (fallbackText) window.ccsmPty.input(sid, preparePastePayload(fallbackText, getCurrentBracketedPasteMode()));
+  if (fallbackText) {
+    const bracketed = getCurrentBracketedPasteMode();
+    const bytesBefore = fallbackText.length;
+    const crlfFound = /\r\n|\r/.test(fallbackText);
+    const payload = preparePastePayload(fallbackText, bracketed);
+    // bytesAfter is the post-normalize length BEFORE bracketed-paste wrapping.
+    // We can derive it by stripping the wrapper bytes when bracketed is true.
+    const bytesAfter = bracketed ? payload.length - '\x1b[200~'.length - '\x1b[201~'.length : payload.length;
+    log.event('paste.normalized', {
+      sid,
+      bytesBefore,
+      bytesAfter,
+      crlfFound,
+    });
+    log.event('paste.branch', { sid, branch: 'text' });
+    log.event('paste.hop', { sid, stage: 'prepare', bytes: payload.length, bracketed });
+    log.event('paste.hop', { sid, stage: 'ipc-send', bytes: payload.length, bracketed });
+    try {
+      window.ccsmPty.input(sid, payload);
+      log.event('paste.hop', { sid, stage: 'pty-write', bytes: payload.length, bracketed });
+    } catch (e) {
+      log.error('paste', 'pty-write failed', { sid, stage: 'pty-write', error: normalizeError(e) });
+    }
+  } else {
+    log.event('paste.branch', { sid, branch: 'empty' });
+  }
 }
 
 /**
@@ -348,13 +414,52 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
   if (ta) {
     ta.addEventListener('compositionstart', () => {
       isComposing = true;
+      imeBufferedChunks = 0;
+      imeBufferedBytes = 0;
+      imeUpdateCount = 0;
+      imeCompositionStartedAt = Date.now();
+      log.event('ime.composition.start', { sid: activeSid ?? undefined });
+    });
+    // `compositionupdate` fires per IME edit. Sample every Nth so a long
+    // pinyin session doesn't flood the log. We never read `event.data` —
+    // that's the in-flight composed string, which is content. Only the
+    // integer counter goes into the event.
+    ta.addEventListener('compositionupdate', () => {
+      imeUpdateCount += 1;
+      if (imeUpdateCount % IME_UPDATE_SAMPLE_N === 0) {
+        log.event('ime.composition.progress', {
+          sid: activeSid ?? undefined,
+          count: imeUpdateCount,
+        });
+      }
     });
     ta.addEventListener('compositionend', () => {
       isComposing = false;
+      const durationMs = imeCompositionStartedAt
+        ? Date.now() - imeCompositionStartedAt
+        : 0;
+      const chunks = imeBufferedChunks;
+      const bytes = imeBufferedBytes;
+      log.event('ime.composition.end', {
+        sid: activeSid ?? undefined,
+        durationMs,
+        bufferedChunks: chunks,
+        bufferedBytes: bytes,
+      });
       if (imeBuffer) {
         const pending = imeBuffer;
         imeBuffer = '';
+        imeBufferedChunks = 0;
+        imeBufferedBytes = 0;
         term?.write(pending);
+        log.event('ime.buffer.flush', {
+          sid: activeSid ?? undefined,
+          bytes: pending.length,
+          chunks,
+        });
+      } else {
+        imeBufferedChunks = 0;
+        imeBufferedBytes = 0;
       }
     });
   }
@@ -417,6 +522,7 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
     // Read text synchronously: clipboardData is only valid during the
     // event dispatch, so we can't await before reading it.
     const text = e.clipboardData?.getData('text/plain') ?? '';
+    if (activeSid) log.event('paste.branch', { sid: activeSid, branch: 'capture-dom' });
     void pasteIntoActivePty(text || undefined);
   };
   host.addEventListener('paste', onPasteCapture, { capture: true });
@@ -456,6 +562,7 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
     }
     // Task #42 — route through the image-first helper so a copied
     // screenshot lands as a file path rather than empty text.
+    if (activeSid) log.event('paste.branch', { sid: activeSid, branch: 'ctrl-v' });
     void pasteIntoActivePty(text);
   };
 
@@ -549,6 +656,10 @@ export function __resetSingletonForTests(): void {
   keyboardPasteHandled = false;
   isComposing = false;
   imeBuffer = '';
+  imeBufferedChunks = 0;
+  imeBufferedBytes = 0;
+  imeUpdateCount = 0;
+  imeCompositionStartedAt = 0;
   if (typeof window !== 'undefined') {
     delete window.__ccsmTerm;
   }
@@ -609,5 +720,6 @@ export function terminalPaste(): void {
   }
   // Task #42 — route through the image-first helper so right-click on a
   // copied screenshot lands as a file path rather than empty text.
+  if (activeSid) log.event('paste.branch', { sid: activeSid, branch: 'right-click' });
   void pasteIntoActivePty(text);
 }
