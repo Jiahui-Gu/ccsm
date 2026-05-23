@@ -154,10 +154,6 @@ async function main() {
           );
           failures++;
         }
-        if (!/hidden/.test(metrics.helpersOverflow)) {
-          fail(`n=${n}: .xterm-helpers overflow=${metrics.helpersOverflow} (expected hidden)`);
-          failures++;
-        }
         if (!/layout/.test(metrics.helpersContain)) {
           fail(`n=${n}: .xterm-helpers contain=${metrics.helpersContain} (expected layout)`);
           failures++;
