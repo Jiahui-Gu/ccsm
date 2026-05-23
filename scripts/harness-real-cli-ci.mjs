@@ -31,7 +31,7 @@
 //   5. Runs each selected case against the shared launch, summarizes,
 //      exits non-zero on any failure.
 //
-// Subset (11 cases):
+// Subset (10 cases):
 //   - agent-icon-active-session-no-halo
 //   - cwd-picker-no-shortcut
 //   - sidebar-group-no-newsession-cluster
@@ -40,7 +40,6 @@
 //   - cwd-picker-top-chevron
 //   - cwd-picker-browse
 //   - caseSpacesInCwdSpawnsCorrectly
-//   - pty-pid-stable-across-switch
 //   - new-session-focus-cli
 //   - attach-replay-from-headless-buffer
 //
@@ -80,6 +79,17 @@
 //                                       could fit time-wise but its
 //                                       second Electron boot exceeds the
 //                                       shared-launch budget structure
+//   - pty-pid-stable-across-switch    : verifies pty PID stability by writing
+//                                       `echo MARKER\n` into the pty and
+//                                       waiting for the marker in xterm
+//                                       scrollback. The pty hosts the
+//                                       `claude` TUI (not a shell), so the
+//                                       input is consumed by the TUI and
+//                                       never echoed back. Inherently
+//                                       unsatisfiable under the fake-LLM-API
+//                                       CI setup; covered by the full
+//                                       harness in dogfood against a real
+//                                       claude binary.
 //
 // Run locally:
 //   node scripts/harness-real-cli-ci.mjs                # all CI subset
@@ -96,6 +106,11 @@ import { startFakeAnthropicApi } from './fixtures/fake-anthropic-api.mjs';
 // Subset selection
 // ============================================================================
 
+// Note: `pty-pid-stable-across-switch` is intentionally NOT in this subset.
+// It writes `echo MARKER\n` into the pty and waits for the marker in xterm
+// scrollback, but the pty hosts the `claude` TUI (not a shell), which
+// consumes the input instead of echoing it. Unsatisfiable under the
+// fake-LLM-API setup; the full harness still runs it in dogfood.
 const CI_SUBSET = new Set([
   'agent-icon-active-session-no-halo',
   'cwd-picker-no-shortcut',
@@ -105,7 +120,6 @@ const CI_SUBSET = new Set([
   'cwd-picker-top-chevron',
   'cwd-picker-browse',
   'caseSpacesInCwdSpawnsCorrectly',
-  'pty-pid-stable-across-switch',
   'new-session-focus-cli',
   'attach-replay-from-headless-buffer',
 ]);
