@@ -8,8 +8,26 @@ import * as fs from 'fs';
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agentory-db-hardening-'));
 let tmpDir = tmpRoot;
 
+// `contextBridge`/`ipcRenderer` are present so this same mock can serve the
+// preload bridge import below (Bug B real-import fix) — db tests only touch
+// `app.getPath`, so the extra surface is inert here.
+const { exposeSpy, invokeSpy, sendSpy, onSpy, removeListenerSpy } = vi.hoisted(() => ({
+  exposeSpy: vi.fn(),
+  invokeSpy: vi.fn(),
+  sendSpy: vi.fn(),
+  onSpy: vi.fn(),
+  removeListenerSpy: vi.fn()
+}));
+
 vi.mock('electron', () => ({
-  app: { getPath: () => tmpDir }
+  app: { getPath: () => tmpDir },
+  contextBridge: { exposeInMainWorld: exposeSpy },
+  ipcRenderer: {
+    invoke: invokeSpy,
+    send: sendSpy,
+    on: onSpy,
+    removeListener: removeListenerSpy
+  }
 }));
 
 async function freshDb() {
@@ -110,11 +128,17 @@ describe('db hardening: schema versioning', () => {
     warn.mockRestore();
   });
 
-  it('migrates an older on-disk schema (stored < current) and stamps current', async () => {
-    // Pre-seed a "v0" DB (stored=0 means "fresh", so simulate a legacy v1-
-    // minus-one by stamping 0 explicitly after creating the table). On boot,
-    // initDb must stamp user_version up to SCHEMA_VERSION without trashing
-    // existing rows.
+  it('stamps SCHEMA_VERSION onto a fresh DB that already has legacy rows', async () => {
+    // Coverage scope: this test ONLY exercises the "fresh DB" branch in
+    // initDb (stored user_version === 0) where pre-existing rows happen to
+    // be on disk. It locks the policy that the first stamp-up does NOT
+    // wipe legacy rows.
+    //
+    // What is NOT covered: the real migrate-from-older path (stored>0 and
+    // stored<SCHEMA_VERSION). That branch is unreachable while
+    // SCHEMA_VERSION===1 because the only stored values that satisfy
+    // stored<1 collapse into the fresh-DB branch. See the it.todo below —
+    // a real migration test must be added when SCHEMA_VERSION bumps to ≥2.
     const mod = await freshDb();
     mod.closeDb();
 
@@ -129,10 +153,8 @@ describe('db hardening: schema versioning', () => {
       );
       INSERT INTO app_state (key, value, updated_at) VALUES ('legacy', 'survives', 0);
     `);
-    // user_version defaults to 0 here — that's the "fresh DB" branch in
-    // initDb. The stored<current branch is unreachable while SCHEMA_VERSION
-    // is 1; this test pins the fresh-stamp path end-to-end with pre-existing
-    // rows so the policy ("don't wipe legacy rows on first stamp") is locked.
+    // user_version is 0 here (sqlite default). initDb's "fresh DB" branch
+    // will stamp it to SCHEMA_VERSION on first open.
     seed.close();
 
     const { initDb, loadState } = mod;
@@ -141,6 +163,15 @@ describe('db hardening: schema versioning', () => {
     expect(handle.pragma('user_version', { simple: true })).toBe(1);
     expect(loadState('legacy')).toBe('survives');
   });
+
+  // EXPLICIT COVERAGE GAP: the migrate-from-older path
+  // (0 < stored < SCHEMA_VERSION) is unreachable while SCHEMA_VERSION===1.
+  // When SCHEMA_VERSION bumps to ≥2, replace this it.todo with a real test
+  // that pre-stamps user_version to an in-between value and asserts the
+  // migration runs (data preserved + user_version stamped up to current).
+  it.todo(
+    'migrates an older on-disk schema (stored < current) — add when SCHEMA_VERSION ≥ 2'
+  );
 });
 
 describe('db hardening: prepared statement cache', () => {
@@ -220,22 +251,21 @@ describe('db hardening: preload re-throws on {ok:false}', () => {
   // the existing `.catch` handlers fire and the user actually sees the
   // failure (instead of silently losing the snapshot).
   it('preload saveState wrapper throws when handler returns {ok:false}', async () => {
-    // Replicate the wrapper in isolation — importing electron/preload.ts
-    // pulls in `contextBridge`/`ipcRenderer` which aren't available
-    // outside a renderer process, so we rebuild the same shape here.
-    async function saveStateWrapper(
-      invoke: () => Promise<{ ok: true } | { ok: false; error: string }>
-    ): Promise<void> {
-      const result = await invoke();
-      if (!result.ok) {
-        throw new Error(result.error);
-      }
-    }
+    // Drive the REAL preload bridge from electron/preload/bridges/ccsmCore.ts
+    // — no inline reimplementation. The file-level `electron` mock above
+    // provides the `contextBridge`/`ipcRenderer` surfaces it needs.
+    const { installCcsmCoreBridge } = await import('../preload/bridges/ccsmCore');
+    exposeSpy.mockClear();
+    installCcsmCoreBridge();
+    const exposeCall = exposeSpy.mock.calls[exposeSpy.mock.calls.length - 1];
+    expect(exposeCall[0]).toBe('ccsm');
+    const api = exposeCall[1] as { saveState: (k: string, v: string) => Promise<void> };
 
-    await expect(
-      saveStateWrapper(async () => ({ ok: false, error: 'value_too_large' }))
-    ).rejects.toThrow('value_too_large');
+    invokeSpy.mockReset();
+    invokeSpy.mockResolvedValueOnce({ ok: false, error: 'value_too_large' });
+    await expect(api.saveState('k', 'v')).rejects.toThrow('value_too_large');
 
-    await expect(saveStateWrapper(async () => ({ ok: true }))).resolves.toBeUndefined();
+    invokeSpy.mockResolvedValueOnce({ ok: true });
+    await expect(api.saveState('k', 'v')).resolves.toBeUndefined();
   });
 });
