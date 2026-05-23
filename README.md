@@ -177,14 +177,14 @@ See `package.json` for exact versions.
 
 ## Status
 
-Public releases are cut from `working` via tagged builds (see Release flow below). The author uses CCSM daily as a personal driver; expect rough edges and breaking-ish updates between minor versions.
+Public releases are cut from `main` via tagged builds (see Release flow below). The author uses CCSM daily as a personal driver; expect rough edges and breaking-ish updates between minor versions.
 
 ## Release flow
 
 For maintainers:
 
-1. Merge PRs into the `working` branch (the default branch). CI on every PR runs lint + typecheck + test + e2e on all three OSes.
-2. Bump `version` in `package.json` and land that bump on `working`.
+1. Merge PRs into the `main` branch (the default branch). CI on every PR runs lint + typecheck + test + e2e on all three OSes.
+2. Bump `version` in `package.json` and land that bump on `main`.
 3. Tag the commit `vX.Y.Z` and push the tag. `.github/workflows/release.yml` picks it up and runs the cross-platform build matrix (Windows NSIS installer, macOS dmg + zip for x64 and arm64, Linux AppImage / deb / rpm).
 4. The workflow uploads the artifacts to a **draft** GitHub Release with auto-generated notes. Review the draft, edit notes if needed, then **publish** it manually.
 

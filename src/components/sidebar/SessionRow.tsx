@@ -298,6 +298,7 @@ function SessionRowImpl({
       >
         <ContextMenuItem onSelect={() => setRenaming(true)}>{t('common.rename')}</ContextMenuItem>
         <ContextMenuItem onSelect={() => copySession(session.id)}>{t('sidebar.copySession')}</ContextMenuItem>
+        <ContextMenuSeparator />
         {(() => {
           // Exclude the session's current group from the destination list so
           // users can only move TO another group (#612). The submenu is
@@ -331,16 +332,16 @@ function SessionRowImpl({
             </ContextMenuSub>
           );
         })()}
-        <ContextMenuSeparator />
-        <ContextMenuItem onSelect={performReload}>
-          {t('sidebar.reloadSession')}
-        </ContextMenuItem>
         <ContextMenuItem
           onSelect={() =>
             isArchived ? unarchiveSession(session.id) : archiveSession(session.id)
           }
         >
           {isArchived ? t('sidebar.unarchiveSession') : t('sidebar.archiveSession')}
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem onSelect={performReload}>
+          {t('sidebar.reloadSession')}
         </ContextMenuItem>
         <ContextMenuItem danger onSelect={performDelete}>
           {t('common.delete')}

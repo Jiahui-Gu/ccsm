@@ -12,6 +12,7 @@
 // Extracted from `electron/preload.ts` in #769 (SRP wave-2 PR-A).
 
 import { contextBridge, ipcRenderer, clipboard, type IpcRendererEvent } from 'electron';
+import { PTY_CHANNELS } from '../../shared/ipcChannels';
 
 type PtyDataPayload = { sid: string; chunk: string; seq: number };
 type PtyExitPayload = {
@@ -29,25 +30,25 @@ const ptyDataListeners = new Set<(e: PtyDataPayload) => void>();
 const ptyExitListeners = new Set<(e: PtyExitPayload) => void>();
 
 const ccsmPty = {
-  list: (): Promise<unknown> => ipcRenderer.invoke('pty:list'),
+  list: (): Promise<unknown> => ipcRenderer.invoke(PTY_CHANNELS.list),
   spawn: (sid: string, cwd: string, forkSourceSid?: string): Promise<unknown> =>
     forkSourceSid === undefined
-      ? ipcRenderer.invoke('pty:spawn', sid, cwd)
-      : ipcRenderer.invoke('pty:spawn', sid, cwd, forkSourceSid),
-  attach: (sid: string): Promise<unknown> => ipcRenderer.invoke('pty:attach', sid),
-  detach: (sid: string): Promise<void> => ipcRenderer.invoke('pty:detach', sid),
+      ? ipcRenderer.invoke(PTY_CHANNELS.spawn, sid, cwd)
+      : ipcRenderer.invoke(PTY_CHANNELS.spawn, sid, cwd, forkSourceSid),
+  attach: (sid: string): Promise<unknown> => ipcRenderer.invoke(PTY_CHANNELS.attach, sid),
+  detach: (sid: string): Promise<void> => ipcRenderer.invoke(PTY_CHANNELS.detach, sid),
   input: (sid: string, data: string): Promise<void> =>
-    ipcRenderer.invoke('pty:input', sid, data),
+    ipcRenderer.invoke(PTY_CHANNELS.input, sid, data),
   resize: (sid: string, cols: number, rows: number): Promise<void> =>
-    ipcRenderer.invoke('pty:resize', sid, cols, rows),
-  kill: (sid: string): Promise<unknown> => ipcRenderer.invoke('pty:kill', sid),
-  get: (sid: string): Promise<unknown> => ipcRenderer.invoke('pty:get', sid),
+    ipcRenderer.invoke(PTY_CHANNELS.resize, sid, cols, rows),
+  kill: (sid: string): Promise<unknown> => ipcRenderer.invoke(PTY_CHANNELS.kill, sid),
+  get: (sid: string): Promise<unknown> => ipcRenderer.invoke(PTY_CHANNELS.get, sid),
   // L4 PR-B (#865): visible xterm attach replay. Returns the serialized
   // headless buffer plus the per-entry chunk seq captured atomically with
   // the serialize call. Renderer uses the seq to dedupe live `pty:data`
   // chunks already represented in the snapshot.
   getBufferSnapshot: (sid: string): Promise<BufferSnapshotPayload> =>
-    ipcRenderer.invoke('pty:getBufferSnapshot', sid),
+    ipcRenderer.invoke(PTY_CHANNELS.getBufferSnapshot, sid),
   onData: (cb: (e: PtyDataPayload) => void): (() => void) => {
     ptyDataListeners.add(cb);
     return () => {
@@ -68,15 +69,15 @@ const ccsmPty = {
   // and the userData write both need the main side; renderer also doesn't
   // get app.getPath('userData').
   saveClipboardImage: (): Promise<string | null> =>
-    ipcRenderer.invoke('pty:saveClipboardImage'),
+    ipcRenderer.invoke(PTY_CHANNELS.saveClipboardImage),
   checkClaudeAvailable: (opts?: { force?: boolean }): Promise<CheckClaudeAvailableResult> =>
-    ipcRenderer.invoke('pty:checkClaudeAvailable', opts ?? {}),
+    ipcRenderer.invoke(PTY_CHANNELS.checkClaudeAvailable, opts ?? {}),
 };
 
 export type CCSMPtyAPI = typeof ccsmPty;
 
 export function installCcsmPtyBridge(): void {
-  ipcRenderer.on('pty:data', (_e: IpcRendererEvent, payload: PtyDataPayload) => {
+  ipcRenderer.on(PTY_CHANNELS.data, (_e: IpcRendererEvent, payload: PtyDataPayload) => {
     for (const cb of ptyDataListeners) {
       try {
         cb(payload);
@@ -86,7 +87,7 @@ export function installCcsmPtyBridge(): void {
     }
   });
 
-  ipcRenderer.on('pty:exit', (_e: IpcRendererEvent, payload: PtyExitPayload) => {
+  ipcRenderer.on(PTY_CHANNELS.exit, (_e: IpcRendererEvent, payload: PtyExitPayload) => {
     for (const cb of ptyExitListeners) {
       try {
         cb(payload);

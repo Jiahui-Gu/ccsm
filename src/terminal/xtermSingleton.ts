@@ -6,6 +6,7 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { CanvasAddon } from '@xterm/addon-canvas';
 import { useStore } from '../stores/store';
 import { SCROLLBACK_LINES_DEFAULT } from '../stores/slices/types';
+import { warn } from '../shared/log';
 
 // Module-scope singleton state for the renderer's xterm view.
 //
@@ -37,6 +38,19 @@ let inputDisposable: { dispose: () => void } | null = null;
 // suppresses the native paste event reaching the current host element.
 // See the paste-path block inside `ensureTerminal` for details.
 let keyboardPasteHandled = false;
+// IME composition state: while a Chinese/Japanese/Korean IME is composing,
+// every term.write reanchors xterm's hidden textarea and makes the
+// composition preview box jump around. Buffer pty chunks until compositionend.
+let isComposing = false;
+let imeBuffer = '';
+
+export function writeOrBuffer(chunk: string): void {
+  if (isComposing) {
+    imeBuffer += chunk;
+    return;
+  }
+  term?.write(chunk);
+}
 // L4 PR-D (#866): callback installed by `usePtyAttach` once it has wired the
 // snapshot/dedupe-by-seq flow. Invoked by `useTerminalResize` AFTER pushing
 // a new size to the headless mirror so the visible xterm can re-render
@@ -52,6 +66,40 @@ let snapshotReplay: (() => Promise<void>) | null = null;
 
 export function getTerm(): Terminal | null {
   return term;
+}
+
+/**
+ * Park the viewport at the bottom AFTER all queued writes have drained.
+ *
+ * xterm's `Terminal.write` is asynchronous: it pushes into an internal
+ * `WriteBuffer` that's flushed on the next microtask/raf. A synchronous
+ * `scrollToBottom()` immediately after `write(snapshot)` runs BEFORE the
+ * snapshot has actually advanced `baseY`, so the viewport ends up parked
+ * at the OLD bottom (which, after `term.reset()`, is row 0 — i.e. the
+ * top of the now-populated transcript). This is the bug behind "attach a
+ * session and the scrollbar lands at the middle/top of the transcript".
+ *
+ * The fix is the documented xterm idiom: pass a callback to `write`, which
+ * fires after the WriteBuffer has drained THIS chunk, and only THEN call
+ * `scrollToBottom()`. Empty-string writes are cheap (no parsing) and still
+ * cause the callback to be queued behind any prior pending writes, so we
+ * use `term.write('', cb)` as the rendezvous point regardless of how many
+ * `term.write(...)` calls preceded it.
+ *
+ * Used by `usePtyAttach` at every attach-path call site that paints into
+ * the terminal: initial snapshot + buffered drain, snapshot-replay tail,
+ * and the post-attach fit branch's replay. The resize path (in
+ * `useTerminalResize`) is gated on the user's prior atBottom state so a
+ * scrolled-up viewport isn't yanked down by a SIGWINCH.
+ */
+export function writeAndScrollToBottom(t: Terminal): void {
+  t.write('', () => {
+    try {
+      t.scrollToBottom();
+    } catch {
+      // best-effort — xterm may have been torn down between queue and drain.
+    }
+  });
 }
 
 export function getFit(): FitAddon | null {
@@ -117,6 +165,29 @@ export function setSnapshotReplay(fn: (() => Promise<void>) | null): void {
  * (currently only tests) can await; production paste paths fire-and-forget
  * via `void`.
  */
+/**
+ * Prepare a clipboard payload for injection into the PTY:
+ *   1. Normalize CRLF → LF (and lone CR → LF). Windows clipboards (notepad,
+ *      most browsers) hand back CRLF; PTYs / claude treat each `\r` as a
+ *      submit. Without this, every multi-line Windows paste fires the prompt
+ *      after the first line and the rest lands in fresh prompts.
+ *   2. If xterm reports bracketed-paste mode active (claude's Ink TUI sends
+ *      `\x1b[?2004h` on startup), wrap in `\x1b[200~ ... \x1b[201~` so the
+ *      app treats the whole payload as paste, not typed input. Without this:
+ *      embedded `\n` submits prematurely, embedded `\x03` SIGINTs claude,
+ *      and embedded ANSI escapes are interpreted as terminal commands.
+ *
+ * Read `term.modes.bracketedPasteMode` (xterm.js IModes — updated live by
+ * the parser as the app sends DECSET 2004 h/l). Falls back to "no wrap" if
+ * the singleton hasn't been constructed yet (e.g. paste fired before the
+ * terminal mounted — shouldn't happen, but the early-return is cheap).
+ */
+function preparePastePayload(text: string): string {
+  const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const bracketed = term?.modes?.bracketedPasteMode === true;
+  return bracketed ? `\x1b[200~${normalized}\x1b[201~` : normalized;
+}
+
 export async function pasteIntoActivePty(fallbackText: string | undefined): Promise<void> {
   // N1 race fix (reviewer): snapshot `activeSid` BEFORE the async IPC hop.
   // `saveClipboardImage` round-trips to main; the user can switch sessions
@@ -130,13 +201,17 @@ export async function pasteIntoActivePty(fallbackText: string | undefined): Prom
   try {
     const imagePath = await window.ccsmPty?.saveClipboardImage?.();
     if (imagePath) {
-      window.ccsmPty.input(sid, imagePath);
+      // Image path is a single-line string with no CR, but route it through
+      // the same prep so bracketed-paste wrapping applies — claude must see
+      // the path as one atomic paste, not as keystrokes that could collide
+      // with TUI keybindings while the path streams in.
+      window.ccsmPty.input(sid, preparePastePayload(imagePath));
       return;
     }
   } catch {
     // best-effort — fall through to text paste on IPC failure.
   }
-  if (fallbackText) window.ccsmPty.input(sid, fallbackText);
+  if (fallbackText) window.ccsmPty.input(sid, preparePastePayload(fallbackText));
 }
 
 /**
@@ -223,18 +298,18 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
       }),
     );
   } catch (e) {
-    console.warn('[TerminalPane] web-links addon failed', e);
+    warn('xterm', 'web-links addon failed', e);
   }
   try {
     term.loadAddon(new ClipboardAddon());
   } catch (e) {
-    console.warn('[TerminalPane] clipboard addon failed', e);
+    warn('xterm', 'clipboard addon failed', e);
   }
   try {
     term.loadAddon(new Unicode11Addon());
     term.unicode.activeVersion = '11';
   } catch (e) {
-    console.warn('[TerminalPane] unicode11 addon failed', e);
+    warn('xterm', 'unicode11 addon failed', e);
   }
   // Canvas renderer is the safe middle ground (DOM is slow on dense
   // output, WebGL flakes under RDP). Fall back silently to default DOM
@@ -242,10 +317,25 @@ export function ensureTerminal(host: HTMLDivElement): Terminal {
   try {
     term.loadAddon(new CanvasAddon());
   } catch (e) {
-    console.warn('[TerminalPane] canvas addon failed, falling back to DOM', e);
+    warn('xterm', 'canvas addon failed, falling back to DOM', e);
   }
 
   term.open(host);
+
+  const ta = term.textarea;
+  if (ta) {
+    ta.addEventListener('compositionstart', () => {
+      isComposing = true;
+    });
+    ta.addEventListener('compositionend', () => {
+      isComposing = false;
+      if (imeBuffer) {
+        const pending = imeBuffer;
+        imeBuffer = '';
+        term?.write(pending);
+      }
+    });
+  }
 
   // Single canonical paste path.
   //
@@ -435,6 +525,8 @@ export function __resetSingletonForTests(): void {
   inputDisposable = null;
   snapshotReplay = null;
   keyboardPasteHandled = false;
+  isComposing = false;
+  imeBuffer = '';
   if (typeof window !== 'undefined') {
     delete window.__ccsmTerm;
   }

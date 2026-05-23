@@ -2,7 +2,7 @@ name: e2e
 
 on:
   pull_request:
-    branches: [main, working]
+    branches: [main]
     paths:
       - 'electron/**'
       - 'src/**'

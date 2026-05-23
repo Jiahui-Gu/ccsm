@@ -4,6 +4,9 @@ import * as os from 'os';
 import * as path from 'path';
 
 const openExternalMock = vi.fn(async (_url: string) => undefined);
+const scanImportableSessionsMock = vi.hoisted(() =>
+  vi.fn(async () => [] as unknown[]),
+);
 
 vi.mock('electron', () => ({
   BrowserWindow: { fromWebContents: () => null },
@@ -11,7 +14,7 @@ vi.mock('electron', () => ({
   shell: { openExternal: (url: string) => openExternalMock(url) },
 }));
 vi.mock('../../import-scanner', () => ({
-  scanImportableSessions: async () => [],
+  scanImportableSessions: scanImportableSessionsMock,
 }));
 vi.mock('../../prefs/userCwds', () => ({
   getUserCwds: () => [os.homedir()],
@@ -196,5 +199,88 @@ describe('ccsm:openExternal IPC handler', () => {
     expect(r).toBe(false);
     expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
+  });
+});
+
+describe('import:scan IPC handler — fresh scan, no stale cache (regression)', () => {
+  // Bug: ImportDialog showed stale list on second open if new on-disk
+  // sessions appeared since the first open. Root cause: the handler used
+  // stale-while-revalidate, returning the cached array immediately and
+  // kicking an async refresh whose result the current caller never saw.
+  // Fix: always await a fresh scan (concurrent IPCs still share the
+  // in-flight promise via the importablePending mutex).
+  type Handler = (e: unknown, ...args: unknown[]) => unknown;
+  let handler: Handler;
+
+  function makeSession(id: string, mtime: number) {
+    return {
+      sessionId: id,
+      cwd: `/tmp/cwd-${id}`,
+      title: `Session ${id}`,
+      mtime,
+      projectDir: `/tmp/proj-${id}`,
+      model: null,
+    };
+  }
+
+  beforeEach(async () => {
+    scanImportableSessionsMock.mockReset();
+    // Force a fresh module instance so module-scoped cache state from
+    // earlier tests doesn't bleed in.
+    vi.resetModules();
+    const mod = await import('../utilityIpc');
+    const handlers = new Map<string, Handler>();
+    const ipcMain = {
+      handle: (ch: string, fn: Handler) => handlers.set(ch, fn),
+      on: (ch: string, fn: Handler) => handlers.set(ch, fn),
+    } as unknown as Electron.IpcMain;
+    mod.registerUtilityIpc({ ipcMain });
+    handler = handlers.get('import:scan')!;
+    expect(handler).toBeDefined();
+  });
+
+  it('returns the fresh on-disk list, not the previously-cached one', async () => {
+    const first = makeSession('a', 1);
+    const second = makeSession('b', 2);
+
+    // First open: only one session exists on disk.
+    scanImportableSessionsMock.mockResolvedValueOnce([first]);
+    const r1 = (await handler({})) as Array<{ sessionId: string }>;
+    expect(r1.map((s) => s.sessionId)).toEqual(['a']);
+
+    // Between opens, a second session is recorded on disk.
+    scanImportableSessionsMock.mockResolvedValueOnce([first, second]);
+    const r2 = (await handler({})) as Array<{ sessionId: string }>;
+
+    // Old (stale-while-revalidate) behaviour would have returned `[a]`
+    // here and only refreshed in the background. Fresh-scan behaviour
+    // must include both sessions.
+    expect(r2.map((s) => s.sessionId)).toEqual(['a', 'b']);
+    expect(scanImportableSessionsMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('shares a single in-flight scan across concurrent callers (single-flight mutex)', async () => {
+    let resolveScan: ((rows: unknown[]) => void) | undefined;
+    scanImportableSessionsMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveScan = resolve as (rows: unknown[]) => void;
+        }),
+    );
+
+    const p1 = handler({}) as Promise<unknown[]>;
+    const p2 = handler({}) as Promise<unknown[]>;
+    const p3 = handler({}) as Promise<unknown[]>;
+
+    // All three callers should be waiting on the same in-flight scan.
+    expect(scanImportableSessionsMock).toHaveBeenCalledTimes(1);
+
+    const rows = [makeSession('x', 1)];
+    resolveScan!(rows);
+    const [r1, r2, r3] = await Promise.all([p1, p2, p3]);
+    expect(r1).toEqual(rows);
+    expect(r2).toEqual(rows);
+    expect(r3).toEqual(rows);
+    expect(scanImportableSessionsMock).toHaveBeenCalledTimes(1);
   });
 });

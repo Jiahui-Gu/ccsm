@@ -3,13 +3,14 @@
 //   1. Resolves the user-visible name via getNameFn (placeholder/empty
 //      collapse to short sid prefix).
 //   2. Calls toastImpl.show with the i18n title/body + a click handler that
-//      focuses the window + sends 'session:activate'.
+//      focuses the window + sends SESSION_CHANNELS.activate.
 //   3. Bumps the unread badge via onNotified.
 //
 // We assert real behavior by injecting a recording toastImpl (no real
 // Notification spawn) and a stub BrowserWindow.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { SESSION_CHANNELS } from '../../../shared/ipcChannels';
 
 // electron is statically imported for `Notification` and the BrowserWindow
 // type. Mock it so importing the sink doesn't require an Electron runtime.
@@ -166,7 +167,7 @@ describe('createToastSink', () => {
     expect(win.show).toHaveBeenCalledTimes(1);
     expect(win.restore).toHaveBeenCalledTimes(1);
     expect(win.focus).toHaveBeenCalledTimes(1);
-    expect(win.webContents.send).toHaveBeenCalledWith('session:activate', { sid: 's1' });
+    expect(win.webContents.send).toHaveBeenCalledWith(SESSION_CHANNELS.activate, { sid: 's1' });
   });
 
   it('click handler skips show/restore when window already visible+not-minimized', () => {

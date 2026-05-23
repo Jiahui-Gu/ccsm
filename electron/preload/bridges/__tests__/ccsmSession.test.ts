@@ -9,6 +9,7 @@
 // pushes don't re-fire.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { SESSION_CHANNELS } from '../../../shared/ipcChannels';
 
 const { exposeSpy, sendSpy, onSpy, removeListenerSpy } = vi.hoisted(() => ({
   exposeSpy: vi.fn(),
@@ -70,21 +71,21 @@ describe('ccsmSession preload bridge', () => {
     const channels = onSpy.mock.calls.map((c) => c[0]).sort();
     expect(channels).toEqual(
       [
-        'session:state',
-        'session:title',
-        'session:cwdRedirected',
-        'session:activate',
+        SESSION_CHANNELS.state,
+        SESSION_CHANNELS.title,
+        SESSION_CHANNELS.cwdRedirected,
+        SESSION_CHANNELS.activate,
       ].sort(),
     );
   });
 
   it.each<[string, string, unknown]>([
-    ['onState', 'session:state', { sid: 's1', state: 'running' }],
-    ['onActivate', 'session:activate', { sid: 's1' }],
-    ['onTitle', 'session:title', { sid: 's1', title: 'hi' }],
+    ['onState', SESSION_CHANNELS.state, { sid: 's1', state: 'running' }],
+    ['onActivate', SESSION_CHANNELS.activate, { sid: 's1' }],
+    ['onTitle', SESSION_CHANNELS.title, { sid: 's1', title: 'hi' }],
     [
       'onCwdRedirected',
-      'session:cwdRedirected',
+      SESSION_CHANNELS.cwdRedirected,
       { sid: 's1', newCwd: '/new/cwd' },
     ],
   ])('%s subscribes to %s fan-out and unsubscribe stops delivery', (m, chan, payload) => {
@@ -109,7 +110,7 @@ describe('ccsmSession preload bridge', () => {
     const cbB = vi.fn();
     (api.onState as (cb: unknown) => () => void)(cbA);
     (api.onState as (cb: unknown) => () => void)(cbB);
-    const dispatch = findRegisteredHandler('session:state');
+    const dispatch = findRegisteredHandler(SESSION_CHANNELS.state);
     dispatch({}, { sid: 's2', state: 'idle' });
     expect(cbA).toHaveBeenCalledTimes(1);
     expect(cbB).toHaveBeenCalledTimes(1);
@@ -124,7 +125,7 @@ describe('ccsmSession preload bridge', () => {
     const good = vi.fn();
     (api.onState as (cb: unknown) => () => void)(bad);
     (api.onState as (cb: unknown) => () => void)(good);
-    findRegisteredHandler('session:state')({}, { sid: 's', state: 'idle' });
+    findRegisteredHandler(SESSION_CHANNELS.state)({}, { sid: 's', state: 'idle' });
     expect(bad).toHaveBeenCalled();
     expect(good).toHaveBeenCalled();
     errSpy.mockRestore();
@@ -134,21 +135,21 @@ describe('ccsmSession preload bridge', () => {
     const api = lastApi();
     const fn = api.setActive as (s: string | null) => void;
     fn('s-123');
-    expect(sendSpy).toHaveBeenCalledWith('session:setActive', 's-123');
+    expect(sendSpy).toHaveBeenCalledWith(SESSION_CHANNELS.setActive, 's-123');
     fn(null);
-    expect(sendSpy).toHaveBeenCalledWith('session:setActive', '');
+    expect(sendSpy).toHaveBeenCalledWith(SESSION_CHANNELS.setActive, '');
   });
 
   it('setName sends "session:setName" with normalized null name', () => {
     const api = lastApi();
     const fn = api.setName as (sid: string, n: string | null) => void;
     fn('s-1', 'Friendly');
-    expect(sendSpy).toHaveBeenCalledWith('session:setName', {
+    expect(sendSpy).toHaveBeenCalledWith(SESSION_CHANNELS.setName, {
       sid: 's-1',
       name: 'Friendly',
     });
     fn('s-1', null);
-    expect(sendSpy).toHaveBeenCalledWith('session:setName', {
+    expect(sendSpy).toHaveBeenCalledWith(SESSION_CHANNELS.setName, {
       sid: 's-1',
       name: '',
     });

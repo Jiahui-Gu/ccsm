@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { EventEmitter } from 'events';
+import { UPDATE_CHANNELS, UPDATES_CHANNELS } from '../shared/ipcChannels';
 
 // ----------------------------------------------------------------------------
 // Mocks
@@ -106,12 +107,12 @@ describe('updater: IPC wiring', () => {
 
   it('registers all expected ipc handlers', () => {
     const expected = [
-      'updates:status',
-      'updates:check',
-      'updates:download',
-      'updates:install',
-      'updates:getAutoCheck',
-      'updates:setAutoCheck'
+      UPDATES_CHANNELS.status,
+      UPDATES_CHANNELS.check,
+      UPDATES_CHANNELS.download,
+      UPDATES_CHANNELS.install,
+      UPDATES_CHANNELS.getAutoCheck,
+      UPDATES_CHANNELS.setAutoCheck
     ];
     for (const ch of expected) {
       expect(ipcHandlers.has(ch), `missing handler: ${ch}`).toBe(true);
@@ -148,29 +149,29 @@ describe('updater: IPC wiring', () => {
   it('broadcasts status on update-available and fires update:available channel', () => {
     autoUpdaterEmitter.emit('update-available', { version: '1.2.3', releaseDate: '2026-01-01' });
 
-    const statusSends = sendsFor('updates:status');
+    const statusSends = sendsFor(UPDATES_CHANNELS.status);
     expect(statusSends).toContainEqual({
       kind: 'available',
       version: '1.2.3',
       releaseDate: '2026-01-01'
     });
 
-    const availableSends = sendsFor('update:available');
+    const availableSends = sendsFor(UPDATE_CHANNELS.available);
     expect(availableSends).toContainEqual({ version: '1.2.3', releaseDate: '2026-01-01' });
   });
 
   it('broadcasts status on update-downloaded and fires update:downloaded channel', () => {
     autoUpdaterEmitter.emit('update-downloaded', { version: '1.2.3' });
 
-    expect(sendsFor('updates:status')).toContainEqual({ kind: 'downloaded', version: '1.2.3' });
-    expect(sendsFor('update:downloaded')).toContainEqual({ version: '1.2.3' });
+    expect(sendsFor(UPDATES_CHANNELS.status)).toContainEqual({ kind: 'downloaded', version: '1.2.3' });
+    expect(sendsFor(UPDATE_CHANNELS.downloaded)).toContainEqual({ version: '1.2.3' });
   });
 
   it('broadcasts status on error and fires update:error channel', () => {
     autoUpdaterEmitter.emit('error', new Error('network down'));
 
-    expect(sendsFor('updates:status')).toContainEqual({ kind: 'error', message: 'network down' });
-    expect(sendsFor('update:error')).toContainEqual({ message: 'network down' });
+    expect(sendsFor(UPDATES_CHANNELS.status)).toContainEqual({ kind: 'error', message: 'network down' });
+    expect(sendsFor(UPDATE_CHANNELS.error)).toContainEqual({ message: 'network down' });
   });
 
   it('updates:check returns not-available in dev (unpackaged) without calling autoUpdater', async () => {
@@ -184,7 +185,7 @@ describe('updater: IPC wiring', () => {
       return { updateInfo: {} };
     };
 
-    const handler = ipcHandlers.get('updates:check')!;
+    const handler = ipcHandlers.get(UPDATES_CHANNELS.check)!;
     const result = await handler({});
     expect(result).toEqual({ kind: 'not-available', version: '0.1.2' });
     expect(checkCalled).toBe(false);
@@ -194,11 +195,11 @@ describe('updater: IPC wiring', () => {
     state.checkForUpdatesImpl = async () => {
       throw new Error('boom');
     };
-    const handler = ipcHandlers.get('updates:check')!;
+    const handler = ipcHandlers.get(UPDATES_CHANNELS.check)!;
     const result = (await handler({})) as { kind: string; message: string };
     expect(result.kind).toBe('error');
     expect(result.message).toBe('boom');
-    expect(sendsFor('updates:status')).toContainEqual({ kind: 'error', message: 'boom' });
+    expect(sendsFor(UPDATES_CHANNELS.status)).toContainEqual({ kind: 'error', message: 'boom' });
   });
 
   it('updates:install calls quitAndInstall silently + relaunch', async () => {
@@ -206,7 +207,7 @@ describe('updater: IPC wiring', () => {
     // lastStatus is `downloaded`. Drive the broadcast first so the
     // handler can proceed.
     autoUpdaterEmitter.emit('update-downloaded', { version: '0.1.3' });
-    const handler = ipcHandlers.get('updates:install')!;
+    const handler = ipcHandlers.get(UPDATES_CHANNELS.install)!;
     const res = handler({});
     expect(res).toEqual({ ok: true });
     // quitAndInstall is scheduled via setImmediate — flush it.
@@ -219,7 +220,7 @@ describe('updater: IPC wiring', () => {
   it('updates:install refuses when no download has completed', () => {
     // No `update-downloaded` event broadcast → lastStatus stays `idle`.
     // The defense-in-depth gate must short-circuit before quitAndInstall.
-    const handler = ipcHandlers.get('updates:install')!;
+    const handler = ipcHandlers.get(UPDATES_CHANNELS.install)!;
     const res = handler({});
     expect(res).toEqual({ ok: false, reason: 'not-ready' });
     expect(quitAndInstallCalls).toEqual([]);
@@ -227,7 +228,7 @@ describe('updater: IPC wiring', () => {
 
   it('updates:install refuses when not packaged', async () => {
     state.appIsPackaged = false;
-    const handler = ipcHandlers.get('updates:install')!;
+    const handler = ipcHandlers.get(UPDATES_CHANNELS.install)!;
     const res = handler({});
     expect(res).toEqual({ ok: false, reason: 'not-packaged' });
   });
@@ -237,15 +238,15 @@ describe('updater: IPC wiring', () => {
     state.downloadUpdateImpl = async () => {
       called = true;
     };
-    const handler = ipcHandlers.get('updates:download')!;
+    const handler = ipcHandlers.get(UPDATES_CHANNELS.download)!;
     const res = await handler({});
     expect(res).toEqual({ ok: true });
     expect(called).toBe(true);
   });
 
   it('updates:setAutoCheck toggles the preference', async () => {
-    const setHandler = ipcHandlers.get('updates:setAutoCheck')!;
-    const getHandler = ipcHandlers.get('updates:getAutoCheck')!;
+    const setHandler = ipcHandlers.get(UPDATES_CHANNELS.setAutoCheck)!;
+    const getHandler = ipcHandlers.get(UPDATES_CHANNELS.getAutoCheck)!;
     expect(await getHandler({})).toBe(true);
     expect(await setHandler({}, false)).toBe(false);
     expect(await getHandler({})).toBe(false);
@@ -254,7 +255,7 @@ describe('updater: IPC wiring', () => {
 
   it('updates:status returns the last broadcast status', async () => {
     autoUpdaterEmitter.emit('update-available', { version: '9.9.9' });
-    const handler = ipcHandlers.get('updates:status')!;
+    const handler = ipcHandlers.get(UPDATES_CHANNELS.status)!;
     const res = await handler({});
     expect(res).toEqual({ kind: 'available', version: '9.9.9', releaseDate: undefined });
   });

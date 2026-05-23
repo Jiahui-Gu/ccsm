@@ -27,6 +27,7 @@ import {
   flushPendingRename,
 } from '../sessionTitles';
 import { fromMainFrame, isSafePath } from '../security/ipcGuards';
+import { SESSION_CHANNELS } from '../shared/ipcChannels';
 
 export interface SessionIpcDeps {
   ipcMain: IpcMain;
@@ -93,7 +94,7 @@ export function registerSessionIpc(deps: SessionIpcDeps): void {
   // Renderer mirrors its active session id here so the notify bridge can
   // suppress toasts for the session the user is currently viewing. Plain
   // `ipcMain.on` (no reply); the renderer fires this on every selectSession.
-  ipcMain.on('session:setActive', (e, sid: unknown) => {
+  ipcMain.on(SESSION_CHANNELS.setActive, (e, sid: unknown) => {
     if (!fromMainFrame(e)) return;
     const next =
       typeof sid === 'string' && sid.length > 0 ? sid : null;
@@ -122,7 +123,7 @@ export function registerSessionIpc(deps: SessionIpcDeps): void {
   // show "my-feature-branch" instead of the UUID. Empty/missing name clears
   // the entry (renderer signals "no longer have a name"). Same security
   // posture as session:setActive — main-frame only.
-  ipcMain.on('session:setName', (e, payload: unknown) => {
+  ipcMain.on(SESSION_CHANNELS.setName, (e, payload: unknown) => {
     if (!fromMainFrame(e)) return;
     if (!payload || typeof payload !== 'object') return;
     const { sid, name } = payload as { sid?: unknown; name?: unknown };

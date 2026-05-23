@@ -37,6 +37,7 @@ import {
   setCloseAction,
 } from '../prefs/closeAction';
 import { tCloseDialog } from '../i18n';
+import { WINDOW_CHANNELS } from '../shared/ipcChannels';
 
 export interface CreateWindowDeps {
   /** True iff we should load the webpack-dev-server URL instead of the
@@ -378,7 +379,7 @@ export function createWindow(deps: CreateWindowDeps): BrowserWindow {
     // Reset the renderer's fade-opacity in case the window was just
     // restored after a fade-to-hide (see `window:beforeHide` below).
     if (!win.webContents.isDestroyed()) {
-      win.webContents.send('window:afterShow');
+      win.webContents.send(WINDOW_CHANNELS.afterShow);
     }
   });
 
@@ -387,7 +388,7 @@ export function createWindow(deps: CreateWindowDeps): BrowserWindow {
   });
 
   const emitMax = () =>
-    win.webContents.send('window:maximizedChanged', win.isMaximized());
+    win.webContents.send(WINDOW_CHANNELS.maximizedChanged, win.isMaximized());
   win.on('maximize', emitMax);
   win.on('unmaximize', emitMax);
 
@@ -416,7 +417,7 @@ export function createWindow(deps: CreateWindowDeps): BrowserWindow {
     fadePending = true;
     try {
       if (!win.webContents.isDestroyed()) {
-        win.webContents.send('window:beforeHide', { durationMs: HIDE_FADE_MS });
+        win.webContents.send(WINDOW_CHANNELS.beforeHide, { durationMs: HIDE_FADE_MS });
       }
     } catch {
       /* renderer unreachable — fall through to immediate hide */
@@ -466,9 +467,9 @@ export function createWindow(deps: CreateWindowDeps): BrowserWindow {
     pendingAsk = null;
     applyCloseDecision({ choice: payload.choice, dontAskAgain: payload.dontAskAgain });
   };
-  deps.ipcMain.on('window:resolveCloseAction', resolveHandler);
+  deps.ipcMain.on(WINDOW_CHANNELS.resolveCloseAction, resolveHandler);
   win.on('closed', () => {
-    deps.ipcMain.removeListener('window:resolveCloseAction', resolveHandler);
+    deps.ipcMain.removeListener(WINDOW_CHANNELS.resolveCloseAction, resolveHandler);
     if (pendingAsk) {
       clearTimeout(pendingAsk.timer);
       pendingAsk = null;
@@ -515,7 +516,7 @@ export function createWindow(deps: CreateWindowDeps): BrowserWindow {
     pendingAsk = { requestId, timer };
     try {
       if (!win.webContents.isDestroyed()) {
-        win.webContents.send('window:askCloseAction', {
+        win.webContents.send(WINDOW_CHANNELS.askCloseAction, {
           requestId,
           labels: {
             message: tCloseDialog('message'),

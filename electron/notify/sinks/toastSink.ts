@@ -22,6 +22,7 @@
 import { Notification, type BrowserWindow } from 'electron';
 import { tNotification } from '../../i18n';
 import type { Decision } from '../notifyDecider';
+import { SESSION_CHANNELS } from '../../shared/ipcChannels';
 
 export interface ToastPayload {
   sid: string;
@@ -76,7 +77,7 @@ function focusAndActivate(win: BrowserWindow | null, sid: string): void {
   }
   try {
     if (!win.webContents.isDestroyed()) {
-      win.webContents.send('session:activate', { sid });
+      win.webContents.send(SESSION_CHANNELS.activate, { sid });
     }
   } catch (err) {
     console.warn('[toastSink] session:activate send failed', err);
