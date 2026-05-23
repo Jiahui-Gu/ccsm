@@ -48,6 +48,21 @@ describe('useRendererCrashNet', () => {
     // Re-import the hook in isolation and confirm that merely importing
     // the module does not register a 'error' or 'unhandledrejection'
     // listener on window. The contract: listeners go in useEffect.
+    //
+    // CRITICAL: vitest's ESM module cache short-circuits a second
+    // `await import(...)` to the cached module record, so the module's
+    // top-level code does NOT re-execute and `addSpy` (cleared in
+    // beforeEach) sees zero calls regardless of where the install
+    // lives. Without `vi.resetModules()` this assertion is a tautology.
+    // Reset is scoped to THIS test only — other tests rely on the
+    // cached module so their addSpy records reflect the useEffect
+    // install, not a re-eval.
+    //
+    // Mutation check (performed locally before commit): moving
+    // `window.addEventListener` calls from inside useEffect to the
+    // module top level causes this test to fail with both 'error' and
+    // 'unhandledrejection' showing up in `installed`.
+    vi.resetModules();
     addSpy.mockClear();
     await import('../../src/app-effects/useRendererCrashNet');
     const installed = addSpy.mock.calls
@@ -151,6 +166,14 @@ describe('useRendererCrashNet', () => {
   it('after unmount, dispatched events no longer reach logError', async () => {
     const { useRendererCrashNet } = await import('../../src/app-effects/useRendererCrashNet');
     const { unmount } = renderHook(() => useRendererCrashNet());
+
+    // Strong form: first prove the listener IS wired by dispatching
+    // pre-unmount and asserting logError fires. Without this, the
+    // negative-only assertion below would also pass for a hook that
+    // simply never installed the listener.
+    window.dispatchEvent(new ErrorEvent('error', { error: new Error('pre-unmount') }));
+    expect(logErrorSpy).toHaveBeenCalledTimes(1);
+
     unmount();
     logErrorSpy.mockClear();
 
