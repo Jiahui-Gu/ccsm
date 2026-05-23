@@ -76,11 +76,28 @@ vi.mock('electron-updater', () => {
   return { autoUpdater };
 });
 
+// Stub the structured logger so test runs under plain Node don't try to
+// initialize electron-log (which requires the electron binary). We capture
+// `log.event` calls so the new observability probes can be asserted.
+const logEventCalls: Array<{ name: string; fields: Record<string, unknown> | undefined }> = [];
+vi.mock('../shared/log', () => ({
+  log: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    event: (name: string, fields?: Record<string, unknown>) => {
+      logEventCalls.push({ name, fields });
+    },
+  },
+}));
+
 function resetState() {
   ipcHandlers.clear();
   webContentsSends.length = 0;
   autoUpdaterEmitter.removeAllListeners();
   quitAndInstallCalls.length = 0;
+  logEventCalls.length = 0;
   state.appIsPackaged = true;
   state.appVersion = '0.1.2';
   state.appName = 'CCSM';
@@ -258,5 +275,45 @@ describe('updater: IPC wiring', () => {
     const handler = ipcHandlers.get(UPDATES_CHANNELS.status)!;
     const res = await handler({});
     expect(res).toEqual({ kind: 'available', version: '9.9.9', releaseDate: undefined });
+  });
+
+  it('exports CHECK_INTERVAL_MS as exactly 1 hour (matches hourly release cadence)', async () => {
+    const mod = await import('../updater');
+    // Match `.github/workflows/hourly-tag-release.yml` cron `0 * * * *`. Going
+    // lower hammers GitHub Releases; going higher (the prior 4h value) leaves
+    // long-running sessions stuck on stale builds. If this constant changes,
+    // double-check the release workflow's cadence still matches.
+    expect(mod.CHECK_INTERVAL_MS).toBe(60 * 60 * 1000);
+  });
+
+  it('emits updater.check.start + updater.check.result probes on startup', async () => {
+    // freshModule() in beforeEach already triggered installUpdaterIpc which
+    // calls safeCheck('startup'). Drain microtasks so the async probe lands.
+    await new Promise((r) => setImmediate(r));
+    const names = logEventCalls.map((c) => c.name);
+    expect(names).toContain('updater.check.start');
+    expect(names).toContain('updater.check.result');
+    expect(names).toContain('updater.poll.scheduled');
+    const start = logEventCalls.find((c) => c.name === 'updater.check.start')!;
+    expect(start.fields).toMatchObject({ reason: 'startup', currentVersion: '0.1.2' });
+    const scheduled = logEventCalls.find((c) => c.name === 'updater.poll.scheduled')!;
+    expect(scheduled.fields).toEqual({ intervalMs: 60 * 60 * 1000 });
+  });
+
+  it('emits updater.error probe when autoUpdater check rejects', async () => {
+    state.checkForUpdatesImpl = async () => {
+      const e = new Error('boom') as Error & { code?: string };
+      e.code = 'ERR_UPDATER_INVALID_UPDATE_INFO';
+      throw e;
+    };
+    const handler = ipcHandlers.get(UPDATES_CHANNELS.check)!;
+    await handler({});
+    const errProbe = logEventCalls.find((c) => c.name === 'updater.error');
+    expect(errProbe).toBeTruthy();
+    expect(errProbe!.fields).toMatchObject({
+      reason: 'manual',
+      code: 'ERR_UPDATER_INVALID_UPDATE_INFO',
+      currentVersion: '0.1.2',
+    });
   });
 });

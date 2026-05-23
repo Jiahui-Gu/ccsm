@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import { UPDATE_CHANNELS, UPDATES_CHANNELS } from './shared/ipcChannels';
+import { log } from './shared/log';
 
 // All status updates flow through one channel so the renderer doesn't have to
 // subscribe to N separate event names. The shape mirrors electron-updater's
@@ -19,10 +20,14 @@ let installed = false;
 let autoCheckEnabled = true;
 let periodicHandle: ReturnType<typeof setInterval> | null = null;
 
-// 4 hours. Electron-updater recommends not checking more often than hourly;
-// 4h is a reasonable default that keeps users on the latest signed build
-// without hammering GitHub releases.
-const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
+// 1 hour. Matches the hourly release cadence (see
+// `.github/workflows/hourly-tag-release.yml`) so an in-app session picks up
+// a new build within roughly one polling window of publication. Electron-
+// updater docs caution against going below hourly (GitHub Releases is the
+// underlying feed and 60+ checks/hr per client is noisy); 1h is the floor.
+// Prior value was 4h — that is too coarse for a project that ships a new
+// tag every hour, leaving long-running sessions stuck on stale builds.
+export const CHECK_INTERVAL_MS = 60 * 60 * 1000;
 
 // Named event channels — requested in the release infra spec in addition to
 // the aggregated `updates:status` channel. Keeping both channels is cheap and
@@ -53,16 +58,41 @@ function broadcast(status: UpdateStatus): void {
  * Safe wrapper around autoUpdater.checkForUpdates() that handles the three
  * common failure modes without crashing: not packaged (dev), network error,
  * and missing update metadata (running a build before the first release).
+ *
+ * Emits `updater.check.start` and `updater.check.result` / `updater.error`
+ * probes so the auto-update path is debuggable from main.log (when the file
+ * sink is enabled). Without these, a silent "never finds an update" failure
+ * mode is invisible to triage — there's no UI surface that lights up when
+ * the check itself errors before any IPC event fires.
  */
-async function safeCheck(): Promise<void> {
+async function safeCheck(reason: 'startup' | 'poll' | 'manual' | 'toggle'): Promise<void> {
   if (!app.isPackaged) {
     broadcast({ kind: 'not-available', version: app.getVersion() });
     return;
   }
+  const currentVersion = app.getVersion();
+  log.event('updater.check.start', { reason, currentVersion });
   try {
-    await autoUpdater.checkForUpdates();
+    const res = await autoUpdater.checkForUpdates();
+    // electron-updater returns `null` if a check is already in progress; in
+    // that case treat as a no-op result rather than a phantom "no update".
+    const latestVersion = res?.updateInfo?.version;
+    const available =
+      typeof latestVersion === 'string' && latestVersion !== currentVersion;
+    log.event('updater.check.result', {
+      reason,
+      currentVersion,
+      latestVersion: typeof latestVersion === 'string' ? latestVersion : undefined,
+      available,
+    });
   } catch (e) {
-    broadcast({ kind: 'error', message: (e as Error).message });
+    const err = e as Error & { code?: string };
+    log.event('updater.error', {
+      reason,
+      currentVersion,
+      code: err?.code,
+    });
+    broadcast({ kind: 'error', message: err?.message ?? String(err) });
   }
 }
 
@@ -74,9 +104,10 @@ function startPeriodicChecks(): void {
   // premature quit while timers are pending. .unref() so it doesn't keep
   // the event loop alive during shutdown.
   periodicHandle = setInterval(() => {
-    void safeCheck();
+    void safeCheck('poll');
   }, CHECK_INTERVAL_MS);
   (periodicHandle as unknown as { unref?: () => void }).unref?.();
+  log.event('updater.poll.scheduled', { intervalMs: CHECK_INTERVAL_MS });
 }
 
 function stopPeriodicChecks(): void {
@@ -90,11 +121,21 @@ export function installUpdaterIpc(): void {
   if (installed) return;
   installed = true;
 
-  // electron-updater is noisy by default; quiet it down — we surface state
-  // through our own channel.
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
-  autoUpdater.logger = null;
+
+  // electron-updater is noisy on stdout by default; route its internal
+  // diagnostics through our structured logger so the records land in
+  // main.log (when the file sink is enabled) under tag `electron-updater`.
+  // Previously this was set to `null`, which silenced electron-updater
+  // entirely — making "updater not detecting releases" an invisible failure
+  // mode with zero log evidence to triage from.
+  autoUpdater.logger = {
+    info: (m: unknown) => log.info('electron-updater', String(m)),
+    warn: (m: unknown) => log.warn('electron-updater', String(m)),
+    error: (m: unknown) => log.error('electron-updater', String(m)),
+    debug: (m: unknown) => log.debug('electron-updater', String(m)),
+  } as unknown as typeof autoUpdater.logger;
 
   // Dual-install (#891): the dev variant pulls GitHub pre-releases so we can
   // ship release candidates / dogfood builds without affecting prod users
@@ -126,9 +167,19 @@ export function installUpdaterIpc(): void {
   autoUpdater.on('update-downloaded', (info) =>
     broadcast({ kind: 'downloaded', version: info.version })
   );
-  autoUpdater.on('error', (err) =>
-    broadcast({ kind: 'error', message: err?.message ?? String(err) })
-  );
+  autoUpdater.on('error', (err) => {
+    // Mirror the autoUpdater error to a structured probe so main.log shows
+    // the failure. The `electron-updater` logger above ALSO records it, but
+    // that record is a free-form string from the library; the probe gives
+    // us a stable event name to grep for during triage.
+    const e = err as Error & { code?: string };
+    log.event('updater.error', {
+      reason: 'emit',
+      currentVersion: app.getVersion(),
+      code: e?.code,
+    });
+    broadcast({ kind: 'error', message: err?.message ?? String(err) });
+  });
 
   ipcMain.handle(UPDATES_CHANNELS.status, () => lastStatus);
 
@@ -138,15 +189,10 @@ export function installUpdaterIpc(): void {
       broadcast(status);
       return status;
     }
-    try {
-      const res = await autoUpdater.checkForUpdates();
-      void res;
-      return lastStatus;
-    } catch (e) {
-      const status: UpdateStatus = { kind: 'error', message: (e as Error).message };
-      broadcast(status);
-      return status;
-    }
+    // Reuse safeCheck so the manual path emits the same probes as the
+    // periodic / startup paths — one log signature to triage from.
+    await safeCheck('manual');
+    return lastStatus;
   });
 
   ipcMain.handle(UPDATES_CHANNELS.download, async () => {
@@ -185,15 +231,15 @@ export function installUpdaterIpc(): void {
     autoCheckEnabled = !!enabled;
     if (autoCheckEnabled) {
       startPeriodicChecks();
-      void safeCheck();
+      void safeCheck('toggle');
     } else {
       stopPeriodicChecks();
     }
     return autoCheckEnabled;
   });
 
-  // Check once on ready + every 4h thereafter.
-  void safeCheck();
+  // Check once on ready + every hour thereafter.
+  void safeCheck('startup');
   startPeriodicChecks();
 }
 
