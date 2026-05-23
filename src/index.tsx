@@ -6,7 +6,7 @@ import '@fontsource-variable/inter';
 import '@fontsource-variable/jetbrains-mono';
 import App from './App';
 import { hydrateStore, type HydrationTrace } from './stores/store';
-import { flushNow, setPersistErrorHandler } from './stores/persist';
+import { setPersistErrorHandler } from './stores/persist';
 import './styles/global.css';
 
 // Renderer crash net (window-level `'error'` + `'unhandledrejection'`
@@ -34,12 +34,11 @@ setPersistErrorHandler((err) => {
   }
 });
 
-// Flush any debounced state write before the renderer is torn down. Without
-// this, a quit within ~250 ms of the last user action drops that action
-// (sidebar resize, model pick, etc.) on next launch.
-window.addEventListener('beforeunload', () => {
-  flushNow();
-});
+// `beforeunload` flush listener is installed by `useFlushOnBeforeUnload`
+// inside <App>, NOT here. Module-eval-time registration of global window
+// listeners in this file BEFORE `createRoot` reproducibly flakes harness-dnd
+// Case 1 on Linux Chromium / xvfb — same anti-pattern PR #1320 fixed for
+// the renderer crash-net listeners. See useFlushOnBeforeUnload.ts.
 
 const root = createRoot(document.getElementById('root')!);
 

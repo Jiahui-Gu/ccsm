@@ -23,6 +23,7 @@ import { useTranslation } from './i18n/useTranslation';
 import { usePreferences } from './store/preferences';
 import { useThemeEffect } from './app-effects/useThemeEffect';
 import { useRendererCrashNet } from './app-effects/useRendererCrashNet';
+import { useFlushOnBeforeUnload } from './app-effects/useFlushOnBeforeUnload';
 import { useLanguageEffect } from './app-effects/useLanguageEffect';
 import { useAgentEventBridge } from './app-effects/useAgentEventBridge';
 import { useShortcutHandlers } from './app-effects/useShortcutHandlers';
@@ -138,6 +139,11 @@ export default function App() {
   // index.tsx) because boot-phase registration regressed harness-dnd Case 1
   // on Linux Chromium / xvfb. See useRendererCrashNet.ts for details.
   useRendererCrashNet();
+
+  // Flush debounced persist queue on `beforeunload` — keeps the last ~250 ms
+  // of user actions from being lost on quit. Same deferred-registration
+  // rationale as useRendererCrashNet.
+  useFlushOnBeforeUnload();
 
   // Theme application — reactive to user choice + (when system) OS scheme.
   useThemeEffect(theme);
