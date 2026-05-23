@@ -36,7 +36,7 @@ import {
 const STEPS = [1, 10, 50, 200, 800];
 
 function fail(msg) {
-  console.error('[probe-e2e-ime-overflow] FAIL:', msg);
+  console.error('[harness-ime-overflow] FAIL:', msg);
   process.exitCode = 1;
 }
 
@@ -126,7 +126,7 @@ async function main() {
         };
       });
 
-      console.log(`[probe-e2e-ime-overflow] n=${n}`, metrics);
+      console.log(`[harness-ime-overflow] n=${n}`, metrics);
 
       if (metrics.appShellScroll > metrics.appShellClient + 2) {
         fail(
@@ -183,9 +183,9 @@ async function main() {
     }
 
     if (failures === 0) {
-      console.log('[probe-e2e-ime-overflow] PASS — all containment assertions held across', STEPS);
+      console.log('[harness-ime-overflow] PASS — all containment assertions held across', STEPS);
     } else {
-      console.error(`[probe-e2e-ime-overflow] ${failures} assertion failure(s)`);
+      console.error(`[harness-ime-overflow] ${failures} assertion failure(s)`);
     }
   } finally {
     try { await electronApp.close(); } catch (_) { /* ignore */ }
@@ -193,6 +193,6 @@ async function main() {
 }
 
 main().catch((e) => {
-  console.error('[probe-e2e-ime-overflow] FAILED:', e);
+  console.error('[harness-ime-overflow] FAILED:', e);
   process.exit(1);
 });
