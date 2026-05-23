@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../stores/store';
 import { classifyPtyExit } from '../lib/ptyExitClassifier';
-import { warn } from '../shared/log';
+import { warn, log } from '../shared/log';
 import {
   getTerm,
   getFit,
@@ -63,7 +63,31 @@ export type UsePtyAttachResult = {
  * appropriate overlay (attaching / error / exit) and Retry button.
  */
 export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult {
-  const [state, setState] = useState<PtyAttachState>({ kind: 'attaching' });
+  const [state, _setState] = useState<PtyAttachState>({ kind: 'attaching' });
+  // Wrap setState so every state edge emits an `attach.state.transition`
+  // probe. The `kind` of the prev + next state plus an optional reason are
+  // structured-only — no message text leaks. We read the current sessionId
+  // from `requestedSidRef` (declared below) inside the updater so this
+  // callback can be `useCallback([])` — stable identity across renders,
+  // safe to capture in the pty:exit effect's `[]` deps array.
+  const setState = useCallback(
+    (next: PtyAttachState, reason?: string): void => {
+      _setState((prev) => {
+        try {
+          log.event('attach.state.transition', {
+            sid: requestedSidRef.current,
+            from: prev.kind,
+            to: next.kind,
+            reason: reason ?? next.kind,
+          });
+        } catch {
+          /* logging must never break the state machine */
+        }
+        return next;
+      });
+    },
+    [],
+  );
   // Store action — clear the disconnect entry on respawn success so the
   // sidebar red dot disappears the moment the pty is back. Routed through
   // a ref so the attach effect doesn't depend on it (and re-run unnecessarily).
@@ -87,12 +111,18 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
   useEffect(() => {
     requestedSidRef.current = sessionId;
     let cancelled = false;
-    setState({ kind: 'attaching' });
+    // Probe state — `attachStartedAt` anchors `term.firstWrite.afterAttach`
+    // so we can disambiguate "first paint visible to user" vs the attach
+    // transition. `firstWriteSeen` ensures the probe fires exactly once per
+    // attach. Both reset on every effect run (new sid / Retry / reload).
+    const attachStartedAt = Date.now();
+    let firstWriteSeen = false;
+    setState({ kind: 'attaching' }, 'effect-start');
 
     (async () => {
       const pty = window.ccsmPty;
       if (!pty) {
-        if (!cancelled) setState({ kind: 'error', message: 'ccsmPty unavailable' });
+        if (!cancelled) setState({ kind: 'error', message: 'ccsmPty unavailable' }, 'no-bridge');
         return;
       }
 
@@ -271,6 +301,22 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
         setUnsubscribeData(
           pty.onData((payload: { sid: string; chunk: string; seq: number }) => {
             if (payload.sid !== getActiveSid()) return;
+            // `term.firstWrite.afterAttach` probe (design v2): fires once
+            // per attach on the first pty→xterm chunk we observe for the
+            // active sid. Disambiguates the post-attach viewport jump —
+            // was it driven by snapshot, fit, or the first live chunk?
+            if (!firstWriteSeen) {
+              firstWriteSeen = true;
+              try {
+                log.event('term.firstWrite.afterAttach', {
+                  sid: sessionId,
+                  bytes: payload.chunk.length,
+                  durationMsSinceAttach: Date.now() - attachStartedAt,
+                });
+              } catch {
+                /* probe must not block write */
+              }
+            }
             if (snapSeq === null) {
               buffered.push({ seq: payload.seq, chunk: payload.chunk });
               return;
@@ -294,7 +340,25 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
 
         // Step 4: write snapshot to the visible terminal.
         const tSnap = getTerm();
+        const snapBytes = snap.snapshot?.length ?? 0;
+        const viewportYBeforeSnap = tSnap?.buffer?.active?.viewportY ?? 0;
+        const snapWriteStart = Date.now();
         if (tSnap && snap.snapshot) await writeAsync(tSnap, snap.snapshot);
+        const snapWriteEnd = Date.now();
+        const viewportYAfterSnap = tSnap?.buffer?.active?.viewportY ?? 0;
+        const baseYAfterSnap = tSnap?.buffer?.active?.baseY ?? 0;
+        try {
+          log.event('attach.snapshot.applied', {
+            sid: sessionId,
+            bytes: snapBytes,
+            durationMs: snapWriteEnd - snapWriteStart,
+            viewportYBefore: viewportYBeforeSnap,
+            viewportYAfter: viewportYAfterSnap,
+            baseY: baseYAfterSnap,
+          });
+        } catch {
+          /* probe failure must not block attach */
+        }
 
         // Step 5: drain buffered chunks with seq > snapSeq, in order.
         // Anything with seq <= snapSeq is already represented in the
@@ -323,6 +387,16 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
         // the snapshot+drain content.
         const tAfterSnap = getTerm();
         if (tAfterSnap) {
+          try {
+            log.event('attach.scrollToBottom.invoked', {
+              sid: sessionId,
+              callsite: 'post-snap',
+              viewportY: tAfterSnap.buffer?.active?.viewportY ?? 0,
+              baseY: tAfterSnap.buffer?.active?.baseY ?? 0,
+            });
+          } catch {
+            /* probe must not block scroll */
+          }
           try {
             tAfterSnap.scrollToBottom();
           } catch {
@@ -416,6 +490,16 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
           const tBottom = getTerm();
           if (tBottom) {
             try {
+              log.event('attach.scrollToBottom.invoked', {
+                sid: sessionId,
+                callsite: 'post-fit',
+                viewportY: tBottom.buffer?.active?.viewportY ?? 0,
+                baseY: tBottom.buffer?.active?.baseY ?? 0,
+              });
+            } catch {
+              /* probe must not block scroll */
+            }
+            try {
               tBottom.scrollToBottom();
             } catch {
               // best-effort.
@@ -487,7 +571,18 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
             fit.fit();
             const newCols = t4.cols;
             const newRows = t4.rows;
-            if (newCols !== cols || newRows !== rows) {
+            const ptyResized = newCols !== cols || newRows !== rows;
+            try {
+              log.event('attach.fit.applied', {
+                sid: sessionId,
+                cols: newCols,
+                rows: newRows,
+                ptyResized,
+              });
+            } catch {
+              /* probe must not block fit */
+            }
+            if (ptyResized) {
               const resizePromise = window.ccsmPty.resize(sid4, newCols, newRows);
               const p = resizePromise && typeof (resizePromise as Promise<void>).then === 'function'
                 ? (resizePromise as Promise<void>)
@@ -514,6 +609,20 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
             }
           } catch (e) {
             warn('attach', 'post-attach fit failed', e);
+            try {
+              log.event('attach.fit.skipped', { sid: sessionId, reason: 'exception' });
+            } catch {
+              /* probe must not block recovery */
+            }
+          }
+        } else {
+          try {
+            log.event('attach.fit.skipped', {
+              sid: sessionId,
+              reason: !fit ? 'no-fit-addon' : !t4 ? 'no-term' : 'no-sid',
+            });
+          } catch {
+            /* probe must not block control flow */
           }
         }
 
@@ -535,7 +644,7 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
           }
         }
 
-        if (!cancelled) setState({ kind: 'ready' });
+        if (!cancelled) setState({ kind: 'ready' }, 'attach-complete');
         // Successful (re-)attach means whatever pty is running for this
         // sid is healthy — drop any stale disconnect entry so the
         // sidebar red dot clears and a future crash starts from a clean
@@ -544,7 +653,7 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
       } catch (err) {
         if (cancelled || requestedSidRef.current !== sessionId) return;
         const message = err instanceof Error ? err.message : String(err);
-        setState({ kind: 'error', message });
+        setState({ kind: 'error', message }, 'attach-threw');
       }
     })();
 
@@ -581,7 +690,7 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
     // reloadNonce is intentional: bumping it (via `reloadSession` after a
     // pty.kill) re-runs the attach so the spawn-on-null fallback brings
     // up a fresh pty for the same sid (env / config refresh).
-  }, [sessionId, attachNonce, reloadNonce, cwd]);
+  }, [sessionId, attachNonce, reloadNonce, cwd, setState]);
 
   // pty:exit subscription for the active session → flip to exit state with
   // a classification (clean vs crashed) shared with the store via
@@ -602,7 +711,7 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
             : code != null
               ? `exit code ${code}`
               : 'unknown';
-        setState({ kind: 'exit', exitKind, detail });
+        setState({ kind: 'exit', exitKind, detail }, 'pty-exit');
       },
     );
     return () => {
@@ -612,7 +721,7 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
         // already torn down — safe to ignore.
       }
     };
-  }, []);
+  }, [setState]);
 
   const onRetry = useCallback(() => {
     setAttachNonce((n) => n + 1);

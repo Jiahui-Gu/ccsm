@@ -22,8 +22,20 @@ vi.mock('electron', () => {
         windows.push(...list);
       },
     },
+    app: { getPath: vi.fn(() => '/tmp/logs') },
+    shell: { openPath: vi.fn(async () => '') },
   };
 });
+
+// Mock the log module to avoid pulling in electron-log (which requires
+// the electron binary). appLifecycle imports getLogLevel / getLogFilePath
+// to render the Help submenu — stub them with deterministic values.
+vi.mock('../../shared/log', () => ({
+  getLogLevel: () => 'info',
+  setLogLevel: vi.fn(),
+  getLogFilePath: () => '/tmp/logs/main.log',
+  log: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), event: vi.fn() },
+}));
 
 // applyAppMenuLocale uses a dynamic `require('../i18n')` to dodge a
 // circular-import edge in the production graph. vitest's vi.mock only
@@ -156,7 +168,7 @@ describe('applyAppMenuLocale', () => {
     vi.mocked(Menu.setApplicationMenu).mockClear();
   });
 
-  it('builds a hidden Edit-role accelerator menu and installs it', () => {
+  it('builds the menu (Edit accelerators + Help submenu) and installs it', () => {
     applyAppMenuLocale();
     expect(Menu.buildFromTemplate).toHaveBeenCalledTimes(1);
     expect(Menu.setApplicationMenu).toHaveBeenCalledTimes(1);
@@ -165,8 +177,10 @@ describe('applyAppMenuLocale', () => {
   it('uses the localized "Edit" label from i18n.tMenu', () => {
     applyAppMenuLocale();
     const template = vi.mocked(Menu.buildFromTemplate).mock.calls[0][0];
-    expect(template).toHaveLength(1);
+    // Edit + Help → 2 top-level entries.
+    expect(template).toHaveLength(2);
     expect(template[0].label).toBe('MENU_edit');
+    expect(template[1].label).toBe('Help');
   });
 
   it('omits paste from the submenu (terminal pane installs its own handler)', () => {

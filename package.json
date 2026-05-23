@@ -59,6 +59,7 @@
     "better-sqlite3": "^12.9.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "electron-log": "^5.4.4",
     "electron-updater": "^6.8.3",
     "framer-motion": "^12.38.0",
     "fuse.js": "^7.0.0",
