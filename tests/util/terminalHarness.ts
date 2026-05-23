@@ -37,7 +37,13 @@ export interface FakeTerminalSpies {
 }
 
 export interface FakeBuffer {
-  active: { baseY: number; viewportY: number };
+  active: {
+    baseY: number;
+    viewportY: number;
+    cursorY: number;
+    length: number;
+    type: 'normal' | 'alternate';
+  };
 }
 
 export interface FakeTerminal extends FakeTerminalSpies {
@@ -72,7 +78,7 @@ export function createFakeTerminal(opts: { cols?: number; rows?: number } = {}):
     inputDisposableDispose,
     cols: opts.cols ?? 80,
     rows: opts.rows ?? 24,
-    buffer: { active: { baseY: 0, viewportY: 0 } },
+    buffer: { active: { baseY: 0, viewportY: 0, cursorY: 0, length: 0, type: 'normal' } },
     callLog,
   };
 }
@@ -103,6 +109,9 @@ export function resetFakeTerminalSpies(t: FakeTerminal): void {
   t.callLog.length = 0;
   t.buffer.active.baseY = 0;
   t.buffer.active.viewportY = 0;
+  t.buffer.active.cursorY = 0;
+  t.buffer.active.length = 0;
+  t.buffer.active.type = 'normal';
   // Restore default implementations — individual tests may have called
   // `mockImplementation(...)` to capture async-schedule / event-ordering
   // semantics for the specific assertion they need. Without restoring,

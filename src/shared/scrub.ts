@@ -116,6 +116,16 @@ export const EVENT_ALLOWED_FIELDS = new Set<string>([
   //  - `branch`: discrete code-path tag for paste entry-points
   //    ('ctrl-v' | 'right-click' | 'capture-dom'). Scalar string, no content.
   'branch',
+  // Attach viewport-pinning invariant probes (`attach.invariant.pinned` +
+  // augmented `attach.scrollToBottom.invoked`).
+  //  - `bufferType`: xterm buffer mode — 'normal' | 'alternate'. Bounded enum.
+  //  - `cursorY`: row index of cursor within the active buffer (small int).
+  //  - `length`: total line count of the active buffer (small int).
+  //  - `atBottom`: boolean — viewportY === baseY after the rendezvous.
+  'bufferType',
+  'cursorY',
+  'length',
+  'atBottom',
 ]);
 
 const DEFAULT_DEPTH = 4;
