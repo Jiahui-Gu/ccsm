@@ -29,7 +29,7 @@ import { app, BrowserWindow, ipcMain, type Tray } from 'electron';
 import { initDb, closeDb } from './db';
 import { buildTrayIcon } from './branding/icon';
 import { initSentry } from './sentry/init';
-import { initLog, log, normalizeError } from './shared/log';
+import { initLog, log, normalizeError, syncPersistedLevelFromDb } from './shared/log';
 import { createWindow as createMainWindowFactory, installContextMenuSuppressIpc } from './window/createWindow';
 import { createTray, type TrayController } from './tray/createTray';
 
@@ -188,6 +188,15 @@ app.whenReady().then(() => {
   }
 
   initDb();
+
+  // initLog() ran at module-load (before app.whenReady) when db wasn't yet
+  // open, so it could only see `CCSM_LOG_LEVEL` or the `info` default. Now
+  // that the db is up, re-read the persisted choice and (if it differs)
+  // apply + rebuild the menu so Help → Set Log Level shows the correct
+  // radio checkmark on first paint. Cold review finding #3c / #9.
+  if (syncPersistedLevelFromDb()) {
+    applyAppMenuLocale();
+  }
 
   // ─────────────────────────── IPC registration ──────────────────────────
   // Wire prefs cache invalidation to the stateSavedBus BEFORE registering

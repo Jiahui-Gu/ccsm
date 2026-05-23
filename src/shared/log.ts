@@ -26,7 +26,7 @@
 // in the back-compat shims so all existing test contracts (~80 sites using
 // `vi.spyOn(console, 'warn')`) keep working without behavior drift.
 
-import { scrub, normalizeError, EVENT_ALLOWED_FIELDS, setHomeDir } from './scrub';
+import { scrub, normalizeError, EVENT_ALLOWED_FIELDS, setHomeDir, scrubConsoleArgs } from './scrub';
 
 type ElogLike = {
   debug: (msg: string) => void;
@@ -166,12 +166,16 @@ export { log_api as log };
 // records routed solely through electron-log. Legacy test contracts assert
 // against the direct console call; preserving it keeps them intact while
 // structured records still flow to the file/IPC sinks via `log_api.warn`.
+//
+// SECURITY: `rest` is scrubbed BEFORE it reaches console — Errors get
+// normalized, objects get forbidden-field drops + path/env scrubbing.
+// See finding #1c in cold review of PR #1345.
 export function warn(tag: string, msg: string, ...rest: unknown[]): void {
-  console.warn(`[${tag}] ${msg}`, ...rest);
+  console.warn(`[${tag}] ${msg}`, ...scrubConsoleArgs(rest));
   log_api.warn(tag, msg, compactRest(rest));
 }
 export function error(tag: string, msg: string, ...rest: unknown[]): void {
-  console.error(`[${tag}] ${msg}`, ...rest);
+  console.error(`[${tag}] ${msg}`, ...scrubConsoleArgs(rest));
   if (rest.length === 1 && rest[0] instanceof Error) {
     log_api.error(tag, msg, rest[0]);
     return;

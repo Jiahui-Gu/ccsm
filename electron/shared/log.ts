@@ -18,7 +18,7 @@ import { app } from 'electron';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { scrub, normalizeError, setHomeDir, EVENT_ALLOWED_FIELDS } from '../../src/shared/scrub';
+import { scrub, normalizeError, setHomeDir, EVENT_ALLOWED_FIELDS, scrubConsoleArgs } from '../../src/shared/scrub';
 
 // Tighter LogLevel — electron-log's own includes `verbose | silly` which we
 // don't expose at the API layer. The four CCSM levels map straight onto
@@ -144,6 +144,15 @@ function jsonlFormat(params: {
 }): unknown[] {
   const first = params.data[0];
   let payload: Record<string, unknown>;
+  // Convention: every `emit()` / `log.event` call site stringifies a single
+  // JSON object and passes it as `data[0]` (see `emit()` below — it always
+  // calls `elog[level](JSON.stringify(record))` with no trailing newline and
+  // no second arg). The `{…}` shape check is a fast structural filter that
+  // distinguishes our structured records from ad-hoc string args (e.g.
+  // direct `elog.warn('plain text')` from third-party paths). Any payload
+  // that matches `{…}` is parse-and-merged; everything else is wrapped as
+  // `{msg: ...}`. The `JSON.parse` is inside a try/catch so a stray `{json-
+  // shaped} string` doesn't crash the transport.
   if (typeof first === 'string' && first.startsWith('{') && first.endsWith('}')) {
     try {
       payload = JSON.parse(first) as Record<string, unknown>;
@@ -301,6 +310,30 @@ export function setLogLevel(level: LogLevel): void {
   persistLevel(level);
 }
 
+/** Re-read the persisted log level from sqlite and apply it, IF the user
+ *  has not pinned a value via `CCSM_LOG_LEVEL`. Call this exactly once,
+ *  right after `initDb()` lands — `initLog()` runs before `app.whenReady()`
+ *  (so db isn't open yet) and would otherwise fall through to the `info`
+ *  default; the Help → Set Log Level radio would then boot showing the
+ *  wrong checkmark until the user clicked once. Cold review finding #3c /
+ *  #9. Returns `true` if the level actually changed (caller can rebuild
+ *  the app menu so the radio reflects reality). */
+export function syncPersistedLevelFromDb(): boolean {
+  // Env override wins — respect the operator's explicit choice.
+  if (readEnvFlags().level) return false;
+  const persisted = loadPersistedLevel();
+  if (!persisted || persisted === _currentLevel) return false;
+  // Apply to transports + module state. Skip `persistLevel` — the value
+  // already came from the db, no write-back needed (would be a no-op
+  // anyway, but the avoidance keeps boot off the disk).
+  _currentLevel = persisted;
+  elog.transports.console.level = persisted;
+  if (elog.transports.file.level !== false) {
+    elog.transports.file.level = persisted;
+  }
+  return true;
+}
+
 export function getLogLevel(): LogLevel {
   return _currentLevel;
 }
@@ -412,12 +445,19 @@ export const log = {
 // records flow to the file + IPC sinks via `log.warn` / `log.error`. The
 // modern `log.event` / `log.debug` / `log.info` paths do NOT echo to
 // console — only the back-compat shims do.
+//
+// SECURITY: `rest` is scrubbed BEFORE it reaches console — Errors get
+// normalized (stack frames lose absolute paths), plain objects get the same
+// forbidden-field drops + path/env scrubbing the structured sink uses.
+// Without this, a caller doing `warn('foo','bad', err)` would print a raw
+// `C:\Users\<name>\…` stack to dev stderr while the file sink stays clean
+// — a transparent-transport violation flagged by cold review finding #1c.
 export function warn(tag: string, msg: string, ...rest: unknown[]): void {
-  console.warn(`[${tag}] ${msg}`, ...rest);
+  console.warn(`[${tag}] ${msg}`, ...scrubConsoleArgs(rest));
   log.warn(tag, msg, compactRest(rest));
 }
 export function error(tag: string, msg: string, ...rest: unknown[]): void {
-  console.error(`[${tag}] ${msg}`, ...rest);
+  console.error(`[${tag}] ${msg}`, ...scrubConsoleArgs(rest));
   if (rest.length === 1 && rest[0] instanceof Error) {
     log.error(tag, msg, rest[0]);
     return;

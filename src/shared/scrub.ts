@@ -197,6 +197,31 @@ export function scrub(value: unknown, depth: number = DEFAULT_DEPTH): unknown {
   }
 }
 
+/** Per-element scrubber for the back-compat `warn(tag, msg, ...rest)` /
+ *  `error(...)` shims' direct-to-console path. Each `rest` element is one
+ *  positional arg to `console.warn` / `console.error`; we must NOT collapse
+ *  them into a single fields object (that would change the observable shape
+ *  for ~80 call sites + their tests that assert against the spread args).
+ *
+ *  Strategy per element:
+ *    * Error → `normalizeError` (scrubs message + stack, walks cause chain).
+ *    * plain object → `scrub` (forbidden-field drops + env-key redaction +
+ *      string scrubbing on every leaf, depth-limited to 4).
+ *    * string → `scrubString` via `scrub` (connection-string + homedir +
+ *      path regexes).
+ *    * scalar / null / undefined → passthrough.
+ *
+ *  This is the last-line defense for the transparent-transport invariant on
+ *  the dev console path. Without it, callers like `warn('foo','bad', e)`
+ *  would leak `e.stack` with absolute paths into stderr even though the
+ *  structured file/IPC sink already runs the same scrubber. */
+export function scrubConsoleArgs(rest: unknown[]): unknown[] {
+  return rest.map((v) => {
+    if (v instanceof Error) return normalizeError(v);
+    return scrub(v);
+  });
+}
+
 /** Normalize an Error for JSON-safe logging. Both `message` and `stack` are
  *  scrubbed (stack frames are where `C:\Users\<username>\…` leaks happen
  *  most). `cause` chains are walked recursively.

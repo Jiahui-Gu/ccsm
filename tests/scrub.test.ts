@@ -9,11 +9,12 @@
 // test is non-tautological, comment out the corresponding regex in
 // `src/shared/scrub.ts` and run the suite — those tests should fail.
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import {
   scrub,
   normalizeError,
   setHomeDir,
+  scrubConsoleArgs,
 } from '../src/shared/scrub';
 
 describe('scrub: env-var key masking', () => {
@@ -223,5 +224,90 @@ describe('scrub: passthrough of allowed scalars + booleans', () => {
     const out = scrub({ items: ['/Users/x/a', 'plain'] }) as { items: string[] };
     expect(out.items[0]).toBe('[path]');
     expect(out.items[1]).toBe('plain');
+  });
+});
+
+describe('scrubConsoleArgs: back-compat shim leak regression', () => {
+  // Cold review finding #1c: the back-compat `warn(tag, msg, ...rest)` /
+  // `error(...)` shims call `console.warn` / `console.error` directly so
+  // legacy `vi.spyOn(console, …)` test contracts keep working. Without
+  // `scrubConsoleArgs`, an `Error` passed in `rest` would leak its raw
+  // `stack` (with absolute paths) to dev stderr while the structured file
+  // sink stayed clean — a transparent-transport violation.
+  //
+  // These tests exercise the shim end-to-end: spy console, call `warn` /
+  // `error` with an Error containing a path-bearing stack, assert the spy
+  // received a NORMALIZED Error object (stack scrubbed, message scrubbed,
+  // class name preserved).
+  beforeEach(() => setHomeDir(null));
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('scrubConsoleArgs replaces an Error with normalized form (stack scrubbed)', () => {
+    const e = new Error('failed at /Users/jiahui/secret/file.ts');
+    e.stack =
+      'Error: failed at /Users/jiahui/secret/file.ts\n' +
+      '    at fn (C:\\Users\\Jiahui\\repos\\ccsm\\src\\foo.ts:10:5)';
+    const [scrubbed] = scrubConsoleArgs([e]) as [
+      { name: string; message: string; stack: string },
+    ];
+    expect(scrubbed.name).toBe('Error');
+    expect(scrubbed.message).toBe('failed at [path]');
+    expect(scrubbed.stack).not.toContain('/Users/jiahui');
+    expect(scrubbed.stack).not.toContain('C:\\Users\\Jiahui');
+    expect(scrubbed.stack).toContain('[path]');
+  });
+
+  it('scrubConsoleArgs scrubs plain objects (forbidden fields, paths)', () => {
+    const out = scrubConsoleArgs([
+      { sid: 'abc', cwd: '/Users/jiahui/x', content: 'leak me', cols: 80 },
+    ]) as [{ sid: string; cwd: string; content?: string; cols: number }];
+    expect(out[0].sid).toBe('abc');
+    expect(out[0].cols).toBe(80);
+    expect(out[0].content).toBeUndefined(); // forbidden field dropped
+    expect(out[0].cwd).toBe('[path]');
+  });
+
+  it('back-compat warn() shim does NOT leak Error.stack absolute paths to console', async () => {
+    // Import via dynamic require so we exercise the actual production shim,
+    // not a re-derived copy. The shim's `electron-log/renderer` import
+    // short-circuits to a no-op stub under VITEST=true (see src/shared/log.ts),
+    // so the test isolates the direct-to-console path we care about.
+    const { warn } = await import('../src/shared/log');
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const e = new Error('boom at /Users/jiahui/repos/ccsm/src/leak.ts:42');
+    e.stack =
+      'Error: boom at /Users/jiahui/repos/ccsm/src/leak.ts:42\n' +
+      '    at fn (C:\\Users\\Jiahui\\repos\\ccsm\\src\\leak.ts:42:7)';
+    warn('test', 'something bad', e);
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const args = warnSpy.mock.calls[0];
+    // First arg is the formatted `[tag] msg` string — must NOT contain the
+    // raw path (msg itself is scalar, no leak there, but defensively check).
+    expect(args[0]).toBe('[test] something bad');
+    // Second arg is the scrubbed error. The whole serialized form must not
+    // mention either the POSIX or the Windows absolute path. Stringifying
+    // covers both `stack` and `message` regardless of object shape.
+    const serialized = JSON.stringify(args[1]);
+    expect(serialized).not.toContain('/Users/jiahui');
+    expect(serialized).not.toContain('C:\\\\Users\\\\Jiahui'); // JSON-escaped
+    expect(serialized).toContain('[path]');
+  });
+
+  it('back-compat error() shim normalizes Error before console.error', async () => {
+    const { error } = await import('../src/shared/log');
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const e = new TypeError('bad arg at /home/x/file.ts');
+    e.stack = 'TypeError: bad arg at /home/x/file.ts\n    at f (/home/x/file.ts:1:1)';
+    error('test', 'oh no', e);
+
+    expect(errSpy).toHaveBeenCalledTimes(1);
+    const args = errSpy.mock.calls[0];
+    const serialized = JSON.stringify(args[1]);
+    expect(serialized).not.toContain('/home/x');
+    // Class name preserved per normalizeError contract.
+    expect(serialized).toContain('TypeError');
   });
 });
