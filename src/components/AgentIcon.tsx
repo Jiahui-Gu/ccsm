@@ -50,7 +50,7 @@ function ClaudeAsterisk({ size }: { size: number }) {
 //   1. crashed       → no halo (red dot in SessionRow is the signal)
 //   2. waiting/flash → amber breathing halo
 //   3. idle          → neutral
-const ATTENTION_PRIORITY = ['crashed', 'waiting-or-flashing', 'idle'] as const;
+type AttentionPriority = 'crashed' | 'waiting-or-flashing' | 'idle';
 
 export function AgentIcon({
   agentType,
@@ -67,12 +67,12 @@ export function AgentIcon({
 }) {
   const px = SIZE_PX[size];
   const glyph = GLYPH_PX[size];
-  // Explicit priority resolution — see ATTENTION_PRIORITY above. crashed
+  // Explicit priority resolution — see comment block above. crashed
   // short-circuits the halo even if state==='waiting' or flashing===true.
   const isWaiting = !crashed && (state === 'waiting' || flashing);
   // Resolved attention bucket — exposed as `data-attention` so visual /
   // unit tests can pin the priority contract without measuring animation.
-  const attention: (typeof ATTENTION_PRIORITY)[number] = crashed
+  const attention: AttentionPriority = crashed
     ? 'crashed'
     : state === 'waiting' || flashing
       ? 'waiting-or-flashing'
