@@ -1,9 +1,10 @@
 name: Release
 
 # Triggered by version tag pushes (vX.Y.Z) or manual dispatch for dry-runs.
-# Artifacts are published to a draft GitHub Release on real tag pushes only;
-# workflow_dispatch runs stop after the artifact upload so dry-runs don't
-# pollute the Releases tab.
+# Artifacts are published to a GitHub Release on real tag pushes only, and
+# only after ALL platform builds succeed (atomic publish — see the `publish`
+# job below). workflow_dispatch runs stop after the per-matrix artifact
+# upload so dry-runs don't pollute the Releases tab.
 on:
   push:
     tags:
@@ -201,11 +202,27 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # Only create/update the GitHub Release when this was a real tag push —
-      # `workflow_dispatch` dry-runs stop at the artifact upload above so we
-      # don't pollute the Releases tab with `v0.0.0-dryrun` entries.
-      - name: Upload to GitHub Release (draft)
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+  # Atomic publish: only create/update the GitHub Release when ALL three
+  # platform builds succeeded. `needs: [build]` is implicitly all-must-pass,
+  # so a single failed matrix entry aborts this job and no partial release
+  # is surfaced to users (electron-updater's latest.yml stays consistent).
+  # Restructured from an in-matrix softprops step (which, combined with
+  # `fail-fast: false`, would publish a non-draft release from successful
+  # matrix entries even when one platform failed). See PR #1322 review.
+  publish:
+    name: publish GitHub Release
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ccsm-*
+          path: release
+          merge-multiple: true
+
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           draft: false
