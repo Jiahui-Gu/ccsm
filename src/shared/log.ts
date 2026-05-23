@@ -35,15 +35,28 @@ type ElogLike = {
   error: (msg: string) => void;
 };
 
+// Detect a non-Electron runtime (vitest under plain Node OR webpack
+// dev-server's SSR shim) and short-circuit electron-log entirely. We check
+// BOTH the Electron-runtime flag (`process.versions.electron`) AND the
+// `VITEST` env so that:
+//   * `isElectronRuntime === false` covers any non-Electron host (CI vitest
+//     on Node with no binary, future SSR experiments) — most robust signal.
+//   * `isVitest === true` covers the renderer-test case where webpack/jsdom
+//     does set up a `window.process` polyfill that DOES claim
+//     `versions.electron` (vite-plugin-electron emulates it). Belt and
+//     suspenders, mirroring the cold-review recommendation.
+const isElectronRuntime =
+  typeof process !== 'undefined' && typeof process.versions?.electron === 'string';
 const isVitest =
   typeof process !== 'undefined' &&
   (process.env?.VITEST === 'true' || process.env?.NODE_ENV === 'test');
 
 function loadElog(): ElogLike {
-  if (isVitest) {
-    // jsdom test environment — write to console only. The back-compat shims
-    // already do that; here we provide a thin pass-through so the structured
-    // paths (`log.event`) don't crash if a test exercises them.
+  if (!isElectronRuntime || isVitest) {
+    // Non-Electron or test environment — write to console only. The back-
+    // compat shims already do that; here we provide a thin pass-through so
+    // the structured paths (`log.event`) don't crash if a test exercises
+    // them.
     return {
       debug: () => {},
       info: () => {},

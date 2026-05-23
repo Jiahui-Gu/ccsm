@@ -12,9 +12,23 @@
 //     the renderer's electron-log instance through the IPC bridge if main
 //     is responsive, AND captured locally so a mid-crash renderer still
 //     has tail evidence on disk
+//
+// TEST / CI SAFETY: this module is `import`-ed by ~80 call sites across the
+// main bundle, including modules that vitest loads under plain Node (with
+// no electron binary installed — the CI lint+typecheck+test job does NOT
+// download the electron binary; only the e2e job does). `electron-log/main`
+// does `require('electron')` at module-eval time, which throws "Electron
+// failed to install correctly" when the binary stub returns no path. To
+// keep vitest under Node from blowing up the moment ANY ptyHost / commands-
+// loader test pulls in `entryFactory.ts → '../shared/log'`, all electron-
+// dependent loads are deferred behind `isElectronRuntime()`:
+//   * `require('electron-log/main')` — lazy, inside `getElog()`
+//   * `require('electron')` for `app.getVersion()` / `app.getPath()` —
+//     lazy, inside `getApp()`
+// Outside Electron, every function in this module falls back to a console-
+// only path. The renderer side (`src/shared/log.ts`) uses a parallel
+// short-circuit keyed on `VITEST`.
 
-import elog from 'electron-log/main';
-import { app } from 'electron';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -25,9 +39,34 @@ import { scrub, normalizeError, setHomeDir, EVENT_ALLOWED_FIELDS, scrubConsoleAr
 // electron-log's homonymous methods.
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
+// Minimal subset of the electron-log surface we use, so the non-Electron
+// fallback can implement just these. Avoids declaring `any` while still
+// keeping the unknown shape opaque to callers.
+type ElogLike = {
+  initialize: () => void;
+  transports: {
+    console: { level: LogLevel | false; format?: (m: { data: unknown[]; level: string; message: { date: Date } }) => unknown[] };
+    file: {
+      level: LogLevel | false;
+      fileName?: string;
+      maxSize?: number;
+      format?: (params: { data: unknown[]; level: string; message: { date: Date } }) => unknown[];
+      archiveLogFn?: (oldLog: unknown) => void;
+      resolvePathFn?: (vars: unknown, message?: unknown) => string;
+      getFile?: () => { path: string };
+    };
+  };
+  create: (opts: { logId: string }) => ElogLike;
+  debug: (msg: string) => void;
+  info: (msg: string) => void;
+  warn: (msg: string) => void;
+  error: (msg: string) => void;
+};
+
 // Setting homedir for the path scrubber. Must happen before any record is
 // emitted; called eagerly at module load so the first uncaughtException
-// during bootstrap is scrubbed too.
+// during bootstrap is scrubbed too. `os.homedir()` is a pure Node API — no
+// electron dep — so it's safe to run at module-eval even on CI vitest.
 try {
   setHomeDir(os.homedir());
 } catch {
@@ -46,6 +85,47 @@ const RENDERER_LOG_MAX_BYTES = 1 * 1024 * 1024;
 
 let _initialized = false;
 let _currentLevel: LogLevel = 'info';
+let _elog: ElogLike | null = null;
+
+/** True when running under Electron (main process with the binary live).
+ *  vitest under plain Node has `process.versions.electron === undefined`,
+ *  so this returns false and every electron-dependent path falls back to
+ *  console-only / no-op. Cheaper than env probing; immune to e2e runs that
+ *  forget to set NODE_ENV / VITEST. */
+function isElectronRuntime(): boolean {
+  return typeof process !== 'undefined' && typeof process.versions?.electron === 'string';
+}
+
+/** Lazily resolve `electron-log/main`. Returns null outside Electron so
+ *  callers can fall back to console-only without crashing on the
+ *  `require('electron')` inside electron-log's own boot. */
+function getElog(): ElogLike | null {
+  if (_elog) return _elog;
+  if (!isElectronRuntime()) return null;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mod = require('electron-log/main') as { default?: ElogLike } & ElogLike;
+    _elog = (mod.default ?? mod) as ElogLike;
+    return _elog;
+  } catch {
+    // electron-log threw on load (e.g. the binary path resolver hit a
+    // corrupt install). Fall back to console-only; logging is best-effort.
+    return null;
+  }
+}
+
+/** Lazily resolve `electron.app`. Same rationale as `getElog`. Returns
+ *  null outside Electron. */
+function getApp(): { getVersion?: () => string; getPath?: (name: string) => string } | null {
+  if (!isElectronRuntime()) return null;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const electron = require('electron') as { app?: { getVersion?: () => string; getPath?: (name: string) => string } };
+    return electron.app ?? null;
+  } catch {
+    return null;
+  }
+}
 
 type EnvFlags = {
   level: LogLevel | null;
@@ -96,7 +176,7 @@ function persistLevel(level: LogLevel): void {
 function buildHeader(): string {
   let appVersion = 'unknown';
   try {
-    appVersion = app.getVersion();
+    appVersion = getApp()?.getVersion?.() ?? 'unknown';
   } catch {
     /* app not ready in tests */
   }
@@ -171,7 +251,10 @@ function jsonlFormat(params: {
   return [JSON.stringify(record)];
 }
 
-/** Configure electron-log transports. Idempotent — re-calling is a no-op. */
+/** Configure electron-log transports. Idempotent — re-calling is a no-op.
+ *  Under non-Electron runtime (vitest on plain Node, CI without binary),
+ *  this is a no-op past the level read — every subsequent `log.*` call
+ *  falls back to the console-only path. */
 export function initLog(): void {
   if (_initialized) return;
   _initialized = true;
@@ -179,6 +262,13 @@ export function initLog(): void {
   const env = readEnvFlags();
   const persisted = loadPersistedLevel();
   _currentLevel = env.level ?? persisted ?? 'info';
+
+  const elog = getElog();
+  if (!elog) {
+    // Non-Electron runtime — no transports to configure. The `emit()`
+    // path below will see `elog === null` and route to console.
+    return;
+  }
 
   // Initialize the IPC bridge so renderer logs flow into main's transports.
   // Per electron-log v5: `initialize()` registers the IPC handlers.
@@ -222,7 +312,7 @@ export function initLog(): void {
     // only keeps ONE rotated archive by default. For 10-file rotation we
     // override to cycle through `main.1.log` … `main.10.log`.
     elog.transports.file.archiveLogFn = (oldLog) => {
-      const file = oldLog.toString();
+      const file = String(oldLog);
       const dir = path.dirname(file);
       const base = path.basename(file, '.log');
       // Shift main.9.log → main.10.log, main.8.log → main.9.log, …
@@ -251,11 +341,13 @@ export function initLog(): void {
     // Header-on-new-file. electron-log resolves the file path lazily via
     // `transports.file.resolvePathFn`; capture it on first write.
     const resolvePath = elog.transports.file.resolvePathFn;
-    elog.transports.file.resolvePathFn = (vars, message) => {
-      const p = resolvePath(vars, message);
-      ensureHeader(p);
-      return p;
-    };
+    if (resolvePath) {
+      elog.transports.file.resolvePathFn = (vars: unknown, message?: unknown) => {
+        const p = resolvePath(vars, message);
+        ensureHeader(p);
+        return p;
+      };
+    }
   }
 
   // Renderer-local fallback transport: a small file at
@@ -265,7 +357,8 @@ export function initLog(): void {
   // evidence if the IPC bridge has died. This transport on the MAIN side
   // captures the IPC-shipped renderer records into a separate file.
   try {
-    const userData = app.getPath('userData');
+    const userData = getApp()?.getPath?.('userData');
+    if (!userData) throw new Error('userData unavailable');
     const rendererLogDir = path.join(userData, 'renderer-logs');
     if (!fs.existsSync(rendererLogDir)) {
       fs.mkdirSync(rendererLogDir, { recursive: true });
@@ -282,7 +375,7 @@ export function initLog(): void {
     rendererLogger.transports.console.level = false;
     // 2-file ring (1MB × 2 = 2MB cap per design v2).
     rendererLogger.transports.file.archiveLogFn = (oldLog) => {
-      const file = oldLog.toString();
+      const file = String(oldLog);
       const dir = path.dirname(file);
       const base = path.basename(file, '.log');
       try {
@@ -303,9 +396,12 @@ export function initLog(): void {
  *  via sqlite app_state so the choice survives restart. */
 export function setLogLevel(level: LogLevel): void {
   _currentLevel = level;
-  elog.transports.console.level = level;
-  if (elog.transports.file.level !== false) {
-    elog.transports.file.level = level;
+  const elog = getElog();
+  if (elog) {
+    elog.transports.console.level = level;
+    if (elog.transports.file.level !== false) {
+      elog.transports.file.level = level;
+    }
   }
   persistLevel(level);
 }
@@ -327,9 +423,12 @@ export function syncPersistedLevelFromDb(): boolean {
   // already came from the db, no write-back needed (would be a no-op
   // anyway, but the avoidance keeps boot off the disk).
   _currentLevel = persisted;
-  elog.transports.console.level = persisted;
-  if (elog.transports.file.level !== false) {
-    elog.transports.file.level = persisted;
+  const elog = getElog();
+  if (elog) {
+    elog.transports.console.level = persisted;
+    if (elog.transports.file.level !== false) {
+      elog.transports.file.level = persisted;
+    }
   }
   return true;
 }
@@ -339,6 +438,8 @@ export function getLogLevel(): LogLevel {
 }
 
 export function getLogFilePath(): string {
+  const elog = getElog();
+  if (!elog?.transports.file.getFile) return '';
   try {
     return elog.transports.file.getFile().path;
   } catch {
@@ -379,7 +480,15 @@ function emit(
     msg,
     ...(payload ?? {}),
   };
-  elog[level](JSON.stringify(record));
+  const json = JSON.stringify(record);
+  const elog = getElog();
+  if (elog) {
+    elog[level](json);
+  }
+  // No console fallback on the structured path — the back-compat shims
+  // below echo to console for the legacy `(tag, msg, ...rest)` callers.
+  // Under non-Electron runtime, structured records simply drop (test
+  // env doesn't need them, and the legacy callers still get console).
 }
 
 function compactRest(rest: unknown[]): Fields {
@@ -429,7 +538,9 @@ export const log = {
       event: name,
       ...(payload ?? {}),
     };
-    elog.info(JSON.stringify(record));
+    const json = JSON.stringify(record);
+    const elog = getElog();
+    if (elog) elog.info(json);
   },
 };
 
