@@ -16,15 +16,15 @@
 //       cached good summary keeps being served).
 //   I4  flushPendingRename preserves the pending entry when the JSONL is
 //       still missing (decideRequeue path).
-//   I5  flushPendingRename DROPS the pending entry when the SDK threw a
-//       non-ENOENT error — this is the candidate data-loss path. Pinned as
-//       a documented characterization test, NOT marked .fails(), so it
-//       lights up red the moment the production policy changes.
+//   I5  flushPendingRename re-queues the pending entry on a transient
+//       non-ENOENT SDK throw (bounded retry: initial + 1 retry). After
+//       MAX_SDK_THREW_ATTEMPTS the entry is dropped but a console.warn
+//       records the loss — never a silent discard.
 //   I6  enqueuePendingRename does not destroy a pending entry already there
 //       for a different sid.
-//   I7  forgetSid wipes the pending-rename entry for that sid without
-//       flushing it — the user's typed-but-not-yet-written title intent is
-//       discarded. Pinned as a documented characterization test.
+//   I7  forgetSid flushes any queued title intent before clearing per-sid
+//       state. If the flush fails, the loss is logged via console.warn —
+//       never silently discarded.
 //   I8  getSessionTitle returns { summary: null, mtime: null } on SDK
 //       throw — it never falls back to a stale or hallucinated string.
 //   I9  listProjectSummaries returns [] on SDK throw — it never returns
@@ -191,34 +191,107 @@ describe('flushPendingRename preserves intent on no_jsonl', () => {
   });
 });
 
-// ─────────────────────── I5: drop on sdk_threw (CHARACTERIZATION) ───────
+// ─────────────────────── I5: bounded retry on sdk_threw ─────────────────
 
-describe('flushPendingRename drops the pending entry on sdk_threw (characterization)', () => {
-  it('discards the user-typed title when the SDK throws non-ENOENT', async () => {
-    // This pins current behaviour. `decideRequeue` returns false for any
-    // result whose reason is not 'no_jsonl', so after one transient SDK
-    // throw (e.g. EBUSY, EACCES, a JSONL parse error) the pending entry is
-    // gone and the user's typed title is silently lost.
-    //
-    // If we ever decide to re-queue on transient sdk_threw, this test will
-    // fail and force a conscious update — preventing accidental data loss
-    // from going unnoticed.
-    // First flush throws non-ENOENT → drops the pending entry.
-    // Second flush should be a no-op if the entry was dropped (the only way
-    // to distinguish "entry dropped" from "entry preserved" since
-    // __hasSidStateForTests is true either way thanks to the opChain Map).
-    sdkMocks.renameSession.mockRejectedValue(new Error('transient EBUSY'));
+describe('flushPendingRename re-queues on transient sdk_threw (bounded)', () => {
+  it('re-queues the pending entry once after a non-ENOENT SDK throw', async () => {
+    // First attempt: SDK throws transient (e.g. EBUSY). The pending entry
+    // must NOT be silently dropped — it gets re-queued so the next watcher
+    // tick retries with the user's original typed title.
+    sdkMocks.renameSession.mockRejectedValueOnce(new Error('transient EBUSY'));
 
     enqueuePendingRename('sid-i5', 'user-typed', '/cwd');
     await flushPendingRename('sid-i5');
 
     expect(sdkMocks.renameSession).toHaveBeenCalledTimes(1);
+    // Entry is still queued; second flush will call the SDK again with the
+    // same title.
+    expect(__hasSidStateForTests('sid-i5')).toBe(true);
 
-    // Second flush: if the pending entry had been re-queued, this would
-    // call the SDK a second time. It does not — the user's title intent
-    // was silently discarded after a single transient SDK throw.
+    sdkMocks.renameSession.mockResolvedValueOnce(undefined);
     await flushPendingRename('sid-i5');
-    expect(sdkMocks.renameSession).toHaveBeenCalledTimes(1);
+
+    expect(sdkMocks.renameSession).toHaveBeenCalledTimes(2);
+    expect(sdkMocks.renameSession).toHaveBeenLastCalledWith(
+      'sid-i5',
+      'user-typed',
+      { dir: '/cwd' }
+    );
+  });
+
+  it('gives up after bounded retries and logs the loss', async () => {
+    // Two consecutive non-ENOENT throws exhausts the retry budget
+    // (initial + 1 retry = 2 attempts). The pending entry is dropped,
+    // but the loss is recorded via console.warn — never silent.
+    sdkMocks.renameSession
+      .mockRejectedValueOnce(new Error('transient EBUSY'))
+      .mockRejectedValueOnce(new Error('still busy'));
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      enqueuePendingRename('sid-i5b', 'user-typed', '/cwd');
+      await flushPendingRename('sid-i5b');
+      await flushPendingRename('sid-i5b');
+
+      expect(sdkMocks.renameSession).toHaveBeenCalledTimes(2);
+      // After exhaustion the entry must be cleared from the pending map,
+      // and a loud log must record the dropped title.
+      const warnedAboutLoss = warn.mock.calls.some((args) =>
+        args.some(
+          (a) =>
+            typeof a === 'string' &&
+            a.includes('sid-i5b') &&
+            a.includes('user-typed')
+        )
+      );
+      expect(warnedAboutLoss).toBe(true);
+
+      // A third flush call must be a no-op (nothing left to flush).
+      await flushPendingRename('sid-i5b');
+      expect(sdkMocks.renameSession).toHaveBeenCalledTimes(2);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does not clobber a newer pending entry that arrived during await (requeue race)', async () => {
+    // Bug found in #1334 review: between the synchronous
+    // `pendingRenames.delete(sid)` and the awaited `renameSessionTitle`,
+    // the renderer can call `enqueuePendingRename(sid, newer)`. If the SDK
+    // then returns no_jsonl, the OLD captured pending would overwrite the
+    // newer entry. Fix: skip the re-queue when a newer entry is already
+    // present.
+    let resolveRename: ((v: unknown) => void) | null = null;
+    sdkMocks.renameSession.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          resolveRename = (_v: unknown) =>
+            reject(Object.assign(new Error('nope'), { code: 'ENOENT' }));
+        })
+    );
+
+    enqueuePendingRename('sid-i5c', 'older-title', '/cwd');
+    const flushPromise = flushPendingRename('sid-i5c');
+
+    // Wait until the SDK mock is invoked, then race in a newer enqueue.
+    for (let i = 0; i < 50 && resolveRename === null; i++) {
+      await Promise.resolve();
+    }
+    enqueuePendingRename('sid-i5c', 'newer-title', '/cwd');
+
+    // Now let the SDK call reject with ENOENT.
+    resolveRename!(undefined);
+    await flushPromise;
+
+    // The newer title must still be the queued entry. Flush again to
+    // confirm what gets sent on the next watcher tick is "newer-title".
+    sdkMocks.renameSession.mockResolvedValueOnce(undefined);
+    await flushPendingRename('sid-i5c');
+    expect(sdkMocks.renameSession).toHaveBeenLastCalledWith(
+      'sid-i5c',
+      'newer-title',
+      { dir: '/cwd' }
+    );
   });
 });
 
@@ -245,10 +318,10 @@ describe('enqueuePendingRename does not clobber other sids', () => {
   });
 });
 
-// ─────────────────────── I7: forgetSid drops pending (CHARACTERIZATION) ─
+// ─────────────────────── I7: forgetSid flushes pending before clearing ──
 
-describe('forgetSid discards a queued title intent without flushing it (characterization)', () => {
-  it('removes the pending entry without ever calling renameSession', async () => {
+describe('forgetSid flushes any queued title intent before clearing state', () => {
+  it('attempts to write the pending title via the SDK before forgetting the sid', async () => {
     sdkMocks.renameSession.mockResolvedValue(undefined);
 
     enqueuePendingRename('sid-i7', 'user-typed-but-never-flushed', '/cwd');
@@ -256,11 +329,81 @@ describe('forgetSid discards a queued title intent without flushing it (characte
 
     forgetSid('sid-i7');
 
-    expect(__hasSidStateForTests('sid-i7')).toBe(false);
-    // The pending title was never written to disk: forgetSid is silent
-    // about discarded intent. Documented; if we ever choose to flush
-    // first, this test fails and forces a review.
+    // forgetSid is sync (its caller, the sessionWatcher 'unwatched'
+    // handler, is sync), but it kicks off an async best-effort flush.
+    // Wait long enough for the chain → SDK call to settle.
+    for (let i = 0; i < 100 && sdkMocks.renameSession.mock.calls.length === 0; i++) {
+      await Promise.resolve();
+    }
+
+    expect(sdkMocks.renameSession).toHaveBeenCalledWith(
+      'sid-i7',
+      'user-typed-but-never-flushed',
+      { dir: '/cwd' }
+    );
+  });
+
+  it('logs loudly when the pending flush fails — never silent data loss', async () => {
+    sdkMocks.renameSession.mockRejectedValue(new Error('disk full'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      enqueuePendingRename('sid-i7b', 'last-chance-title', '/cwd');
+      forgetSid('sid-i7b');
+
+      // Wait for the async flush kicked off by forgetSid to settle.
+      for (let i = 0; i < 200 && warn.mock.calls.length === 0; i++) {
+        await Promise.resolve();
+      }
+
+      // forgetSid must surface the loss via console.warn rather than
+      // discarding the user's typed title in silence.
+      const loggedLoss = warn.mock.calls.some((args) =>
+        args.some(
+          (a) =>
+            typeof a === 'string' &&
+            a.includes('sid-i7b') &&
+            a.includes('last-chance-title')
+        )
+      );
+      expect(loggedLoss).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('bails the deferred flush if a newer enqueue arrives in the same tick (race)', async () => {
+    // forgetSid race mirror of the I5 requeue-race. Between forgetSid's
+    // synchronous `pendingRenames.delete(sid)` and the microtask that
+    // calls `renameSessionTitle(sid, capturedOlderTitle)`, the renderer
+    // may call `enqueuePendingRename(sid, newerTitle)`. If the deferred
+    // flush ran unconditionally, it would write the OLD title to disk
+    // for a moment before the next watcher tick overwrites it with the
+    // newer value — a brief stale write the user can observe.
+    //
+    // Expected: the microtask sees the newer entry already present and
+    // bails. No SDK call happens for the old title. The next flush
+    // (simulating the watcher tick) writes the newer title.
+    sdkMocks.renameSession.mockResolvedValue(undefined);
+
+    enqueuePendingRename('sid-i7c', 'older-title', '/cwd');
+    forgetSid('sid-i7c');
+    // Same-tick re-enqueue, before the microtask fires.
+    enqueuePendingRename('sid-i7c', 'newer-title', '/cwd');
+
+    // Drain microtasks; the deferred flush should bail without calling SDK.
+    for (let i = 0; i < 100; i++) {
+      await Promise.resolve();
+    }
     expect(sdkMocks.renameSession).not.toHaveBeenCalled();
+
+    // Next watcher tick: the newer entry is the one that gets written.
+    await flushPendingRename('sid-i7c');
+    expect(sdkMocks.renameSession).toHaveBeenCalledTimes(1);
+    expect(sdkMocks.renameSession).toHaveBeenCalledWith(
+      'sid-i7c',
+      'newer-title',
+      { dir: '/cwd' }
+    );
   });
 });
 
