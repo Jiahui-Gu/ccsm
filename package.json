@@ -14,6 +14,9 @@
     "url": "https://github.com/Jiahui-Gu/ccsm.git"
   },
   "main": "dist/electron/main.js",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
     "dev": "concurrently -k -n web,app -c blue,magenta \"npm:dev:web\" \"npm:dev:app\"",
     "dev:web": "webpack serve --config webpack.config.js --mode development",

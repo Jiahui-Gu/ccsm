@@ -28,7 +28,7 @@ jobs:
           python-version: '3.11'
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
       # Cache node_modules directly — same rationale as ci.yml: `npm ci`
       # is the dominant Windows CI cost. Cache hit skips install entirely
