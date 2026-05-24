@@ -1,5 +1,7 @@
-// Per-session warm xterm registry (PR #25 — architectural fix for the
-// session-switch 冲顶 / scroll-to-top flash).
+// Per-session warm xterm registry — architectural fix for the
+// session-switch 冲顶 / scroll-to-top flash. Originally landed gated
+// behind `CCSM_WARM_XTERM=1` (PR #1355); the flag was removed in the
+// follow-up refactor and this is now the only terminal path.
 //
 // Goal (user-stated): "我一个session本来是打开的, 我理解切到另一个session,
 // 当前session只是被放在后台了, 就像图层一样, 被盖住了, 那切回来的时候只是简单
@@ -7,18 +9,13 @@
 // keeps its own xterm Terminal alive in memory; switching sessions is just
 // reparenting a DOM wrapper, NOT rebuilding state.
 //
-// This module is GATED — it must only be activated when the
-// `CCSM_WARM_XTERM=1` env flag is set (read at preload init, surfaced via
-// `window.ccsm.featureFlags.warmXterm`). The legacy singleton
-// (`./xtermSingleton.ts`) remains the default path. When the flag is off
-// this file IS imported (TerminalPane references `usePtyAttachWarm`
-// statically so both branches type-check), but all side effects — the
-// `beforeunload` cleanup and the module-level `pty.onExit` subscription —
-// are lazy behind `installUnloadCleanupOnce` / `installExitListenerOnce`,
-// which are ONLY invoked from `allocEntry`. `allocEntry` itself is only
-// reached via `ensureAndShowEntry`, called exclusively by the warm hook.
-// Net effect with flag off: importing this file allocates no listeners
-// and runs no DOM work.
+// The registry owns the per-entry xterm Terminal AND all input-side
+// behaviours that used to live on the legacy singleton: IME composition
+// buffering, custom keybindings (Ctrl/Cmd+C/V/A), capture-phase paste
+// listener, selection-to-clipboard auto-copy. Listeners that depend on
+// `term.textarea` (composition + key handler + capture-phase paste) are
+// installed inside `ensureAndShowEntry` AFTER `term.open()` runs — the
+// textarea doesn't exist before then.
 //
 // Transparent-transport invariant: this module fans out PTY data to the
 // per-session xterm via `window.ccsmPty.onData` (multi-subscriber, see
@@ -35,6 +32,14 @@ import { CanvasAddon } from '@xterm/addon-canvas';
 import { useStore } from '../stores/store';
 import { SCROLLBACK_LINES_DEFAULT } from '../stores/slices/types';
 import { warn, log } from '../shared/log';
+import { pasteIntoActivePty } from './paste';
+
+/**
+ * `compositionupdate` fires once per IME edit; sample every Nth so a long
+ * pinyin session doesn't flood the log. Reset on `compositionstart` so
+ * each composition counts independently.
+ */
+const IME_UPDATE_SAMPLE_N = 10;
 
 const DEFAULT_WARM_CAP = 20;
 /**
@@ -46,39 +51,11 @@ const DEFAULT_WARM_CAP = 20;
  * the OLDEST entry so the most recent live tail survives.
  */
 const BUFFERING_SOFT_CAP = 256;
-/**
- * Minimum WARM_CAP. Hard floor of 2 (not 1).
- *
- * Rationale (Major 3 from cold review): with `cap === 1`, the
- * `allocEntry` eviction loop simultaneously exempts the incoming sid AND
- * the current active sid. When the only map entry IS the active sid and
- * the user switches to a new sid, BOTH candidates are exempt → loop
- * finds no victim → we `set()` past cap and overflow to size 2. A
- * `cap === 1` warm cache is also semantically pointless: the warm
- * cache's only value is keeping ≥1 OTHER session's Terminal alive while
- * the user is on the active one. So we refuse caps below 2.
- *
- * `CCSM_WARM_XTERM_CAP=1` is clamped UP to 2 with no error — friendlier
- * than crashing on a config typo. The clamp happens in two places (env
- * parser in `electron/preload/bridges/ccsmCore.ts` AND `getWarmCap()`
- * below); the renderer-side clamp is the authoritative floor since the
- * preload value is purely advisory.
- */
-const WARM_CAP_MIN = 2;
-const WARM_CAP_MAX = 100;
 
-/** Look up the runtime LRU cap. Honours `CCSM_WARM_XTERM_CAP` (surfaced via
- *  `window.ccsm.featureFlags.warmXtermCap`, clamped to [2,100] at preload).
- *  Falls back to {@link DEFAULT_WARM_CAP} when the override is absent. */
+/** LRU cap for the warm registry. Static — no runtime override surface
+ *  remains after the `CCSM_WARM_XTERM` flag deletion. If a future need
+ *  for tuning surfaces, expose a setting via the store. */
 export function getWarmCap(): number {
-  try {
-    const override = window.ccsm?.featureFlags?.warmXtermCap;
-    if (typeof override === 'number' && Number.isFinite(override) && override > 0) {
-      return Math.min(WARM_CAP_MAX, Math.max(WARM_CAP_MIN, Math.floor(override)));
-    }
-  } catch {
-    // window.ccsm absent in headless tests — fall through to default.
-  }
   return DEFAULT_WARM_CAP;
 }
 
@@ -117,6 +94,37 @@ export type WarmEntry = {
    * 5.5's CanvasAddon/DOM renderer.
    */
   opened: boolean;
+  /**
+   * Whether the textarea-dependent listeners (IME composition, custom
+   * key handler, capture-phase paste, selection-auto-copy) have been
+   * installed. They require `term.textarea` to exist, which only happens
+   * after `term.open()`, so installation is deferred to the first
+   * {@link ensureAndShowEntry} call AFTER `opened` flips true. Idempotent
+   * across subsequent shows.
+   */
+  inputListenersInstalled: boolean;
+  /**
+   * IME composition state. While a CJK IME is composing, every `term.write`
+   * reanchors xterm's hidden textarea and makes the composition preview
+   * box jump around. We buffer PTY chunks here and flush on
+   * `compositionend`. Reset on each `compositionstart`.
+   */
+  composing: boolean;
+  bufferedDuringComposition: string[];
+  imeBufferedBytes: number;
+  imeUpdateCount: number;
+  imeCompositionStartedAt: number;
+  /**
+   * Handoff flag between the Ctrl/Cmd+V keydown handler and the
+   * capture-phase `paste` listener. When the keydown handler injects a
+   * paste, some browsers / Electron versions then dispatch a follow-up
+   * native `paste` event — this flag tells the capture listener to
+   * swallow that follow-up so we paste exactly once.
+   */
+  keyboardPasteHandled: boolean;
+  /** All input-side disposers (composition listeners, capture-paste,
+   *  selection-copy, key handler). Drained in {@link disposeEntry}. */
+  inputDisposers: Array<() => void>;
 };
 
 /**
@@ -413,6 +421,19 @@ function allocEntry(sid: string): WarmEntry {
       // 'live' mode: drop pre-snap chunks (defensive — should be empty
       // by here since applySnapshot drained them), write the rest.
       if (router.snapSeq != null && payload.seq <= router.snapSeq) return;
+      // IME composition guard. While a CJK IME is composing, every
+      // `term.write` reanchors the hidden textarea and makes the
+      // composition preview box jump. Buffer chunks here and flush them
+      // on `compositionend`. Read the entry's composing flag lazily so
+      // listeners installed later (the composition listeners themselves
+      // run in `ensureAndShowEntry`) can flip the bit without needing
+      // their own write path.
+      const entryNow = warm.get(sid);
+      if (entryNow?.composing) {
+        entryNow.bufferedDuringComposition.push(payload.chunk);
+        entryNow.imeBufferedBytes += payload.chunk.length;
+        return;
+      }
       try {
         term.write(payload.chunk);
       } catch {
@@ -429,6 +450,14 @@ function allocEntry(sid: string): WarmEntry {
     dataUnsubscribe,
     lastAccessedAt: Date.now(),
     opened: false,
+    inputListenersInstalled: false,
+    composing: false,
+    bufferedDuringComposition: [],
+    imeBufferedBytes: 0,
+    imeUpdateCount: 0,
+    imeCompositionStartedAt: 0,
+    keyboardPasteHandled: false,
+    inputDisposers: [],
   };
   warm.set(sid, entry);
 
@@ -439,6 +468,271 @@ function allocEntry(sid: string): WarmEntry {
   }
 
   return entry;
+}
+
+/**
+ * Install all textarea-dependent input listeners for `entry`:
+ *
+ *   1. IME composition (compositionstart/update/end on `term.textarea`).
+ *      Flips `entry.composing`; the `pty.onData` live-mode handler reads
+ *      this flag and buffers chunks during composition windows so the
+ *      hidden textarea doesn't get reanchored mid-edit (the CJK preview
+ *      box would jump).
+ *
+ *   2. Custom key handler (`term.attachCustomKeyEventHandler`).
+ *      Ctrl/Cmd+C copies selection (or falls through to SIGINT when no
+ *      selection), Ctrl/Cmd+V pastes via the shared `paste` module,
+ *      Ctrl/Cmd+A selects all. Shift variants force always-clipboard
+ *      semantics matching Windows Terminal.
+ *
+ *   3. Selection-to-clipboard auto-copy (`term.onSelectionChange`).
+ *      ttyd-style — Shift-drag in alt-screen apps (claude) copies the
+ *      selection without an explicit Ctrl+C. Best-effort; clipboard
+ *      failures are tolerated.
+ *
+ *   4. Capture-phase `paste` listener on `entry.wrapper`. Swallows
+ *      xterm's built-in paste pipeline (which would call
+ *      `triggerDataEvent` and bypass our bracketed-paste normalization)
+ *      and routes through `pasteIntoActivePty`. The `keyboardPasteHandled`
+ *      handoff flag suppresses the duplicate native paste event that
+ *      some browsers/Electron versions dispatch after the keydown
+ *      handler injects.
+ *
+ * MUST run AFTER `term.open()` succeeds — `term.textarea` is `undefined`
+ * before then. Caller gates via `entry.opened` + `entry.inputListenersInstalled`.
+ *
+ * Every disposer registers on `entry.inputDisposers`; `disposeEntry`
+ * drains them.
+ */
+function installInputListeners(entry: WarmEntry): void {
+  const term = entry.term;
+  const sid = entry.sid;
+  const wrapper = entry.wrapper;
+  const ta = term.textarea;
+
+  // (1) IME composition listeners — only if textarea is present. Real
+  // xterm always provides one post-open; tests may stub the Terminal
+  // without one, in which case we skip silently (the composing flag
+  // stays false and the live-mode write path is uninhibited).
+  if (ta) {
+    const onStart = () => {
+      entry.composing = true;
+      entry.bufferedDuringComposition.length = 0;
+      entry.imeBufferedBytes = 0;
+      entry.imeUpdateCount = 0;
+      entry.imeCompositionStartedAt = Date.now();
+      try {
+        log.event('ime.composition.start', { sid });
+      } catch {
+        /* probe failure tolerated */
+      }
+    };
+    const onUpdate = () => {
+      entry.imeUpdateCount += 1;
+      if (entry.imeUpdateCount % IME_UPDATE_SAMPLE_N === 0) {
+        try {
+          log.event('ime.composition.progress', {
+            sid,
+            count: entry.imeUpdateCount,
+          });
+        } catch {
+          /* probe failure tolerated */
+        }
+      }
+    };
+    const onEnd = () => {
+      entry.composing = false;
+      const durationMs = entry.imeCompositionStartedAt
+        ? Date.now() - entry.imeCompositionStartedAt
+        : 0;
+      const chunks = entry.bufferedDuringComposition.length;
+      const bytes = entry.imeBufferedBytes;
+      try {
+        log.event('ime.composition.end', {
+          sid,
+          durationMs,
+          bufferedChunks: chunks,
+          bufferedBytes: bytes,
+        });
+      } catch {
+        /* probe failure tolerated */
+      }
+      if (chunks > 0) {
+        // Single coalesced flush — concatenate the buffered chunks and
+        // write in one call so the parser sees the post-composition
+        // tail as a contiguous batch.
+        const pending = entry.bufferedDuringComposition.join('');
+        entry.bufferedDuringComposition.length = 0;
+        entry.imeBufferedBytes = 0;
+        try {
+          term.write(pending);
+        } catch {
+          /* best-effort */
+        }
+        try {
+          log.event('ime.buffer.flush', { sid, bytes: pending.length, chunks });
+        } catch {
+          /* probe failure tolerated */
+        }
+      }
+    };
+    ta.addEventListener('compositionstart', onStart);
+    ta.addEventListener('compositionupdate', onUpdate);
+    ta.addEventListener('compositionend', onEnd);
+    entry.inputDisposers.push(() => {
+      try {
+        ta.removeEventListener('compositionstart', onStart);
+      } catch {
+        /* ignore */
+      }
+      try {
+        ta.removeEventListener('compositionupdate', onUpdate);
+      } catch {
+        /* ignore */
+      }
+      try {
+        ta.removeEventListener('compositionend', onEnd);
+      } catch {
+        /* ignore */
+      }
+    });
+  }
+
+  // (2) Capture-phase paste listener — installs on the wrapper so it
+  // intercepts paste before xterm's built-in pipeline runs. See the
+  // `xtermSingleton.ts` history comment (PR ~v0.2.0/2.1) for the
+  // single-canonical-paste rationale.
+  const onPasteCapture = (e: ClipboardEvent): void => {
+    e.stopImmediatePropagation();
+    e.preventDefault();
+    if (entry.keyboardPasteHandled) {
+      entry.keyboardPasteHandled = false;
+      return;
+    }
+    const text = e.clipboardData?.getData('text/plain') ?? '';
+    try {
+      log.event('paste.branch', { sid, branch: 'capture-dom' });
+    } catch {
+      /* probe failure tolerated */
+    }
+    void pasteIntoActivePty(() => entry.term, sid, text || undefined);
+  };
+  wrapper.addEventListener('paste', onPasteCapture, { capture: true });
+  entry.inputDisposers.push(() => {
+    try {
+      wrapper.removeEventListener('paste', onPasteCapture, { capture: true } as AddEventListenerOptions);
+    } catch {
+      /* ignore */
+    }
+  });
+
+  // (3) Selection-to-clipboard auto-copy. ttyd convention — works in
+  // alt-screen apps when the user holds Shift to bypass mouse tracking.
+  try {
+    const selDisposable = term.onSelectionChange(() => {
+      const sel = term.getSelection();
+      if (sel) {
+        try {
+          window.ccsmPty?.clipboard?.writeText(sel);
+        } catch {
+          /* ignore — selection still highlights */
+        }
+      }
+    });
+    entry.inputDisposers.push(() => {
+      try {
+        selDisposable?.dispose?.();
+      } catch {
+        /* ignore */
+      }
+    });
+  } catch (e) {
+    warn('xterm-warm', 'onSelectionChange attach failed', e);
+  }
+
+  // (4) Custom key handler — Ctrl/Cmd+C/V/A. Same matrix as the legacy
+  // singleton path; reads selection state at keypress time so it tracks
+  // live xterm state rather than a snapshot.
+  const pasteFromClipboard = (): void => {
+    entry.keyboardPasteHandled = true;
+    // Reset on a macrotask (NOT a microtask). Browsers dispatch the
+    // follow-up native `paste` AFTER our keydown returns but BEFORE the
+    // next task tick — microtasks fire before that native paste, so a
+    // microtask reset leaves the flag false when the capture listener
+    // runs and we get a double-paste. setTimeout(0) lands AFTER the
+    // native paste dispatch, so the capture listener sees the flag and
+    // suppresses.
+    setTimeout(() => {
+      entry.keyboardPasteHandled = false;
+    }, 0);
+    let text: string | undefined;
+    try {
+      text = window.ccsmPty?.clipboard?.readText() || undefined;
+    } catch {
+      /* best-effort */
+    }
+    try {
+      log.event('paste.branch', { sid, branch: 'ctrl-v' });
+    } catch {
+      /* probe failure tolerated */
+    }
+    void pasteIntoActivePty(() => entry.term, sid, text);
+  };
+  try {
+    term.attachCustomKeyEventHandler((ev) => {
+      if (ev.type !== 'keydown') return true;
+      const mod = ev.ctrlKey || ev.metaKey;
+      if (!mod || ev.altKey) return true;
+      const isC = ev.key === 'C' || ev.key === 'c';
+      const isV = ev.key === 'V' || ev.key === 'v';
+      const isA = ev.key === 'A' || ev.key === 'a';
+
+      if (!ev.shiftKey && isA) {
+        try {
+          term.selectAll();
+        } catch {
+          /* ignore */
+        }
+        return false;
+      }
+      if (!ev.shiftKey && isC) {
+        const sel = term.getSelection();
+        if (sel) {
+          try {
+            window.ccsmPty?.clipboard?.writeText(sel);
+          } catch {
+            /* ignore */
+          }
+          return false;
+        }
+        return true; // fall through to SIGINT
+      }
+      if (!ev.shiftKey && isV) {
+        pasteFromClipboard();
+        return false;
+      }
+      if (ev.shiftKey && isC) {
+        const sel = term.getSelection();
+        if (sel) {
+          try {
+            window.ccsmPty?.clipboard?.writeText(sel);
+          } catch {
+            /* ignore */
+          }
+        }
+        return false;
+      }
+      if (ev.shiftKey && isV) {
+        pasteFromClipboard();
+        return false;
+      }
+      return true;
+    });
+  } catch (e) {
+    warn('xterm-warm', 'attachCustomKeyEventHandler failed', e);
+  }
+  // (No disposer needed for the key handler — xterm overwrites on
+  // subsequent attach calls; the entry's lifetime IS the handler's.)
 }
 
 /**
@@ -454,6 +748,8 @@ function allocEntry(sid: string): WarmEntry {
  *   3. `activeSid` is set to `sid`; `lastAccessedAt` is bumped.
  *   4. `window.__ccsmTerm` is repointed at the new entry's term so e2e
  *      probes always reach the foreground terminal.
+ *   5. On first show after alloc: `term.open()` runs against the visible
+ *      host, then textarea-dependent input listeners are installed.
  */
 export function ensureAndShowEntry(
   sid: string,
@@ -507,6 +803,17 @@ export function ensureAndShowEntry(
       warn('xterm-warm', 'term.open failed', e);
       // Leave entry.opened=false; a future show may retry.
     }
+  }
+
+  // Install textarea-dependent input listeners exactly once per entry,
+  // AFTER `term.open()` has succeeded (term.textarea only exists from
+  // that point). Subsequent shows skip via the `inputListenersInstalled`
+  // flag. See `installInputListeners` for the full surface (IME
+  // composition, custom key handler, capture-phase paste, selection
+  // auto-copy).
+  if (entry.opened && !entry.inputListenersInstalled) {
+    installInputListeners(entry);
+    entry.inputListenersInstalled = true;
   }
 
   entry.lastAccessedAt = Date.now();
@@ -622,6 +929,18 @@ export function disposeEntry(
   } catch (e) {
     warn('xterm-warm', 'dataUnsubscribe failed', e);
   }
+  // Drain the input-side disposers (IME listeners, capture-paste,
+  // selection-copy). The custom key handler has no disposer — xterm's
+  // `attachCustomKeyEventHandler` is overwrite-on-set, and the entry's
+  // Terminal is disposed below anyway.
+  for (const d of entry.inputDisposers) {
+    try {
+      d();
+    } catch (e) {
+      warn('xterm-warm', 'inputDisposer failed', e);
+    }
+  }
+  entry.inputDisposers.length = 0;
   try {
     entry.wrapper.remove();
   } catch (e) {
@@ -652,6 +971,14 @@ export function __resetRegistryForTests(): void {
     } catch {
       /* ignore */
     }
+    for (const d of entry.inputDisposers) {
+      try {
+        d();
+      } catch {
+        /* ignore */
+      }
+    }
+    entry.inputDisposers.length = 0;
     try {
       entry.wrapper.remove();
     } catch {

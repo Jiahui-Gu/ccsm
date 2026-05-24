@@ -1,31 +1,56 @@
+// IME composition buffering via the warm registry (`xtermWarmRegistry.ts`).
+//
+// While a CJK IME is composing, the `pty.onData` live-mode handler must
+// buffer chunks rather than calling `term.write` directly — each write
+// reanchors the hidden textarea and makes the composition preview jump.
+// On `compositionend` the buffered chunks flush in a single coalesced
+// write.
+//
+// This test drives the registry's `allocEntry` → `ensureAndShowEntry`
+// pipeline with a real DOM textarea so the compositionstart/end
+// listeners attach against it (they're installed inside
+// `ensureAndShowEntry` after `term.open()` makes the textarea real).
+// The `pty.onData` callback captured at alloc time is invoked directly
+// to simulate live chunks; we assert that writes during the composition
+// window are buffered, and that they all land on `compositionend`.
+
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// Mock xterm constructors BEFORE importing the module under test. The
-// mock Terminal exposes a real <textarea> so the singleton's
-// compositionstart/compositionend listeners (attached to `term.textarea`
-// inside `ensureTerminal`) can be exercised with real DOM events. The
-// `write` method is a plain spy so we can assert it (was not) called at
-// the right moments.
-const { writeSpy, textarea, terminalCtor } = vi.hoisted(() => {
+const { writeSpy, textareaRef, terminalCtor } = vi.hoisted(() => {
   const writeSpy = vi.fn();
-  const textarea = (globalThis as unknown as { document: Document }).document.createElement('textarea');
+  const textareaRef: { current: HTMLTextAreaElement } = {
+    current: (globalThis as unknown as { document: Document }).document.createElement('textarea'),
+  };
   const terminalCtor = vi.fn(function () {
+    textareaRef.current = (globalThis as unknown as { document: Document }).document.createElement(
+      'textarea',
+    );
     return {
       open: vi.fn(),
       loadAddon: vi.fn(),
-      onSelectionChange: vi.fn(),
+      dispose: vi.fn(),
+      reset: vi.fn(),
+      focus: vi.fn(),
+      scrollToBottom: vi.fn(),
+      onData: vi.fn(() => ({ dispose: vi.fn() })),
+      onSelectionChange: vi.fn(() => ({ dispose: vi.fn() })),
       attachCustomKeyEventHandler: vi.fn(),
       getSelection: vi.fn(() => ''),
       clearSelection: vi.fn(),
       selectAll: vi.fn(),
+      resize: vi.fn(),
+      cols: 80,
+      rows: 24,
       unicode: { activeVersion: '6' },
       modes: { bracketedPasteMode: false },
-      _core: { _parent: null },
-      textarea,
+      buffer: {
+        active: { viewportY: 0, baseY: 0, cursorY: 0, length: 0, type: 'normal' },
+      },
+      textarea: textareaRef.current,
       write: writeSpy,
     };
   });
-  return { writeSpy, textarea, terminalCtor };
+  return { writeSpy, textareaRef, terminalCtor };
 });
 
 vi.mock('@xterm/xterm', () => ({ Terminal: terminalCtor }));
@@ -35,83 +60,109 @@ vi.mock('@xterm/addon-clipboard', () => ({ ClipboardAddon: vi.fn(function () { r
 vi.mock('@xterm/addon-unicode11', () => ({ Unicode11Addon: vi.fn(function () { return {}; }) }));
 vi.mock('@xterm/addon-canvas', () => ({ CanvasAddon: vi.fn(function () { return {}; }) }));
 
-import {
-  __resetSingletonForTests,
-  ensureTerminal,
-  writeOrBuffer,
-} from '../../src/terminal/xtermSingleton';
+// Capture the onData callback the registry installs so we can fire live
+// chunks at will.
+let onDataCb: ((p: { sid: string; chunk: string; seq: number }) => void) | null = null;
+function installFakeBridge(): void {
+  onDataCb = null;
+  (window as unknown as { ccsmPty: unknown }).ccsmPty = {
+    onData: (cb: typeof onDataCb) => {
+      onDataCb = cb;
+      return () => {
+        onDataCb = null;
+      };
+    },
+    onExit: () => () => {},
+  };
+}
 
-describe('writeOrBuffer — IME composition buffering', () => {
+import {
+  __resetRegistryForTests,
+  applySnapshot,
+  ensureAndShowEntry,
+} from '../../src/terminal/xtermWarmRegistry';
+
+describe('warm registry — IME composition buffering', () => {
+  let host: HTMLDivElement;
+
   beforeEach(() => {
-    __resetSingletonForTests();
+    __resetRegistryForTests();
     writeSpy.mockClear();
     terminalCtor.mockClear();
-    // Fresh host each test so ensureTerminal's open() side-effects don't bleed.
-    const host = document.createElement('div');
+    installFakeBridge();
+    host = document.createElement('div');
     document.body.appendChild(host);
-    ensureTerminal(host as HTMLDivElement);
+    // ensureAndShowEntry → allocEntry + term.open + install IME listeners.
+    ensureAndShowEntry('sid-1', host, 'mount');
+    // Flip router to 'live' so subsequent onData writes go through the
+    // composition guard (router buffers otherwise).
+    applySnapshot('sid-1', 0);
   });
 
   afterEach(() => {
-    __resetSingletonForTests();
+    __resetRegistryForTests();
     document.body.innerHTML = '';
+    delete (window as unknown as { ccsmPty?: unknown }).ccsmPty;
   });
 
+  function fireChunk(chunk: string, seq: number): void {
+    onDataCb?.({ sid: 'sid-1', chunk, seq });
+  }
+
   it('writes immediately when not composing', () => {
-    writeOrBuffer('hello');
+    fireChunk('hello', 1);
     expect(writeSpy).toHaveBeenCalledTimes(1);
-    expect(writeSpy).toHaveBeenCalledWith('hello');
+    expect(writeSpy).toHaveBeenLastCalledWith('hello');
   });
 
   it('buffers chunks while composing (no term.write calls)', () => {
-    textarea.dispatchEvent(new CompositionEvent('compositionstart'));
-    writeOrBuffer('a');
-    writeOrBuffer('b');
-    writeOrBuffer('c');
+    textareaRef.current.dispatchEvent(new CompositionEvent('compositionstart'));
+    fireChunk('a', 1);
+    fireChunk('b', 2);
+    fireChunk('c', 3);
     expect(writeSpy).not.toHaveBeenCalled();
   });
 
   it('flushes the buffered chunks in a single write on compositionend', () => {
-    textarea.dispatchEvent(new CompositionEvent('compositionstart'));
-    writeOrBuffer('foo');
-    writeOrBuffer('bar');
-    writeOrBuffer('baz');
+    textareaRef.current.dispatchEvent(new CompositionEvent('compositionstart'));
+    fireChunk('foo', 1);
+    fireChunk('bar', 2);
+    fireChunk('baz', 3);
     expect(writeSpy).not.toHaveBeenCalled();
 
-    textarea.dispatchEvent(new CompositionEvent('compositionend'));
-    // One coalesced flush of the accumulated buffer.
+    textareaRef.current.dispatchEvent(new CompositionEvent('compositionend'));
     expect(writeSpy).toHaveBeenCalledTimes(1);
-    expect(writeSpy).toHaveBeenCalledWith('foobarbaz');
+    expect(writeSpy).toHaveBeenLastCalledWith('foobarbaz');
   });
 
   it('clears the buffer after flush so subsequent writes go direct', () => {
-    textarea.dispatchEvent(new CompositionEvent('compositionstart'));
-    writeOrBuffer('queued');
-    textarea.dispatchEvent(new CompositionEvent('compositionend'));
+    textareaRef.current.dispatchEvent(new CompositionEvent('compositionstart'));
+    fireChunk('queued', 1);
+    textareaRef.current.dispatchEvent(new CompositionEvent('compositionend'));
     writeSpy.mockClear();
 
-    writeOrBuffer('after');
+    fireChunk('after', 2);
     expect(writeSpy).toHaveBeenCalledTimes(1);
-    expect(writeSpy).toHaveBeenCalledWith('after');
+    expect(writeSpy).toHaveBeenLastCalledWith('after');
   });
 
   it('compositionend with no buffered chunks does not call write', () => {
-    textarea.dispatchEvent(new CompositionEvent('compositionstart'));
-    textarea.dispatchEvent(new CompositionEvent('compositionend'));
+    textareaRef.current.dispatchEvent(new CompositionEvent('compositionstart'));
+    textareaRef.current.dispatchEvent(new CompositionEvent('compositionend'));
     expect(writeSpy).not.toHaveBeenCalled();
   });
 
   it('a fresh compositionstart re-engages buffering after a prior cycle', () => {
-    textarea.dispatchEvent(new CompositionEvent('compositionstart'));
-    writeOrBuffer('x');
-    textarea.dispatchEvent(new CompositionEvent('compositionend'));
+    textareaRef.current.dispatchEvent(new CompositionEvent('compositionstart'));
+    fireChunk('x', 1);
+    textareaRef.current.dispatchEvent(new CompositionEvent('compositionend'));
     writeSpy.mockClear();
 
-    textarea.dispatchEvent(new CompositionEvent('compositionstart'));
-    writeOrBuffer('y');
+    textareaRef.current.dispatchEvent(new CompositionEvent('compositionstart'));
+    fireChunk('y', 2);
     expect(writeSpy).not.toHaveBeenCalled();
-    textarea.dispatchEvent(new CompositionEvent('compositionend'));
+    textareaRef.current.dispatchEvent(new CompositionEvent('compositionend'));
     expect(writeSpy).toHaveBeenCalledTimes(1);
-    expect(writeSpy).toHaveBeenCalledWith('y');
+    expect(writeSpy).toHaveBeenLastCalledWith('y');
   });
 });

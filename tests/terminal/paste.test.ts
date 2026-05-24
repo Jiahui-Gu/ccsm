@@ -1,24 +1,13 @@
-// Focused unit tests for `preparePastePayload` (PR-B2 / audit gap from PR #1303).
-//
-// Complements the property suite in `tests/contract/paste-normalization.property.test.ts`
-// with explicit, narrative test cases for each branch — the bracketed-paste
-// on/off split, every line-ending variant, NUL pass-through, and the
-// "no length cap" transport invariant from `project_ccsm_transparent_transport.md`.
-//
-// xterm constructors are mocked because the function lives in a module that
-// imports `@xterm/xterm` at top level; we never call `ensureTerminal()` here,
-// so a stub mock is sufficient.
+// Focused unit tests for `preparePastePayload` in `src/terminal/paste.ts`
+// (the stateless shared paste module). Complements the property suite in
+// `tests/contract/paste-normalization.property.test.ts` with explicit,
+// narrative test cases for each branch — the bracketed-paste on/off
+// split, every line-ending variant, NUL pass-through, and the "no length
+// cap" transport invariant from `project_ccsm_transparent_transport.md`.
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 
-vi.mock('@xterm/xterm', () => ({ Terminal: vi.fn() }));
-vi.mock('@xterm/addon-fit', () => ({ FitAddon: vi.fn() }));
-vi.mock('@xterm/addon-web-links', () => ({ WebLinksAddon: vi.fn() }));
-vi.mock('@xterm/addon-clipboard', () => ({ ClipboardAddon: vi.fn() }));
-vi.mock('@xterm/addon-unicode11', () => ({ Unicode11Addon: vi.fn() }));
-vi.mock('@xterm/addon-canvas', () => ({ CanvasAddon: vi.fn() }));
-
-import { preparePastePayload } from '../../src/terminal/xtermSingleton';
+import { preparePastePayload } from '../../src/terminal/paste';
 
 const SOH = '\x1b[200~';
 const EOH = '\x1b[201~';

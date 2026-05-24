@@ -28,20 +28,9 @@
 // catch a shift in CRLF handling but cheap enough to keep the suite
 // fast.
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 
-// The singleton module touches xterm constructors only inside
-// `ensureTerminal()`, which we never call here — but importing it still
-// pulls in `@xterm/xterm` as a transitive load. Stub the addons with
-// minimal mocks so the import is cheap even in a node-only test env.
-vi.mock('@xterm/xterm', () => ({ Terminal: vi.fn() }));
-vi.mock('@xterm/addon-fit', () => ({ FitAddon: vi.fn() }));
-vi.mock('@xterm/addon-web-links', () => ({ WebLinksAddon: vi.fn() }));
-vi.mock('@xterm/addon-clipboard', () => ({ ClipboardAddon: vi.fn() }));
-vi.mock('@xterm/addon-unicode11', () => ({ Unicode11Addon: vi.fn() }));
-vi.mock('@xterm/addon-canvas', () => ({ CanvasAddon: vi.fn() }));
-
-import { preparePastePayload } from '../../src/terminal/xtermSingleton';
+import { preparePastePayload } from '../../src/terminal/paste';
 
 // ── Hand-rolled generator ─────────────────────────────────────────────
 // Deterministic mulberry32 PRNG so failures are reproducible. Seeded

@@ -9,42 +9,37 @@
 //      main-process `context-menu` event — separate one-shot needed)
 //   3. branches on the selection: copy + clear OR paste
 //
-// All four terminal hooks are mocked to no-ops so the pane mounts
-// without instantiating xterm or attaching to a PTY — the test is
-// strictly about the right-click wiring.
+// The warm hook (`usePtyAttachWarm`), warm registry (`getActiveEntry`),
+// and shared `paste` module are mocked so the pane mounts without
+// instantiating xterm or attaching to a PTY — the test is strictly about
+// the right-click wiring.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, fireEvent } from '@testing-library/react';
 
-const { copySpy, pasteSpy } = vi.hoisted(() => ({
+const { copySpy, pasteSpy, getActiveEntrySpy } = vi.hoisted(() => ({
   copySpy: vi.fn(),
   pasteSpy: vi.fn(),
+  getActiveEntrySpy: vi.fn(() => ({ term: { id: 'fake-term' } })),
 }));
 
-vi.mock('../../src/terminal/useXtermSingleton', () => ({
-  useXtermSingleton: () => undefined,
-}));
-vi.mock('../../src/terminal/useTerminalResize', () => ({
-  useTerminalResize: () => undefined,
-}));
-vi.mock('../../src/terminal/usePtyAttach', () => ({
-  // Return a `ready` state so the pane doesn't render the Attaching /
-  // Error / Exit overlay layers — they're orthogonal to right-click
-  // and rendering them just adds noise.
-  usePtyAttach: () => ({ state: { kind: 'ready' }, onRetry: vi.fn() }),
+vi.mock('../../src/terminal/usePtyAttach.warm', () => ({
+  usePtyAttachWarm: () => ({ state: { kind: 'ready' }, onRetry: vi.fn() }),
 }));
 vi.mock('../../src/terminal/useAtBottom', () => ({
   useAtBottom: () => ({ atBottom: true, scrollToBottom: vi.fn() }),
 }));
-vi.mock('../../src/terminal/xtermSingleton', () => ({
+vi.mock('../../src/terminal/xtermWarmRegistry', () => ({
+  getActiveEntry: getActiveEntrySpy,
+}));
+vi.mock('../../src/terminal/paste', () => ({
   terminalCopy: copySpy,
   terminalPaste: pasteSpy,
 }));
 vi.mock('../../src/i18n/useTranslation', () => ({
   useTranslation: () => ({ t: (k: string) => k }),
 }));
-// Skip xterm CSS import in jsdom (jsdom doesn't load CSS anyway, but the
-// import resolver still walks the path).
+// Skip xterm CSS import in jsdom.
 vi.mock('@xterm/xterm/css/xterm.css', () => ({}));
 
 import { TerminalPane } from '../../src/components/TerminalPane';
@@ -62,15 +57,11 @@ function installShellBridge(): MockShell {
 function fireContextMenuOnHost(container: HTMLElement) {
   const host = container.querySelector('[data-terminal-host]') as HTMLElement;
   expect(host).not.toBeNull();
-  // `fireEvent.contextMenu` dispatches a real MouseEvent with the right
-  // type; React's onContextMenu hands the SyntheticEvent through so
-  // preventDefault on the synthetic event reaches the underlying native
-  // event via the React event pool.
   const result = fireEvent.contextMenu(host);
   return { host, result };
 }
 
-describe('TerminalPane right-click (Task #41)', () => {
+describe('TerminalPane right-click (Task #41, warm path)', () => {
   beforeEach(() => {
     copySpy.mockReset();
     pasteSpy.mockReset();
@@ -82,7 +73,6 @@ describe('TerminalPane right-click (Task #41)', () => {
     const shell = installShellBridge();
     const { container } = render(<TerminalPane sessionId="sid-1" cwd="/tmp" />);
     const host = container.querySelector('[data-terminal-host]') as HTMLElement;
-    // `fireEvent` returns false when the event was preventDefault-ed.
     const notPrevented = fireEvent.contextMenu(host);
     expect(notPrevented).toBe(false);
     expect(copySpy).toHaveBeenCalledTimes(1);
@@ -99,12 +89,13 @@ describe('TerminalPane right-click (Task #41)', () => {
     expect(notPrevented).toBe(false);
     expect(copySpy).toHaveBeenCalledTimes(1);
     expect(pasteSpy).toHaveBeenCalledTimes(1);
+    // terminalPaste signature: (getTerm, sid, branch)
+    expect(pasteSpy.mock.calls[0]?.[1]).toBe('sid-2');
+    expect(pasteSpy.mock.calls[0]?.[2]).toBe('right-click');
     expect(shell.suppressContextMenuOnce).toHaveBeenCalledTimes(1);
   });
 
   it('survives when ccsmShell bridge is missing (e2e probes / test harnesses)', () => {
-    // Bridge intentionally not installed — the optional-chain in the
-    // handler must keep the copy/paste branching alive.
     copySpy.mockReturnValue(true);
     const { container } = render(<TerminalPane sessionId="sid-3" cwd="/tmp" />);
     const host = container.querySelector('[data-terminal-host]') as HTMLElement;
@@ -123,7 +114,6 @@ describe('TerminalPane right-click (Task #41)', () => {
     const { container } = render(<TerminalPane sessionId="sid-4" cwd="/tmp" />);
     const { host } = fireContextMenuOnHost(container);
     expect(host).toBeTruthy();
-    // Paste still ran despite the IPC throw.
     expect(pasteSpy).toHaveBeenCalledTimes(1);
   });
 });

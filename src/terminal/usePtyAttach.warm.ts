@@ -582,6 +582,149 @@ export function usePtyAttachWarm(
   // the store's `deleteSession` action through `disposeEntry` directly
   // if dogfooding shows the memory ceiling is too high.
 
+  // ResizeObserver-driven fit + snapshot replay (gap-8 port from legacy
+  // `useTerminalResize`). When the host container changes size (splitter
+  // drag, window resize, fullscreen toggle), we:
+  //   1. Capture the pre-resize scroll state (atBottom + absolute
+  //      viewportY) so a user reading scrolled-up content isn't yanked
+  //      to the bottom on every drag tick.
+  //   2. Re-fit the entry's term against the new container.
+  //   3. Push the new cols/rows to the PTY so claude reflows on the
+  //      backend (which also reflows the headless source-of-truth buffer
+  //      so subsequent snapshot reads are correctly wrapped).
+  //   4. Pull a fresh snapshot and replay it into the visible xterm
+  //      (claude's alt-screen TUI doesn't repaint on SIGWINCH until
+  //      input arrives — #852 root cause).
+  //   5. Restore the pre-resize viewportY if the user was scrolled up.
+  //
+  // Debounced 80ms so a continuous drag fires one replay per pause, not
+  // per pixel. Coalesces overlapping runs via an inFlight latch so two
+  // RO ticks back-to-back can't interleave `reset()`s.
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    let debounce: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
+    let replayInFlight = false;
+    let replayPending = false;
+
+    const runResizeReplay = async (): Promise<void> => {
+      const pty = window.ccsmPty;
+      const entry = getEntry(sessionId);
+      if (cancelled || !pty || !entry || !entry.opened) return;
+      // Snapshot pre-resize scroll state.
+      let wasAtBottom = true;
+      let savedViewportY = 0;
+      try {
+        const buf = entry.term.buffer.active;
+        wasAtBottom = buf.baseY - buf.viewportY <= 1;
+        savedViewportY = buf.viewportY;
+      } catch {
+        /* default: assume at-bottom */
+      }
+      try {
+        entry.fit.fit();
+      } catch (e) {
+        warn('attach-warm', 'resize fit failed', e);
+        return;
+      }
+      const cols = entry.term.cols;
+      const rows = entry.term.rows;
+      try {
+        const p = pty.resize(sessionId, cols, rows);
+        if (p && typeof (p as Promise<void>).then === 'function') {
+          await (p as Promise<void>);
+        }
+      } catch (e) {
+        warn('attach-warm', 'resize pty.resize failed', e);
+      }
+      if (cancelled) return;
+      // Pull a fresh snapshot from the (now-reflowed) headless buffer
+      // and replay it. Same dedupe contract as the cold-attach path —
+      // applySnapshot drains live chunks with seq > snap.seq and flips
+      // the router back to 'live'.
+      let snap: { snapshot: string; seq: number };
+      try {
+        snap = (await pty.getBufferSnapshot(sessionId)) as {
+          snapshot: string;
+          seq: number;
+        };
+      } catch (e) {
+        warn('attach-warm', 'resize snapshot fetch failed', e);
+        return;
+      }
+      if (cancelled) return;
+      const entry2 = getEntry(sessionId);
+      if (!entry2 || !entry2.opened) return;
+      try {
+        entry2.term.reset();
+      } catch (e) {
+        warn('attach-warm', 'resize reset failed', e);
+      }
+      if (snap.snapshot) {
+        await new Promise<void>((resolve) => {
+          try {
+            entry2.term.write(snap.snapshot, () => resolve());
+          } catch {
+            resolve();
+          }
+        });
+      }
+      applySnapshot(sessionId, snap.seq);
+      // Drain queued writes before reading viewport state, then restore
+      // scroll position.
+      await new Promise<void>((resolve) => {
+        try {
+          entry2.term.write('', () => resolve());
+        } catch {
+          resolve();
+        }
+      });
+      try {
+        if (wasAtBottom) {
+          entry2.term.scrollToBottom();
+        } else {
+          (entry2.term as unknown as {
+            scrollToLine?: (n: number) => void;
+          }).scrollToLine?.(savedViewportY);
+        }
+      } catch {
+        /* best-effort */
+      }
+    };
+
+    const scheduleReplay = (): void => {
+      if (replayInFlight) {
+        replayPending = true;
+        return;
+      }
+      replayInFlight = true;
+      void (async () => {
+        try {
+          await runResizeReplay();
+          while (replayPending && !cancelled) {
+            replayPending = false;
+            await runResizeReplay();
+          }
+        } finally {
+          replayInFlight = false;
+          replayPending = false;
+        }
+      })();
+    };
+
+    const ro = new ResizeObserver(() => {
+      if (debounce) clearTimeout(debounce);
+      debounce = setTimeout(scheduleReplay, 80);
+    });
+    ro.observe(host);
+    return () => {
+      cancelled = true;
+      if (debounce) clearTimeout(debounce);
+      ro.disconnect();
+    };
+  }, [sessionId, hostRef]);
+
   const onRetry = useCallback(() => {
     setAttachNonce((n) => n + 1);
   }, []);
