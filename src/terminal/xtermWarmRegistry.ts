@@ -907,7 +907,14 @@ export function applySnapshot(sid: string, snapSeq: number): void {
  */
 export function disposeEntry(
   sid: string,
-  cause: 'lru' | 'session-deleted' | 'reset' | 'unload' | 'cancelled-mid-cold-attach',
+  cause:
+    | 'lru'
+    | 'session-deleted'
+    | 'reset'
+    | 'unload'
+    | 'cancelled-mid-cold-attach'
+    | 'reload'
+    | 'retry',
 ): void {
   const entry = warm.get(sid);
   if (!entry) return;

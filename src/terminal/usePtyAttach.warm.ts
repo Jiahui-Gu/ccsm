@@ -765,8 +765,29 @@ export function usePtyAttachWarm(
   }, [sessionId, hostRef]);
 
   const onRetry = useCallback(() => {
+    // Tear down the warm entry so the next attach pass takes the COLD
+    // branch (which is the only branch that calls `pty.attach` / `pty.spawn`).
+    // Without this, the entry survives `pty.kill`, the effect re-runs into
+    // `ensureAndShowEntry` → `isCold=false`, and no fresh PTY ever spawns.
+    try {
+      disposeEntry(sessionId, 'retry');
+    } catch {
+      /* registry absent in tests — non-fatal */
+    }
+    // Clear the disconnect record — otherwise `resolveReadyOrExit` reads
+    // the still-populated `disconnectedSessions[sid]` at the end of the
+    // cold attach and snaps state right back to 'exit', leaving the
+    // overlay visible. See PR #1361 / bug #1360 root cause.
+    try {
+      clearPtyExitRef.current(sessionId);
+    } catch {
+      /* slice absent in tests — non-fatal */
+    }
+    // Flip to attaching synchronously so the exit overlay disappears
+    // immediately on click rather than after the async attach resolves.
+    setState({ kind: 'attaching' }, 'retry');
     setAttachNonce((n) => n + 1);
-  }, []);
+  }, [sessionId, setState]);
 
   return { state, onRetry };
 }

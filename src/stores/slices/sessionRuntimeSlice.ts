@@ -17,6 +17,7 @@
 // `sessionCrudSlice` (split per Task #736 / PR #754 review).
 
 import { classifyPtyExit } from '../../lib/ptyExitClassifier';
+import { disposeEntry } from '../../terminal/xtermWarmRegistry';
 import type { RootStore, SetFn, GetFn } from './types';
 
 export type SessionRuntimeSlice = Pick<
@@ -109,6 +110,16 @@ export function createSessionRuntimeSlice(
         await window.ccsmPty?.kill(sid);
       } catch {
         /* renderer started without preload (tests) — no-op */
+      }
+      // Tear down the warm xterm entry for this sid. Without this the
+      // attach effect's next pass (driven by the reloadNonce bump below)
+      // hits a still-present warm entry, takes the WARM branch, and
+      // never calls `pty.spawn` — the PTY is dead and the UI is stale.
+      // See PR #1361 / bug #1360 root cause.
+      try {
+        disposeEntry(sid, 'reload');
+      } catch {
+        /* registry may be absent in unit tests — non-fatal */
       }
       // Drop any stale exit-classification entry from the previous pty
       // so the sidebar red dot doesn't linger across the reload window
