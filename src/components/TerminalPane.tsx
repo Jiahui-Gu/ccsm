@@ -10,7 +10,7 @@ import { ScrollToBottomButton } from './ScrollToBottomButton';
 // TerminalPane is the host shell for the per-session warm xterm view.
 // The registry (`src/terminal/xtermWarmRegistry.ts`) owns the actual
 // Terminal instances — this component just provides the reparent target
-// host div, overlays (Attaching / Error / Exit), and wires right-click
+// host div, overlays (Error / Exit), and wires right-click
 // copy/paste. Per-session warm state means switching sessions reparents
 // the wrapper rather than tearing down xterm.
 //
@@ -83,13 +83,11 @@ function Overlay({
   onRetry: () => void;
   t: (key: string, opts?: Record<string, unknown>) => string;
 }) {
-  if (state.kind === 'attaching') {
-    return (
-      <div className="absolute inset-0 z-10 flex items-center justify-center text-neutral-400 text-sm pointer-events-none">
-        Attaching...
-      </div>
-    );
-  }
+  // Intentionally no overlay for `state.kind === 'attaching'`: per user
+  // feedback, cold attaches should leave the pane visually unchanged for
+  // the brief window before the snapshot lands rather than flashing an
+  // "Attaching..." placeholder. State machine still tracks 'attaching'
+  // for focus/IPC guards elsewhere.
   if (state.kind === 'error') {
     // z-10 so the overlay sits above xterm's canvas layers (the canvas
     // renderer stacks its own absolutely-positioned canvases inside the
