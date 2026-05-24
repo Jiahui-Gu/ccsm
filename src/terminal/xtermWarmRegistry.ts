@@ -617,10 +617,10 @@ function installInputListeners(entry: WarmEntry): void {
     }
     void pasteIntoActivePty(() => entry.term, sid, text || undefined);
   };
-  wrapper.addEventListener('paste', onPasteCapture, { capture: true });
+  wrapper.addEventListener('paste', onPasteCapture, true);
   entry.inputDisposers.push(() => {
     try {
-      wrapper.removeEventListener('paste', onPasteCapture, { capture: true } as AddEventListenerOptions);
+      wrapper.removeEventListener('paste', onPasteCapture, true);
     } catch {
       /* ignore */
     }
