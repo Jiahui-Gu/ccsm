@@ -363,20 +363,34 @@ export async function getBufferSnapshot(
   // JS, so no `dispatchPtyChunk` can interleave between the drain
   // resolving and the synchronous seq+serialize read on the next line.
   //
-  // The drain await is bounded by the parser's per-chunk cost (~µs per
-  // KB), so on typical buffers this adds well under a millisecond.
+  // Typically completes in one parser tick (≤12ms); 250ms ceiling guards
+  // against a wedged parser so the snapshot IPC can never hang forever.
   await new Promise<void>((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (!done) {
+        done = true;
+        resolve();
+      }
+    };
+    const timer = setTimeout(finish, 250);
     try {
-      entry.headless.write('', () => resolve());
+      entry.headless.write('', () => {
+        clearTimeout(timer);
+        finish();
+      });
     } catch {
       // headless was disposed mid-call — resolve so the caller can
       // proceed with whatever serialize() can still produce. The
       // surrounding caller handles `snapshot === ''` gracefully.
-      resolve();
+      clearTimeout(timer);
+      finish();
     }
   });
 
   // Capture seq + serialized string atomically (both sync, no awaits).
+  // DO NOT add awaits between the drain above and this seq capture —
+  // any yield here re-introduces the async race the drain just closed.
   const seq = entry.seq;
   // PR-B contract: serialize captures whatever lives in the headless buffer
   // at this instant, paired with `seq`. We bound the payload to the user's
