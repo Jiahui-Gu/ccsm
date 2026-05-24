@@ -794,17 +794,25 @@ html.theme-light ::-webkit-scrollbar-thumb:hover {
  * overflow propagates up to .app-shell.scrollWidth (measured 1280 -> 12451)
  * and pushes the sidebar off-screen.
  *
- * `contain: layout` severs scrollable-overflow propagation to ancestors per
- * CSS Containment L2 §2.5 (https://www.w3.org/TR/css-contain-2/#containment-layout).
- * That alone restores scrollWidth to viewport width (12451 -> 1280) and is
- * the entire fix. We deliberately do NOT set width/height/overflow: those
- * inflate .xterm-helpers from its xterm.css-default 0x0 box to the terminal
- * footprint, which moves the Windows TSF / OS IME anchor one row below the
- * caret (P2 regression from the previous over-broad rule).
+ * `overflow: clip` severs scrollable-overflow propagation to ancestors
+ * (https://www.w3.org/TR/css-overflow-3/#overflow-clip) without establishing
+ * a new containing block or paint context. This matters for IME: xterm's
+ * CompositionHelper.updateCompositionElements() writes style.left/style.top
+ * on .xterm-helper-textarea every keystroke to track the cursor so the OS
+ * IME candidate window anchors at the caret. The previous fix used
+ * `contain: layout`, which establishes a new containing block — that broke
+ * those per-keystroke offsets, causing the textarea to fall back to its
+ * xterm.css default (left: -9999em) and the Chinese IME pre-edit/candidate
+ * popup to render at the screen corner instead of overlaying the cursor.
+ *
+ * We deliberately do NOT set width/height: that inflates .xterm-helpers
+ * from its xterm.css-default 0x0 box to the terminal footprint, which
+ * moves the Windows TSF / OS IME anchor one row below the caret (P2
+ * regression from an earlier over-broad rule).
  *
  * Delete this rule when bumping @xterm/xterm to a release containing
  * upstream PRs #5747 / #5763 (milestone 7.0.0, unreleased).
  */
 .xterm .xterm-helpers {
-  contain: layout;
+  overflow: clip;
 }
