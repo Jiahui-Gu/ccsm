@@ -1,9 +1,10 @@
 // IME composition overflow e2e probe.
 //
 // Verifies the architectural fix in src/styles/global.css (.xterm .xterm-helpers
-// containment) + src/components/AppShell.tsx (min-w-0 overflow-hidden) prevents
+// overflow: clip) + src/components/AppShell.tsx (min-w-0 overflow-hidden) prevents
 // long IME composition strings from inflating .app-shell.scrollWidth and pushing
-// the sidebar off-screen.
+// the sidebar off-screen. (Previous incarnation used `contain: layout` — see the
+// comment in global.css for why we moved to `overflow: clip`.)
 //
 // Bug class: xterm.js 5.5.0 inflates .xterm-helper-textarea and .composition-view
 // inline widths to match the composition string (~11200px for 800 chars).
@@ -114,13 +115,17 @@ async function main() {
           appShellClient: appShell?.clientWidth ?? 0,
           sidebarLeft: sidebar ? sidebar.getBoundingClientRect().left : -9999,
           hostRight: host ? host.getBoundingClientRect().right : 0,
-          // .xterm-helpers is the clip box (overflow:hidden + contain:layout
-          // applied by our fix). Its right edge bounds where .composition-view
-          // is actually painted, regardless of the view element's own natural
-          // width (which xterm sets to the composition string's pixel length).
+          // .xterm-helpers is the clip box (overflow:clip applied by our fix
+          // in src/styles/global.css). Its right edge bounds where
+          // .composition-view is actually painted, regardless of the view
+          // element's own natural width (which xterm sets to the composition
+          // string's pixel length). NOTE: we switched from `contain: layout`
+          // to `overflow: clip` because the former established a new
+          // containing block that broke xterm CompositionHelper's per-keystroke
+          // style.left/top updates on .xterm-helper-textarea — that anchored
+          // the OS IME candidate window off-screen for Chinese input.
           helpersRight: helpersRect ? helpersRect.right : 0,
           helpersOverflow: helpers ? getComputedStyle(helpers).overflow : '',
-          helpersContain: helpers ? getComputedStyle(helpers).contain : '',
           viewWidth: view ? view.getBoundingClientRect().width : 0,
           viewActive: view ? view.classList.contains('active') : false,
         };
@@ -146,16 +151,16 @@ async function main() {
         // The clip box (.xterm-helpers) must stay within the terminal host's
         // right edge. The composition-view's own bounding rect can be wider
         // (xterm 5.5.0 sets its inline width to the string's pixel length),
-        // but our overflow:hidden + contain:layout on .xterm-helpers ensures
-        // only the head is painted within the terminal area.
+        // but our overflow:clip on .xterm-helpers ensures only the head is
+        // painted within the terminal area.
         if (metrics.helpersRight > metrics.hostRight + 2) {
           fail(
             `n=${n}: .xterm-helpers clip box right ${metrics.helpersRight} > terminal-host.right ${metrics.hostRight}+2 (clip box escapes terminal)`,
           );
           failures++;
         }
-        if (!/layout/.test(metrics.helpersContain)) {
-          fail(`n=${n}: .xterm-helpers contain=${metrics.helpersContain} (expected layout)`);
+        if (!/^(clip|hidden)/.test(metrics.helpersOverflow)) {
+          fail(`n=${n}: .xterm-helpers overflow=${metrics.helpersOverflow} (expected clip or hidden)`);
           failures++;
         }
       }
