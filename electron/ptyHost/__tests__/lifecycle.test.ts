@@ -38,7 +38,6 @@ interface LifecycleBus {
 }
 
 function bus(): LifecycleBus {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (globalThis as any).__lcBus as LifecycleBus;
 }
 
@@ -110,7 +109,6 @@ function makeFakeEntry(over: Partial<FakeEntry> = {}): FakeEntry {
 }
 
 beforeEach(() => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (globalThis as any).__lcBus = {
     killCalls: [],
     watcherStopCalls: [],
@@ -121,7 +119,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   delete (globalThis as any).__lcBus;
   vi.restoreAllMocks();
 });
@@ -134,7 +131,6 @@ describe('lifecycle.spawn', () => {
     const entry = makeFakeEntry({ pty: makeFakePty({ pid: 9 }), cwd: '/picked' });
     bus().makeEntry.mockReturnValue(entry);
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const info = L.spawn(sessions as any, 'sid-A', '/work', '/bin/claude');
 
     expect(sessions.get('sid-A')).toBe(entry);
@@ -144,7 +140,6 @@ describe('lifecycle.spawn', () => {
   it('uses DEFAULT_COLS/ROWS when opts is omitted', () => {
     const sessions = new Map<string, FakeEntry>();
     bus().makeEntry.mockReturnValue(makeFakeEntry());
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     L.spawn(sessions as any, 'sid', '/work', '/bin/claude');
     const args = bus().makeEntry.mock.calls[0];
     expect(args[3]).toBe(120); // cols
@@ -154,7 +149,6 @@ describe('lifecycle.spawn', () => {
   it('passes through explicit cols/rows opts', () => {
     const sessions = new Map<string, FakeEntry>();
     bus().makeEntry.mockReturnValue(makeFakeEntry());
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     L.spawn(sessions as any, 'sid', '/work', '/bin/claude', { cols: 200, rows: 50 });
     const args = bus().makeEntry.mock.calls[0];
     expect(args[3]).toBe(200);
@@ -166,7 +160,6 @@ describe('lifecycle.spawn', () => {
     const entry = makeFakeEntry({ pty: makeFakePty({ pid: 99 }) });
     sessions.set('sid-A', entry);
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const info = L.spawn(sessions as any, 'sid-A', '/work2', '/bin/claude2');
 
     expect(bus().makeEntry).not.toHaveBeenCalled();
@@ -177,7 +170,6 @@ describe('lifecycle.spawn', () => {
     const sessions = new Map<string, FakeEntry>();
     bus().makeEntry.mockReturnValue(makeFakeEntry());
     const onCwdRedirect = vi.fn();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     L.spawn(sessions as any, 'sid', '/work', '/bin/claude', { onCwdRedirect });
     const deps = bus().makeEntry.mock.calls[0][5] as { onCwdRedirect?: unknown };
     expect(deps.onCwdRedirect).toBe(onCwdRedirect);
@@ -186,7 +178,6 @@ describe('lifecycle.spawn', () => {
   it('the onExit deps callback removes the entry from the map', () => {
     const sessions = new Map<string, FakeEntry>();
     bus().makeEntry.mockReturnValue(makeFakeEntry());
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     L.spawn(sessions as any, 'sid-A', '/work', '/bin/claude');
     expect(sessions.has('sid-A')).toBe(true);
     const deps = bus().makeEntry.mock.calls[0][5] as { onExit: (s: string) => void };
@@ -203,7 +194,6 @@ describe('lifecycle.list and get', () => {
     sessions.set('a', makeFakeEntry({ cwd: '/a', pty: makeFakePty({ pid: 1 }) }));
     sessions.set('b', makeFakeEntry({ cwd: '/b', pty: makeFakePty({ pid: 2 }) }));
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const out = L.list(sessions as any);
     expect(out).toHaveLength(2);
     expect(out.map((i) => i.sid).sort()).toEqual(['a', 'b']);
@@ -212,14 +202,12 @@ describe('lifecycle.list and get', () => {
   });
 
   it('get returns null when sid is not in the map', () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(L.get(new Map() as any, 'nope')).toBeNull();
   });
 
   it('get returns the info for an existing entry', () => {
     const sessions = new Map<string, FakeEntry>();
     sessions.set('s', makeFakeEntry({ cwd: '/c', pty: makeFakePty({ pid: 7 }) }));
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(L.get(sessions as any, 's')).toEqual({ sid: 's', pid: 7, cols: 80, rows: 24, cwd: '/c' });
   });
 });
@@ -228,7 +216,6 @@ describe('lifecycle.list and get', () => {
 
 describe('lifecycle.attach and detach', () => {
   it('attach returns null for an unknown sid', () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(L.attach(new Map() as any, 'ghost')).toBeNull();
   });
 
@@ -241,7 +228,6 @@ describe('lifecycle.attach and detach', () => {
       pty: makeFakePty({ pid: 55 }),
       serialize: { serialize: serializeSpy },
     }));
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(L.attach(sessions as any, 's')).toEqual({
       cols: 99,
       rows: 33,
@@ -255,7 +241,6 @@ describe('lifecycle.attach and detach', () => {
   it('detach is a no-op at the lifecycle layer (per-webContents cleanup is IPC concern)', () => {
     const sessions = new Map<string, FakeEntry>();
     sessions.set('s', makeFakeEntry());
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(() => L.detach(sessions as any, 's')).not.toThrow();
     // entry not removed
     expect(sessions.has('s')).toBe(true);
@@ -269,13 +254,11 @@ describe('lifecycle.input', () => {
     const sessions = new Map<string, FakeEntry>();
     const entry = makeFakeEntry();
     sessions.set('s', entry);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     L.input(sessions as any, 's', 'echo hi\n');
     expect(entry.pty.write).toHaveBeenCalledWith('echo hi\n');
   });
 
   it('is a silent no-op when sid is unknown', () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(() => L.input(new Map() as any, 'ghost', 'x')).not.toThrow();
   });
 
@@ -284,7 +267,6 @@ describe('lifecycle.input', () => {
     const entry = makeFakeEntry();
     entry.pty.write = vi.fn(() => { throw new Error('EPIPE'); });
     sessions.set('s', entry);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(() => L.input(sessions as any, 's', 'x')).not.toThrow();
   });
 });
@@ -296,7 +278,6 @@ describe('lifecycle.resize', () => {
     const sessions = new Map<string, FakeEntry>();
     const entry = makeFakeEntry();
     sessions.set('s', entry);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     L.resize(sessions as any, 's', 100, 40);
     expect(entry.pty.resize).toHaveBeenCalledWith(100, 40);
     expect(entry.headless.resize).toHaveBeenCalledWith(100, 40);
@@ -308,9 +289,7 @@ describe('lifecycle.resize', () => {
     const sessions = new Map<string, FakeEntry>();
     const entry = makeFakeEntry();
     sessions.set('s', entry);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     L.resize(sessions as any, 's', 1, 40);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     L.resize(sessions as any, 's', 40, 1);
     expect(entry.pty.resize).not.toHaveBeenCalled();
     expect(entry.headless.resize).not.toHaveBeenCalled();
@@ -324,7 +303,6 @@ describe('lifecycle.resize', () => {
     const entry = makeFakeEntry();
     entry.pty.resize = vi.fn(() => { throw new Error('boom'); });
     sessions.set('s', entry);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(() => L.resize(sessions as any, 's', 100, 40)).not.toThrow();
     expect(console.warn).toHaveBeenCalledWith(
       expect.stringContaining('resize s failed'),
@@ -332,7 +310,6 @@ describe('lifecycle.resize', () => {
   });
 
   it('is a no-op when sid is unknown', () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(L.resize(new Map() as any, 'ghost', 100, 40)).toBeUndefined();
   });
 });
@@ -341,7 +318,6 @@ describe('lifecycle.resize', () => {
 
 describe('lifecycle.kill', () => {
   it('resolves to false for an unknown sid (no side effects)', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await expect(L.kill(new Map() as any, 'ghost')).resolves.toBe(false);
     expect(bus().killCalls).toEqual([]);
     expect(bus().watcherStopCalls).toEqual([]);
@@ -360,7 +336,6 @@ describe('lifecycle.kill', () => {
     entry.pty.write = vi.fn(() => entry.pty.__fireExit!());
     sessions.set('s', entry);
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await expect(L.kill(sessions as any, 's')).resolves.toBe(true);
     expect(entry.pty.write).toHaveBeenCalledWith('\x03');
     // Hard kill MUST NOT have been called on the graceful path — that
@@ -378,7 +353,6 @@ describe('lifecycle.kill', () => {
     entry.pty.write = vi.fn(() => { entry.pty.__fireExit!(); });
     sessions.set('s', entry);
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await expect(L.kill(sessions as any, 's')).resolves.toBe(true);
     expect(bus().killCalls).toEqual([]);
     // Watcher still stopped (idempotent, doesn't interfere with claude's writes).
@@ -394,7 +368,6 @@ describe('lifecycle.kill', () => {
     // write threw, no onExit fired → resolves false via timeout (and
     // escalates to hard kill in the timer branch).
     vi.useFakeTimers();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const p = L.kill(sessions as any, 's');
     await vi.advanceTimersByTimeAsync(L.KILL_EXIT_TIMEOUT_MS + 10);
     await expect(p).resolves.toBe(false);
@@ -410,7 +383,6 @@ describe('lifecycle.kill', () => {
     entry.pty.write = vi.fn(() => entry.pty.__fireExit!());
     sessions.set('s', entry);
     bus().watcherStopShouldThrow = true;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await expect(L.kill(sessions as any, 's')).resolves.toBe(true);
     expect(bus().watcherStopCalls).toEqual(['s']);
   });
@@ -438,7 +410,6 @@ describe('lifecycle.kill', () => {
     });
     sessions.set('s', entry);
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await expect(L.kill(sessions as any, 's')).resolves.toBe(true);
     expect(calls[0]).toBe('onExit');
     expect(calls[1]).toBe('write');
@@ -455,7 +426,6 @@ describe('lifecycle.kill', () => {
     entry.pty.write = vi.fn();
     sessions.set('s', entry);
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const p = L.kill(sessions as any, 's');
     // Soft signal sent synchronously, watcher stopped — but the hard
     // kill / subtree walk MUST NOT have run yet (graceful path).
@@ -487,7 +457,6 @@ describe('lifecycle.kill', () => {
     entry.pty.write = vi.fn();
     sessions.set('s', entry);
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const p = L.kill(sessions as any, 's');
     let resolved: boolean | 'pending' = 'pending';
     void p.then((v) => { resolved = v; });
@@ -515,7 +484,6 @@ describe('lifecycle.kill', () => {
     entry.pty.write = vi.fn();
     sessions.set('s', entry);
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const p = L.kill(sessions as any, 's');
 
     // Before timeout: no hard kill yet, no subtree walk.
@@ -531,7 +499,6 @@ describe('lifecycle.kill', () => {
     // Zombie removed from registry — attach now returns null, letting the
     // renderer's reloadNonce → spawn-on-null fallback create a fresh PTY.
     expect(sessions.has('s')).toBe(false);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(L.attach(sessions as any, 's')).toBeNull();
     vi.useRealTimers();
   });
@@ -550,7 +517,6 @@ describe('lifecycle.kill', () => {
     });
     sessions.set('s', entry);
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const p = L.kill(sessions as any, 's');
     await vi.advanceTimersByTimeAsync(L.KILL_EXIT_TIMEOUT_MS + 10);
     await expect(p).resolves.toBe(false);
@@ -572,9 +538,7 @@ describe('lifecycle.kill', () => {
     entry.pty.write = vi.fn();
     sessions.set('s', entry);
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const p1 = L.kill(sessions as any, 's');
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const p2 = L.kill(sessions as any, 's');
     // Same promise — second call is a no-op short-circuit, no extra
     // soft-signal writes or watcher-stop calls.
@@ -595,12 +559,10 @@ describe('lifecycle.kill', () => {
     entry.pty.write = vi.fn(() => entry.pty.__fireExit!());
     sessions.set('s', entry);
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await L.kill(sessions as any, 's');
     // Re-add the entry (simulating spawn-on-null fallback creating a new pty
     // for the same sid) and kill again — this must NOT short-circuit.
     sessions.set('s', entry);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await L.kill(sessions as any, 's');
     expect(entry.pty.write).toHaveBeenCalledTimes(2);
   });
@@ -622,7 +584,6 @@ describe('lifecycle.killAll', () => {
     sessions.set('b', b);
     sessions.set('c', c);
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const result = L.killAll(sessions as any);
     // killAll must return a Promise (before-quit awaits it to give claude
     // time to flush before Electron tears down — see appLifecycle.ts).
@@ -649,7 +610,6 @@ describe('lifecycle.killAll', () => {
     sessions.set('fast', fast);
     sessions.set('slow', slow);
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const p = L.killAll(sessions as any);
     let resolved: 'pending' | 'done' = 'pending';
     void p.then(() => { resolved = 'done'; });
@@ -670,13 +630,11 @@ describe('lifecycle.killAll', () => {
     b.pty.write = vi.fn(() => b.pty.__fireExit!());
     sessions.set('a', a);
     sessions.set('b', b);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await L.killAll(sessions as any);
     expect(bus().watcherStopCalls).toHaveLength(2);
   });
 
   it('killAll over an empty map resolves immediately with no side effects', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await expect(L.killAll(new Map() as any)).resolves.toBeUndefined();
     expect(bus().killCalls).toEqual([]);
     expect(bus().watcherStopCalls).toEqual([]);

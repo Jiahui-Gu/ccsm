@@ -46,7 +46,6 @@ interface PtyFakeBus {
   pendingCallbacks: Array<() => void>;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function bus(): PtyFakeBus { return (globalThis as any).__pf as PtyFakeBus; }
 
 vi.mock('node-pty', () => ({
@@ -172,14 +171,12 @@ function freshBus(): PtyFakeBus {
 
 describe('L4 PR-E: detach/reattach via headless buffer (#864)', () => {
   beforeEach(() => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (globalThis as any).__pf = freshBus();
     vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     delete (globalThis as any).__pf;
   });
 
@@ -218,7 +215,6 @@ describe('L4 PR-E: detach/reattach via headless buffer (#864)', () => {
 
     // Now register a wc (the freshly-mounted visible xterm).
     const wc = makeFakeWc(1);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     entry.attached.set(wc.id, wc as any);
 
     // A live chunk arrives strictly AFTER the snapshot — must be
@@ -245,7 +241,6 @@ describe('L4 PR-E: detach/reattach via headless buffer (#864)', () => {
 
     // Cycle 1 attach.
     const wc1 = makeFakeWc(1);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     entry.attached.set(wc1.id, wc1 as any);
     bus().onData!('A3');
     expect(wc1.received).toEqual([{ chunk: 'A3', seq: 3 }]);
@@ -269,7 +264,6 @@ describe('L4 PR-E: detach/reattach via headless buffer (#864)', () => {
     expect(snap.seq).toBeGreaterThan(3);
 
     const wc2 = makeFakeWc(2);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     entry.attached.set(wc2.id, wc2 as any);
     bus().onData!('C1');
     expect(wc2.received).toEqual([{ chunk: 'C1', seq: 7 }]);
@@ -287,7 +281,6 @@ describe('L4 PR-E: detach/reattach via headless buffer (#864)', () => {
     expect(snap.seq).toBe(9);
 
     const wc3 = makeFakeWc(3);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     entry.attached.set(wc3.id, wc3 as any);
     bus().onData!('E1');
     expect(wc3.received).toEqual([{ chunk: 'E1', seq: 10 }]);
@@ -325,7 +318,6 @@ describe('L4 PR-E: detach/reattach via headless buffer (#864)', () => {
         visibleTerminal.push(payload.chunk);
       }
     };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     entry.attached.set(wc.id, wc as any);
 
     // A live chunk arrives DURING the snapshot await; PR-B race window.
@@ -381,7 +373,6 @@ describe('L4 PR-E: detach/reattach via headless buffer (#864)', () => {
     // Now the warn MUST fire (visible consumer is present and the lag
     // is real-user-affecting).
     const wc = makeFakeWc(1);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     entry.attached.set(wc.id, wc as any);
     warnSpy.mockClear();
     for (let i = 0; i < threshold + 1; i++) {
