@@ -48,11 +48,32 @@ export function TerminalPane({ sessionId, cwd }: Props) {
   // app-effect subscriber dedupes and dispatches `applyTerminalFontSize`
   // to the registry. We RAF-coalesce so a fast scroll fires one resize
   // per frame instead of per wheel tick.
+  //
+  // Mouse-anchored scroll: before changing the font, we sample the
+  // logical line under the cursor (anchorLine = viewportY + offsetY/cellH).
+  // After the registry writes `term.options.fontSize` (synchronous reflow
+  // via the zustand subscriber), we read the new cell height and
+  // scrollToLine so the same anchorLine stays at the same screen-Y. This
+  // is what gives WT / iTerm2 their "zoom around the pointer" feel.
+  // Uses xterm internals (`_core._renderService.dimensions.css.cell`) —
+  // best-effort, wrapped in try/catch; on any failure we skip the
+  // re-anchor and the user still gets correct zoom, just without the
+  // pointer-fixing.
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
     let raf = 0;
     let pendingDelta = 0;
+    let pendingClientY = 0;
+    const readCellHeight = (term: unknown): number | null => {
+      try {
+        const core = (term as { _core?: { _renderService?: { dimensions?: { css?: { cell?: { height?: number } } } } } })._core;
+        const h = core?._renderService?.dimensions?.css?.cell?.height;
+        return typeof h === 'number' && h > 0 ? h : null;
+      } catch {
+        return null;
+      }
+    };
     const onWheel = (e: WheelEvent): void => {
       if (!e.ctrlKey) return;
       if (e.deltaY === 0) return;
@@ -63,10 +84,12 @@ export function TerminalPane({ sessionId, cwd }: Props) {
       // pinch gestures (typically large continuous deltaY) still feel
       // responsive because we step in the direction's sign only.
       pendingDelta += e.deltaY < 0 ? 1 : -1;
+      pendingClientY = e.clientY;
       if (raf) return;
       raf = requestAnimationFrame(() => {
         raf = 0;
         const delta = pendingDelta;
+        const clientY = pendingClientY;
         pendingDelta = 0;
         if (delta === 0) return;
         const cur = useStore.getState().terminalFontSizePx;
@@ -75,7 +98,48 @@ export function TerminalPane({ sessionId, cwd }: Props) {
           Math.min(TERMINAL_FONT_SIZE_MAX, cur + delta),
         );
         if (next === cur) return;
+        // Capture anchor before dispatch (cellH still reflects old font).
+        const active = getActiveEntry();
+        const term = active?.term;
+        let anchorLine: number | null = null;
+        let anchorScreenRow: number | null = null;
+        if (term) {
+          try {
+            const rect = host.getBoundingClientRect();
+            const offsetY = clientY - rect.top;
+            const cellHOld = readCellHeight(term);
+            const buf = term.buffer.active;
+            if (cellHOld != null && offsetY >= 0 && offsetY <= rect.height) {
+              anchorScreenRow = Math.floor(offsetY / cellHOld);
+              anchorLine = buf.viewportY + anchorScreenRow;
+            }
+          } catch {
+            /* anchor capture best-effort */
+          }
+        }
         useStore.getState().setTerminalFontSizePx(next);
+        // After dispatch, the registry has synchronously written
+        // term.options.fontSize and called fit.fit(); cell metrics now
+        // reflect the new font. Reposition so anchorLine stays under
+        // the cursor (modulo sub-cell rounding).
+        if (term && anchorLine != null && anchorScreenRow != null) {
+          try {
+            const cellHNew = readCellHeight(term);
+            const buf = term.buffer.active;
+            if (cellHNew != null) {
+              const desiredViewportY = anchorLine - anchorScreenRow;
+              const clamped = Math.max(
+                0,
+                Math.min(buf.baseY, desiredViewportY),
+              );
+              (term as unknown as {
+                scrollToLine?: (n: number) => void;
+              }).scrollToLine?.(clamped);
+            }
+          } catch {
+            /* re-anchor best-effort — skip on failure */
+          }
+        }
       });
     };
     host.addEventListener('wheel', onWheel, { passive: false, capture: true });

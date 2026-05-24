@@ -853,7 +853,29 @@ export function ensureAndShowEntry(
       } catch (e) {
         warn('xterm-warm', 'lazy apply fontSize failed', e);
       }
-      void runResizeReplayForEntry(sid);
+      // Reflow-only path: fit + pty.resize. No snapshot replay — replay
+      // does `term.reset()` + `term.write(snapshot)` which causes the
+      // CanvasAddon to nuke + repaint its texture atlas (visible flash)
+      // and recomputes viewportY against new cols, making the user's
+      // scroll position appear to jump. xterm's internal reflow
+      // (triggered by the fontSize option write above + the fit) keeps
+      // both the buffer and the cursor row stable.
+      try {
+        entry.fit.fit();
+      } catch (e) {
+        warn('xterm-warm', 'lazy apply fit failed', e);
+      }
+      try {
+        const pty = window.ccsmPty;
+        const p = pty?.resize(sid, entry.term.cols, entry.term.rows);
+        if (p && typeof (p as Promise<void>).then === 'function') {
+          void (p as Promise<void>).catch((e) =>
+            warn('xterm-warm', 'lazy apply pty.resize failed', e),
+          );
+        }
+      } catch (e) {
+        warn('xterm-warm', 'lazy apply pty.resize threw', e);
+      }
     }
   }
 
@@ -1004,9 +1026,13 @@ export function disposeEntry(
  *
  *   1. The ResizeObserver-driven flow in `usePtyAttach.warm.ts` (host
  *      container changed size — splitter drag, window resize, etc.).
- *   2. {@link applyTerminalFontSize} when the Ctrl+wheel zoom changes
- *      the font size (cells get bigger/smaller → cols/rows change in
- *      the same way as a container resize would).
+ *
+ * NOTE: NOT used by the Ctrl+wheel font-size zoom path. The snapshot
+ * replay's `term.reset()` + `term.write(snapshot)` causes CanvasAddon
+ * texture-atlas churn (visible flash) and its post-replay
+ * `scrollToLine(savedViewportY)` lands on the wrong row after a cols
+ * change. {@link applyTerminalFontSize} uses a reflow-only path
+ * instead (option write + `fit.fit()` + `pty.resize`).
  *
  * The snapshot replay is non-negotiable for alt-screen TUIs like claude:
  * SIGWINCH alone doesn't trigger a repaint until the next user input,
@@ -1014,8 +1040,7 @@ export function disposeEntry(
  * visible terminal looks stale until the user types.
  *
  * Caller is responsible for whatever serialization / debouncing it needs
- * (the RO path debounces 80 ms + uses an inFlight latch; the font-size
- * path runs immediately because each wheel tick is throttled by RAF).
+ * (the RO path debounces 80 ms + uses an inFlight latch).
  */
 export async function runResizeReplayForEntry(sid: string): Promise<void> {
   const pty = window.ccsmPty;
@@ -1098,25 +1123,38 @@ export async function runResizeReplayForEntry(sid: string): Promise<void> {
 /**
  * Apply a new terminal font size to the warm registry.
  *
- * Strategy (to avoid N concurrent snapshot IPCs when many sessions are
- * warmed): the ACTIVE entry gets the font applied + resize-replay run
- * immediately; all OTHER entries record `pendingFontSize`, which
- * {@link ensureAndShowEntry} consumes on next show.
+ * Strategy: the ACTIVE entry gets the font applied + a reflow-only resize
+ * pushed to its PTY immediately; all OTHER entries record
+ * `pendingFontSize`, which {@link ensureAndShowEntry} consumes on next
+ * show (same reflow-only primitive).
+ *
+ * Reflow-only (no snapshot replay): writing `term.options.fontSize`
+ * changes the cell metric and xterm reflows the existing buffer in
+ * place. We then `fit.fit()` to recompute cols/rows for the new metric
+ * and forward to PTY via `pty.resize` so the child sees SIGWINCH. We
+ * deliberately do NOT call {@link runResizeReplayForEntry} on the zoom
+ * path because:
+ *   1. `term.reset()` + `term.write(snapshot)` makes the CanvasAddon
+ *      drop its texture atlas and full-repaint — visible flash on every
+ *      wheel tick.
+ *   2. The snapshot replay's post-write `scrollToLine(savedViewportY)`
+ *      uses an absolute row number that no longer points to the same
+ *      logical content after cols-change reflow → jumpy scroll position.
+ * xterm's internal reflow preserves both buffer content and cursor row,
+ * so the user's reading position stays where it visually was modulo
+ * sub-cell rounding (the wheel handler in TerminalPane.tsx applies a
+ * mouse-anchor adjustment on top of this for WT/iTerm2-style feel).
  *
  * IME guard: if the active entry is mid-composition, defer — applying
  * `term.options.fontSize` reanchors the hidden textarea mid-edit and
- * makes the CJK preview box jump. We mark it pending instead, and the
- * next `compositionend` would not naturally trigger a re-apply, so this
- * is a known minor staleness for IME-heavy sessions. The user will
- * trigger another wheel event soon enough to retry. Subsequent
- * `applyTerminalFontSize` calls clear stale pending values automatically.
+ * makes the CJK preview box jump. We mark it pending instead.
  */
 export async function applyTerminalFontSize(px: number): Promise<void> {
   const active = getActiveEntry();
   for (const [sid, entry] of warm.entries()) {
     if (active && sid === active.sid) continue;
     // Record pending only when the entry's current font differs — saves
-    // a spurious resize-replay on next show when nothing actually changed.
+    // a spurious resize on next show when nothing actually changed.
     const cur = (entry.term.options as { fontSize?: number }).fontSize;
     if (cur === px) {
       entry.pendingFontSize = null;
@@ -1141,7 +1179,24 @@ export async function applyTerminalFontSize(px: number): Promise<void> {
     warn('xterm-warm', 'apply fontSize failed', e);
     return;
   }
-  await runResizeReplayForEntry(active.sid);
+  // Reflow-only: fit recomputes cols/rows for the new cell metric, then
+  // we forward to PTY. No snapshot replay (see docstring above).
+  try {
+    active.fit.fit();
+  } catch (e) {
+    warn('xterm-warm', 'apply fontSize fit failed', e);
+    return;
+  }
+  try {
+    const pty = window.ccsmPty;
+    if (!pty) return;
+    const p = pty.resize(active.sid, active.term.cols, active.term.rows);
+    if (p && typeof (p as Promise<void>).then === 'function') {
+      await (p as Promise<void>);
+    }
+  } catch (e) {
+    warn('xterm-warm', 'apply fontSize pty.resize failed', e);
+  }
 }
 
 /**
