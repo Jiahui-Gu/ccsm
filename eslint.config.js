@@ -16,6 +16,7 @@ export default [
       'scripts/**',
       'tests/**',
       'docs/**',
+      '.claude/**',
       'webpack.config.js',
       'postcss.config.js',
       'eslint.config.js'
