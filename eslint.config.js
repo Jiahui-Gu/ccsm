@@ -14,6 +14,7 @@ export default [
       'node_modules/**',
       'release/**',
       'scripts/**',
+      'scratch/**',
       'tests/**',
       'docs/**',
       '.claude/**',
