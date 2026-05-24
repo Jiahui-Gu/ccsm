@@ -1,6 +1,6 @@
 {
   "name": "ccsm",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "description": "CCSM (Claude Code Session Manager) — group-first manager for many Claude Code sessions",
   "productName": "CCSM",
   "license": "MIT",
