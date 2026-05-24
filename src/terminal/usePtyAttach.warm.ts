@@ -668,7 +668,41 @@ export function usePtyAttachWarm(
       })();
     };
 
-    const ro = new ResizeObserver(() => {
+    // Gate the replay on actual contentRect dimension change. Warm
+    // session switches reparent the entry's wrapper from the offscreen
+    // holder back to the live host, but this `host` div (per-pane,
+    // observed below) doesn't itself change size — so the offscreen
+    // ↔ live transition fires RO with dims identical to the live
+    // baseline. Without this gate, every warm switch ran the replay
+    // path which calls `entry.term.reset()` and re-applies a snapshot —
+    // wiping ydisp/baseY/scrollback. Dogfood frame log on the bug:
+    // viewportY 294 → 0, baseY 344 → 0, scrollHeight 6015 → 855 within
+    // ~80ms of B→A switch (the RO debounce window). Real user-driven
+    // resizes (window resize, splitter drag) still produce dim deltas
+    // and trigger the replay as before.
+    //
+    // First RO callback after observe() is treated as the live baseline
+    // (record dims, no replay). Subsequent ticks with identical dims
+    // are no-ops; only genuine dim changes schedule the replay.
+    let lastW = 0;
+    let lastH = 0;
+    let roBaseline = false;
+    const ro = new ResizeObserver((entries) => {
+      const r = entries[0]?.contentRect;
+      if (!r) return;
+      const w = Math.round(r.width);
+      const h = Math.round(r.height);
+      if (!roBaseline) {
+        lastW = w;
+        lastH = h;
+        roBaseline = true;
+        return;
+      }
+      if (w === lastW && h === lastH) {
+        return;
+      }
+      lastW = w;
+      lastH = h;
       if (debounce) clearTimeout(debounce);
       debounce = setTimeout(scheduleReplay, 80);
     });
