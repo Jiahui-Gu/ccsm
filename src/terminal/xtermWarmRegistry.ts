@@ -99,6 +99,15 @@ export type WarmEntry = {
   dataUnsubscribe: () => void;
   /** Updated on `showEntry`; used for LRU eviction. */
   lastAccessedAt: number;
+  /**
+   * Whether `term.open(wrapper)` has been called. Deferred from
+   * {@link allocEntry} to the first {@link ensureAndShowEntry} so the
+   * xterm renderer initializes against the visible host's real geometry
+   * rather than the 0x0 / visibility:hidden offscreen holder — the
+   * latter leaves the paint scheduler permanently quiesced under xterm
+   * 5.5's CanvasAddon/DOM renderer.
+   */
+  opened: boolean;
 };
 
 /**
@@ -318,8 +327,12 @@ function allocEntry(sid: string): WarmEntry {
   wrapper.setAttribute('data-ccsm-warm-sid', sid);
   wrapper.className = 'absolute inset-0';
   // Park under the offscreen holder until showEntry() reparents it.
+  // NOTE: do NOT call `term.open(wrapper)` here — xterm 5.5's renderer
+  // latches onto wrapper geometry at open() time, and the offscreen
+  // holder is 0x0 / visibility:hidden, which leaves the paint scheduler
+  // permanently quiesced. The first ensureAndShowEntry() calls open()
+  // against the visible host instead.
   getOffscreenHolder().appendChild(wrapper);
-  term.open(wrapper);
 
   // Per-entry PTY data subscription. Filters by sid (NOT by the global
   // active sid) so hidden sessions keep ingesting live output. The bytes
@@ -339,9 +352,44 @@ function allocEntry(sid: string): WarmEntry {
   entryRouters.set(sid, router);
   const pty = window.ccsmPty;
   let dataUnsubscribe = () => {};
+  // Diagnostic counters (dev-only — see probes below). Tracking the very
+  // first chunk per-entry is enough to bisect "did onData fire at all?"
+  // vs "did sid filter drop it?" vs "did router get stuck in buffering?".
+  let firstChunkLogged = false;
   if (pty?.onData) {
+    try {
+      log.event('warm.subscription.installed', { sid });
+    } catch {
+      /* probe failure tolerated */
+    }
     dataUnsubscribe = pty.onData((payload: { sid: string; chunk: string; seq: number }) => {
-      if (payload.sid !== sid) return;
+      if (payload.sid !== sid) {
+        if (!firstChunkLogged) {
+          // One-shot: the FIRST callback invocation that was filtered out
+          // by sid mismatch. Tells us callback fires but our sid doesn't
+          // match what main is broadcasting. count=0 sentinel.
+          firstChunkLogged = true;
+          try {
+            log.event('warm.data.filtered', { sid, count: 0, stage: 'sid-mismatch' });
+          } catch {
+            /* probe failure tolerated */
+          }
+        }
+        return;
+      }
+      if (!firstChunkLogged) {
+        firstChunkLogged = true;
+        try {
+          log.event('warm.data.received', {
+            sid,
+            bytes: payload.chunk.length,
+            count: 1,
+            stage: router.mode,
+          });
+        } catch {
+          /* probe failure tolerated */
+        }
+      }
       if (router.mode === 'buffering') {
         // Stash with seq so applySnapshot can drop dupes vs. the
         // serialized snapshot it's about to land.
@@ -366,6 +414,7 @@ function allocEntry(sid: string): WarmEntry {
     wrapper,
     dataUnsubscribe,
     lastAccessedAt: Date.now(),
+    opened: false,
   };
   warm.set(sid, entry);
 
@@ -425,6 +474,26 @@ export function ensureAndShowEntry(
     host.appendChild(entry.wrapper);
   } catch (e) {
     warn('xterm-warm', 'show reparent failed', e);
+  }
+
+  // First-time open: deferred from allocEntry so the xterm renderer
+  // initializes against real visible geometry rather than the 0x0
+  // offscreen holder (see WarmEntry.opened docs). Also fit() immediately
+  // so the canvas atlas sizes against non-zero dimensions; the
+  // cold-attach hook's later fit() call is then a no-op refresh.
+  if (!entry.opened) {
+    try {
+      entry.term.open(entry.wrapper);
+      entry.opened = true;
+      try {
+        entry.fit.fit();
+      } catch (e) {
+        warn('xterm-warm', 'initial fit failed', e);
+      }
+    } catch (e) {
+      warn('xterm-warm', 'term.open failed', e);
+      // Leave entry.opened=false; a future show may retry.
+    }
   }
 
   entry.lastAccessedAt = Date.now();
