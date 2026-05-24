@@ -247,7 +247,28 @@ export function createWindow(deps: CreateWindowDeps): BrowserWindow {
   //
   // Devs running a single probe by hand without the env still get
   // a normal centered visible window for debugging.
-  const hiddenForE2E = process.env.CCSM_E2E_HIDDEN === '1';
+  //
+  // Belt-and-braces: also auto-enable hidden mode when Chromium's
+  // `--enable-automation` switch is present. Playwright's
+  // `_electron.launch` (which drives every harness/dogfood/screenshot
+  // script in this repo) injects this switch unconditionally; same
+  // for puppeteer / chromedriver / selenium. This means a dogfood
+  // script that forgets to set CCSM_E2E_HIDDEN=1 STILL gets a
+  // hidden window instead of popping a visible one on the dev's
+  // desktop. Production launches (electron-builder packaged app,
+  // `npm run dev`) never set this switch, so they're unaffected.
+  // Explicit `CCSM_E2E_VISIBLE=1` opts out (for manual driving of
+  // a Playwright session you want to actually watch — e.g. recording
+  // a demo). Explicit `CCSM_E2E_HIDDEN=0` also opts out and takes
+  // precedence over the automation auto-detect, matching the
+  // existing semantics callers like harness-dnd.mjs rely on.
+  const explicitHidden = process.env.CCSM_E2E_HIDDEN;
+  const wantsVisible =
+    process.env.CCSM_E2E_VISIBLE === '1' || explicitHidden === '0';
+  const automationDriven =
+    !!app.commandLine && app.commandLine.hasSwitch('enable-automation');
+  const hiddenForE2E =
+    !wantsVisible && (explicitHidden === '1' || automationDriven);
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
