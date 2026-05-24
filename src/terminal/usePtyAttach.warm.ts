@@ -519,13 +519,18 @@ export function usePtyAttachWarm(
         }
       } catch (err) {
         if (cancelled || requestedSidRef.current !== sessionId) return;
-        // Minor 4 (cold review): if the cold path threw (spawn_failed,
-        // attach_failed_after_spawn, etc.), the entry is half-initialized
-        // and its listener is still buffering. Dispose so the next Retry
-        // walks a clean cold path.
-        if (isCold) {
-          disposeEntry(sessionId, 'cancelled-mid-cold-attach');
-        }
+        // Don't dispose the entry on a real attach error (e.g. spawn_failed,
+        // attach_failed_after_spawn). Keep the wrapper + term mounted so
+        // the user sees the error overlay over the existing terminal DOM
+        // and can hit Retry without a flash of blank host. The router is
+        // left in 'buffering' mode — Retry's cold-attach path will
+        // re-resolve `applySnapshot` with the new snapSeq and flush.
+        //
+        // The mid-cancel dispose paths above (lines guarded by
+        // `cancelled || requestedSidRef.current !== sessionId`) still
+        // tear down — that's the case the original Minor 4 fix was for
+        // (user switched away mid-cold-attach), where keeping the entry
+        // would strand a buffering listener for a session nobody is on.
         const message = err instanceof Error ? err.message : String(err);
         setState({ kind: 'error', message }, 'attach-threw');
       }
