@@ -76,6 +76,7 @@ import {
   getActiveSid,
   getWarmCacheSize,
   applyTerminalScrollback,
+  applyTerminalFontSize,
   __resetRegistryForTests,
 } from '../../src/terminal/xtermWarmRegistry';
 
@@ -383,6 +384,131 @@ describe('xtermWarmRegistry', () => {
       applyTerminalScrollback(6000);
       expect(writes).toBe(1);
       expect(proxy.scrollback).toBe(6000);
+    });
+  });
+
+  // Followup for PR #1368 (silky Ctrl+wheel zoom): lock the contract
+  // that the font-size apply path is reflow-only — it must NOT call
+  // `runResizeReplayForEntry` (term.reset + snapshot rewrite, the
+  // source of the per-tick flash) and it must honor the IME composing
+  // guard by deferring into `pendingFontSize`.
+  describe('applyTerminalFontSize (PR #1368)', () => {
+    function augmentPtyMock(): {
+      resize: ReturnType<typeof vi.fn>;
+      getBufferSnapshot: ReturnType<typeof vi.fn>;
+    } {
+      const resize = vi.fn().mockResolvedValue(undefined);
+      const getBufferSnapshot = vi
+        .fn()
+        .mockResolvedValue({ snapshot: '', seq: 0 });
+      const cur = (window as unknown as { ccsmPty: Record<string, unknown> })
+        .ccsmPty;
+      cur.resize = resize;
+      cur.getBufferSnapshot = getBufferSnapshot;
+      return { resize, getBufferSnapshot };
+    }
+
+    it('active entry: writes term.options.fontSize, calls fit + pty.resize, does NOT invoke replay (no term.reset, no getBufferSnapshot)', async () => {
+      const { resize, getBufferSnapshot } = augmentPtyMock();
+      const { entry } = ensureAndShowEntry('sid-a', host);
+      const term = entry.term as unknown as {
+        reset: ReturnType<typeof vi.fn>;
+        options: { fontSize?: number };
+      };
+      const fitSpy = entry.fit.fit as unknown as ReturnType<typeof vi.fn>;
+      term.reset.mockClear();
+      fitSpy.mockClear();
+      resize.mockClear();
+      getBufferSnapshot.mockClear();
+
+      await applyTerminalFontSize(20);
+
+      // Immediate write to the active term.
+      expect(term.options.fontSize).toBe(20);
+      // Reflow primitive: fit once + pty.resize once.
+      expect(fitSpy).toHaveBeenCalledTimes(1);
+      expect(resize).toHaveBeenCalledTimes(1);
+      expect(resize).toHaveBeenCalledWith('sid-a', entry.term.cols, entry.term.rows);
+      // Negative assertions — the smoking-gun signals of the old
+      // replay path. If any of these regress, the per-tick flash is back.
+      expect(term.reset).not.toHaveBeenCalled();
+      expect(getBufferSnapshot).not.toHaveBeenCalled();
+      // pendingFontSize cleared on the active entry after a successful apply.
+      expect(entry.pendingFontSize).toBeNull();
+    });
+
+    it('IME composing: defers to pendingFontSize and does NOT mutate term.options.fontSize or call fit/resize', async () => {
+      const { resize, getBufferSnapshot } = augmentPtyMock();
+      const { entry } = ensureAndShowEntry('sid-a', host);
+      const term = entry.term as unknown as {
+        reset: ReturnType<typeof vi.fn>;
+        options: { fontSize?: number };
+      };
+      const fitSpy = entry.fit.fit as unknown as ReturnType<typeof vi.fn>;
+      // Baseline font; mark composing.
+      term.options.fontSize = 13;
+      entry.composing = true;
+      term.reset.mockClear();
+      fitSpy.mockClear();
+      resize.mockClear();
+
+      await applyTerminalFontSize(18);
+
+      // Font NOT applied while composing — preview box stability.
+      expect(term.options.fontSize).toBe(13);
+      expect(entry.pendingFontSize).toBe(18);
+      // No reflow side-effects either.
+      expect(fitSpy).not.toHaveBeenCalled();
+      expect(resize).not.toHaveBeenCalled();
+      expect(term.reset).not.toHaveBeenCalled();
+      expect(getBufferSnapshot).not.toHaveBeenCalled();
+
+      // Composition ends + the user switches back to this entry (via
+      // ensureAndShowEntry): the lazy-apply branch consumes the pending
+      // value via the same reflow-only primitive.
+      entry.composing = false;
+      fitSpy.mockClear();
+      resize.mockClear();
+      // ensureAndShowEntry on the already-active sid still runs the
+      // pendingFontSize consumer.
+      ensureAndShowEntry('sid-a', host);
+      expect(term.options.fontSize).toBe(18);
+      expect(entry.pendingFontSize).toBeNull();
+      expect(fitSpy).toHaveBeenCalledTimes(1);
+      expect(resize).toHaveBeenCalledTimes(1);
+      // Still no replay on the lazy-apply path.
+      expect(term.reset).not.toHaveBeenCalled();
+      expect(getBufferSnapshot).not.toHaveBeenCalled();
+    });
+
+    it('non-active entries: records pendingFontSize only, does NOT mutate term.options.fontSize nor invoke replay', async () => {
+      const { resize, getBufferSnapshot } = augmentPtyMock();
+      const { entry: a } = ensureAndShowEntry('sid-a', host);
+      const host2 = document.createElement('div');
+      document.body.appendChild(host2);
+      const { entry: b } = ensureAndShowEntry('sid-b', host2);
+      // sid-b is now active; sid-a is the background entry under test.
+      const termA = a.term as unknown as {
+        reset: ReturnType<typeof vi.fn>;
+        options: { fontSize?: number };
+      };
+      termA.options.fontSize = 13;
+      a.pendingFontSize = null;
+      termA.reset.mockClear();
+      resize.mockClear();
+      getBufferSnapshot.mockClear();
+
+      await applyTerminalFontSize(22);
+
+      // Background entry: pending recorded, font itself untouched.
+      expect(a.pendingFontSize).toBe(22);
+      expect(termA.options.fontSize).toBe(13);
+      // And definitely no replay attempted for the background entry.
+      expect(termA.reset).not.toHaveBeenCalled();
+      expect(getBufferSnapshot).not.toHaveBeenCalled();
+      // The active entry (sid-b) is what received the immediate apply.
+      expect((b.term.options as { fontSize?: number }).fontSize).toBe(22);
+      document.body.removeChild(host2);
     });
   });
 });
