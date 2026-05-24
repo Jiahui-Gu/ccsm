@@ -86,6 +86,11 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
+          # actions/checkout@v4 defaults to fetch-tags: false even with
+          # fetch-depth: 0. We rely on the local tag refs below to
+          # compute `git rev-list <CURRENT_TAG>..HEAD`, so we must
+          # explicitly fetch them.
+          fetch-tags: true
           # Checkout with the PAT so the later `git push` carries PAT auth
           # and the tag-push event is delivered to release.yml.
           token: ${{ secrets.RELEASE_TOKEN }}
@@ -159,8 +164,8 @@ jobs:
             echo "Mode: \`tag-current\` — \`$CURRENT_TAG\` missing, will tag HEAD." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          # Tag exists. Fetch it locally and count commits ahead.
-          git fetch --tags --quiet origin "$CURRENT_TAG"
+          # Tag exists. The checkout step fetched all tags (fetch-tags: true),
+          # so it is already a local ref. Count commits ahead.
           ahead=$(git rev-list --count "$CURRENT_TAG..HEAD")
           echo "ahead=$ahead" >> "$GITHUB_OUTPUT"
           if [ "$ahead" = "0" ]; then
