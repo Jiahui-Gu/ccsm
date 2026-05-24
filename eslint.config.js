@@ -64,6 +64,8 @@ export default [
         Event: 'readonly',
         EventTarget: 'readonly',
         MouseEvent: 'readonly',
+        WheelEvent: 'readonly',
+        EventListenerOptions: 'readonly',
         PointerEvent: 'readonly',
         FocusEvent: 'readonly',
         DragEvent: 'readonly',

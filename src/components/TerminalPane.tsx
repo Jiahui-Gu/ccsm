@@ -1,4 +1,4 @@
-import { useCallback, useRef, type MouseEvent } from 'react';
+import { useCallback, useEffect, useRef, type MouseEvent } from 'react';
 import '@xterm/xterm/css/xterm.css';
 import { useTranslation } from '../i18n/useTranslation';
 import { usePtyAttachWarm, type PtyAttachState } from '../terminal/usePtyAttach.warm';
@@ -6,6 +6,11 @@ import { useAtBottom } from '../terminal/useAtBottom';
 import { getActiveEntry } from '../terminal/xtermWarmRegistry';
 import { terminalCopy, terminalPaste } from '../terminal/paste';
 import { ScrollToBottomButton } from './ScrollToBottomButton';
+import { useStore } from '../stores/store';
+import {
+  TERMINAL_FONT_SIZE_MAX,
+  TERMINAL_FONT_SIZE_MIN,
+} from '../stores/slices/types';
 
 // TerminalPane is the host shell for the per-session warm xterm view.
 // The registry (`src/terminal/xtermWarmRegistry.ts`) owns the actual
@@ -31,6 +36,54 @@ export function TerminalPane({ sessionId, cwd }: Props) {
   // while ready (see ScrollToBottomButton). We keep the hook subscribed
   // so the detection logic (and its tests) stays live for future use.
   const { scrollToBottom } = useAtBottom(sessionId);
+
+  // Ctrl+MouseWheel zoom for the terminal font size. We attach via
+  // useEffect rather than React's `onWheel` prop because React synthesizes
+  // wheel events as passive on the document root (cannot preventDefault),
+  // and we need to suppress both the page-zoom default AND xterm's own
+  // wheel-to-scroll handler when Ctrl is held. Capture phase + non-passive
+  // is the only way that works across Chromium versions.
+  //
+  // The store action is no-op on equal value (clamped 8–32), and the
+  // app-effect subscriber dedupes and dispatches `applyTerminalFontSize`
+  // to the registry. We RAF-coalesce so a fast scroll fires one resize
+  // per frame instead of per wheel tick.
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    let raf = 0;
+    let pendingDelta = 0;
+    const onWheel = (e: WheelEvent): void => {
+      if (!e.ctrlKey) return;
+      if (e.deltaY === 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      // Wheel-up (deltaY < 0) zooms IN (larger font); wheel-down zooms
+      // out. Step by 1 per wheel notch regardless of |deltaY| — touchpad
+      // pinch gestures (typically large continuous deltaY) still feel
+      // responsive because we step in the direction's sign only.
+      pendingDelta += e.deltaY < 0 ? 1 : -1;
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        const delta = pendingDelta;
+        pendingDelta = 0;
+        if (delta === 0) return;
+        const cur = useStore.getState().terminalFontSizePx;
+        const next = Math.max(
+          TERMINAL_FONT_SIZE_MIN,
+          Math.min(TERMINAL_FONT_SIZE_MAX, cur + delta),
+        );
+        if (next === cur) return;
+        useStore.getState().setTerminalFontSizePx(next);
+      });
+    };
+    host.addEventListener('wheel', onWheel, { passive: false, capture: true });
+    return () => {
+      host.removeEventListener('wheel', onWheel, { capture: true } as EventListenerOptions);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, []);
 
   const onContextMenu = useCallback(
     (e: MouseEvent<HTMLDivElement>) => {

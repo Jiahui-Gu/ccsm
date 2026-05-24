@@ -60,6 +60,7 @@ import {
   ensureAndShowEntry,
   getActiveSid,
   getEntry,
+  runResizeReplayForEntry,
 } from './xtermWarmRegistry';
 
 const writeAsync = (
@@ -647,91 +648,6 @@ export function usePtyAttachWarm(
     let replayInFlight = false;
     let replayPending = false;
 
-    const runResizeReplay = async (): Promise<void> => {
-      const pty = window.ccsmPty;
-      const entry = getEntry(sessionId);
-      if (cancelled || !pty || !entry || !entry.opened) return;
-      // Snapshot pre-resize scroll state.
-      let wasAtBottom = true;
-      let savedViewportY = 0;
-      try {
-        const buf = entry.term.buffer.active;
-        wasAtBottom = buf.baseY - buf.viewportY <= 1;
-        savedViewportY = buf.viewportY;
-      } catch {
-        /* default: assume at-bottom */
-      }
-      try {
-        entry.fit.fit();
-      } catch (e) {
-        warn('attach-warm', 'resize fit failed', e);
-        return;
-      }
-      const cols = entry.term.cols;
-      const rows = entry.term.rows;
-      try {
-        const p = pty.resize(sessionId, cols, rows);
-        if (p && typeof (p as Promise<void>).then === 'function') {
-          await (p as Promise<void>);
-        }
-      } catch (e) {
-        warn('attach-warm', 'resize pty.resize failed', e);
-      }
-      if (cancelled) return;
-      // Pull a fresh snapshot from the (now-reflowed) headless buffer
-      // and replay it. Same dedupe contract as the cold-attach path —
-      // applySnapshot drains live chunks with seq > snap.seq and flips
-      // the router back to 'live'.
-      let snap: { snapshot: string; seq: number };
-      try {
-        snap = (await pty.getBufferSnapshot(sessionId)) as {
-          snapshot: string;
-          seq: number;
-        };
-      } catch (e) {
-        warn('attach-warm', 'resize snapshot fetch failed', e);
-        return;
-      }
-      if (cancelled) return;
-      const entry2 = getEntry(sessionId);
-      if (!entry2 || !entry2.opened) return;
-      try {
-        entry2.term.reset();
-      } catch (e) {
-        warn('attach-warm', 'resize reset failed', e);
-      }
-      if (snap.snapshot) {
-        await new Promise<void>((resolve) => {
-          try {
-            entry2.term.write(snap.snapshot, () => resolve());
-          } catch {
-            resolve();
-          }
-        });
-      }
-      applySnapshot(sessionId, snap.seq);
-      // Drain queued writes before reading viewport state, then restore
-      // scroll position.
-      await new Promise<void>((resolve) => {
-        try {
-          entry2.term.write('', () => resolve());
-        } catch {
-          resolve();
-        }
-      });
-      try {
-        if (wasAtBottom) {
-          entry2.term.scrollToBottom();
-        } else {
-          (entry2.term as unknown as {
-            scrollToLine?: (n: number) => void;
-          }).scrollToLine?.(savedViewportY);
-        }
-      } catch {
-        /* best-effort */
-      }
-    };
-
     const scheduleReplay = (): void => {
       if (replayInFlight) {
         replayPending = true;
@@ -740,10 +656,10 @@ export function usePtyAttachWarm(
       replayInFlight = true;
       void (async () => {
         try {
-          await runResizeReplay();
+          await runResizeReplayForEntry(sessionId);
           while (replayPending && !cancelled) {
             replayPending = false;
-            await runResizeReplay();
+            await runResizeReplayForEntry(sessionId);
           }
         } finally {
           replayInFlight = false;

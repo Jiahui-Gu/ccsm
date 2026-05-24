@@ -30,7 +30,7 @@ import { ClipboardAddon } from '@xterm/addon-clipboard';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { CanvasAddon } from '@xterm/addon-canvas';
 import { useStore } from '../stores/store';
-import { SCROLLBACK_LINES_DEFAULT } from '../stores/slices/types';
+import { SCROLLBACK_LINES_DEFAULT, TERMINAL_FONT_SIZE_DEFAULT } from '../stores/slices/types';
 import { warn, log } from '../shared/log';
 import { pasteIntoActivePty } from './paste';
 
@@ -125,6 +125,16 @@ export type WarmEntry = {
   /** All input-side disposers (composition listeners, capture-paste,
    *  selection-copy, key handler). Drained in {@link disposeEntry}. */
   inputDisposers: Array<() => void>;
+  /**
+   * Pending terminal font-size to apply on next show. Set by
+   * {@link applyTerminalFontSize} for non-active warm entries when the
+   * global Ctrl+wheel zoom changes — applying live to every hidden entry
+   * would fan out N snapshot IPCs concurrently and stutter the UI. We
+   * apply lazily in {@link ensureAndShowEntry} just before reparent, and
+   * run a single resize-replay for the entry being shown. Null means
+   * the entry's current `term.options.fontSize` is already up to date.
+   */
+  pendingFontSize: number | null;
 };
 
 /**
@@ -299,9 +309,11 @@ function allocEntry(sid: string): WarmEntry {
 
   const scrollback =
     useStore.getState().scrollbackLines ?? SCROLLBACK_LINES_DEFAULT;
+  const fontSize =
+    useStore.getState().terminalFontSizePx ?? TERMINAL_FONT_SIZE_DEFAULT;
   const term = new Terminal({
     fontFamily: 'Cascadia Mono, Consolas, "Courier New", monospace',
-    fontSize: 13,
+    fontSize,
     cursorBlink: false,
     allowProposedApi: true,
     scrollback,
@@ -458,6 +470,7 @@ function allocEntry(sid: string): WarmEntry {
     imeCompositionStartedAt: 0,
     keyboardPasteHandled: false,
     inputDisposers: [],
+    pendingFontSize: null,
   };
   warm.set(sid, entry);
 
@@ -824,6 +837,26 @@ export function ensureAndShowEntry(
     /* probe handle is best-effort */
   }
 
+  // Consume pendingFontSize from a previous Ctrl+wheel zoom that landed
+  // while this entry was hidden. Apply the font option synchronously so
+  // the cell metrics change before paint, then fire-and-forget the
+  // resize-replay (snapshot IPC + reflow) — same primitive the active
+  // path runs eagerly. Cold entries (just allocated) read the current
+  // store value at construction, so they never have a pending mismatch.
+  if (entry.pendingFontSize != null) {
+    const px = entry.pendingFontSize;
+    const cur = (entry.term.options as { fontSize?: number }).fontSize;
+    entry.pendingFontSize = null;
+    if (cur !== px) {
+      try {
+        entry.term.options.fontSize = px;
+      } catch (e) {
+        warn('xterm-warm', 'lazy apply fontSize failed', e);
+      }
+      void runResizeReplayForEntry(sid);
+    }
+  }
+
   if (!isCold) {
     // Warm path probe — fires only on cache hit. Cold path emits
     // `terminal.warmAlloc` from `allocEntry`. Includes viewport
@@ -956,6 +989,152 @@ export function disposeEntry(
   } catch {
     /* probe failure tolerated */
   }
+}
+
+/**
+ * Refit the entry's xterm against its host, push the new cols/rows to the
+ * PTY, then pull a fresh snapshot and replay it. Used by:
+ *
+ *   1. The ResizeObserver-driven flow in `usePtyAttach.warm.ts` (host
+ *      container changed size — splitter drag, window resize, etc.).
+ *   2. {@link applyTerminalFontSize} when the Ctrl+wheel zoom changes
+ *      the font size (cells get bigger/smaller → cols/rows change in
+ *      the same way as a container resize would).
+ *
+ * The snapshot replay is non-negotiable for alt-screen TUIs like claude:
+ * SIGWINCH alone doesn't trigger a repaint until the next user input,
+ * so without pulling + replaying the (now-reflowed) headless buffer the
+ * visible terminal looks stale until the user types.
+ *
+ * Caller is responsible for whatever serialization / debouncing it needs
+ * (the RO path debounces 80 ms + uses an inFlight latch; the font-size
+ * path runs immediately because each wheel tick is throttled by RAF).
+ */
+export async function runResizeReplayForEntry(sid: string): Promise<void> {
+  const pty = window.ccsmPty;
+  const entry = getEntry(sid);
+  if (!pty || !entry || !entry.opened) return;
+  // Snapshot pre-resize scroll state — preserves user's reading position
+  // when they were scrolled up; otherwise we snap to bottom.
+  let wasAtBottom = true;
+  let savedViewportY = 0;
+  try {
+    const buf = entry.term.buffer.active;
+    wasAtBottom = buf.baseY - buf.viewportY <= 1;
+    savedViewportY = buf.viewportY;
+  } catch {
+    /* default: assume at-bottom */
+  }
+  try {
+    entry.fit.fit();
+  } catch (e) {
+    warn('xterm-warm', 'resize fit failed', e);
+    return;
+  }
+  const cols = entry.term.cols;
+  const rows = entry.term.rows;
+  try {
+    const p = pty.resize(sid, cols, rows);
+    if (p && typeof (p as Promise<void>).then === 'function') {
+      await (p as Promise<void>);
+    }
+  } catch (e) {
+    warn('xterm-warm', 'resize pty.resize failed', e);
+  }
+  let snap: { snapshot: string; seq: number };
+  try {
+    snap = (await pty.getBufferSnapshot(sid)) as {
+      snapshot: string;
+      seq: number;
+    };
+  } catch (e) {
+    warn('xterm-warm', 'resize snapshot fetch failed', e);
+    return;
+  }
+  const entry2 = getEntry(sid);
+  if (!entry2 || !entry2.opened) return;
+  try {
+    entry2.term.reset();
+  } catch (e) {
+    warn('xterm-warm', 'resize reset failed', e);
+  }
+  if (snap.snapshot) {
+    await new Promise<void>((resolve) => {
+      try {
+        entry2.term.write(snap.snapshot, () => resolve());
+      } catch {
+        resolve();
+      }
+    });
+  }
+  applySnapshot(sid, snap.seq);
+  await new Promise<void>((resolve) => {
+    try {
+      entry2.term.write('', () => resolve());
+    } catch {
+      resolve();
+    }
+  });
+  try {
+    if (wasAtBottom) {
+      entry2.term.scrollToBottom();
+    } else {
+      (entry2.term as unknown as {
+        scrollToLine?: (n: number) => void;
+      }).scrollToLine?.(savedViewportY);
+    }
+  } catch {
+    /* best-effort */
+  }
+}
+
+/**
+ * Apply a new terminal font size to the warm registry.
+ *
+ * Strategy (to avoid N concurrent snapshot IPCs when many sessions are
+ * warmed): the ACTIVE entry gets the font applied + resize-replay run
+ * immediately; all OTHER entries record `pendingFontSize`, which
+ * {@link ensureAndShowEntry} consumes on next show.
+ *
+ * IME guard: if the active entry is mid-composition, defer — applying
+ * `term.options.fontSize` reanchors the hidden textarea mid-edit and
+ * makes the CJK preview box jump. We mark it pending instead, and the
+ * next `compositionend` would not naturally trigger a re-apply, so this
+ * is a known minor staleness for IME-heavy sessions. The user will
+ * trigger another wheel event soon enough to retry. Subsequent
+ * `applyTerminalFontSize` calls clear stale pending values automatically.
+ */
+export async function applyTerminalFontSize(px: number): Promise<void> {
+  const active = getActiveEntry();
+  for (const [sid, entry] of warm.entries()) {
+    if (active && sid === active.sid) continue;
+    // Record pending only when the entry's current font differs — saves
+    // a spurious resize-replay on next show when nothing actually changed.
+    const cur = (entry.term.options as { fontSize?: number }).fontSize;
+    if (cur === px) {
+      entry.pendingFontSize = null;
+    } else {
+      entry.pendingFontSize = px;
+    }
+  }
+  if (!active) return;
+  if (active.composing) {
+    active.pendingFontSize = px;
+    return;
+  }
+  try {
+    const cur = (active.term.options as { fontSize?: number }).fontSize;
+    if (cur === px) {
+      active.pendingFontSize = null;
+      return;
+    }
+    active.term.options.fontSize = px;
+    active.pendingFontSize = null;
+  } catch (e) {
+    warn('xterm-warm', 'apply fontSize failed', e);
+    return;
+  }
+  await runResizeReplayForEntry(active.sid);
 }
 
 /**

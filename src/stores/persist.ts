@@ -34,6 +34,7 @@ export const PERSISTED_KEYS = [
   'theme',
   'fontSize',
   'fontSizePx',
+  'terminalFontSizePx',
 ] as const;
 
 export type PersistedKey = typeof PERSISTED_KEYS[number];
@@ -55,6 +56,9 @@ export interface PersistedState {
   fontSize?: FontSize;
   /** Preferred over legacy `fontSize` when present. 12–16 px scale. */
   fontSizePx?: FontSizePx;
+  /** Terminal (xterm) font size in px. Bounds 8–32, default 13. Driven by
+   *  Ctrl+MouseWheel over the terminal pane. Global across sessions. */
+  terminalFontSizePx?: number;
 }
 
 export async function loadPersisted(): Promise<PersistedState | null> {

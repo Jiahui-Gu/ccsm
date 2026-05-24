@@ -25,6 +25,14 @@ export const SCROLLBACK_LINES_DEFAULT = 1500;
 export const SCROLLBACK_LINES_MIN = 100;
 export const SCROLLBACK_LINES_MAX = 50000;
 
+/** Global terminal (xterm) font size in px. Distinct from `fontSizePx`,
+ *  which controls the app's UI font (12–16) — `terminalFontSizePx` is the
+ *  xterm `fontSize` option, driven by Ctrl+MouseWheel, with broader
+ *  bounds. Persisted; single value across all sessions. */
+export const TERMINAL_FONT_SIZE_DEFAULT = 13;
+export const TERMINAL_FONT_SIZE_MIN = 8;
+export const TERMINAL_FONT_SIZE_MAX = 32;
+
 export type EndpointKind =
   | 'anthropic'
   | 'openai-compat'
@@ -70,6 +78,10 @@ export type State = {
   fontSize: FontSize;
   fontSizePx: FontSizePx;
   scrollbackLines: number;
+  /** xterm font size in px. Global, persisted, default 13, bounds 8–32.
+   *  Controlled by Ctrl+MouseWheel over the terminal pane. Applied to the
+   *  active warm entry immediately and lazily to others on next show. */
+  terminalFontSizePx: number;
   flashStates: Record<string, boolean>;
   hydrated: boolean;
   installerCorrupt: boolean;
@@ -159,6 +171,7 @@ export type Actions = {
   setFontSize: (size: FontSize) => void;
   setFontSizePx: (px: FontSizePx) => void;
   setScrollbackLines: (n: number) => void;
+  setTerminalFontSizePx: (px: number) => void;
   setSidebarWidth: (px: number) => void;
   resetSidebarWidth: () => void;
 

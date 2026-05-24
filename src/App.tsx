@@ -27,6 +27,7 @@ import { useFlushOnBeforeUnload } from './app-effects/useFlushOnBeforeUnload';
 import { useLanguageEffect } from './app-effects/useLanguageEffect';
 import { useAgentEventBridge } from './app-effects/useAgentEventBridge';
 import { useShortcutHandlers } from './app-effects/useShortcutHandlers';
+import { useTerminalFontSize } from './app-effects/useTerminalFontSize';
 import { useSessionActivateBridge } from './app-effects/useSessionActivateBridge';
 import { useFocusBridge } from './app-effects/useFocusBridge';
 import { useUpdateDownloadedBridge } from './app-effects/useUpdateDownloadedBridge';
@@ -147,6 +148,11 @@ export default function App() {
 
   // Theme application — reactive to user choice + (when system) OS scheme.
   useThemeEffect(theme);
+
+  // Ctrl+MouseWheel terminal zoom bridge — subscribes to `terminalFontSizePx`
+  // store field and dispatches font apply + resize-replay to the warm
+  // xterm registry. The wheel listener itself lives on TerminalPane.
+  useTerminalFontSize();
 
   // Pipe `session:state` IPC events into the store via subscribeAgentEvents.
   // Drives the AgentIcon attention halo for non-active sessions.
