@@ -10,6 +10,7 @@ import {
   legacyFontSizeToPx,
   sanitizeFontSizePx,
   sanitizeScrollbackLines,
+  sanitizeTerminalFontSizePx,
   resolvePersistedSidebarWidth,
 } from './slices/appearanceSlice';
 import { createInstallerSlice } from './slices/installerSlice';
@@ -103,6 +104,9 @@ export async function hydrateStore(): Promise<void> {
       fontSizePx: persisted.fontSizePx !== undefined
         ? sanitizeFontSizePx(persisted.fontSizePx)
         : legacyFontSizeToPx(persisted.fontSize ?? 'md'),
+      ...(persisted.terminalFontSizePx !== undefined
+        ? { terminalFontSizePx: sanitizeTerminalFontSizePx(persisted.terminalFontSizePx) }
+        : {}),
     });
   }
   if (persistedScrollback !== null) {

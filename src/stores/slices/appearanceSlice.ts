@@ -16,6 +16,9 @@ import {
   SCROLLBACK_LINES_DEFAULT,
   SCROLLBACK_LINES_MAX,
   SCROLLBACK_LINES_MIN,
+  TERMINAL_FONT_SIZE_DEFAULT,
+  TERMINAL_FONT_SIZE_MAX,
+  TERMINAL_FONT_SIZE_MIN,
 } from './types';
 
 /** Map the legacy `sm`/`md`/`lg` enum to the numeric pixel scale. The old
@@ -56,6 +59,20 @@ export function sanitizeScrollbackLines(raw: unknown): number {
   n = Math.round(n);
   if (n < SCROLLBACK_LINES_MIN) return SCROLLBACK_LINES_MIN;
   if (n > SCROLLBACK_LINES_MAX) return SCROLLBACK_LINES_MAX;
+  return n;
+}
+
+/** Clamp + integerize a raw terminal-font-size value into the 8–32 range.
+ *  Used for both Ctrl+wheel updates and persisted-snapshot rehydration. */
+export function sanitizeTerminalFontSizePx(raw: unknown): number {
+  let n: number;
+  if (typeof raw === 'number') n = raw;
+  else if (typeof raw === 'string' && raw.length > 0) n = Number(raw);
+  else return TERMINAL_FONT_SIZE_DEFAULT;
+  if (!Number.isFinite(n)) return TERMINAL_FONT_SIZE_DEFAULT;
+  n = Math.round(n);
+  if (n < TERMINAL_FONT_SIZE_MIN) return TERMINAL_FONT_SIZE_MIN;
+  if (n > TERMINAL_FONT_SIZE_MAX) return TERMINAL_FONT_SIZE_MAX;
   return n;
 }
 
@@ -104,15 +121,17 @@ export type AppearanceSlice = Pick<
   | 'fontSize'
   | 'fontSizePx'
   | 'scrollbackLines'
+  | 'terminalFontSizePx'
   | 'setTheme'
   | 'setFontSize'
   | 'setFontSizePx'
   | 'setScrollbackLines'
+  | 'setTerminalFontSizePx'
   | 'setSidebarWidth'
   | 'resetSidebarWidth'
 >;
 
-export function createAppearanceSlice(set: SetFn, _get: GetFn): AppearanceSlice {
+export function createAppearanceSlice(set: SetFn, get: GetFn): AppearanceSlice {
   return {
     // initial state
     sidebarWidth: SIDEBAR_WIDTH_DEFAULT,
@@ -120,6 +139,7 @@ export function createAppearanceSlice(set: SetFn, _get: GetFn): AppearanceSlice 
     fontSize: 'md',
     fontSizePx: 14,
     scrollbackLines: SCROLLBACK_LINES_DEFAULT,
+    terminalFontSizePx: TERMINAL_FONT_SIZE_DEFAULT,
 
     // actions
     setTheme: (theme) => set({ theme }),
@@ -129,6 +149,13 @@ export function createAppearanceSlice(set: SetFn, _get: GetFn): AppearanceSlice 
       set({ fontSizePx, fontSize: pxToLegacyFontSize(fontSizePx) }),
     setScrollbackLines: (n) =>
       set({ scrollbackLines: sanitizeScrollbackLines(n) }),
+    setTerminalFontSizePx: (px) => {
+      const next = sanitizeTerminalFontSizePx(px);
+      // No-op on equal value — avoids spurious snapshot-replay work
+      // downstream (`applyTerminalFontSize` runs a real resize pipeline).
+      if (get().terminalFontSizePx === next) return;
+      set({ terminalFontSizePx: next });
+    },
     setSidebarWidth: (px) => set({ sidebarWidth: sanitizeSidebarWidth(px) }),
     resetSidebarWidth: () => set({ sidebarWidth: SIDEBAR_WIDTH_DEFAULT }),
   };
