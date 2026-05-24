@@ -130,9 +130,18 @@ jobs:
       # upload via softprops/action-gh-release below — that gives us a
       # single source of release metadata and keeps `publish: github` in
       # package.json reserved for the update feed only.
+      # Retry wraps only the electron-builder invocation — it downloads
+      # several binary blobs (nsis, nsis-resources, winCodeSign, …) from
+      # GitHub Releases, which occasionally 502. v0.2.8 run 26354634615
+      # hit this on Windows; a bare rerun succeeded. 3×30s covers it.
       - name: Package (Linux)
         if: matrix.platform == 'linux'
-        run: npx electron-builder --linux --publish never
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 30
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: npx electron-builder --linux --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -147,7 +156,12 @@ jobs:
       # See v0.2.1 release run #25785568643 for the failure trace.
       - name: Package (macOS, signed)
         if: matrix.platform == 'mac' && steps.secrets.outputs.signed == 'true'
-        run: npx electron-builder --mac --publish never
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 30
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: npx electron-builder --mac --publish never
         env:
           DEBUG: electron-builder
           DEBUG_COLORS: 'false'
@@ -165,7 +179,12 @@ jobs:
         # leaving them unset lets electron-builder take the pure-unsigned
         # code path. CSC_IDENTITY_AUTO_DISCOVERY=false suppresses keychain
         # lookup on the runner.
-        run: npx electron-builder --mac --publish never
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 30
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: npx electron-builder --mac --publish never
         env:
           DEBUG: electron-builder
           DEBUG_COLORS: 'false'
@@ -180,7 +199,12 @@ jobs:
 
       - name: Package (Windows)
         if: matrix.platform == 'win'
-        run: npx electron-builder --win --publish never
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 30
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: npx electron-builder --win --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_LINK: ${{ secrets.CSC_LINK }}
