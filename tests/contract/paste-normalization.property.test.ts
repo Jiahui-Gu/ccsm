@@ -1,8 +1,8 @@
 // Property test for paste normalization (audit finding 6).
 //
-// Imports the real `preparePastePayload` from `src/terminal/xtermSingleton.ts`
-// (exported in PR-B2 specifically so this test can exercise production
-// instead of a mirror). The function was introduced in PR #1303 —
+// Imports the real `preparePastePayload` from `src/terminal/paste.ts` —
+// the shared stateless paste module extracted from the now-deleted
+// legacy singleton. The function was introduced in PR #1303 —
 // "fix(paste): wrap in bracketed-paste when active + normalize CRLF".
 //
 // ccsm is a transparent transport (memory:

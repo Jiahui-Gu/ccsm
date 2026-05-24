@@ -1,9 +1,9 @@
-// `usePtyAttach.warm.ts` — PR #25 warm-xterm variant of `usePtyAttach`.
+// `usePtyAttach.warm.ts` — per-session warm-xterm PTY attach hook.
 //
-// Activated only when `window.ccsm.featureFlags.warmXterm === true` (env
-// flag `CCSM_WARM_XTERM=1`). When the flag is off this file is NEVER
-// imported — the legacy `usePtyAttach.ts` remains the default and is
-// bit-identical to today.
+// The only PTY-attach path in the renderer: there is no longer a legacy
+// singleton variant or a `CCSM_WARM_XTERM` flag. The warm registry owns
+// one xterm Terminal per sid and switching sessions is a wrapper
+// reparent, not a teardown.
 //
 // Architectural contract (per parent decisions, design doc §3):
 //   * COLD path (first time we ever see `sid` in this renderer):
