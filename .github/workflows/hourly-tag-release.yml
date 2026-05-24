@@ -1,24 +1,38 @@
-# Hourly auto-tag on main.
+# Hourly auto-bump + auto-tag on main.
 #
-# Purpose: when package.json.version is bumped on main (via a normal PR
-# merge), this workflow notices within an hour and pushes `v<version>` as
-# a git tag. The tag push triggers release.yml, which builds and drafts
-# the GitHub Release.
+# Purpose: every hour, release whatever has landed on main since the
+# last tagged release. The workflow itself does the version bump — no
+# manual `chore(release)` PR is needed.
+#
+# Modes (decided by comparing package.json.version to existing tags):
+#   - `tag-current`: someone manually bumped package.json but didn't
+#     tag — tag HEAD as v<pkg.version>.
+#   - `noop`: HEAD is already tagged — nothing to do.
+#   - `auto-bump`: HEAD is ahead of v<pkg.version> — bump patch, commit
+#     the bump to main, push, and tag the new version.
+#
+# The tag push triggers release.yml, which builds and drafts the
+# GitHub Release. Commits landing within the same hour naturally
+# coalesce into one bumped version.
 #
 # Replaces the deleted nightly daily-promote-release.yml (#1254, removed
 # in #1298). Now that `working` is retired and all PRs target `main`
-# directly, no branch-promotion step is needed — just "tag if missing".
+# directly, no branch-promotion step is needed.
 #
 # Locked decisions:
 #   - PAT (RELEASE_TOKEN) is REQUIRED, not optional. Tags pushed using the
 #     default GITHUB_TOKEN do NOT fire downstream workflows, so release.yml
-#     would never run. We fail fast if the secret is missing instead of
-#     silently producing tags that go nowhere.
+#     would never run. Same PAT is used to push the auto-bump commit to
+#     main, so main's branch protection must allow this bot.
 #   - No "CI green on main" gate. ci.yml runs on pull_request only — there
 #     is no per-commit status on main HEAD we can query cheaply. The merge
 #     queue / branch protection on main is what ensures green-before-merge.
 #   - Blocker gate covers BOTH open issues AND open PRs labelled `blocker`,
-#     since either may indicate a release should be held.
+#     since either may indicate a release should be held. Blocker skips
+#     both the bump AND the tag.
+#   - On race with a mid-flight manual bump: `git push origin HEAD:main`
+#     rejects non-FF and the workflow fails loudly. Next hourly run
+#     recovers from the new HEAD. No rebase / retry logic.
 #   - cancel-in-progress: false — if an hourly run is mid-push and the next
 #     hour fires, we don't want to interrupt a tag push.
 
@@ -72,6 +86,11 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
+          # actions/checkout@v4 defaults to fetch-tags: false even with
+          # fetch-depth: 0. We rely on the local tag refs below to
+          # compute `git rev-list <CURRENT_TAG>..HEAD`, so we must
+          # explicitly fetch them.
+          fetch-tags: true
           # Checkout with the PAT so the later `git push` carries PAT auth
           # and the tag-push event is delivered to release.yml.
           token: ${{ secrets.RELEASE_TOKEN }}
@@ -117,29 +136,48 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           {
-            echo "### Version"
+            echo "### Current version"
             echo ""
             echo "- package.json: \`$version\`"
-            echo "- candidate tag: \`$tag\`"
+            echo "- corresponding tag: \`$tag\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Check if tag already exists
-        id: tagcheck
+      # Three modes:
+      #   - `tag-current`: CURRENT_TAG does not exist yet (e.g. someone
+      #     manually bumped package.json in a PR but didn't tag). Tag
+      #     HEAD as CURRENT_TAG. Same behavior as before this workflow
+      #     learned to auto-bump.
+      #   - `noop`: CURRENT_TAG exists and points at HEAD — no new
+      #     commits since last release.
+      #   - `auto-bump`: CURRENT_TAG exists but HEAD is ahead of it.
+      #     The workflow bumps package.json patch, commits to main,
+      #     pushes, and tags the new version.
+      - name: Decide mode (tag-current / noop / auto-bump)
+        id: mode
         if: steps.blockers.outputs.blocked == 'false'
         env:
-          TAG: ${{ steps.pkg.outputs.tag }}
+          CURRENT_TAG: ${{ steps.pkg.outputs.tag }}
         run: |
           set -euo pipefail
-          if gh api "repos/$OWNER/$REPO/git/refs/tags/$TAG" >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "Tag \`$TAG\` already exists — no-op." >> "$GITHUB_STEP_SUMMARY"
+          if ! gh api "repos/$OWNER/$REPO/git/refs/tags/$CURRENT_TAG" >/dev/null 2>&1; then
+            echo "mode=tag-current" >> "$GITHUB_OUTPUT"
+            echo "Mode: \`tag-current\` — \`$CURRENT_TAG\` missing, will tag HEAD." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # Tag exists. The checkout step fetched all tags (fetch-tags: true),
+          # so it is already a local ref. Count commits ahead.
+          ahead=$(git rev-list --count "$CURRENT_TAG..HEAD")
+          echo "ahead=$ahead" >> "$GITHUB_OUTPUT"
+          if [ "$ahead" = "0" ]; then
+            echo "mode=noop" >> "$GITHUB_OUTPUT"
+            echo "Mode: \`noop\` — HEAD == \`$CURRENT_TAG\`, no new commits." >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "Tag \`$TAG\` does not exist — will create." >> "$GITHUB_STEP_SUMMARY"
+            echo "mode=auto-bump" >> "$GITHUB_OUTPUT"
+            echo "Mode: \`auto-bump\` — HEAD is $ahead commit(s) ahead of \`$CURRENT_TAG\`." >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Create and push tag
-        if: steps.blockers.outputs.blocked == 'false' && steps.tagcheck.outputs.exists == 'false'
+      - name: Tag current (mode=tag-current)
+        if: steps.blockers.outputs.blocked == 'false' && steps.mode.outputs.mode == 'tag-current'
         env:
           TAG: ${{ steps.pkg.outputs.tag }}
         run: |
@@ -153,4 +191,49 @@ jobs:
             echo "### Tagged"
             echo ""
             echo "Pushed \`$TAG\` -> [release.yml](../../actions/workflows/release.yml) should fire shortly."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Auto-bump path: writes package.json + package-lock.json, commits
+      # the bump to main, pushes, then tags the new version. The tag push
+      # (via RELEASE_TOKEN PAT) is what triggers release.yml.
+      #
+      # Loop-safety: after this step, package.json says NEW_VERSION and
+      # vNEW_VERSION points at HEAD. The next hourly run reads
+      # NEW_VERSION, finds the tag exists, computes 0 commits ahead, and
+      # falls through to `noop`. No infinite bump.
+      #
+      # Race-safety: if a human PR is mid-merge bumping package.json,
+      # `git push origin HEAD:main` will reject as non-fast-forward and
+      # the step fails loudly. The next hourly run recovers from the new
+      # main HEAD. We deliberately do not rebase or retry — a rare loud
+      # failure beats a quiet wrong bump.
+      - name: Auto-bump + tag (mode=auto-bump)
+        if: steps.blockers.outputs.blocked == 'false' && steps.mode.outputs.mode == 'auto-bump'
+        env:
+          CURRENT_VERSION: ${{ steps.pkg.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # npm version patch prints "vX.Y.Z" to stdout and writes
+          # package.json + package-lock.json. --no-git-tag-version
+          # suppresses npm's own commit/tag so we control both.
+          new_tag=$(npm version patch --no-git-tag-version)
+          new_version=${new_tag#v}
+
+          git add package.json package-lock.json
+          git commit -m "chore(release): bump version to $new_version"
+          git push origin HEAD:main
+
+          git tag -a "$new_tag" -m "Release $new_tag"
+          git push origin "$new_tag"
+
+          {
+            echo ""
+            echo "### Auto-bumped + tagged"
+            echo ""
+            echo "- bumped: \`$CURRENT_VERSION\` -> \`$new_version\`"
+            echo "- pushed commit to \`main\` and tag \`$new_tag\`"
+            echo "- [release.yml](../../actions/workflows/release.yml) should fire shortly."
           } >> "$GITHUB_STEP_SUMMARY"
