@@ -126,8 +126,9 @@ function CloseBehaviorField() {
 }
 
 // Terminal scrollback line cap. Single user-facing knob that bounds BOTH
-// the visible xterm buffer (next-launch effect — the renderer's xterm
-// singleton reads this once at construction) and the headless
+// the visible xterm buffer (hot-applied — `useTerminalScrollback` subscribes
+// to the store and dispatches `applyTerminalScrollback` across every warm
+// xterm entry, so edits take effect without a restart) and the headless
 // authoritative buffer in main (next-spawn effect — `entryFactory.makeEntry`
 // reads from the same `scrollbackLines` row). Persisted via `db:save` to
 // match the closeBehavior pattern, NOT via the renderer's PERSISTED_KEYS

@@ -28,6 +28,7 @@ import { useLanguageEffect } from './app-effects/useLanguageEffect';
 import { useAgentEventBridge } from './app-effects/useAgentEventBridge';
 import { useShortcutHandlers } from './app-effects/useShortcutHandlers';
 import { useTerminalFontSize } from './app-effects/useTerminalFontSize';
+import { useTerminalScrollback } from './app-effects/useTerminalScrollback';
 import { useSessionActivateBridge } from './app-effects/useSessionActivateBridge';
 import { useFocusBridge } from './app-effects/useFocusBridge';
 import { useUpdateDownloadedBridge } from './app-effects/useUpdateDownloadedBridge';
@@ -153,6 +154,12 @@ export default function App() {
   // store field and dispatches font apply + resize-replay to the warm
   // xterm registry. The wheel listener itself lives on TerminalPane.
   useTerminalFontSize();
+
+  // Hot-apply `scrollbackLines` store field to all warm xterm entries when
+  // the user edits it in Settings — no app restart required for the
+  // visible/active terminal. Main-side headless mirror still picks up the
+  // new cap on next session spawn (its buffer is sized at process start).
+  useTerminalScrollback();
 
   // Pipe `session:state` IPC events into the store via subscribeAgentEvents.
   // Drives the AgentIcon attention halo for non-active sessions.

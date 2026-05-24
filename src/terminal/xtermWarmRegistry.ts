@@ -1200,6 +1200,40 @@ export async function applyTerminalFontSize(px: number): Promise<void> {
 }
 
 /**
+ * Apply a new scrollback line cap to every warm entry (active + background).
+ *
+ * Unlike fontSize, scrollback is a pure buffer-capacity setting on xterm's
+ * Terminal:
+ *
+ *   - growing the cap is a no-op on existing rows (new writes will now be
+ *     retained further);
+ *   - shrinking the cap immediately trims the oldest scrollback rows so
+ *     `buffer.active.length` drops to `scrollback + rows` (xterm internal
+ *     behaviour, no replay needed on our side).
+ *
+ * No resize-replay, no IME guard, no `pending*` deferral — assigning
+ * `term.options.scrollback = n` is cheap and side-effect-free with respect
+ * to fontMetrics / cell layout / cursor / IME compositions. Safe to fan
+ * out across all entries (active and offscreen) in one synchronous pass.
+ *
+ * Transparent-transport invariant unchanged: this only resizes the
+ * renderer-side display buffer. The PTY byte stream and the main-side
+ * headless mirror buffer (which uses its own `scrollbackLines` row read
+ * at spawn) are untouched.
+ */
+export function applyTerminalScrollback(n: number): void {
+  for (const entry of warm.values()) {
+    try {
+      const cur = (entry.term.options as { scrollback?: number }).scrollback;
+      if (cur === n) continue;
+      entry.term.options.scrollback = n;
+    } catch (e) {
+      warn('xterm-warm', 'apply scrollback failed', e);
+    }
+  }
+}
+
+/**
  * Test-only: drop all entries without emitting probes (tests don't want
  * probe noise polluting their own assertions). Also resets the
  * offscreen-holder pointer + the unload-listener flag so the next test

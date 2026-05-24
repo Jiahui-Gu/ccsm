@@ -130,7 +130,7 @@ const en = {
     },
     scrollback: 'Terminal scrollback',
     scrollbackHint:
-      'How many lines each terminal keeps in its scrollback buffer. Applies on next attach for the headless mirror and on next launch for the visible terminal.',
+      'How many lines each terminal keeps in its scrollback buffer. The visible terminal updates immediately; the headless mirror applies on next session spawn.',
     scrollbackUnit: 'lines',
     scrollbackAriaLabel: 'Terminal scrollback in lines',
     scrollbackReset: 'Reset to default ({{default}})',
