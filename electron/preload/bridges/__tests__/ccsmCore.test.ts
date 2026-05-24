@@ -59,6 +59,7 @@ describe('ccsmCore preload bridge', () => {
     expect(Object.keys(api).sort()).toEqual(
       [
         'defaultModel',
+        'featureFlags',
         'getVersion',
         'i18n',
         'loadState',
@@ -81,6 +82,19 @@ describe('ccsmCore preload bridge', () => {
         'window',
       ].sort(),
     );
+  });
+
+  it('exposes featureFlags as a static boolean snapshot from process.env', () => {
+    // The module already imported once at file top; the values it captured
+    // reflect process.env at THAT point, not at test-run time. We can't
+    // re-import after mutating env without a vi.resetModules() dance, so
+    // assert the structural shape and types — not the values, which depend
+    // on the CI process's env (default: both falsy).
+    const api = getApi();
+    const ff = api.featureFlags as { warmXterm: unknown; warmXtermCap: unknown };
+    expect(Object.keys(ff).sort()).toEqual(['warmXterm', 'warmXtermCap']);
+    expect(typeof ff.warmXterm).toBe('boolean');
+    expect(ff.warmXtermCap === null || typeof ff.warmXtermCap === 'number').toBe(true);
   });
 
   it('nests i18n / userCwds / window with their own stable keys', () => {

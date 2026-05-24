@@ -124,6 +124,23 @@ declare global {
         }) => void;
         platform: 'aix' | 'android' | 'darwin' | 'freebsd' | 'haiku' | 'linux' | 'openbsd' | 'sunos' | 'win32' | 'cygwin' | 'netbsd';
       };
+
+      /**
+       * Renderer-readable feature-flag snapshot, captured once at preload
+       * init from `process.env`. Static values — re-reads return the same
+       * thing for the renderer's lifetime. Currently used by
+       * `src/terminal/*` to select the warm-xterm path (#25).
+       */
+      featureFlags: {
+        /** `CCSM_WARM_XTERM === '1'` — per-session warm Terminal cache. */
+        warmXterm: boolean;
+        /**
+         * `CCSM_WARM_XTERM_CAP` parsed as an integer, clamped to [2,100].
+         * `null` when unset or unparseable; consumer falls back to its
+         * own default (20).
+         */
+        warmXtermCap: number | null;
+      };
     };
   }
 }

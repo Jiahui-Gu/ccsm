@@ -137,6 +137,17 @@ export const EVENT_ALLOWED_FIELDS = new Set<string>([
   'releaseDate',
   'code',
   'intervalMs',
+  // PR #25 — per-session warm xterm (gated by CCSM_WARM_XTERM=1).
+  //  - `warmCacheSize`: count of warm Terminals currently held in the
+  //    LRU registry (small int, bounded by WARM_CAP).
+  //  - `lruSize`: alias used by `terminal.warmAlloc`/`warmEvict`/`warmHide`
+  //    probes for the same value at emit time.
+  //  - `cause`: bounded enum tag — `'session-switch' | 'mount' | 'retry'`
+  //    for warmShow, `'lru' | 'session-deleted' | 'reset'` for warmEvict.
+  //    Scalar string, no content.
+  'warmCacheSize',
+  'lruSize',
+  'cause',
 ]);
 
 const DEFAULT_DEPTH = 4;
