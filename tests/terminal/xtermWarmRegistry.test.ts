@@ -148,35 +148,28 @@ describe('xtermWarmRegistry', () => {
     document.body.removeChild(host2);
   });
 
-  it('honors a custom WARM_CAP override and LRU-evicts the least-recently-shown entry on overflow', () => {
-    (window as unknown as { ccsm: unknown }).ccsm = {
-      featureFlags: { warmXterm: true, warmXtermCap: 3 },
-    };
-
-    // Discrete time stamps so lastAccessedAt has stable ordering. The
-    // registry reads Date.now() — we stub it.
+  it('LRU-evicts the least-recently-shown entry on overflow (active sid + just-allocated sid exempt)', () => {
     let now = 1000;
     const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
 
-    // Fill cache: 1, 2, 3.
-    ensureAndShowEntry('sid-1', host);
-    now = 1010;
-    ensureAndShowEntry('sid-2', host);
-    now = 1020;
-    ensureAndShowEntry('sid-3', host);
-    expect(getWarmCacheSize()).toBe(3);
-    // Bump sid-1 so it's NOT the LRU.
-    now = 1030;
-    ensureAndShowEntry('sid-1', host);
-    // sid-2 is now the least-recently-shown that is neither active (sid-1)
-    // nor about-to-be-allocated (sid-4).
-    now = 1040;
-    ensureAndShowEntry('sid-4', host);
-    expect(getWarmCacheSize()).toBe(3);
-    expect(getEntry('sid-1')).toBeDefined();
-    expect(getEntry('sid-2')).toBeUndefined();
-    expect(getEntry('sid-3')).toBeDefined();
-    expect(getEntry('sid-4')).toBeDefined();
+    // Fill cache to the default cap of 20.
+    for (let i = 0; i < 20; i += 1) {
+      now = 1000 + i * 10;
+      ensureAndShowEntry(`sid-${i}`, host);
+    }
+    expect(getWarmCacheSize()).toBe(20);
+    // Bump sid-0 so it's NOT the LRU anymore.
+    now = 2000;
+    ensureAndShowEntry('sid-0', host);
+    // sid-1 is now the least-recently-shown (still at 1010) that is
+    // neither active (sid-0) nor about-to-be-allocated (sid-new).
+    now = 3000;
+    ensureAndShowEntry('sid-new', host);
+    expect(getWarmCacheSize()).toBe(20);
+    expect(getEntry('sid-0')).toBeDefined();
+    expect(getEntry('sid-1')).toBeUndefined();
+    expect(getEntry('sid-2')).toBeDefined();
+    expect(getEntry('sid-new')).toBeDefined();
     nowSpy.mockRestore();
   });
 
@@ -316,30 +309,10 @@ describe('xtermWarmRegistry', () => {
     expect(applyPtyExitSpy).toHaveBeenLastCalledWith('sid-hidden-and-crashed', { code: 1, signal: null });
   });
 
-  // Major 3 from cold review — `CCSM_WARM_XTERM_CAP=1` is unsafe because
-  // both the incoming sid AND the active sid are exempt from LRU
-  // eviction, leaving no viable victim when the user switches to a new
-  // sid against a full cache. We clamp UP to 2 (silently — friendlier
-  // than crashing on a config typo).
-  it('cap override of 1 is clamped up to WARM_CAP_MIN=2 (Major 3 fix)', () => {
-    (window as unknown as { ccsm: unknown }).ccsm = {
-      featureFlags: { warmXterm: true, warmXtermCap: 1 },
-    };
-    let now = 0;
-    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => ++now);
-    ensureAndShowEntry('sid-1', host);
-    ensureAndShowEntry('sid-2', host);
-    expect(getWarmCacheSize()).toBe(2);
-    // Adding a 3rd evicts the LRU non-active (sid-1; sid-2 is active),
-    // leaving size === 2. With the broken clamp (floor=1) the eviction
-    // loop would find no victim and `set()` would push size to 3.
-    ensureAndShowEntry('sid-3', host);
-    expect(getWarmCacheSize()).toBe(2);
-    expect(getEntry('sid-1')).toBeUndefined();
-    expect(getEntry('sid-2')).toBeDefined();
-    expect(getEntry('sid-3')).toBeDefined();
-    nowSpy.mockRestore();
-  });
+  // (Former `cap override of 1 is clamped up` test removed — the
+  // CCSM_WARM_XTERM_CAP override surface was deleted alongside the
+  // CCSM_WARM_XTERM flag. The cap is now a static constant of 20 and
+  // the LRU semantics are exercised by the test above.)
 
   it('defers term.open() until first ensureAndShowEntry (renderer-init invariant)', () => {
     // Regression lock: a prior bug called term.open(wrapper) inside

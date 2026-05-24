@@ -1,35 +1,39 @@
-// PR B Stage 2 — IME composition probes.
-//
-// Verifies the structured `log.event` calls emitted by the compositionstart /
-// compositionupdate / compositionend listeners in `xtermSingleton.ts`.
-// Particularly: `ime.composition.progress` is sampled every 10th update so
-// long pinyin sessions don't flood the log. The 1st-through-9th, 11th-
-// through-19th, etc. updates must NOT fire `progress`.
+// IME composition probes — `ime.composition.start/progress/end` +
+// `ime.buffer.flush`. These fire from the listeners installed by the warm
+// registry's `installInputListeners` (after `term.open()` makes the
+// textarea real). `progress` is sampled every 10th update so a long
+// pinyin session doesn't flood the log.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// Same hoisted-ctor pattern as imeBuffering.test.ts so the singleton wires
-// real DOM compositionstart/update/end listeners to a real <textarea>.
 const { writeSpy, textareaRef, terminalCtor } = vi.hoisted(() => {
   const writeSpy = vi.fn();
   const textareaRef: { current: HTMLTextAreaElement } = {
     current: (globalThis as unknown as { document: Document }).document.createElement('textarea'),
   };
   const terminalCtor = vi.fn(function () {
-    // Fresh textarea per Terminal so leftover listeners from a prior test
-    // don't double-fire compositionupdate handlers on subsequent tests.
-    textareaRef.current = (globalThis as unknown as { document: Document }).document.createElement('textarea');
+    textareaRef.current = (globalThis as unknown as { document: Document }).document.createElement(
+      'textarea',
+    );
     return {
       open: vi.fn(),
       loadAddon: vi.fn(),
-      onSelectionChange: vi.fn(),
+      dispose: vi.fn(),
+      reset: vi.fn(),
+      focus: vi.fn(),
+      scrollToBottom: vi.fn(),
+      onData: vi.fn(() => ({ dispose: vi.fn() })),
+      onSelectionChange: vi.fn(() => ({ dispose: vi.fn() })),
       attachCustomKeyEventHandler: vi.fn(),
       getSelection: vi.fn(() => ''),
       clearSelection: vi.fn(),
       selectAll: vi.fn(),
+      resize: vi.fn(),
+      cols: 80,
+      rows: 24,
       unicode: { activeVersion: '6' },
       modes: { bracketedPasteMode: false },
-      _core: { _parent: null },
+      buffer: { active: { viewportY: 0, baseY: 0, cursorY: 0, length: 0, type: 'normal' } },
       textarea: textareaRef.current,
       write: writeSpy,
     };
@@ -44,10 +48,6 @@ vi.mock('@xterm/addon-clipboard', () => ({ ClipboardAddon: vi.fn(function () { r
 vi.mock('@xterm/addon-unicode11', () => ({ Unicode11Addon: vi.fn(function () { return {}; }) }));
 vi.mock('@xterm/addon-canvas', () => ({ CanvasAddon: vi.fn(function () { return {}; }) }));
 
-// Mock the shared log so we can assert on `log.event(...)` payloads without
-// the real electron-log path firing. We keep `warn` (and `error`) as real
-// no-op spies so the back-compat shim used inside xtermSingleton for addon-
-// load failures doesn't blow up.
 const eventSpy = vi.fn();
 vi.mock('../../src/shared/log', () => ({
   log: {
@@ -61,12 +61,25 @@ vi.mock('../../src/shared/log', () => ({
   error: vi.fn(),
 }));
 
+let onDataCb: ((p: { sid: string; chunk: string; seq: number }) => void) | null = null;
+function installFakeBridge(): void {
+  onDataCb = null;
+  (window as unknown as { ccsmPty: unknown }).ccsmPty = {
+    onData: (cb: typeof onDataCb) => {
+      onDataCb = cb;
+      return () => {
+        onDataCb = null;
+      };
+    },
+    onExit: () => () => {},
+  };
+}
+
 import {
-  __resetSingletonForTests,
-  ensureTerminal,
-  setActiveSid,
-  writeOrBuffer,
-} from '../../src/terminal/xtermSingleton';
+  __resetRegistryForTests,
+  applySnapshot,
+  ensureAndShowEntry,
+} from '../../src/terminal/xtermWarmRegistry';
 
 function eventNames(): string[] {
   return eventSpy.mock.calls.map((c) => c[0] as string);
@@ -78,22 +91,28 @@ function fieldsFor(name: string): Array<Record<string, unknown>> {
     .map((c) => (c[1] ?? {}) as Record<string, unknown>);
 }
 
-describe('IME probes — composition lifecycle events', () => {
+describe('IME probes — composition lifecycle events (warm registry)', () => {
+  let host: HTMLDivElement;
+
   beforeEach(() => {
-    __resetSingletonForTests();
+    __resetRegistryForTests();
     writeSpy.mockClear();
     terminalCtor.mockClear();
     eventSpy.mockClear();
-    const host = document.createElement('div');
+    installFakeBridge();
+    host = document.createElement('div');
     document.body.appendChild(host);
-    ensureTerminal(host as HTMLDivElement);
-    setActiveSid('sid-1');
+    ensureAndShowEntry('sid-1', host, 'mount');
+    applySnapshot('sid-1', 0);
+    // Clear the warmAlloc + warmShow events fired during setup so the
+    // per-test assertions count only composition events.
+    eventSpy.mockClear();
   });
 
   afterEach(() => {
-    __resetSingletonForTests();
+    __resetRegistryForTests();
     document.body.innerHTML = '';
-    setActiveSid(null);
+    delete (window as unknown as { ccsmPty?: unknown }).ccsmPty;
   });
 
   it('fires ime.composition.start on compositionstart', () => {
@@ -144,7 +163,6 @@ describe('IME probes — composition lifecycle events', () => {
     expect(fields).not.toHaveProperty('content');
     expect(fields).not.toHaveProperty('text');
     expect(fields).not.toHaveProperty('composition');
-    // Only sid + integer count.
     expect(Object.keys(fields).sort()).toEqual(['count', 'sid']);
   });
 
@@ -156,7 +174,6 @@ describe('IME probes — composition lifecycle events', () => {
     textareaRef.current.dispatchEvent(new CompositionEvent('compositionend'));
     eventSpy.mockClear();
 
-    // Second composition: only 5 updates → still no progress event.
     textareaRef.current.dispatchEvent(new CompositionEvent('compositionstart'));
     for (let i = 0; i < 5; i++) {
       textareaRef.current.dispatchEvent(new CompositionEvent('compositionupdate'));
@@ -164,10 +181,10 @@ describe('IME probes — composition lifecycle events', () => {
     expect(eventNames()).not.toContain('ime.composition.progress');
   });
 
-  it('fires composition.end with bufferedChunks/bufferedBytes from writeOrBuffer', () => {
+  it('fires composition.end with bufferedChunks/bufferedBytes from live PTY chunks', () => {
     textareaRef.current.dispatchEvent(new CompositionEvent('compositionstart'));
-    writeOrBuffer('abc'); // 3 bytes, 1 chunk
-    writeOrBuffer('de'); // 2 bytes, 2 chunks total
+    onDataCb?.({ sid: 'sid-1', chunk: 'abc', seq: 1 }); // 3 bytes, 1 chunk
+    onDataCb?.({ sid: 'sid-1', chunk: 'de', seq: 2 }); // +2 bytes, 2 chunks total
     textareaRef.current.dispatchEvent(new CompositionEvent('compositionend'));
     const end = fieldsFor('ime.composition.end')[0];
     expect(end).toMatchObject({
@@ -180,7 +197,7 @@ describe('IME probes — composition lifecycle events', () => {
 
   it('fires ime.buffer.flush when end drains a non-empty buffer', () => {
     textareaRef.current.dispatchEvent(new CompositionEvent('compositionstart'));
-    writeOrBuffer('xyz');
+    onDataCb?.({ sid: 'sid-1', chunk: 'xyz', seq: 1 });
     textareaRef.current.dispatchEvent(new CompositionEvent('compositionend'));
     const flush = fieldsFor('ime.buffer.flush')[0];
     expect(flush).toMatchObject({ sid: 'sid-1', bytes: 3, chunks: 1 });

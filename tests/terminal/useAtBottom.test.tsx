@@ -25,13 +25,13 @@ const fakeTerm = {
   scrollToBottom: scrollToBottomSpy,
 };
 
-vi.mock('../../src/terminal/xtermSingleton', () => ({
-  getTerm: vi.fn(() => fakeTerm),
+vi.mock('../../src/terminal/xtermWarmRegistry', () => ({
+  getActiveEntry: vi.fn(() => ({ term: fakeTerm })),
 }));
 
 import { useAtBottom } from '../../src/terminal/useAtBottom';
 
-describe('useAtBottom', () => {
+describe('useAtBottom (warm registry)', () => {
   beforeEach(() => {
     fakeBuffer.active.viewportY = 0;
     fakeBuffer.active.baseY = 0;
@@ -73,7 +73,6 @@ describe('useAtBottom', () => {
     const { result } = renderHook(() => useAtBottom('sid-A'));
     expect(result.current.atBottom).toBe(true);
 
-    // User scrolls up — xterm fires onScroll.
     act(() => {
       fakeBuffer.active.viewportY = 20;
       scrollListener!();
@@ -87,8 +86,6 @@ describe('useAtBottom', () => {
     const { result } = renderHook(() => useAtBottom('sid-A'));
     expect(result.current.atBottom).toBe(true);
 
-    // User scrolled up; later, new output bumps baseY without firing
-    // a scroll event. onLineFeed should still recompute.
     act(() => {
       fakeBuffer.active.viewportY = 50;
       fakeBuffer.active.baseY = 80;
@@ -127,8 +124,6 @@ describe('useAtBottom', () => {
     });
     expect(result.current.atBottom).toBe(false);
 
-    // Session switch: usePtyAttach has called term.reset() so buffer
-    // is parked at 0/0 (atBottom).
     act(() => {
       fakeBuffer.active.baseY = 0;
       fakeBuffer.active.viewportY = 0;
