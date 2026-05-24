@@ -1,3 +1,4 @@
+/* eslint-disable no-undef, no-unused-vars */
 // Headless dogfood for Ctrl+MouseWheel terminal font-size zoom.
 // MUST stay invisible per project policy (no visible window).
 import { _electron as electron } from 'playwright';
