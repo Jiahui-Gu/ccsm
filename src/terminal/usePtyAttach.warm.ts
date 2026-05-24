@@ -181,7 +181,14 @@ export function usePtyAttachWarm(
   cwd: string,
   hostRef: { current: HTMLDivElement | null },
 ): UsePtyAttachResult {
-  const [state, _setState] = useState<PtyAttachState>({ kind: 'attaching' });
+  // Initial state: if the warm registry already has an entry for this
+  // sid (e.g. a prior TerminalPane mount for the same sid populated it),
+  // start in 'ready' so the first render doesn't briefly show the
+  // 'Attaching...' overlay over an already-warmed terminal. Cold mounts
+  // start in 'attaching' as before.
+  const [state, _setState] = useState<PtyAttachState>(() =>
+    getEntry(sessionId) ? { kind: 'ready' } : { kind: 'attaching' },
+  );
   const setState = useCallback(
     (next: PtyAttachState, reason?: string): void => {
       _setState((prev) => {
@@ -211,7 +218,14 @@ export function usePtyAttachWarm(
     requestedSidRef.current = sessionId;
     let cancelled = false;
     const attachStartedAt = Date.now();
-    setState({ kind: 'attaching' }, 'effect-start');
+    // NOTE: do NOT setState('attaching') here unconditionally. Warm-cache
+    // hits (the common case — user switching back to an already-open
+    // session) would briefly render the 'Attaching...' overlay over the
+    // already-visible terminal DOM, producing a perceptible flash on
+    // every session switch. We defer the attaching transition into the
+    // cold branch below so warm hits stay in their prior 'ready' state
+    // (or 'exit'/'error' if the prior attach concluded that way) until
+    // the new entry is fully swapped in.
 
     (async () => {
       const pty = window.ccsmPty;
@@ -230,6 +244,13 @@ export function usePtyAttachWarm(
       // hide this signal (it allocates on cache miss).
       const existed = !!getEntry(sessionId);
 
+      // Only flip to 'attaching' for cold attaches (snapshot IPC etc.
+      // genuinely take time). Warm hits are a sync reparent + at most
+      // one IPC and stay visually continuous.
+      if (!existed) {
+        setState({ kind: 'attaching' }, 'effect-start');
+      }
+
       // Reparent (or allocate-then-parent) the entry into our host. The
       // registry handles the activeSid update, hides the previous active
       // entry, fires the `attach.warm.shown` probe on cache hit.
@@ -242,7 +263,27 @@ export function usePtyAttachWarm(
         if (!isCold) {
           // ===== WARM PATH =====
           // The entry's term has been receiving live PTY chunks since
-          // its alloc. Reparent already happened; just fit + pin.
+          // its alloc — DOM is already populated, viewport is wherever
+          // the user last left it. Switch UX contract: visual swap is
+          // instant, no overlay, no scroll, no flash.
+          //
+          // We still need to (a) fit() locally so the canvas atlas
+          // matches the post-reparent host dims, and (b) tell the PTY
+          // about any cols/rows change that happened while this entry
+          // was offscreen — but BOTH are fire-and-forget. We don't
+          // await them before flipping to 'ready'. Reasons:
+          //   - The terminal DOM is already showing the correct content.
+          //     A stale cols/rows for one PTY tick is harmless (claude
+          //     re-wraps on next output).
+          //   - Awaiting pty.resize (1 IPC) kept the UI on whatever
+          //     prior state (typically 'ready' from the previous warm
+          //     hit) for an extra frame, but the cost showed up as a
+          //     perceptible delay between sidebar click and the new
+          //     terminal feeling "interactive".
+          //   - We do NOT call pinViewportToBottom — the entry's
+          //     viewport is preserved across hide/show by virtue of
+          //     xterm's WriteBuffer staying intact under reparent. The
+          //     user expects "where I left it", not "snapped to bottom".
           try {
             entry.fit.fit();
           } catch (e) {
@@ -258,24 +299,17 @@ export function usePtyAttachWarm(
           } catch {
             /* probe failure tolerated */
           }
-          // Push container size to PTY so claude resizes if the host
-          // dimensions changed while this entry was offscreen. Best-effort;
-          // resize IPC is idempotent on identical dims.
-          try {
-            await pty.resize(sessionId, entry.term.cols, entry.term.rows);
-          } catch (e) {
+          // Fire-and-forget: best-effort PTY resize. Idempotent on
+          // identical dims, so common-case (no host resize since hide)
+          // is a cheap main-side no-op.
+          void pty.resize(sessionId, entry.term.cols, entry.term.rows).catch((e) => {
             warn('attach-warm', 'warm resize failed', e);
-          }
-          if (cancelled || requestedSidRef.current !== sessionId) return;
+          });
           try {
             entry.term.focus();
           } catch {
             /* focus best-effort */
           }
-          await pinViewportToBottom(
-            entry.term as unknown as PinnableTerminal,
-            sessionId,
-          );
           if (!cancelled) {
             // Major (round 2): if the session already crashed (either
             // while hidden, or while this effect was awaiting), prefer
