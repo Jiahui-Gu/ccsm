@@ -36,6 +36,7 @@ interface FakeWin {
 
 let latestWin: FakeWin | null = null;
 let appQuitMock: ReturnType<typeof vi.fn>;
+let hasSwitchMock: ReturnType<typeof vi.fn<[string], boolean>>;
 
 function makeFakeWin(opts: Record<string, unknown>): FakeWin {
   const listeners = new Map<string, (...args: unknown[]) => void>();
@@ -91,6 +92,14 @@ vi.mock('electron', () => {
   const app = {
     quit: (...args: unknown[]) => appQuitMock(...args),
     isPackaged: false,
+    // Chromium command-line switch lookup. The createWindow factory checks
+    // `enable-automation` to auto-enable hidden mode under Playwright; in
+    // these unit tests we want manual control via CCSM_E2E_HIDDEN env, so
+    // default to "no switches set".
+    commandLine: {
+      hasSwitch: (name: string) => hasSwitchMock(name),
+      getSwitchValue: (_name: string) => '',
+    },
   };
   return { BrowserWindow, Menu, app };
 });
@@ -537,12 +546,14 @@ describe('createWindow factory', () => {
     latestWin = null;
     isQuittingFlag = false;
     appQuitMock = vi.fn();
+    hasSwitchMock = vi.fn<[string], boolean>(() => false);
     getCloseActionMock.mockReset().mockReturnValue('tray');
     setCloseActionMock.mockReset();
     ipcHandlers = new Map();
     removedIpcChannels = [];
     // Default env: not e2e-hidden, no dev-quit override, no custom port.
     delete process.env.CCSM_E2E_HIDDEN;
+    delete process.env.CCSM_E2E_VISIBLE;
     delete process.env.CCSM_DEV_QUIT_ON_CLOSE;
     delete process.env.CCSM_DEV_PORT;
     deps = {
@@ -589,6 +600,34 @@ describe('createWindow factory', () => {
     // Hidden mode also primes Chromium-level focus and disables throttling.
     expect(latestWin!.webContents.focus).toHaveBeenCalled();
     expect(latestWin!.webContents.setBackgroundThrottling).toHaveBeenCalledWith(false);
+  });
+
+  it('auto-hides when Chromium --enable-automation switch is set (Playwright/Puppeteer/etc)', () => {
+    // Playwright `_electron.launch` injects this switch unconditionally;
+    // we treat it as "this is a script-driven launch, do not pop a visible
+    // window on the dev's desktop" — independent of CCSM_E2E_HIDDEN.
+    hasSwitchMock.mockImplementation((name) => name === 'enable-automation');
+    createWindow(deps);
+    expect(latestWin!.ctorOpts.x).toBe(-32000);
+    expect(latestWin!.ctorOpts.skipTaskbar).toBe(true);
+  });
+
+  it('CCSM_E2E_VISIBLE=1 forces visible window even under automation', () => {
+    // Manual escape hatch for demos / recording / interactive debugging
+    // of a Playwright-driven session.
+    hasSwitchMock.mockImplementation((name) => name === 'enable-automation');
+    process.env.CCSM_E2E_VISIBLE = '1';
+    createWindow(deps);
+    expect(latestWin!.ctorOpts.x).toBeUndefined();
+    expect(latestWin!.ctorOpts.skipTaskbar).toBe(false);
+  });
+
+  it('CCSM_E2E_HIDDEN=0 overrides automation auto-detect (existing harness-dnd contract)', () => {
+    hasSwitchMock.mockImplementation((name) => name === 'enable-automation');
+    process.env.CCSM_E2E_HIDDEN = '0';
+    createWindow(deps);
+    expect(latestWin!.ctorOpts.x).toBeUndefined();
+    expect(latestWin!.ctorOpts.skipTaskbar).toBe(false);
   });
 
   // ─── dev vs prod renderer load ─────────────────────────────────────────

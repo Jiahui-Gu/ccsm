@@ -364,6 +364,14 @@ export async function createIsolatedClaudeDir({ keep = false } = {}) {
  *
  * Throws a clear error if `dist/renderer/index.html` doesn't exist (caller
  * forgot to run `npm run build`).
+ *
+ * Defaults `CCSM_E2E_HIDDEN=1` so dogfood scripts don't accidentally pop a
+ * visible Electron window on the developer's desktop. The window is still
+ * fully rendered (Chromium runs un-throttled — see createWindow.ts) just
+ * positioned offscreen and hidden from the taskbar, so screenshots and
+ * animation-sensitive probes keep working. Callers that genuinely need a
+ * visible window (manual debugging, dnd-kit) opt out with
+ * `env: { CCSM_E2E_HIDDEN: '0' }`.
  */
 export async function launchCcsmIsolated({ tempDir, userDataDir, env = {} } = {}) {
   if (!tempDir) throw new Error('launchCcsmIsolated: tempDir is required');
@@ -402,6 +410,11 @@ export async function launchCcsmIsolated({ tempDir, userDataDir, env = {} } = {}
       ELECTRON_DISABLE_GPU: '1',
       NODE_ENV: 'production',
       CCSM_PROD_BUNDLE: '1',
+      // Default to hidden so dogfood scripts don't pop a visible window
+      // on the dev's desktop. Honor parent shell's CCSM_E2E_HIDDEN if set
+      // (e.g. dev exported '0' for manual debugging), and let the caller's
+      // explicit `env: { CCSM_E2E_HIDDEN: '0' }` win via the spread below.
+      CCSM_E2E_HIDDEN: process.env.CCSM_E2E_HIDDEN ?? '1',
       // Main reads CCSM_CLAUDE_CONFIG_DIR; renderer's commands-loader reads
       // bare CLAUDE_CONFIG_DIR; claude binary reads CLAUDE_CONFIG_DIR;
       // ccsm.userHome is derived from HOME / USERPROFILE. Set them all.
