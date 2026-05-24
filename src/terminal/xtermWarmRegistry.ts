@@ -38,6 +38,15 @@ import { warn, log } from '../shared/log';
 
 const DEFAULT_WARM_CAP = 20;
 /**
+ * Soft cap on `router.buffered` length. The buffering window is normally
+ * sub-second (alloc → cold-attach snapshot → applySnapshot drains).
+ * 256 chunks ≈ tens of KB at typical chunk sizes — plenty of headroom
+ * for a healthy attach, while bounding growth if cold-attach hangs
+ * (e.g. term.open() retry path never succeeds). On overflow we drop
+ * the OLDEST entry so the most recent live tail survives.
+ */
+const BUFFERING_SOFT_CAP = 256;
+/**
  * Minimum WARM_CAP. Hard floor of 2 (not 1).
  *
  * Rationale (Major 3 from cold review): with `cap === 1`, the
@@ -352,23 +361,20 @@ function allocEntry(sid: string): WarmEntry {
   entryRouters.set(sid, router);
   const pty = window.ccsmPty;
   let dataUnsubscribe = () => {};
-  // Diagnostic counters (dev-only — see probes below). Tracking the very
-  // first chunk per-entry is enough to bisect "did onData fire at all?"
-  // vs "did sid filter drop it?" vs "did router get stuck in buffering?".
-  let firstChunkLogged = false;
+  // One-shot probe flags — independent so a `sid-mismatch` first callback
+  // doesn't suppress the subsequent `warm.data.received` probe. Under the
+  // multi-subscriber pty.onData fan-out the first invocation is commonly
+  // for someone else's sid; a shared flag would mislead future bisection.
+  let receivedLogged = false;
+  let filteredLogged = false;
   if (pty?.onData) {
-    try {
-      log.event('warm.subscription.installed', { sid });
-    } catch {
-      /* probe failure tolerated */
-    }
     dataUnsubscribe = pty.onData((payload: { sid: string; chunk: string; seq: number }) => {
       if (payload.sid !== sid) {
-        if (!firstChunkLogged) {
+        if (!filteredLogged) {
           // One-shot: the FIRST callback invocation that was filtered out
           // by sid mismatch. Tells us callback fires but our sid doesn't
           // match what main is broadcasting. count=0 sentinel.
-          firstChunkLogged = true;
+          filteredLogged = true;
           try {
             log.event('warm.data.filtered', { sid, count: 0, stage: 'sid-mismatch' });
           } catch {
@@ -377,8 +383,8 @@ function allocEntry(sid: string): WarmEntry {
         }
         return;
       }
-      if (!firstChunkLogged) {
-        firstChunkLogged = true;
+      if (!receivedLogged) {
+        receivedLogged = true;
         try {
           log.event('warm.data.received', {
             sid,
@@ -392,8 +398,16 @@ function allocEntry(sid: string): WarmEntry {
       }
       if (router.mode === 'buffering') {
         // Stash with seq so applySnapshot can drop dupes vs. the
-        // serialized snapshot it's about to land.
+        // serialized snapshot it's about to land. Soft cap: drop the
+        // OLDEST entries past the cap so an unexpectedly long buffering
+        // window (e.g. term.open() retry path never succeeding) can't
+        // grow router.buffered unbounded. 256 chunks ≈ several seconds
+        // of normal output; we hit applySnapshot well before this in
+        // any healthy attach.
         router.buffered.push({ seq: payload.seq, chunk: payload.chunk });
+        if (router.buffered.length > BUFFERING_SOFT_CAP) {
+          router.buffered.shift();
+        }
         return;
       }
       // 'live' mode: drop pre-snap chunks (defensive — should be empty
@@ -478,18 +492,17 @@ export function ensureAndShowEntry(
 
   // First-time open: deferred from allocEntry so the xterm renderer
   // initializes against real visible geometry rather than the 0x0
-  // offscreen holder (see WarmEntry.opened docs). Also fit() immediately
-  // so the canvas atlas sizes against non-zero dimensions; the
-  // cold-attach hook's later fit() call is then a no-op refresh.
+  // offscreen holder (see WarmEntry.opened docs). We do NOT call
+  // fit.fit() here — host layout may not have settled on the same
+  // microtask, and (cold path) usePtyAttach.warm.ts calls fit.fit()
+  // after term.resize() + snapshot write a few ms later, which sizes
+  // the canvas atlas against fully-laid-out dimensions. The eager fit
+  // here would either redundantly force layout or compute cols=0 when
+  // host itself is still hidden.
   if (!entry.opened) {
     try {
       entry.term.open(entry.wrapper);
       entry.opened = true;
-      try {
-        entry.fit.fit();
-      } catch (e) {
-        warn('xterm-warm', 'initial fit failed', e);
-      }
     } catch (e) {
       warn('xterm-warm', 'term.open failed', e);
       // Leave entry.opened=false; a future show may retry.

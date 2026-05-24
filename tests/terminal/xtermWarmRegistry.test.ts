@@ -340,4 +340,31 @@ describe('xtermWarmRegistry', () => {
     expect(getEntry('sid-3')).toBeDefined();
     nowSpy.mockRestore();
   });
+
+  it('defers term.open() until first ensureAndShowEntry (renderer-init invariant)', () => {
+    // Regression lock: a prior bug called term.open(wrapper) inside
+    // allocEntry while wrapper was parented in a 0x0 visibility:hidden
+    // offscreen holder. xterm 5.5's renderer latched onto that geometry
+    // and the paint scheduler stayed quiesced — chunks parsed but DOM
+    // stayed empty. Fix defers open() to first show, when wrapper is in
+    // the visible host. This test asserts the deferred-open contract
+    // directly so the bug can't silently come back.
+    const { entry } = ensureAndShowEntry('sid-deferred', host);
+    // Mock terminal exposes `open` as a vi.fn(). It MUST have been called
+    // exactly once, and with the wrapper that is now host-parented.
+    const openSpy = (entry.term as unknown as { open: ReturnType<typeof vi.fn> }).open;
+    expect(openSpy).toHaveBeenCalledTimes(1);
+    expect(openSpy).toHaveBeenCalledWith(entry.wrapper);
+    expect(entry.wrapper.parentElement).toBe(host);
+    expect(entry.opened).toBe(true);
+
+    // Hide then re-show: term.open must NOT be called again (opened flag).
+    const host2 = document.createElement('div');
+    document.body.appendChild(host2);
+    ensureAndShowEntry('sid-other', host2);
+    ensureAndShowEntry('sid-deferred', host);
+    expect(openSpy).toHaveBeenCalledTimes(1);
+    expect(entry.opened).toBe(true);
+    document.body.removeChild(host2);
+  });
 });
