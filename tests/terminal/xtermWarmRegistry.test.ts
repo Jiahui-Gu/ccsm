@@ -28,6 +28,7 @@ const { terminalCtor, addonCtor } =
         buffer: {
           active: { viewportY: 0, baseY: 0, cursorY: 0, length: 0, type: 'normal' },
         },
+        options: { scrollback: 1000, fontSize: 13 },
       };
       return inst;
     });
@@ -74,6 +75,7 @@ import {
   getEntry,
   getActiveSid,
   getWarmCacheSize,
+  applyTerminalScrollback,
   __resetRegistryForTests,
 } from '../../src/terminal/xtermWarmRegistry';
 
@@ -339,5 +341,48 @@ describe('xtermWarmRegistry', () => {
     expect(openSpy).toHaveBeenCalledTimes(1);
     expect(entry.opened).toBe(true);
     document.body.removeChild(host2);
+  });
+
+  describe('applyTerminalScrollback', () => {
+    it('fans out new scrollback to every warm entry (active + background)', () => {
+      const { entry: a } = ensureAndShowEntry('sid-a', host);
+      const host2 = document.createElement('div');
+      document.body.appendChild(host2);
+      const { entry: b } = ensureAndShowEntry('sid-b', host2);
+      // sid-b is now active; sid-a is offscreen. Both should still get
+      // the new scrollback — no pending/defer machinery for scrollback.
+      applyTerminalScrollback(7777);
+      expect((a.term.options as { scrollback?: number }).scrollback).toBe(7777);
+      expect((b.term.options as { scrollback?: number }).scrollback).toBe(7777);
+      document.body.removeChild(host2);
+    });
+
+    it('skips entries whose scrollback already matches (no spurious writes)', () => {
+      const { entry } = ensureAndShowEntry('sid-a', host);
+      // Pre-set to the target value via the assignment path we observe.
+      entry.term.options.scrollback = 5000;
+      const proxy = entry.term.options as { scrollback?: number };
+      let writes = 0;
+      Object.defineProperty(entry.term, 'options', {
+        configurable: true,
+        get() {
+          return new Proxy(proxy, {
+            set(target, key, value) {
+              if (key === 'scrollback') writes++;
+              (target as Record<string, unknown>)[key as string] = value;
+              return true;
+            },
+            get(target, key) {
+              return (target as Record<string, unknown>)[key as string];
+            },
+          });
+        },
+      });
+      applyTerminalScrollback(5000);
+      expect(writes).toBe(0);
+      applyTerminalScrollback(6000);
+      expect(writes).toBe(1);
+      expect(proxy.scrollback).toBe(6000);
+    });
   });
 });
