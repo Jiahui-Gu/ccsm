@@ -248,6 +248,10 @@ export function kill(sessions: Map<string, Entry>, sid: string): Promise<boolean
         `[ptyHost] kill ${sid} wedged: SIGKILL also failed (${e instanceof Error ? e.message : String(e)}); pid ${pid} may leak`,
       );
     }
+    // Evict the zombie from the registry RIGHT NOW (before awaiting the
+    // subtree walk): renderer attach-after-kill paths only inspect map
+    // membership and must see the entry gone the instant kill() escalates.
+    if (sessions.get(sid) === entry) sessions.delete(sid);
     // ConPTY's kill only terminates the cmd.exe / OpenConsole wrapper; on
     // Windows the claude.exe child (and its grandchildren) survive as
     // orphans. On mac/linux the pgid may also have stragglers. Walk the
@@ -255,9 +259,16 @@ export function kill(sessions: Map<string, Entry>, sid: string): Promise<boolean
     // Deferred to the hard-fallback branch ONLY — running this on the
     // graceful path would kill claude mid-flush and defeat the soft-signal
     // strategy.
-    killProcessSubtree(pid);
-    if (sessions.get(sid) === entry) sessions.delete(sid);
-    settle(false);
+    //
+    // Now async (#1380): we keep `kill()`'s promise pending until the
+    // subtree walk completes so `before-quit`'s `await killAll(...)` knows
+    // every reap finished before re-firing `app.quit()`. `killProcessSubtree`
+    // has its own 5s ceiling, so this can never hang. Errors are
+    // intentionally swallowed — already-dead pids are expected.
+    void killProcessSubtree(pid).then(
+      () => settle(false),
+      () => settle(false),
+    );
   }, KILL_EXIT_TIMEOUT_MS);
 
   // Soft signal: write Ctrl+C (`\x03`) to the PTY. On Windows ConPTY this is
