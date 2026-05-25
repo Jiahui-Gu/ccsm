@@ -47,17 +47,19 @@ export default defineConfig({
         'src/index.tsx',
         'src/components/ScrollToBottomButton.tsx',
       ],
-      // Task #43 — gate is now enforced in CI. Thresholds set ~8pp below
-      // measured post-exclusion baseline (lines 87.08%, statements 84.60%,
-      // functions 84.52%, branches 76.28%) so normal week-to-week churn
-      // doesn't flake the gate, while regressions of >8pp are caught.
+      // Tech-debt R6 (Task #43) — gate is enforced in CI. Thresholds set
+      // ~3pp below the measured post-exclusion baseline (2026-05-25:
+      // lines 84.46%, statements 82.34%, functions 84.84%, branches 73.69%)
+      // so normal week-to-week churn doesn't flake the gate, while
+      // regressions of >3pp are caught — tightened from the earlier ~8pp
+      // buffer per technical-debt audit 2026-05-25.
       // Raise these as suites grow; never lower without a written
       // justification in the PR body.
       thresholds: {
-        lines: 78,
-        functions: 76,
-        branches: 68,
-        statements: 76,
+        lines: 81,
+        functions: 81,
+        branches: 70,
+        statements: 79,
       },
     },
   },
