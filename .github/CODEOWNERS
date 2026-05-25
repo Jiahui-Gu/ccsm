@@ -1,0 +1,16 @@
+# CODEOWNERS — single-maintainer repo
+#
+# GitHub uses this file to auto-request reviews when PRs touch matching
+# paths. As of 2026-05-25 the project has one human maintainer; this entry
+# documents that fact so future contributors / agents / CI tools have a
+# discoverable owner without having to grep git log.
+#
+# Note: branch protection on `main` does NOT require approving reviews
+# (`required_approving_review_count: 0`) — single-account repo, see
+# feedback_dev_workflow.md for the rationale. The "no self-merge" rule
+# lives at the agent layer, not GitHub.
+#
+# Update when adding contributors. Move to per-path patterns once the
+# team grows past one person.
+
+* @Jiahui-Gu
