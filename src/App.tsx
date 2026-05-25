@@ -97,6 +97,7 @@ export default function App() {
   // toggling a single session's waiting<->idle). See PR #1269.
   const selectSession = useStore((s) => s.selectSession);
   const focusGroup = useStore((s) => s.focusGroup);
+  const createGroup = useStore((s) => s.createGroup);
   const applyExternalTitle = useStore((s) => s._applyExternalTitle);
   const applyCwdRedirect = useStore((s) => s._applyCwdRedirect);
   const applyPtyExit = useStore((s) => s._applyPtyExit);
@@ -184,11 +185,18 @@ export default function App() {
     }));
   }, []));
 
-  // Global keyboard shortcuts (Ctrl+/, "?", Ctrl+F, Ctrl+,).
+  // Global keyboard shortcuts (Ctrl+/, "?", Ctrl+F, Ctrl+,, Ctrl/Cmd+Shift+N).
   useShortcutHandlers({
     toggleShortcuts: React.useCallback(() => setShortcutsOpen((p) => !p), []),
     togglePalette: React.useCallback(() => setPaletteOpen((p) => !p), []),
     openSettings: React.useCallback(() => setSettingsOpen(true), []),
+    // Mirror Sidebar.handleNewGroup minus the inline-rename: create the group
+    // then focus it so a subsequent "New session" lands inside. Auto-rename
+    // is intentionally not replicated here (see useShortcutHandlers note).
+    createNewGroup: React.useCallback(() => {
+      const id = createGroup();
+      focusGroup(id);
+    }, [createGroup, focusGroup]),
   });
 
   // Mirror resolved language to main for OS-level surfaces (tray menu,
