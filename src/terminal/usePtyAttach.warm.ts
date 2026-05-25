@@ -285,11 +285,34 @@ export function usePtyAttachWarm(
           //     viewport is preserved across hide/show by virtue of
           //     xterm's WriteBuffer staying intact under reparent. The
           //     user expects "where I left it", not "snapped to bottom".
+          // DEBUG (task #49): trace viewportY across show → fit → focus →
+          // next-frame so we can pinpoint which step is recentering the
+          // viewport to the bottom on warm switch.
+          const snapVp = (label: string) => {
+            try {
+              const b = entry.term.buffer?.active;
+              log.event('warm.viewport.trace', {
+                sid: sessionId,
+                step: label,
+                viewportY: b?.viewportY ?? -1,
+                baseY: b?.baseY ?? -1,
+                cursorY: b?.cursorY ?? -1,
+                length: b?.length ?? -1,
+                cols: entry.term.cols,
+                rows: entry.term.rows,
+                atBottom: (b?.viewportY ?? 0) === (b?.baseY ?? 0),
+              });
+            } catch {
+              /* probe best-effort */
+            }
+          };
+          snapVp('before-fit');
           try {
             entry.fit.fit();
           } catch (e) {
             warn('attach-warm', 'warm fit failed', e);
           }
+          snapVp('after-fit');
           try {
             log.event('attach.fit.applied', {
               sid: sessionId,
@@ -311,6 +334,9 @@ export function usePtyAttachWarm(
           } catch {
             /* focus best-effort */
           }
+          snapVp('after-focus');
+          requestAnimationFrame(() => snapVp('next-frame'));
+          setTimeout(() => snapVp('plus-50ms'), 50);
           if (!cancelled) {
             // Major (round 2): if the session already crashed (either
             // while hidden, or while this effect was awaiting), prefer
