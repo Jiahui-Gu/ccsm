@@ -269,7 +269,18 @@ export function createWindow(deps: CreateWindowDeps): BrowserWindow {
     !!app.commandLine && app.commandLine.hasSwitch('enable-automation');
   const hiddenForE2E =
     !wantsVisible && (explicitHidden === '1' || automationDriven);
+  // Dev runs (`npm run dev` → scripts/dev-electron.mjs sets CCSM_DEV=1)
+  // share the CCSM.exe / electron.exe binary name with the installed
+  // build, which made it impossible to tell them apart in tasklist or
+  // Alt-Tab. Window title is the cheapest user-facing signal: Windows
+  // surfaces it in the taskbar tooltip and the Alt-Tab thumbnail.
+  // Packaged-dev variant (productName "CCSM Dev") and the unpackaged
+  // npm-run-dev case both get the marker; the installed prod build
+  // has a clean "CCSM" title.
+  const isDevProcess =
+    process.env.CCSM_DEV === '1' || app.getName().includes('Dev');
   const win = new BrowserWindow({
+    title: isDevProcess ? 'CCSM [dev]' : 'CCSM',
     width: 1280,
     height: 800,
     minWidth: 900,

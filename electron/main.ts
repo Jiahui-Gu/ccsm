@@ -176,13 +176,27 @@ function getTray(): Tray | null {
 }
 
 app.whenReady().then(() => {
+  // npm-run-dev (scripts/dev-electron.mjs) sets CCSM_DEV=1. Override
+  // app.getName() so Windows tasklist / Alt-Tab / Task Manager all
+  // surface "CCSM (dev)" instead of bare "CCSM" — without this the
+  // dev process and a co-running installed CCSM.exe are visually
+  // indistinguishable, and accidental `taskkill /IM CCSM.exe` kills
+  // the user's working session. The packaged-dev variant
+  // (productName "CCSM Dev") already gets a distinct name from
+  // electron-builder; this branch covers the unpackaged dev case.
+  if (process.env.CCSM_DEV === '1' && !app.getName().includes('Dev')) {
+    app.setName('CCSM (dev)');
+  }
+
   // On Windows, set a stable AppUserModelID so the OS attributes the app to
   // its taskbar / Start Menu entry instead of generic "electron.exe".
   if (process.platform === 'win32') {
     // Dual-install (#891): the dev variant ships as productName "CCSM Dev"
     // and must use a distinct AUMID so its taskbar / toast attribution
-    // doesn't collide with a co-installed prod build.
-    const isDevVariant = app.getName().includes('Dev');
+    // doesn't collide with a co-installed prod build. The unpackaged
+    // npm-run-dev case (CCSM_DEV=1) also gets its own AUMID so the
+    // taskbar groups dev and prod separately.
+    const isDevVariant = app.getName().includes('Dev') || app.getName().includes('(dev)');
     const aumid = isDevVariant ? 'com.ccsm.app.dev' : 'com.ccsm.app';
     app.setAppUserModelId(aumid);
   }
