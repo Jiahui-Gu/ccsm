@@ -195,6 +195,54 @@ describe('pty:input / resize / kill / get pass-through', () => {
     expect(deps.resizePtySession).toHaveBeenCalledWith('sid', 100, 30);
   });
 
+  // Defense-in-depth — TS signatures are advisory across the IPC boundary.
+  // These guards drop malformed renderer payloads instead of forwarding them
+  // to node-pty / xterm where the failure mode is uglier (truncate, throw
+  // inside the addon, or accept a runaway size).
+  it('input drops non-string data without calling deps', () => {
+    const ipc = makeFakeIpc();
+    const deps = makeDeps();
+    registerPtyIpc(ipc as any, deps);
+    for (const bad of [123, null, undefined, {}, [], true, Buffer.from('x')]) {
+      ipc.handlers.get(PTY_CHANNELS.input)!({}, 'sid', bad as any);
+    }
+    expect(deps.inputPtySession).not.toHaveBeenCalled();
+  });
+
+  it('resize drops non-finite or out-of-range cols/rows without calling deps', () => {
+    const ipc = makeFakeIpc();
+    const deps = makeDeps();
+    registerPtyIpc(ipc as any, deps);
+    const cases: Array<[unknown, unknown]> = [
+      [Number.NaN, 30],
+      [100, Number.NaN],
+      [Number.POSITIVE_INFINITY, 30],
+      [100, Number.NEGATIVE_INFINITY],
+      [0, 30],
+      [100, 0],
+      [-1, 30],
+      [100, -1],
+      [1001, 30],
+      [100, 1001],
+      ['80' as unknown, 30],
+    ];
+    for (const [c, r] of cases) {
+      ipc.handlers.get(PTY_CHANNELS.resize)!({}, 'sid', c as any, r as any);
+    }
+    expect(deps.resizePtySession).not.toHaveBeenCalled();
+  });
+
+  it('resize accepts boundary values 1 and 1000', () => {
+    const ipc = makeFakeIpc();
+    const deps = makeDeps();
+    registerPtyIpc(ipc as any, deps);
+    ipc.handlers.get(PTY_CHANNELS.resize)!({}, 'sid', 1, 1);
+    ipc.handlers.get(PTY_CHANNELS.resize)!({}, 'sid', 1000, 1000);
+    expect(deps.resizePtySession).toHaveBeenCalledTimes(2);
+    expect(deps.resizePtySession).toHaveBeenNthCalledWith(1, 'sid', 1, 1);
+    expect(deps.resizePtySession).toHaveBeenNthCalledWith(2, 'sid', 1000, 1000);
+  });
+
   it('kill returns the deps result', async () => {
     const ipc = makeFakeIpc();
     const deps = makeDeps({ killPtySession: vi.fn(async () => false) });
