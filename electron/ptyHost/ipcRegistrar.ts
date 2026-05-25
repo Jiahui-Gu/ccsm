@@ -202,10 +202,22 @@ export function registerPtyIpc(ipcMain: IpcMain, deps: PtyIpcDeps): void {
   });
 
   ipcMain.handle(PTY_CHANNELS.input, (_event, sid: string, data: string) => {
+    // Defense-in-depth: TypeScript signature is advisory across the IPC
+    // boundary — a compromised renderer (or a buggy preload bridge) can
+    // hand us anything. node-pty's `write` truncates non-strings silently
+    // or throws inside the addon, neither of which we want.
+    if (typeof data !== 'string') return;
     deps.inputPtySession(sid, data);
   });
 
   ipcMain.handle(PTY_CHANNELS.resize, (_event, sid: string, cols: number, rows: number) => {
+    // Same rationale as `pty:input` — guard the numeric channels too.
+    // `Number.isFinite` rejects NaN / Infinity / -Infinity; `>= 1` rejects
+    // zero and negatives. xterm's typical max is ~600 cols × ~600 rows on a
+    // huge monitor; cap at 1000 each to bound the damage from a hostile
+    // renderer asking for a 2^31 × 2^31 resize.
+    if (!Number.isFinite(cols) || !Number.isFinite(rows)) return;
+    if (cols < 1 || rows < 1 || cols > 1000 || rows > 1000) return;
     deps.resizePtySession(sid, cols, rows);
   });
 
