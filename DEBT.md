@@ -57,9 +57,9 @@ shows what got paid down).
 |---|---|---|---|
 | D1 | `engines.node` field missing + CI on Node 20 (EOL Apr 2026) | [#1372](https://github.com/Jiahui-Gu/ccsm/pull/1372) | `7093869` |
 | D2 | `npm run lint` had no `--max-warnings 0` — 114 dead `eslint-disable` directives accumulated | [#1373](https://github.com/Jiahui-Gu/ccsm/pull/1373) | `a2317b4` |
-| D3 | `engines.node` was advisory only — add `engine-strict=true`; fix `e2e.yml` cache key `node20`→`node22` | [#1375](https://github.com/Jiahui-Gu/ccsm/pull/1375) | (see PR) |
+| D3 | `engines.node` was advisory only — add `engine-strict=true`; fix `e2e.yml` cache key `node20`→`node22` | [#1375](https://github.com/Jiahui-Gu/ccsm/pull/1375) | `f240978` |
 | D4 | `pty:input` / `pty:resize` IPC handlers trusted TS signatures — added runtime typeof + range guards + 3 tests | [#1376](https://github.com/Jiahui-Gu/ccsm/pull/1376) | `df461a9` |
-| D5 | Coverage thresholds were ~8pp below baseline (silent regression headroom) — tightened to ~3pp | [#1377](https://github.com/Jiahui-Gu/ccsm/pull/1377) | (see PR) |
+| D5 | Coverage thresholds were ~8pp below baseline (silent regression headroom) — tightened to ~3pp | [#1377](https://github.com/Jiahui-Gu/ccsm/pull/1377) | `a426f53` |
 | D6 | No `CODEOWNERS` / no debt register | (this PR) | — |
 
 ---
