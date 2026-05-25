@@ -92,6 +92,12 @@ vi.mock('electron', () => {
   const app = {
     quit: (...args: unknown[]) => appQuitMock(...args),
     isPackaged: false,
+    // Default app name. Tests that want to exercise the dev-process
+    // branch (CCSM (dev) / CCSM Dev) drive it via the CCSM_DEV env
+    // override, which the factory checks first; the getName() arm is
+    // only hit by the packaged-dev variant. Stub returns "CCSM" so the
+    // production branch is the default — matches productName.
+    getName: () => 'CCSM',
     // Chromium command-line switch lookup. The createWindow factory checks
     // `enable-automation` to auto-enable hidden mode under Playwright; in
     // these unit tests we want manual control via CCSM_E2E_HIDDEN env, so
