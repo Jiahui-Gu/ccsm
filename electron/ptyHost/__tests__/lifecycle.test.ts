@@ -42,7 +42,10 @@ function bus(): LifecycleBus {
 }
 
 vi.mock('../processKiller', () => ({
-  killProcessSubtree: (pid: number | undefined) => bus().killCalls.push(pid),
+  killProcessSubtree: (pid: number | undefined) => {
+    bus().killCalls.push(pid);
+    return Promise.resolve();
+  },
 }));
 
 vi.mock('../../sessionWatcher', () => ({
@@ -638,5 +641,46 @@ describe('lifecycle.killAll', () => {
     await expect(L.killAll(new Map() as any)).resolves.toBeUndefined();
     expect(bus().killCalls).toEqual([]);
     expect(bus().watcherStopCalls).toEqual([]);
+  });
+
+  it('killAll fans out in parallel — wall time ≈ slowest kill, NOT sum of all', async () => {
+    // Regression guard for #1380: previously `killAll` was serial and each
+    // wedged session blocked the next on `spawnSync('taskkill', ...)` for
+    // 200–2000 ms, freezing the UI on quit. With parallel fanout + async
+    // taskkill the wall clock should track the slowest kill, not the sum.
+    //
+    // We simulate the wedged-fallback branch by NOT firing onExit and
+    // letting each kill ride the KILL_EXIT_TIMEOUT_MS timer to settlement.
+    // Under serial execution wall time would be 3×KILL_EXIT_TIMEOUT_MS;
+    // under parallel fanout it's ~1×.
+    vi.useFakeTimers();
+    try {
+      const sessions = new Map<string, FakeEntry>();
+      const a = makeFakeEntry({ pty: makeFakePty({ pid: 100 }) });
+      const b = makeFakeEntry({ pty: makeFakePty({ pid: 101 }) });
+      const c = makeFakeEntry({ pty: makeFakePty({ pid: 102 }) });
+      // All three writes succeed but no onExit fires — every kill rides
+      // the wedged-fallback timer.
+      sessions.set('a', a);
+      sessions.set('b', b);
+      sessions.set('c', c);
+
+      const p = L.killAll(sessions as any);
+      let resolved = false;
+      void p.then(() => { resolved = true; });
+
+      // Advance ONE KILL_EXIT_TIMEOUT_MS — if the three kills are racing in
+      // parallel they should all settle on this single tick. If they were
+      // serialized this would only settle the first.
+      await vi.advanceTimersByTimeAsync(L.KILL_EXIT_TIMEOUT_MS + 50);
+      await expect(p).resolves.toBeUndefined();
+      expect(resolved).toBe(true);
+
+      // All three subtree walks fired (proves all three escalated, not
+      // just one).
+      expect(bus().killCalls.sort()).toEqual([100, 101, 102]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
