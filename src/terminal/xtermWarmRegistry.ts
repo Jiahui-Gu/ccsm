@@ -135,6 +135,17 @@ export type WarmEntry = {
    * the entry's current `term.options.fontSize` is already up to date.
    */
   pendingFontSize: number | null;
+  /**
+   * Last `.xterm-viewport.scrollTop` captured at hide time. Webkit drops
+   * scrollTop when an element is reparented out of the layout tree, so
+   * xterm's internal `viewportY` stays at e.g. 148 but the visible
+   * scrollbar thumb snaps back to 0 on show. We snapshot before the hide
+   * reparent and restore after the show reparent — the canvas was already
+   * painting the correct logical rows (viewportY preserved), so the only
+   * thing the user noticed was the thumb jumping to the top.
+   * `null` means "no snapshot yet" (first show) — treated as no-op.
+   */
+  savedScrollTop: number | null;
 };
 
 /**
@@ -471,6 +482,7 @@ function allocEntry(sid: string): WarmEntry {
     keyboardPasteHandled: false,
     inputDisposers: [],
     pendingFontSize: null,
+    savedScrollTop: null,
   };
   warm.set(sid, entry);
 
@@ -773,13 +785,28 @@ export function ensureAndShowEntry(
   if (activeSid && activeSid !== sid) {
     const prev = warm.get(activeSid);
     if (prev) {
+      // Snapshot `.xterm-viewport.scrollTop` BEFORE the reparent.
+      // Webkit drops scrollTop when an element leaves its containing
+      // block (the offscreen holder is display:none / out-of-tree). Read
+      // synchronously to capture the user's current scroll position;
+      // restore in the symmetric show branch below.
+      try {
+        const vp = prev.wrapper.querySelector('.xterm-viewport');
+        if (vp instanceof HTMLElement) prev.savedScrollTop = vp.scrollTop;
+      } catch {
+        /* snapshot best-effort */
+      }
       try {
         getOffscreenHolder().appendChild(prev.wrapper);
       } catch (e) {
         warn('xterm-warm', 'hide reparent failed', e);
       }
       try {
-        log.event('terminal.warmHide', { sid: activeSid, lruSize: warm.size });
+        log.event('terminal.warmHide', {
+          sid: activeSid,
+          lruSize: warm.size,
+          savedScrollTop: prev.savedScrollTop ?? -1,
+        });
       } catch {
         /* probe failure tolerated */
       }
@@ -797,6 +824,39 @@ export function ensureAndShowEntry(
     host.appendChild(entry.wrapper);
   } catch (e) {
     warn('xterm-warm', 'show reparent failed', e);
+  }
+
+  // Restore `.xterm-viewport.scrollTop` captured at the symmetric hide.
+  // xterm's internal `viewportY` survives the offscreen detour (canvas
+  // keeps painting the right rows), but webkit zeroes the DOM scrollTop
+  // when the element leaves the layout tree — so without this the
+  // scrollbar thumb snaps to the top while the canvas content shows
+  // a mid-buffer position. Write AFTER the reparent (element must be
+  // back in the layout tree) and synchronously so the user never
+  // observes a frame at scrollTop=0.
+  if (entry.savedScrollTop != null) {
+    let restoreApplied = -1;
+    let restoreActual = -1;
+    try {
+      const vp = entry.wrapper.querySelector('.xterm-viewport');
+      if (vp instanceof HTMLElement) {
+        vp.scrollTop = entry.savedScrollTop;
+        restoreApplied = entry.savedScrollTop;
+        restoreActual = vp.scrollTop;
+      }
+    } catch {
+      /* restore best-effort */
+    }
+    try {
+      log.event('terminal.warmShow.scrollRestore', {
+        sid,
+        savedScrollTop: entry.savedScrollTop,
+        applied: restoreApplied,
+        actualAfterWrite: restoreActual,
+      });
+    } catch {
+      /* probe failure tolerated */
+    }
   }
 
   // First-time open: deferred from allocEntry so the xterm renderer
