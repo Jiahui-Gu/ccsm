@@ -227,7 +227,7 @@ describe('archiveSession / unarchiveSession', () => {
     ).toBe(container!.id);
   });
 
-  it('unarchiveSession falls back to g-default when source group was deleted', () => {
+  it('unarchiveSession falls back to another usable normal group when source was deleted', () => {
     const otherGroup: Group = {
       id: 'g-other',
       name: 'Other',
@@ -261,6 +261,46 @@ describe('archiveSession / unarchiveSession', () => {
     const s = h.state();
     expect(s.sessions!.find((x) => x.id === 's1')!.groupId).toBe('g-default');
     // Container deleted (empty).
+    expect(s.groups!.find((g) => g.id === containerId)).toBeUndefined();
+  });
+
+  it('unarchiveSession synthesizes a normal group when none exist (was orphaning into g-default literal)', () => {
+    // Repro for the P1 bug: when the user has deleted both the source
+    // group AND `g-default`, the old code wrote the literal `'g-default'`
+    // as the target groupId. No such group existed → the unarchived
+    // session pointed at a non-existent groupId and never re-appeared
+    // in the sidebar. ensureUsableGroup must materialize a fresh normal
+    // group so the session lands somewhere visible.
+    const h = harness({
+      groups: [{ id: 'g-default', name: 'Sessions', collapsed: false, kind: 'normal' }],
+      sessions: [mkSession('s1', 'g-default')],
+      activeId: 's1',
+    });
+    h.get().archiveSession('s1');
+    const containerId = h.state().groups!.find(
+      (g) => g.kind === 'archive' && g.sourceGroupId === 'g-default'
+    )!.id;
+    // s1 now lives in the archive container, so deleting g-default does
+    // not cascade-delete it. Removing g-default leaves the container as
+    // the only group, with s1 inside.
+    h.get().deleteGroup('g-default');
+    const mid = h.state();
+    expect(mid.groups!.find((g) => g.id === 'g-default')).toBeUndefined();
+    expect(mid.groups!.filter((g) => g.kind === 'normal').length).toBe(0);
+    expect(mid.sessions!.find((x) => x.id === 's1')).toBeDefined();
+
+    h.get().unarchiveSession('s1');
+    const s = h.state();
+    const s1 = s.sessions!.find((x) => x.id === 's1')!;
+    // A fresh normal group exists.
+    const normalGroups = s.groups!.filter((g) => g.kind === 'normal');
+    expect(normalGroups.length).toBe(1);
+    // Session points at the new group's id, NOT the literal 'g-default'.
+    expect(s1.groupId).toBe(normalGroups[0].id);
+    expect(s1.groupId).not.toBe('g-default');
+    // archivedAt cleared.
+    expect(s1.archivedAt).toBeUndefined();
+    // Container removed (was the only archived holder).
     expect(s.groups!.find((g) => g.id === containerId)).toBeUndefined();
   });
 
