@@ -24,7 +24,6 @@ interface RegistrarBus {
   userDataDir: string;
 }
 function bus(): RegistrarBus {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (globalThis as any).__irBus as RegistrarBus;
 }
 
@@ -112,7 +111,6 @@ function makeDeps(over: Partial<PtyIpcDeps> = {}): PtyIpcDeps {
 }
 
 beforeEach(() => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (globalThis as any).__irBus = {
     resolveClaude: vi.fn(),
     watcherListeners: new Map<string, Array<(evt: unknown) => void>>(),
@@ -124,7 +122,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   delete (globalThis as any).__irBus;
   vi.restoreAllMocks();
 });
@@ -134,7 +131,6 @@ afterEach(() => {
 describe('registerPtyIpc handler registration', () => {
   it('registers all ten pty:* channels (8 legacy + getBufferSnapshot + saveClipboardImage)', () => {
     const ipc = makeFakeIpc();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, makeDeps());
     expect(Array.from(ipc.handlers.keys()).sort()).toEqual(
       [
@@ -162,7 +158,6 @@ describe('registerPtyIpc handler registration', () => {
         seq: 7,
       })),
     });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
     const out = await ipc.handlers.get(PTY_CHANNELS.getBufferSnapshot)!({}, 'sid-Z');
     expect(out).toEqual({ snapshot: 'snap-for-sid-Z', seq: 7 });
@@ -176,7 +171,6 @@ describe(PTY_CHANNELS.list, () => {
   it('delegates to deps.listPtySessions', () => {
     const ipc = makeFakeIpc();
     const deps = makeDeps({ listPtySessions: vi.fn(() => [{ sid: 'a', pid: 1, cols: 80, rows: 24, cwd: '/x' }]) });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
     const out = ipc.handlers.get(PTY_CHANNELS.list)!({});
     expect(out).toEqual([{ sid: 'a', pid: 1, cols: 80, rows: 24, cwd: '/x' }]);
@@ -188,7 +182,6 @@ describe('pty:input / resize / kill / get pass-through', () => {
   it('input forwards sid+data', () => {
     const ipc = makeFakeIpc();
     const deps = makeDeps();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
     ipc.handlers.get(PTY_CHANNELS.input)!({}, 'sid', 'echo\n');
     expect(deps.inputPtySession).toHaveBeenCalledWith('sid', 'echo\n');
@@ -197,7 +190,6 @@ describe('pty:input / resize / kill / get pass-through', () => {
   it('resize forwards sid+cols+rows', () => {
     const ipc = makeFakeIpc();
     const deps = makeDeps();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
     ipc.handlers.get(PTY_CHANNELS.resize)!({}, 'sid', 100, 30);
     expect(deps.resizePtySession).toHaveBeenCalledWith('sid', 100, 30);
@@ -206,7 +198,6 @@ describe('pty:input / resize / kill / get pass-through', () => {
   it('kill returns the deps result', async () => {
     const ipc = makeFakeIpc();
     const deps = makeDeps({ killPtySession: vi.fn(async () => false) });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
     await expect(ipc.handlers.get(PTY_CHANNELS.kill)!({}, 'sid')).resolves.toBe(false);
     expect(deps.killPtySession).toHaveBeenCalledWith('sid');
@@ -216,7 +207,6 @@ describe('pty:input / resize / kill / get pass-through', () => {
     const info = { sid: 's', pid: 9, cols: 80, rows: 24, cwd: '/' };
     const ipc = makeFakeIpc();
     const deps = makeDeps({ getPtySession: vi.fn(() => info) });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
     expect(ipc.handlers.get(PTY_CHANNELS.get)!({}, 's')).toBe(info);
   });
@@ -228,7 +218,6 @@ describe(PTY_CHANNELS.spawn, () => {
   it('returns {ok:false, error:claude_not_found} when resolveClaude returns null', async () => {
     const ipc = makeFakeIpc();
     bus().resolveClaude.mockReturnValue(null);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, makeDeps());
     expect(await ipc.handlers.get(PTY_CHANNELS.spawn)!({}, 'sid', '/work')).toEqual({
       ok: false,
@@ -242,7 +231,6 @@ describe(PTY_CHANNELS.spawn, () => {
     const deps = makeDeps({
       spawnPtySession: vi.fn(() => ({ sid: 'sid', pid: 1, cols: 80, rows: 24, cwd: '/picked' })),
     });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
     const out = await ipc.handlers.get(PTY_CHANNELS.spawn)!({}, 'sid', '/work');
     expect(out).toEqual({ ok: true, sid: 'sid', pid: 1, cols: 80, rows: 24, cwd: '/picked' });
@@ -265,7 +253,6 @@ describe(PTY_CHANNELS.spawn, () => {
     const deps = makeDeps({
       spawnPtySession: vi.fn(() => ({ sid: 'sid', pid: 1, cols: 120, rows: 30, cwd: '/picked' })),
     });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
     // Even if a (legacy) renderer were to send the third opts argument,
     // the IPC handler ignores it — the only opt threaded into the
@@ -284,7 +271,6 @@ describe(PTY_CHANNELS.spawn, () => {
     const deps = makeDeps({
       spawnPtySession: vi.fn(() => ({ sid: 'sid', pid: 1, cols: 120, rows: 30, cwd: '/picked' })),
     });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
     await ipc.handlers.get(PTY_CHANNELS.spawn)!({}, 'sid', '/work');
     const call = (deps.spawnPtySession as ReturnType<typeof vi.fn>).mock.calls[0];
@@ -300,7 +286,6 @@ describe(PTY_CHANNELS.spawn, () => {
     const deps = makeDeps({
       spawnPtySession: vi.fn(() => { throw new Error('ENOENT'); }),
     });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
     const out = (await ipc.handlers.get(PTY_CHANNELS.spawn)!({}, 'sid', '/work')) as { ok: boolean; error: string };
     expect(out.ok).toBe(false);
@@ -314,14 +299,12 @@ describe(PTY_CHANNELS.spawn, () => {
     const win = makeWin(wc);
     let captured: ((newCwd: string) => void) | null = null;
     const deps = makeDeps({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       getMainWindow: () => win as any,
       spawnPtySession: vi.fn((_sid: string, _cwd: string, _claude: string, opts?: { onCwdRedirect?: (n: string) => void }) => {
         captured = opts?.onCwdRedirect ?? null;
         return { sid: 'sid', pid: 1, cols: 80, rows: 24, cwd: '/picked' };
       }),
     });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
     await ipc.handlers.get(PTY_CHANNELS.spawn)!({}, 'sid', '/work');
     expect(captured).not.toBeNull();
@@ -340,7 +323,6 @@ describe(PTY_CHANNELS.spawn, () => {
         return { sid: 'sid', pid: 1, cols: 80, rows: 24, cwd: '/' };
       }),
     });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
     await ipc.handlers.get(PTY_CHANNELS.spawn)!({}, 'sid', '/work');
     expect(() => captured!('/new')).not.toThrow();
@@ -353,14 +335,12 @@ describe(PTY_CHANNELS.spawn, () => {
     const win = makeWin(wc);
     let captured: ((newCwd: string) => void) | null = null;
     const deps = makeDeps({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       getMainWindow: () => win as any,
       spawnPtySession: vi.fn((_sid, _cwd, _claude, opts?: { onCwdRedirect?: (n: string) => void }) => {
         captured = opts?.onCwdRedirect ?? null;
         return { sid: 'sid', pid: 1, cols: 80, rows: 24, cwd: '/' };
       }),
     });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
     await ipc.handlers.get(PTY_CHANNELS.spawn)!({}, 'sid', '/work');
     expect(() => captured!('/new')).not.toThrow();
@@ -372,7 +352,6 @@ describe(PTY_CHANNELS.spawn, () => {
 describe(PTY_CHANNELS.attach, () => {
   it('returns null when entry is unknown', () => {
     const ipc = makeFakeIpc();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, makeDeps({ getEntry: () => undefined }));
     expect(ipc.handlers.get(PTY_CHANNELS.attach)!({ sender: makeWc(1) }, 'sid')).toBeNull();
   });
@@ -389,10 +368,8 @@ describe(PTY_CHANNELS.attach, () => {
       attached,
     };
     const deps = makeDeps({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       getEntry: () => entry as any,
     });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
     const wc = makeWc(7);
     const res = ipc.handlers.get(PTY_CHANNELS.attach)!({ sender: wc }, 'sid');
@@ -415,10 +392,8 @@ describe(PTY_CHANNELS.attach, () => {
       attached,
     };
     const deps = makeDeps({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       getEntry: () => entry as any,
     });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
     const wc = makeWc(11);
     ipc.handlers.get(PTY_CHANNELS.attach)!({ sender: wc }, 'sid');
@@ -433,9 +408,7 @@ describe(PTY_CHANNELS.detach, () => {
   it('removes the sender id from entry.attached', () => {
     const ipc = makeFakeIpc();
     const attached = new Map<number, unknown>([[5, makeWc(5)]]);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const entry = { attached } as any;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, makeDeps({ getEntry: () => entry }));
     ipc.handlers.get(PTY_CHANNELS.detach)!({ sender: makeWc(5) }, 'sid');
     expect(attached.has(5)).toBe(false);
@@ -443,7 +416,6 @@ describe(PTY_CHANNELS.detach, () => {
 
   it('is a no-op when entry is unknown', () => {
     const ipc = makeFakeIpc();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, makeDeps({ getEntry: () => undefined }));
     expect(() => ipc.handlers.get(PTY_CHANNELS.detach)!({ sender: makeWc(1) }, 'sid')).not.toThrow();
   });
@@ -455,7 +427,6 @@ describe(PTY_CHANNELS.checkClaudeAvailable, () => {
   it('returns {available:true, path} when resolveClaude succeeds', async () => {
     const ipc = makeFakeIpc();
     bus().resolveClaude.mockReturnValue('/bin/claude');
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, makeDeps());
     expect(await ipc.handlers.get(PTY_CHANNELS.checkClaudeAvailable)!({}, undefined)).toEqual({
       available: true,
@@ -466,7 +437,6 @@ describe(PTY_CHANNELS.checkClaudeAvailable, () => {
   it('returns {available:false} when resolveClaude returns null', async () => {
     const ipc = makeFakeIpc();
     bus().resolveClaude.mockReturnValue(null);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, makeDeps());
     expect(await ipc.handlers.get(PTY_CHANNELS.checkClaudeAvailable)!({}, undefined)).toEqual({
       available: false,
@@ -476,7 +446,6 @@ describe(PTY_CHANNELS.checkClaudeAvailable, () => {
   it('passes {force:true} through to resolveClaude when opts.force === true', async () => {
     const ipc = makeFakeIpc();
     bus().resolveClaude.mockReturnValue('/bin/claude');
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, makeDeps());
     await ipc.handlers.get(PTY_CHANNELS.checkClaudeAvailable)!({}, { force: true });
     expect(bus().resolveClaude).toHaveBeenCalledWith({ force: true });
@@ -485,7 +454,6 @@ describe(PTY_CHANNELS.checkClaudeAvailable, () => {
   it('does NOT pass force when opts is malformed (string / number / null / no force key)', async () => {
     const ipc = makeFakeIpc();
     bus().resolveClaude.mockReturnValue('/bin/claude');
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, makeDeps());
     await ipc.handlers.get(PTY_CHANNELS.checkClaudeAvailable)!({}, 'not-an-object');
     await ipc.handlers.get(PTY_CHANNELS.checkClaudeAvailable)!({}, null);
@@ -554,9 +522,7 @@ describe(PTY_CHANNELS.saveClipboardImage, () => {
 describe('sessionWatcher → renderer bridge', () => {
   it('subscribes to state-changed and title-changed exactly once across re-registrations', () => {
     const ipc = makeFakeIpc();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, makeDeps());
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, makeDeps());
     // The registrar's `stateBridgeInstalled` guard is module-level and may
     // already be true from earlier tests (other test files import this same
@@ -570,7 +536,6 @@ describe('sessionWatcher → renderer bridge', () => {
     const ipc = makeFakeIpc();
     const wc = makeWc(1);
     const win = makeWin(wc);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, makeDeps({ getMainWindow: () => win as any }));
     const listeners = bus().watcherListeners.get('state-changed') ?? [];
     if (listeners.length === 0) {
@@ -587,7 +552,6 @@ describe('sessionWatcher → renderer bridge', () => {
     const ipc = makeFakeIpc();
     const wc = makeWc(1);
     const win = makeWin(wc);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, makeDeps({ getMainWindow: () => win as any }));
     const listeners = bus().watcherListeners.get('title-changed') ?? [];
     if (listeners.length === 0) return;
@@ -597,7 +561,6 @@ describe('sessionWatcher → renderer bridge', () => {
 
   it('state-changed forward is a no-op when getMainWindow returns null', () => {
     const ipc = makeFakeIpc();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, makeDeps({ getMainWindow: () => null }));
     const listeners = bus().watcherListeners.get('state-changed') ?? [];
     if (listeners.length === 0) return;
@@ -608,7 +571,6 @@ describe('sessionWatcher → renderer bridge', () => {
     const ipc = makeFakeIpc();
     const wc = makeWc(1, { sendThrows: true });
     const win = makeWin(wc);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, makeDeps({ getMainWindow: () => win as any }));
     const listeners = bus().watcherListeners.get('state-changed') ?? [];
     if (listeners.length === 0) return;

@@ -29,7 +29,6 @@ interface SpawnFakeBus {
   killed: number;
 }
 function bus(): SpawnFakeBus {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (globalThis as any).__claudeResolverBus as SpawnFakeBus;
 }
 
@@ -81,7 +80,6 @@ function setPlatform(p: NodeJS.Platform) {
 }
 
 beforeEach(() => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (globalThis as any).__claudeResolverBus = {
     results: new Map(),
     calls: [],
@@ -95,7 +93,6 @@ beforeEach(() => {
 afterEach(() => {
   setPlatform(ORIGINAL_PLATFORM);
   __resetClaudeResolverForTest();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   delete (globalThis as any).__claudeResolverBus;
   vi.restoreAllMocks();
 });

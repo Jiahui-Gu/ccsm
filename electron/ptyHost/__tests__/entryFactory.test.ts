@@ -29,7 +29,6 @@ interface PtyFakeBus {
   deferHeadlessWrite: boolean;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function bus(): PtyFakeBus { return (globalThis as any).__pf as PtyFakeBus; }
 
 vi.mock('node-pty', () => ({
@@ -53,7 +52,6 @@ vi.mock('@xterm/headless', () => ({
   Terminal: class {
     constructor(opts?: unknown) {
       // Record constructor opts so tests can pin scrollback wiring.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (globalThis as any).__pf_lastHeadlessOpts = opts;
     }
     // Mirror @xterm/headless's `write(data, callback?)` signature so tests
@@ -112,7 +110,6 @@ vi.mock('../dataFanout', () => ({
 // `globalThis.__pf_scrollback` directly.
 vi.mock('../../prefs/scrollback', () => ({
   loadScrollbackLines: () =>
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (((globalThis as any).__pf_scrollback as number | undefined) ?? 1500),
   DEFAULT_SCROLLBACK_LINES: 1500,
 }));
@@ -135,14 +132,12 @@ describe('entryFactory.makeEntry', () => {
       ensureCopied: false,
       deferHeadlessWrite: false,
     };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (globalThis as any).__pf = b;
     vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     delete (globalThis as any).__pf;
   });
 
@@ -219,10 +214,8 @@ describe('entryFactory.makeEntry', () => {
   });
 
   it('passes the user-configured scrollback cap into the headless Terminal constructor', () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (globalThis as any).__pf_scrollback = 2500;
     makeEntry('sid-SCROLL', '/work', '/bin/claude', 80, 24, { onExit: vi.fn() });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const opts = (globalThis as any).__pf_lastHeadlessOpts as
       | { scrollback?: number }
       | undefined;
@@ -230,10 +223,8 @@ describe('entryFactory.makeEntry', () => {
   });
 
   it('falls back to the default cap when the prefs module returns the default', () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     delete (globalThis as any).__pf_scrollback;
     makeEntry('sid-DEFAULT', '/work', '/bin/claude', 80, 24, { onExit: vi.fn() });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const opts = (globalThis as any).__pf_lastHeadlessOpts as
       | { scrollback?: number }
       | undefined;
@@ -312,14 +303,12 @@ describe('entryFactory.dispatchPtyChunk', () => {
       ensureCopied: false,
       deferHeadlessWrite: false,
     };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (globalThis as any).__pf = b;
     vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     delete (globalThis as any).__pf;
   });
 
@@ -333,7 +322,6 @@ describe('entryFactory.dispatchPtyChunk', () => {
         sent.push({ chunk: payload.chunk, seq: payload.seq });
       },
     };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     entry.attached.set(1, wc as any);
 
     mod.dispatchPtyChunk('sid-DW', entry, 'a');
@@ -366,7 +354,6 @@ describe('entryFactory.dispatchPtyChunk', () => {
       isDestroyed: () => false,
       send: vi.fn(),
     };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     entry.attached.set(1, wc as any);
 
     // Defer write callbacks so writes stay "pending" until we manually drain.
@@ -413,9 +400,7 @@ describe('entryFactory.dispatchPtyChunk', () => {
       isDestroyed: () => false,
       send: (_ch: string, payload: { seq: number }) => aliveSent.push(payload.seq),
     };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     entry.attached.set(1, dead as any);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     entry.attached.set(2, alive as any);
 
     mod.dispatchPtyChunk('sid-DEAD', entry, 'x');
@@ -430,9 +415,7 @@ describe('entryFactory.dispatchPtyChunk', () => {
     const entry = mod.makeEntry('sid-PRUNE', '/work', '/bin/claude', 80, 24, { onExit: vi.fn() });
     const dead = { isDestroyed: () => true, send: vi.fn() };
     const alive = { isDestroyed: () => false, send: vi.fn() };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     entry.attached.set(1, dead as any);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     entry.attached.set(2, alive as any);
     expect(entry.attached.size).toBe(2);
 

@@ -23,7 +23,6 @@ interface RegistrarBus {
   userDataDir: string;
 }
 function bus(): RegistrarBus {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (globalThis as any).__irBusF6 as RegistrarBus;
 }
 
@@ -90,7 +89,6 @@ function makeDeps(over: Partial<PtyIpcDeps> = {}): PtyIpcDeps {
 }
 
 beforeEach(() => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (globalThis as any).__irBusF6 = {
     resolveClaude: vi.fn(),
     watcherListeners: new Map(),
@@ -100,7 +98,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   delete (globalThis as any).__irBusF6;
   vi.restoreAllMocks();
 });
@@ -116,7 +113,6 @@ describe('F6: pty:attach destroyed-handler isolates per-wc (PR #1315 follow-up)'
       rows: 24,
       attached,
     };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, makeDeps({ getEntry: () => entry as any }));
 
     const wcA = makeWc(101);

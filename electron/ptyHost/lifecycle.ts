@@ -410,7 +410,6 @@ export async function getBufferSnapshot(
   for (let i = 0; i < lines.length; i += SNAPSHOT_CHUNK_LINES) {
     out.push(lines.slice(i, i + SNAPSHOT_CHUNK_LINES).join('\n'));
     if (i + SNAPSHOT_CHUNK_LINES < lines.length) {
-      // eslint-disable-next-line no-await-in-loop
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
   }
