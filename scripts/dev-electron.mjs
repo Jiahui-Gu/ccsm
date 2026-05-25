@@ -104,11 +104,13 @@ function findListenerPidWin(port) {
   const res = spawnSync('netstat', ['-ano', '-p', 'TCP'], { encoding: 'utf8' });
   if (res.status !== 0) return null;
   const lines = res.stdout.split(/\r?\n/);
-  const needle = `:${port}`;
+  // `:4100 ` (with trailing whitespace) discriminates the exact port
+  // from substrings like `:41000`. netstat always pads the local
+  // address column with at least one space before the foreign address.
+  const needle = `:${port} `;
   for (const line of lines) {
     if (!line.includes('LISTENING')) continue;
-    // Local Address column contains "0.0.0.0:4100" or "[::]:4100".
-    if (!new RegExp(`${needle.replace('.', '\\.')}\\b`).test(line)) continue;
+    if (!line.includes(needle)) continue;
     const cols = line.trim().split(/\s+/);
     const pid = Number(cols[cols.length - 1]);
     if (Number.isFinite(pid) && pid > 0) return pid;
@@ -117,9 +119,10 @@ function findListenerPidWin(port) {
 }
 
 function inspectProcessWin(pid) {
-  // wmic is deprecated on Win11 but still present on most systems; if
-  // missing we fall back to tasklist (which doesn't give CommandLine).
-  // CSV output keeps the comma-in-path case parseable.
+  // Try wmic first — fastest and present on Win10 + most Win11 < 24H2.
+  // Win11 24H2 removed wmic by default; CIM via PowerShell is the
+  // documented replacement and ships on every supported Win10/11 SKU.
+  // Final fallback is tasklist for the image name only.
   const wmic = spawnSync(
     'wmic',
     ['process', 'where', `ProcessId=${pid}`, 'get', 'ExecutablePath,CommandLine', '/format:list'],
@@ -131,12 +134,45 @@ function inspectProcessWin(pid) {
     const cmd = /CommandLine=(.*)/i.exec(out)?.[1]?.trim() ?? '';
     if (exe || cmd) return { executablePath: exe, commandLine: cmd };
   }
-  // Fallback: at least surface the image name.
+
+  // PowerShell CIM fallback. ConvertTo-Json keeps quoted strings
+  // unambiguous (Format-List loses newlines inside CommandLine for
+  // some processes). -NoProfile skips user $PROFILE so this is safe
+  // and fast in fresh shells. Property selection is explicit so the
+  // JSON shape doesn't depend on PowerShell version.
+  const ps = spawnSync(
+    'powershell',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" | ` +
+        `Select-Object ExecutablePath,CommandLine | ConvertTo-Json -Compress`,
+    ],
+    { encoding: 'utf8' },
+  );
+  if (ps.status === 0 && ps.stdout.trim()) {
+    try {
+      const obj = JSON.parse(ps.stdout);
+      const exe = String(obj?.ExecutablePath ?? '').trim();
+      const cmd = String(obj?.CommandLine ?? '').trim();
+      if (exe || cmd) return { executablePath: exe, commandLine: cmd };
+    } catch {
+      /* fall through to tasklist */
+    }
+  }
+
+  // Final fallback: tasklist gives us the image name only (no
+  // CommandLine). With empty commandLine, the preflight rule
+  // `looksLikeOurDev` is guaranteed false → refuse to kill, which
+  // is the safe default. Parse the first CSV field so the bail
+  // message shows just `CCSM.exe`, not the raw 5-column row.
   const tl = spawnSync('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], {
     encoding: 'utf8',
   });
   if (tl.status === 0 && tl.stdout.trim()) {
-    return { executablePath: tl.stdout.trim(), commandLine: '' };
+    const firstField = /^"([^"]*)"/.exec(tl.stdout.trim())?.[1] ?? '';
+    if (firstField) return { executablePath: firstField, commandLine: '' };
   }
   return null;
 }
