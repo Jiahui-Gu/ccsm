@@ -15,11 +15,13 @@ describe('useShortcutHandlers', () => {
   let toggleShortcuts: ReturnType<typeof vi.fn>;
   let togglePalette: ReturnType<typeof vi.fn>;
   let openSettings: ReturnType<typeof vi.fn>;
+  let createNewGroup: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     toggleShortcuts = vi.fn();
     togglePalette = vi.fn();
     openSettings = vi.fn();
+    createNewGroup = vi.fn();
   });
 
   function mount() {
@@ -28,6 +30,7 @@ describe('useShortcutHandlers', () => {
         toggleShortcuts,
         togglePalette,
         openSettings,
+        createNewGroup,
       })
     );
   }
@@ -50,6 +53,7 @@ describe('useShortcutHandlers', () => {
     expect(togglePalette).not.toHaveBeenCalled();
     expect(toggleShortcuts).not.toHaveBeenCalled();
     expect(openSettings).not.toHaveBeenCalled();
+    expect(createNewGroup).not.toHaveBeenCalled();
   });
 
   it('Ctrl+, opens settings', () => {
@@ -83,6 +87,45 @@ describe('useShortcutHandlers', () => {
     expect(togglePalette).not.toHaveBeenCalled();
     expect(toggleShortcuts).not.toHaveBeenCalled();
     expect(openSettings).not.toHaveBeenCalled();
+    expect(createNewGroup).not.toHaveBeenCalled();
+  });
+
+  describe('Ctrl/Cmd+Shift+N (new group)', () => {
+    it('Ctrl+Shift+N fires createNewGroup', () => {
+      mount();
+      dispatchKey({ key: 'N', ctrlKey: true, shiftKey: true });
+      expect(createNewGroup).toHaveBeenCalledTimes(1);
+      expect(toggleShortcuts).not.toHaveBeenCalled();
+      expect(togglePalette).not.toHaveBeenCalled();
+      expect(openSettings).not.toHaveBeenCalled();
+    });
+
+    it('Cmd+Shift+N fires createNewGroup', () => {
+      mount();
+      dispatchKey({ key: 'N', metaKey: true, shiftKey: true });
+      expect(createNewGroup).toHaveBeenCalledTimes(1);
+    });
+
+    it('Ctrl+N alone does NOT fire createNewGroup', () => {
+      mount();
+      dispatchKey({ key: 'n', ctrlKey: true });
+      expect(createNewGroup).not.toHaveBeenCalled();
+    });
+
+    it('Ctrl+Shift+N is suppressed when an input/textarea is focused', () => {
+      mount();
+      const input = document.createElement('input');
+      document.body.appendChild(input);
+      dispatchKey({ key: 'N', ctrlKey: true, shiftKey: true, target: input });
+      expect(createNewGroup).not.toHaveBeenCalled();
+      document.body.removeChild(input);
+
+      const ta = document.createElement('textarea');
+      document.body.appendChild(ta);
+      dispatchKey({ key: 'N', ctrlKey: true, shiftKey: true, target: ta });
+      expect(createNewGroup).not.toHaveBeenCalled();
+      document.body.removeChild(ta);
+    });
   });
 
   it('removes the keydown listener on unmount', () => {
