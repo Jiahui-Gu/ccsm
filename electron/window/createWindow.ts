@@ -362,6 +362,17 @@ export function createWindow(deps: CreateWindowDeps): BrowserWindow {
   // our preload attached.
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 
+  // Keep the dev marker visible in the OS title. Electron mirrors the
+  // renderer's `document.title` (`src/index.html` has `<title>CCSM</title>`)
+  // into BrowserWindow.getTitle() via the default page-title-updated
+  // handler — that would clobber the constructor-time "CCSM [dev]" within
+  // milliseconds of dom-ready. preventDefault keeps our marker authoritative.
+  // Prod builds want the renderer-driven title (future per-session titles,
+  // etc.) so we gate this on the dev flag.
+  if (isDevProcess) {
+    win.on('page-title-updated', (event) => event.preventDefault());
+  }
+
   // Block in-window navigation away from our renderer origin. The renderer
   // should never navigate; all external links go through `shell:openExternal`
   // (which itself filters to http(s) only).

@@ -23,6 +23,15 @@ async function main() {
     env: {
       ...process.env,
       CCSM_DEV: '1',
+      // Force prod bundle (dist/renderer/index.html) so the renderer
+      // actually loads — without this, dev mode tries webpack-dev-server
+      // on :4100 which we are not running, and the renderer ends up at
+      // chrome-error://chromewebdata/ with an empty document.title.
+      // The point of this probe is precisely to verify the [dev]
+      // title survives the renderer loading its real index.html
+      // (which has <title>CCSM</title> and would trigger
+      // page-title-updated).
+      CCSM_PROD_BUNDLE: '1',
       // Stay offscreen so this dogfood never pops a window on the
       // user's desktop. Same convention as scripts/probe-utils-real-cli.
       CCSM_E2E_HIDDEN: '1',
@@ -37,24 +46,39 @@ async function main() {
     await new Promise((r) => setTimeout(r, 1500));
 
     const appName = await app.evaluate(({ app }) => app.getName());
-    const winTitle = await app.evaluate(({ BrowserWindow }) => {
+    const winTitleEarly = await app.evaluate(({ BrowserWindow }) => {
       const w = BrowserWindow.getAllWindows()[0];
       return w?.getTitle() ?? '';
     });
 
-    console.log(`app.getName() = ${JSON.stringify(appName)}`);
-    console.log(`window.title  = ${JSON.stringify(winTitle)}`);
+    // Wait longer to give renderer document.title + page-title-updated
+    // a chance to fire and (potentially) clobber BrowserWindow.getTitle().
+    // If our [dev] marker doesn't survive 5s post-load, the title is
+    // being overwritten and we need preventDefault on page-title-updated.
+    await new Promise((r) => setTimeout(r, 5000));
+    const winTitleLate = await app.evaluate(({ BrowserWindow }) => {
+      const w = BrowserWindow.getAllWindows()[0];
+      return w?.getTitle() ?? '';
+    });
+
+    console.log(`app.getName()        = ${JSON.stringify(appName)}`);
+    console.log(`window.title (early) = ${JSON.stringify(winTitleEarly)}`);
+    console.log(`window.title (+5s)   = ${JSON.stringify(winTitleLate)}`);
 
     const okName = appName.includes('dev') || appName.includes('Dev');
-    const okTitle = /\[dev\]/i.test(winTitle);
+    const okTitleEarly = /\[dev\]/i.test(winTitleEarly);
+    const okTitleLate = /\[dev\]/i.test(winTitleLate);
 
     if (!okName) {
       console.error(`FAIL: app.getName() should include dev marker, got ${JSON.stringify(appName)}`);
     }
-    if (!okTitle) {
-      console.error(`FAIL: window title should include [dev], got ${JSON.stringify(winTitle)}`);
+    if (!okTitleEarly) {
+      console.error(`FAIL: window title should include [dev] early, got ${JSON.stringify(winTitleEarly)}`);
     }
-    if (okName && okTitle) {
+    if (!okTitleLate) {
+      console.error(`FAIL: window title should still include [dev] after 5s — renderer page-title-updated likely overwrote it. Got ${JSON.stringify(winTitleLate)}`);
+    }
+    if (okName && okTitleEarly && okTitleLate) {
       console.log('PASS');
     } else {
       process.exitCode = 1;

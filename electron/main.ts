@@ -94,6 +94,20 @@ import { installEarlyTestHooks, installLateTestHooks } from './testHooks';
 // `electron .`, so they don't require a running webpack-dev-server.
 const isDev = !app.isPackaged && process.env.CCSM_PROD_BUNDLE !== '1';
 
+// npm-run-dev (scripts/dev-electron.mjs) sets CCSM_DEV=1. Override
+// app.getName() so Windows tasklist / Alt-Tab / Task Manager all surface
+// "CCSM (dev)" instead of bare "CCSM" — without this the dev process
+// and a co-running installed CCSM.exe are visually indistinguishable,
+// and accidental `taskkill /IM CCSM.exe` kills the user's working
+// session. Must run BEFORE app.whenReady() so any `app.getPath()` /
+// userData / logs / sessionData derived from app name resolve to the
+// renamed dir from the very first call. The packaged-dev variant
+// (productName "CCSM Dev") already gets a distinct name from
+// electron-builder; this branch covers the unpackaged dev case.
+if (process.env.CCSM_DEV === '1' && !app.getName().includes('Dev')) {
+  app.setName('CCSM (dev)');
+}
+
 // Acquire the single-instance lock + register the second-instance focus
 // handler. See electron/lifecycle/singleInstance for the rationale.
 acquireSingleInstanceLock();
@@ -176,18 +190,6 @@ function getTray(): Tray | null {
 }
 
 app.whenReady().then(() => {
-  // npm-run-dev (scripts/dev-electron.mjs) sets CCSM_DEV=1. Override
-  // app.getName() so Windows tasklist / Alt-Tab / Task Manager all
-  // surface "CCSM (dev)" instead of bare "CCSM" — without this the
-  // dev process and a co-running installed CCSM.exe are visually
-  // indistinguishable, and accidental `taskkill /IM CCSM.exe` kills
-  // the user's working session. The packaged-dev variant
-  // (productName "CCSM Dev") already gets a distinct name from
-  // electron-builder; this branch covers the unpackaged dev case.
-  if (process.env.CCSM_DEV === '1' && !app.getName().includes('Dev')) {
-    app.setName('CCSM (dev)');
-  }
-
   // On Windows, set a stable AppUserModelID so the OS attributes the app to
   // its taskbar / Start Menu entry instead of generic "electron.exe".
   if (process.platform === 'win32') {
