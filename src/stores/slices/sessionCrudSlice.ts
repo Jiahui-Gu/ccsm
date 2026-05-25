@@ -512,7 +512,11 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
 
     unarchiveSession: (sessionId) => {
       // Clear `archivedAt`, move back to original source group if it
-      // still exists and is normal — otherwise fall back to g-default.
+      // still exists and is normal — otherwise route through
+      // `ensureUsableGroup` so we either land in another existing normal
+      // group or materialize a fresh one. The earlier `'g-default'`
+      // literal fallback orphaned the session (invisible row) when the
+      // user had deleted both the source group and `g-default`.
       // If the archive container empties after the move, delete it.
       // If the user has no active session (e.g. they just archived the
       // active one and then immediately unarchived it), restore activeId
@@ -529,11 +533,13 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
       if (!container || container.kind !== 'archive' || !container.sourceGroupId) {
         return;
       }
-      const origin = store.groups.find(
-        (g) => g.id === container.sourceGroupId && g.kind === 'normal'
-      );
-      const targetGroupId = origin ? origin.id : 'g-default';
       set((s) => {
+        // Compute the target group on the latest `s` so any group
+        // synthesis lands in the same atomic patch as the session move
+        // and the container cleanup — avoids a second `set` racing the
+        // empty-container removal against a stale `s.groups`.
+        const ensured = ensureUsableGroup(s.groups, container.sourceGroupId);
+        const targetGroupId = ensured.groupId;
         const sessions = s.sessions.map((x) => {
           if (x.id !== sessionId) return x;
           const { archivedAt: _drop, ...rest } = x;
@@ -544,8 +550,8 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
           (x) => x.groupId === containerId
         );
         const groups = remainingInContainer
-          ? s.groups
-          : s.groups.filter((g) => g.id !== containerId);
+          ? ensured.groups
+          : ensured.groups.filter((g) => g.id !== containerId);
         const nextActive = s.activeId === '' ? sessionId : s.activeId;
         return { groups, sessions, activeId: nextActive };
       });
