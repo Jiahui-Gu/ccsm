@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Attach timeline review — current vs planned</title>
+<style>
+  :root {
+    --bg: #f7f7f6;
+    --panel: #ffffff;
+    --ink: #1a1a1a;
+    --ink-2: #4a4a4a;
+    --ink-3: #6b6b6b;
+    --line: #e3e3e0;
+    --line-2: #d4d4d0;
+    --sync: #2962ff;       /* blue */
+    --sync-bg: #eaf0ff;
+    --await: #1b873f;      /* green */
+    --await-bg: #e6f4ec;
+    --fnf: #d97706;        /* orange */
+    --fnf-bg: #fff3df;
+    --bug: #c8281a;        /* red */
+    --bug-bg: #fdecea;
+    --muted: #b6b6b1;
+    --muted-bg: #f0efec;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); font-size: 14px; line-height: 1.5; }
+  .page { max-width: 1680px; margin: 0 auto; padding: 32px 28px 80px; }
+
+  header.head { display: flex; flex-direction: column; gap: 6px; margin-bottom: 28px; }
+  header.head h1 { font-size: 22px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+  header.head .sub { color: var(--ink-3); font-size: 13px; }
+  header.head .meta { color: var(--ink-3); font-family: var(--mono); font-size: 12px; margin-top: 4px; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 22px; }
+  .legend .pill { font-size: 12px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line-2); background: #fff; display: inline-flex; align-items: center; gap: 6px; }
+  .legend .dot { width: 8px; height: 8px; border-radius: 999px; display: inline-block; }
+  .dot.sync { background: var(--sync); }
+  .dot.await { background: var(--await); }
+  .dot.fnf { background: var(--fnf); }
+  .dot.bug { background: var(--bug); }
+  .dot.unchanged { background: var(--muted); }
+
+  .target { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; margin-bottom: 28px; }
+  .target h2 { margin: 0 0 6px; font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-2); }
+  .target p { margin: 0; color: var(--ink-2); font-size: 13px; }
+
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: start; }
+  @media (max-width: 1100px) { .cols { grid-template-columns: 1fr; } }
+
+  .col { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px 18px 22px; }
+  .col > h2 { font-size: 15px; font-weight: 600; margin: 0 0 4px; }
+  .col > h2 .tag { font-size: 11px; font-weight: 500; padding: 2px 8px; border-radius: 999px; margin-left: 8px; vertical-align: 2px; }
+  .col.left  h2 .tag { background: var(--bug-bg); color: var(--bug); border: 1px solid #f4c8c4; }
+  .col.right h2 .tag { background: var(--await-bg); color: var(--await); border: 1px solid #c5e3ce; }
+  .col > .desc { color: var(--ink-3); font-size: 12px; margin: 0 0 14px; }
+
+  .step { position: relative; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px 12px 14px; margin: 0 0 10px; background: #fff; }
+  .step.unchanged { background: var(--muted-bg); border-color: var(--line); color: var(--ink-3); }
+  .step.unchanged .num, .step.unchanged .ref, .step.unchanged .state { opacity: 0.85; }
+
+  .step::before { content: ""; position: absolute; left: 0; top: 10px; bottom: 10px; width: 3px; border-radius: 2px; background: var(--sync); }
+  .step.kind-sync::before  { background: var(--sync); }
+  .step.kind-await::before { background: var(--await); }
+  .step.kind-fnf::before   { background: var(--fnf); }
+  .step.unchanged::before  { background: var(--muted); }
+
+  .step .row { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .step .num { font-family: var(--mono); font-size: 11px; color: var(--ink-3); min-width: 28px; }
+  .step .title { font-size: 13.5px; font-weight: 500; color: var(--ink); }
+  .step .badge { font-size: 10.5px; padding: 1px 7px; border-radius: 4px; font-weight: 500; letter-spacing: 0.02em; text-transform: uppercase; }
+  .badge.sync  { background: var(--sync-bg);  color: var(--sync);  border: 1px solid #cfdbff; }
+  .badge.await { background: var(--await-bg); color: var(--await); border: 1px solid #c5e3ce; }
+  .badge.fnf   { background: var(--fnf-bg);   color: var(--fnf);   border: 1px solid #f5d9a8; }
+  .badge.new   { background: #efeafa; color: #5d3aa0; border: 1px solid #d8ccf3; }
+  .badge.moved { background: #e7f4fb; color: #006b8f; border: 1px solid #b9dbed; }
+  .badge.dropped { background: #f3f3f0; color: var(--ink-3); border: 1px solid var(--line-2); }
+  .badge.merged { background: #fff1e0; color: #8a4b00; border: 1px solid #f0d09d; }
+
+  .ref { font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); }
+  .state { font-family: var(--mono); font-size: 11.5px; color: var(--ink-2); margin-top: 6px; background: #fafaf8; border: 1px dashed var(--line-2); padding: 6px 8px; border-radius: 6px; white-space: pre-wrap; }
+  .note { margin-top: 8px; font-size: 12.5px; color: var(--ink-2); }
+  .note b { color: var(--ink); }
+
+  .problem { margin-top: 8px; border: 1.5px solid var(--bug); background: var(--bug-bg); border-radius: 6px; padding: 7px 10px; font-size: 12.5px; color: #6f140c; }
+  .problem .ptag { display: inline-block; font-family: var(--mono); font-size: 10.5px; color: #fff; background: var(--bug); padding: 1px 6px; border-radius: 3px; margin-right: 6px; vertical-align: 1px; }
+
+  .fix { margin-top: 8px; border-left: 3px solid var(--await); background: var(--await-bg); border-radius: 4px; padding: 7px 10px; font-size: 12.5px; color: #134d24; }
+  .fix .ftag { display: inline-block; font-family: var(--mono); font-size: 10.5px; color: #fff; background: var(--await); padding: 1px 6px; border-radius: 3px; margin-right: 6px; vertical-align: 1px; }
+
+  .group-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); margin: 16px 0 6px; padding-left: 2px; font-weight: 600; }
+  .group-label:first-of-type { margin-top: 0; }
+
+  footer { margin-top: 36px; color: var(--ink-3); font-size: 12px; }
+  footer ul { padding-left: 18px; margin: 6px 0 0; }
+  footer li { margin: 2px 0; }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header class="head">
+  <h1>Attach timeline review — current vs planned</h1>
+  <div class="sub">Cold + resume attach 路径(resume session 第一次 mount)。基于 task #71 审计。仅做可视化对比,review 完再写代码。</div>
+  <div class="meta">src/terminal/usePtyAttach.warm.ts  ·  src/terminal/xtermWarmRegistry.ts  ·  src/components/TerminalPane.tsx</div>
+</header>
+
+<div class="legend">
+  <span class="pill"><span class="dot sync"></span> 同步(同 JS turn)</span>
+  <span class="pill"><span class="dot await"></span> async + await(drain)</span>
+  <span class="pill"><span class="dot fnf"></span> fire-and-forget(未 await)</span>
+  <span class="pill"><span class="dot bug"></span> 审计发现的 race / 时序问题</span>
+  <span class="pill"><span class="dot unchanged"></span> 计划栏:与当前一致</span>
+</div>
+
+<section class="target">
+  <h2>Target behavior</h2>
+  <p>Resume session 第一次 attach,<b>第一帧 viewport 已落在底部</b>,scrollTop 已对齐,不出现中间帧(无空白/无上飘/无再 snap 回底)。Cold + 新 session 与 resume 行为一致。Warm 切换保持上次 viewportY(已由 #1388 修复,不在本次范围)。</p>
+</section>
+
+<div class="cols">
+
+  <!-- =================== LEFT: CURRENT =================== -->
+  <section class="col left">
+    <h2>Current timeline <span class="tag">as-shipped · audited</span></h2>
+    <p class="desc">实际跑的顺序。3 个红框是审计找到的 race。</p>
+
+    <div class="group-label">Mount &amp; entry alloc</div>
+
+    <div class="step kind-sync">
+      <div class="row"><span class="num">1</span><span class="title">TerminalPane mount → hostRef ready</span><span class="badge sync">sync</span></div>
+      <div class="ref">TerminalPane.tsx:185</div>
+      <div class="state">host = &lt;div absolute inset-0&gt;  // 0×0 until layout commits</div>
+    </div>
+
+    <div class="step kind-sync">
+      <div class="row"><span class="num">2</span><span class="title">usePtyAttachWarm — cold 分支判定</span><span class="badge sync">sync</span></div>
+      <div class="ref">usePtyAttach.warm.ts:191–193, 247, 253</div>
+      <div class="state">phase = 'cold'</div>
+    </div>
+
+    <div class="step kind-sync">
+      <div class="row"><span class="num">3</span><span class="title">allocEntry — 新 wrapper + Terminal 实例</span><span class="badge sync">sync</span></div>
+      <div class="ref">xtermWarmRegistry.ts:289, 368</div>
+      <div class="state">wrapper.style.display = 'none'
+term.open NOT called yet
+listener = 'buffering' (WriteBuffer 收 chunks)</div>
+    </div>
+
+    <div class="step kind-sync">
+      <div class="row"><span class="num">4</span><span class="title">ensureAndShowEntry: host.appendChild(wrapper)</span><span class="badge sync">sync</span></div>
+      <div class="ref">xtermWarmRegistry.ts:820, 831</div>
+      <div class="state">wrapper in DOM, display:'none'</div>
+    </div>
+
+    <div class="step kind-sync">
+      <div class="row"><span class="num">5</span><span class="title">wrapper.style.display = ''</span><span class="badge sync">sync</span></div>
+      <div class="ref">xtermWarmRegistry.ts:844</div>
+      <div class="state">同一 JS turn — layout 尚未 commit
+浏览器还没排版,clientWidth/clientHeight 仍为 0</div>
+    </div>
+
+    <div class="step kind-sync">
+      <div class="row"><span class="num">6</span><span class="title">term.open(wrapper)</span><span class="badge sync">sync</span></div>
+      <div class="ref">xtermWarmRegistry.ts:860</div>
+      <div class="state">term.textarea 创建
+renderer 初始化 — 但 dims 取自尚未 commit 的 layout</div>
+      <div class="problem"><span class="ptag">QP-2</span><b>term.open 在 layout 未 commit 时跑</b>,xterm 拿到 stale dims(可能 0×0 / 上次的尺寸)。后续 fit 必然触发 cols/rows 变化。</div>
+      <div class="problem"><span class="ptag">QP-4</span>CanvasAddon atlas 在 display:none→'' 后 <b>异步</b> 完成第一次纹理上传,首帧可能用 fallback DOM/Canvas。</div>
+    </div>
+
+    <div class="group-label">Attach &amp; snapshot</div>
+
+    <div class="step kind-await">
+      <div class="row"><span class="num">7</span><span class="title">await pty.attach(sid)</span><span class="badge await">await</span></div>
+      <div class="ref">usePtyAttach.warm.ts:372</div>
+      <div class="state">main 开始广播 chunks
+renderer listener 仍 'buffering' — chunks 塞 WriteBuffer[]</div>
+    </div>
+
+    <div class="step kind-sync">
+      <div class="row"><span class="num">8</span><span class="title">term.resize(cols, rows)</span><span class="badge sync">sync</span></div>
+      <div class="ref">usePtyAttach.warm.ts:415</div>
+      <div class="state">cols/rows 来自 cached estimate,不一定等于真实 layout</div>
+    </div>
+
+    <div class="step kind-await">
+      <div class="row"><span class="num">9</span><span class="title">await pty.getBufferSnapshot</span><span class="badge await">await</span></div>
+      <div class="ref">usePtyAttach.warm.ts:420</div>
+      <div class="state">snap = { snapshot, seq }
+期间 buffer 继续累积新 chunks(seq &gt; snap.seq)</div>
+    </div>
+
+    <div class="step kind-sync">
+      <div class="row"><span class="num">10</span><span class="title">term.reset()</span><span class="badge sync">sync</span></div>
+      <div class="ref">usePtyAttach.warm.ts:436</div>
+      <div class="state">term buffer 清零,viewportY = baseY = ydisp = 0</div>
+    </div>
+
+    <div class="step kind-await">
+      <div class="row"><span class="num">11</span><span class="title">await writeAsync(snap.snapshot) — drain</span><span class="badge await">await</span></div>
+      <div class="ref">usePtyAttach.warm.ts:442</div>
+      <div class="state">parser 完成 snapshot 写入
+baseY 上涨到 snapshot 末行
+ydisp 由 xterm 自动跟到 baseY(默认 follow tail)</div>
+    </div>
+
+    <div class="step kind-fnf">
+      <div class="row"><span class="num">12</span><span class="title">applySnapshot → term.write(b.chunk) 逐条 live-tail</span><span class="badge fnf">fire-and-forget</span></div>
+      <div class="ref">xtermWarmRegistry.ts:977, 990</div>
+      <div class="state">遍历 WriteBuffer[snapSeq..]
+<b>term.write(chunk)</b> 不传 cb / 不 await
+chunks 进入 parser 队列,异步消化
+baseY 仍在涨,ydisp 跟 tail</div>
+    </div>
+
+    <div class="step kind-sync">
+      <div class="row"><span class="num">13</span><span class="title">term.scrollToBottom()</span><span class="badge sync">sync</span></div>
+      <div class="ref">usePtyAttach.warm.ts:479</div>
+      <div class="state">读 <i>当前</i> baseY → 设 ydisp = baseY
+但 parser 队列里还有未消化的 live-tail chunks</div>
+      <div class="problem"><span class="ptag">QP-1 (高)</span><b>applySnapshot 的 live-tail write 没有 await,scrollToBottom 跑时 baseY 还在涨。</b>
+随后 parser 继续解析剩余 chunks,baseY 增长但 ydisp 卡在旧值 → 视觉上 viewport "卡在半中间",最后第 17 步才再 snap 回底。</div>
+    </div>
+
+    <div class="group-label">Wireup &amp; finalize</div>
+
+    <div class="step kind-sync">
+      <div class="row"><span class="num">14</span><span class="title">wireup onData → pty.input</span><span class="badge sync">sync</span></div>
+      <div class="ref">usePtyAttach.warm.ts:488</div>
+      <div class="state">输入通路建好</div>
+    </div>
+
+    <div class="step kind-sync">
+      <div class="row"><span class="num">15</span><span class="title">fit.fit()</span><span class="badge sync">sync</span></div>
+      <div class="ref">usePtyAttach.warm.ts:514</div>
+      <div class="state">读真实 layout dims → 计算新 cols/rows
+如果与第 8 步的 cached 不同 → term.resize → pty.resize</div>
+      <div class="problem"><span class="ptag">QP-3</span><b>fit.fit 在 snapshot 之后才跑</b>,触发 SIGWINCH,claude 重发整屏 ANSI;新 chunks 抢在第 17 步 pin 之后,viewport 又被推走。</div>
+    </div>
+
+    <div class="step kind-sync">
+      <div class="row"><span class="num">16</span><span class="title">term.focus()</span><span class="badge sync">sync</span></div>
+      <div class="ref">usePtyAttach.warm.ts:545</div>
+    </div>
+
+    <div class="step kind-await">
+      <div class="row"><span class="num">17</span><span class="title">await pinViewportToBottom — writeAsync('') drain + scrollToBottom</span><span class="badge await">await</span></div>
+      <div class="ref">usePtyAttach.warm.ts:551 · helper 86–97</div>
+      <div class="state">drain parser 队列(包括 SIGWINCH 重发)
+然后 scrollToBottom → ydisp = baseY</div>
+      <div class="note">本步与第 13 步 <b>重复</b> 做底部对齐 —— 因为第 13 步发生得太早。</div>
+    </div>
+
+    <div class="step kind-sync">
+      <div class="row"><span class="num">18</span><span class="title">setState('ready')</span><span class="badge sync">sync</span></div>
+      <div class="ref">usePtyAttach.warm.ts:576</div>
+    </div>
+
+    <div class="step kind-sync">
+      <div class="row"><span class="num">19</span><span class="title">ResizeObserver baseline 安装</span><span class="badge sync">sync</span></div>
+      <div class="ref">usePtyAttach.warm.ts:702, 718–728</div>
+      <div class="state">日后 layout 变化由 RO 驱动 fit + snapshot replay</div>
+      <div class="problem"><span class="ptag">QP-5 (dev-only)</span>StrictMode double-mount 让二次 effect 走 warm path,但 router 仍 'buffering' → 视觉上有人能复现"第一次 attach 闪两下"。</div>
+    </div>
+
+  </section>
+
+  <!-- =================== RIGHT: PLANNED =================== -->
+  <section class="col right">
+    <h2>Planned timeline <span class="tag">proposal for review</span></h2>
+    <p class="desc">目标:第一帧 viewport 就在底部,不闪不漂。差异以彩色 badge 标注;浅灰卡片表示与当前一致。</p>
+
+    <div class="group-label">Mount &amp; entry alloc</div>
+
+    <div class="step unchanged">
+      <div class="row"><span class="num">1</span><span class="title">TerminalPane mount → hostRef ready</span></div>
+      <div class="ref">TerminalPane.tsx:185</div>
+    </div>
+
+    <div class="step unchanged">
+      <div class="row"><span class="num">2</span><span class="title">usePtyAttachWarm — cold 分支判定</span></div>
+      <div class="ref">usePtyAttach.warm.ts:191–193</div>
+    </div>
+
+    <div class="step unchanged">
+      <div class="row"><span class="num">3</span><span class="title">allocEntry — wrapper + Terminal,listener 'buffering'</span></div>
+      <div class="ref">xtermWarmRegistry.ts:289, 368</div>
+    </div>
+
+    <div class="step unchanged">
+      <div class="row"><span class="num">4</span><span class="title">host.appendChild(wrapper) — display:'none'</span></div>
+      <div class="ref">xtermWarmRegistry.ts:831</div>
+    </div>
+
+    <div class="step kind-await">
+      <div class="row"><span class="num">5</span><span class="title">await layout commit(rAF + 0×0 guard)</span><span class="badge new">new</span></div>
+      <div class="ref">xtermWarmRegistry.ts:~844 (前置)</div>
+      <div class="state">await new Promise(r =&gt; requestAnimationFrame(r))
+assert(host.clientWidth &gt; 0 &amp;&amp; host.clientHeight &gt; 0)</div>
+      <div class="fix"><span class="ftag">fix QP-2</span>让 layout 先 commit,然后再 open + flip display,从根上消除 stale dims。</div>
+    </div>
+
+    <div class="step kind-sync">
+      <div class="row"><span class="num">6</span><span class="title">term.open(wrapper) — wrapper 仍 display:'none' 但已有真实 size(via parent)</span><span class="badge moved">moved earlier</span></div>
+      <div class="ref">xtermWarmRegistry.ts:860</div>
+      <div class="state">renderer 初始化时已能读到正确 host dims
+wrapper 不可见,首帧不会闪 fallback atlas</div>
+    </div>
+
+    <div class="step kind-sync">
+      <div class="row"><span class="num">7</span><span class="title">fit.fit() — 基于真实 layout 计算 cols/rows</span><span class="badge moved">moved before attach</span></div>
+      <div class="ref">usePtyAttach.warm.ts:514 → 提前</div>
+      <div class="state">term 已 open,dims 真实
+计算出的 cols/rows 与后续 pty 协商一致</div>
+      <div class="fix"><span class="ftag">fix QP-3</span>把 fit 推到 pty.attach <b>之前</b>,attach 时带正确 cols/rows,不会再触发 SIGWINCH 重发。</div>
+    </div>
+
+    <div class="group-label">Attach &amp; snapshot(with correct dims)</div>
+
+    <div class="step kind-await">
+      <div class="row"><span class="num">8</span><span class="title">await pty.attach(sid, { cols, rows })</span><span class="badge moved">cols/rows now correct</span></div>
+      <div class="ref">usePtyAttach.warm.ts:372</div>
+      <div class="state">main 已知 final size,不会先发一份 old-size 帧再 SIGWINCH 重发
+listener 仍 'buffering'</div>
+    </div>
+
+    <div class="step unchanged">
+      <div class="row"><span class="num">9</span><span class="title">await pty.getBufferSnapshot</span></div>
+      <div class="ref">usePtyAttach.warm.ts:420</div>
+    </div>
+
+    <div class="step unchanged">
+      <div class="row"><span class="num">10</span><span class="title">term.reset()</span></div>
+      <div class="ref">usePtyAttach.warm.ts:436</div>
+    </div>
+
+    <div class="step kind-await">
+      <div class="row"><span class="num">11</span><span class="title">await writeAsync(snap.snapshot) — drain</span></div>
+      <div class="ref">usePtyAttach.warm.ts:442</div>
+      <div class="state">parser 完成 snapshot 解析,baseY 稳定</div>
+    </div>
+
+    <div class="step kind-await">
+      <div class="row"><span class="num">12</span><span class="title">applySnapshot + await drain(live-tail 全部 await)</span><span class="badge new">await drain</span></div>
+      <div class="ref">xtermWarmRegistry.ts:977–1000 改造</div>
+      <div class="state">遍历 WriteBuffer[snapSeq..]
+对最后一个 chunk 用 term.write(chunk, cb) wrap 成 Promise
+全部 drain 完才 resolve
+baseY / ydisp 都已稳定</div>
+      <div class="fix"><span class="ftag">fix QP-1</span>消灭审计 QP-1 高优 race:scrollToBottom 之前 live-tail 已完全 drain,baseY 不再增长。</div>
+    </div>
+
+    <div class="group-label">Single bottom-pin + reveal</div>
+
+    <div class="step kind-sync">
+      <div class="row"><span class="num">13</span><span class="title">term.scrollToBottom()(唯一一次)</span><span class="badge merged">merged 13+17</span></div>
+      <div class="ref">替换 usePtyAttach.warm.ts:479 / 删除 551</div>
+      <div class="state">baseY 稳定 → ydisp = baseY,一次到位</div>
+      <div class="fix"><span class="ftag">simplify</span>L479 + L551 两次 scrollToBottom 合并为一次,删除冗余 pinViewportToBottom。</div>
+    </div>
+
+    <div class="step kind-sync">
+      <div class="row"><span class="num">14</span><span class="title">wrapper.style.display = ''  (reveal — viewport 已对齐)</span><span class="badge moved">moved late</span></div>
+      <div class="ref">替换 xtermWarmRegistry.ts:844</div>
+      <div class="state">显示翻转 <b>放到最后</b>:用户看到的第一帧就是底部
+CanvasAddon atlas 已在隐藏期内异步初始化,reveal 时直接呈现</div>
+      <div class="fix"><span class="ftag">fix QP-4</span>display flip 推到 layout commit + first-paint 后,CanvasAddon 不再在用户可见时异步切换 atlas。</div>
+    </div>
+
+    <div class="step unchanged">
+      <div class="row"><span class="num">15</span><span class="title">wireup onData → pty.input</span></div>
+      <div class="ref">usePtyAttach.warm.ts:488</div>
+    </div>
+
+    <div class="step unchanged">
+      <div class="row"><span class="num">16</span><span class="title">term.focus()</span></div>
+      <div class="ref">usePtyAttach.warm.ts:545</div>
+    </div>
+
+    <div class="step kind-sync">
+      <div class="row"><span class="num">17</span><span class="title">pinViewportToBottom — 删除</span><span class="badge dropped">dropped</span></div>
+      <div class="ref">~~usePtyAttach.warm.ts:551~~</div>
+      <div class="state">第 12 步已 drain,第 13 步已 pin,第 14 步才 reveal
+不再需要二次补 pin</div>
+    </div>
+
+    <div class="step unchanged">
+      <div class="row"><span class="num">18</span><span class="title">setState('ready')</span></div>
+      <div class="ref">usePtyAttach.warm.ts:576</div>
+    </div>
+
+    <div class="step unchanged">
+      <div class="row"><span class="num">19</span><span class="title">ResizeObserver baseline 安装</span></div>
+      <div class="ref">usePtyAttach.warm.ts:718–728</div>
+      <div class="note"><b>QP-5</b>:dev-only StrictMode 由 router 'buffering' 语义保证 idempotent,本计划不专门改;若仍现象化,加 mountGuard 单独处理。</div>
+    </div>
+
+  </section>
+
+</div><!-- /cols -->
+
+<footer>
+  <div><b>核心改动一句话</b>:把 fit + drain 全部提前到 reveal 之前,只在底部对齐一次后再翻 display:'',让用户看到的"第一帧"就是定稿。</div>
+  <ul>
+    <li>顺序变更:fit.fit 移到 pty.attach 之前(原 L514 → 提前到 ~L410 之前)</li>
+    <li>新增 await:applySnapshot 的 live-tail term.write 改为带 cb 的 Promise drain(原 L990 fire-and-forget → await)</li>
+    <li>新增 await:term.open 之前 rAF + 0×0 guard,等 layout commit</li>
+    <li>合并:L479 + L551 两次 scrollToBottom → 一次(放在 drain 完之后)</li>
+    <li>移动:wrapper display:'' 由 alloc 后(L844)推到 bottom-pin 之后</li>
+    <li>删除:pinViewportToBottom 整体(及 writeAsync('') 占位 drain)</li>
+  </ul>
+  <div style="margin-top:10px; color: var(--ink-3);">Review notes 直接在 PR 留言即可。看完一起调整,再开 task。</div>
+</footer>
+
+</div>
+</body>
+</html>
