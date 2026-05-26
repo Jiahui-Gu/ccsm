@@ -44,78 +44,6 @@
   code, .mono { font-family: var(--mono); }
   code { background: #f0efec; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; color: var(--ink); }
   pre { background: #fafaf8; border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; overflow-x: auto; font-family: var(--mono); font-size: 12.5px; line-height: 1.55; margin: 8px 0; color: var(--ink); white-space: pre; }
-  pre .k { color: var(--par); }
-  pre .s { color: var(--ok); }
-  pre .c { color: var(--ink-3); font-style: italic; }
-  pre .t { color: #006b8f; }
-
-  .principles { display: grid; gap: 10px; }
-  .princ { display: grid; grid-template-columns: 28px 1fr; gap: 12px; align-items: start; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: #fafaf8; }
-  .princ .n { font-family: var(--mono); font-size: 11px; color: var(--ink-3); padding-top: 1px; }
-  .princ b { font-size: 13.5px; }
-  .princ .body { color: var(--ink-2); font-size: 13px; margin-top: 2px; }
-
-  /* phases */
-  .phases { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-top: 8px; }
-  @media (max-width: 1100px) { .phases { grid-template-columns: 1fr 1fr; } }
-  .phase { border: 1px solid var(--line); border-radius: 8px; padding: 12px 12px 10px; background: #fff; position: relative; }
-  .phase .ph { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.06em; }
-  .phase b { display: block; font-size: 13.5px; margin: 4px 0; }
-  .phase .desc { font-size: 12px; color: var(--ink-2); }
-  .phase.live { border-color: #c5e3ce; background: var(--ok-bg); }
-  .phase.reveal { border-color: #cfdbff; background: var(--accent-bg); }
-
-  /* parallel flow */
-  .flow { background: #fafaf8; border: 1px dashed var(--line-2); border-radius: 10px; padding: 16px; }
-  .lanes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-  @media (max-width: 1000px) { .lanes { grid-template-columns: 1fr; } }
-  .lane { border: 1.5px dashed #b9a8df; border-radius: 8px; background: #fbf8ff; padding: 10px 12px; }
-  .lane .lh { font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--par); font-weight: 700; margin-bottom: 6px; }
-  .lane .item { font-size: 12.5px; margin: 4px 0; padding-left: 12px; position: relative; color: var(--ink-2); }
-  .lane .item::before { content: "›"; position: absolute; left: 0; color: var(--par); font-weight: 700; }
-  .lane .item b { color: var(--ink); }
-  .arrow { text-align: center; color: #b9a8df; font-size: 18px; line-height: 1; margin: 6px 0; }
-  .barrier { padding: 10px 12px; border: 2px solid var(--ok); background: var(--ok-bg); border-radius: 8px; text-align: center; font-weight: 600; color: #0e4019; font-family: var(--mono); font-size: 13px; }
-  .barrier .sub { display: block; font-weight: 400; font-size: 11.5px; color: var(--ok); margin-top: 3px; font-family: var(--sans); }
-  .serial { border: 1.5px solid #c5e3ce; background: #f4faf6; border-radius: 8px; padding: 10px 12px; }
-  .serial .sh { font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ok); font-weight: 700; margin-bottom: 6px; }
-  .serial .item { font-size: 12.5px; margin: 4px 0; padding-left: 12px; position: relative; color: var(--ink-2); }
-  .serial .item::before { content: "→"; position: absolute; left: 0; color: var(--ok); font-weight: 700; }
-  .serial .item b { color: var(--ink); }
-  .reveal { margin-top: 6px; padding: 12px; border: 2px solid var(--accent); background: var(--accent-bg); border-radius: 8px; text-align: center; font-weight: 600; color: #15327a; font-family: var(--mono); font-size: 13.5px; }
-  .reveal .sub { display: block; font-weight: 400; font-size: 11.5px; color: var(--accent); margin-top: 3px; font-family: var(--sans); }
-
-  /* scenario two-up */
-  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-  @media (max-width: 900px) { .two { grid-template-columns: 1fr; } }
-  .scen { border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; background: #fafaf8; }
-  .scen h4 { font-size: 13.5px; margin: 0 0 6px; }
-  .scen h4 .tag { font-size: 10.5px; padding: 2px 7px; border-radius: 4px; margin-left: 6px; vertical-align: 2px; background: #fff; border: 1px solid var(--line-2); color: var(--ink-3); font-family: var(--mono); font-weight: 500; }
-  .scen .frame { background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; font-size: 12.5px; color: var(--ink-2); margin: 8px 0; }
-  .scen ul { padding-left: 18px; margin: 6px 0; font-size: 12.5px; color: var(--ink-2); }
-  .scen ul li { margin: 3px 0; }
-  .scen ul li b { color: var(--ink); }
-  .inv { background: #fff; border-left: 3px solid var(--ok); padding: 6px 10px; font-size: 12px; color: #134d24; border-radius: 0 6px 6px 0; margin: 6px 0; }
-  .inv b { color: #0e4019; }
-
-  /* failure table */
-  table.f { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 4px; }
-  table.f th, table.f td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
-  table.f th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-3); font-weight: 600; background: #fafaf8; }
-  table.f td.what { font-family: var(--mono); color: var(--ink); width: 22%; }
-  table.f td.user { color: var(--ink-2); width: 32%; }
-
-  /* compare */
-  .cmp { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-  @media (max-width: 900px) { .cmp { grid-template-columns: 1fr; } }
-  .cmp .col { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; background: #fafaf8; }
-  .cmp .col h4 { margin: 0 0 6px; font-size: 13px; }
-  .cmp .col.old h4 { color: var(--err); }
-  .cmp .col.new h4 { color: var(--ok); }
-  .cmp ul { padding-left: 18px; margin: 4px 0; font-size: 12.5px; color: var(--ink-2); }
-  .cmp ul li { margin: 4px 0; }
-
-  .kill { text-decoration: line-through; color: var(--err); }
 
   /* callout (rule cards) */
   .rules { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
@@ -159,14 +87,14 @@
 
 <header class="head">
   <h1>Attach 重新设计 —— UX 模型</h1>
-  <div class="sub">右侧内容区怎么呈现 session,以及背后大致是怎么做到的。3 分钟看完。</div>
-  <div class="meta">范围:pty attach + xterm mount + 侧边栏耦合 · 配套文档 docs/attach-timeline-review.html(历史)</div>
+  <div class="sub">右侧内容区怎么呈现 session。只解两个问题:第一次别 flicker,看过的切回要瞬间。</div>
+  <div class="meta">范围:pty attach + xterm mount · 历史时间线 docs/attach-timeline-review.html</div>
 </header>
 
-<!-- ====================== 1. UX 模型 ====================== -->
+<!-- ====================== 1. UX 三种状态 ====================== -->
 <section class="s">
-  <h2>1 · UX 模型 —— 三种状态</h2>
-  <p class="lede">右侧内容区就这三种样子。左边的 sidebar 是固定的。</p>
+  <h2>1 · UX —— 三种状态</h2>
+  <p class="lede">右侧内容区就这三种样子,sidebar 固定。</p>
 
   <div class="states">
 
@@ -200,7 +128,7 @@
           <div class="mask">准备中…</div>
         </div>
       </div>
-      <div class="caption">遮罩盖住右侧。后台拉 snapshot、建 xterm、写入、滚到底,好了揭开。遮罩是<b>每个 shell wrapper 自己</b>的,不是右侧 host 共用的 —— 切到别的 session 不会把这个遮罩带过去。</div>
+      <div class="caption">遮罩盖住右侧。后台拉 snapshot、建 xterm、写入、滚到底,好了揭开。用户看不到半成品。</div>
     </div>
 
     <div class="state">
@@ -227,254 +155,69 @@
     </div>
 
   </div>
-
-  <h3 class="sub">状态怎么流转</h3>
-<pre>State 0  ──点第一个 session──▶  State 1  ──准备完──▶  State 2
-                                                       │
-                                                       ├──点已看过──▶ 留在 State 2(秒切)
-                                                       │
-                                                       └──点没看过──▶ State 1(再来一次冷启动)
-</pre>
 </section>
 
 <!-- ====================== 2. 两条规则 ====================== -->
 <section class="s">
   <h2>2 · 两条规则</h2>
-  <p class="lede">用户行为只分两种,响应也只有两种。</p>
+  <p class="lede">资源策略,一句话。</p>
 
   <div class="rules">
     <div class="rule cold">
       <div class="tag">规则 1</div>
-      <b>第一次点 = 冷启动</b>
-      <p>右侧盖一层 "准备中" 的遮罩。背后拉 snapshot、建 xterm、写入、滚到底,全部做完才揭开。用户不会看到半成品。</p>
+      <b>没看过 = 零资源</b>
+      <p>没点过的 session 完全不准备 —— 不订 PTY,不建 xterm,什么都不占。</p>
     </div>
     <div class="rule warm">
       <div class="tag">规则 2</div>
-      <b>再点已看过的 = 秒切</b>
-      <p>右侧 z-stack 里把这个 session 翻到顶,viewport 还停在上次离开的位置。无遮罩,无加载,无重建。</p>
+      <b>看过 = 留着不放</b>
+      <p>点过一次之后 xterm 和 PTY 订阅都留住。关 ccsm 才一次性回收。</p>
     </div>
   </div>
 </section>
 
-<!-- ====================== 3. 背后做什么 ====================== -->
+<!-- ====================== 3. 怎么做 ====================== -->
 <section class="s">
-  <h2>3 · 背后做什么(high-level)</h2>
-  <p class="lede">不展开 IPC 和状态机,只说大方向。</p>
+  <h2>3 · 怎么做</h2>
+  <p class="lede">三块东西凑起来,不展开。</p>
 
   <ul style="margin:0; padding-left:18px; font-size:13.5px; color:var(--ink-2);">
-    <li>没点过的 session <b>完全不准备</b> —— 不订 PTY,不建 xterm,什么资源都不占。</li>
-    <li>点过一次之后 <b>留住不放</b> —— xterm 实例和 PTY 订阅都不 dispose,所以再切回来是秒级。</li>
-    <li><b>关 ccsm 才回收</b> —— 退出时一次性 dispose 所有留下来的 shell。</li>
-    <li>右侧是 <b>z-stack</b> —— 看过的 shell 都叠在那里,点哪个哪个拉到顶。</li>
-    <li>看过的 session 一直留着,关 ccsm 才一次性回收。</li>
+    <li><b>z-stack</b> —— 右侧 host 里挂 N 个 wrapper,每个 wrapper 内有自己的 xterm。切换只改 <code>display</code> 和 <code>z-index</code>,xterm 实例<b>从不</b>在 wrapper 之间 reparent。这是"看过的切回瞬间、位置不变"的根本。</li>
+    <li><b>per-shell mask</b> —— 每个 wrapper 自带一个遮罩 div。冷启动期间这个 wrapper 的遮罩亮,其它 wrapper 的遮罩状态各自独立,切走切回都不串。</li>
+    <li><b>服务端 snapshot</b> —— main 进程用 <code>@xterm/headless</code> + <code>SerializeAddon</code> 保留每个 session 的镜像,renderer 冷启动时拉一次写进 xterm 就行。</li>
   </ul>
-
-  <h3 class="sub">为什么留住不放</h3>
-  <p style="margin:0; font-size:13px; color:var(--ink-2);">
-    服务端 (<code>@xterm/headless</code> + <code>SerializeAddon</code>) 一直在 main 进程里保留每个 session 的镜像,renderer 这边理论上随时 dispose 再重建都行。但本设计选择<b>留住</b>,因为切换体感差别明显:z-stack swap 0ms,重建一次大约 ~50ms(还要等 snapshot 往返)。这是有意识的权衡。<b>如果以后内存真成问题再加回收逻辑</b>,目前不做。
-  </p>
 </section>
 
-<!-- ====================== 5. 其他操作的行为 ====================== -->
+<!-- ====================== 4. 其他操作 ====================== -->
 <section class="s">
-  <h2>5 · 其他操作的行为</h2>
-  <p class="lede">sidebar 上的三个操作:删除、重做、复制。都不引入新的 UX 概念,只是套用前面两条规则。</p>
+  <h2>4 · 其他操作</h2>
+  <p class="lede">delete / reload / copy,各一句话,不引入新概念。</p>
 
   <div class="rules" style="grid-template-columns: 1fr 1fr 1fr;">
     <div class="rule">
-      <div class="tag">操作 1</div>
-      <b>删除 (delete)</b>
-      <p>
-        · sidebar 那行消失。<br>
-        · 后台 dispose 这个 session 的 xterm,解订 PTY。<br>
-        · 删的是当前顶层 → 顶层移走,z-stack 下一层自动露出(上次看的那个)。<br>
-        · 删的是 z-stack 里非顶层 → 用户看不到任何变化。<br>
-        · 删的是从没看过的 session → 啥都不发生,本来就没建。<br>
-        · 删的是正在冷启动的 session → cancel,遮罩消失,顶层退回下一层。
-      </p>
+      <div class="tag">delete</div>
+      <b>移除</b>
+      <p>移除 shell + wrapper。删的是顶层 → z-stack 自动塌到下一层;塌到空 → 回 State 0 黑屏。</p>
     </div>
     <div class="rule">
-      <div class="tag">操作 2</div>
-      <b>重做 (reload)</b>
-      <p>
-        · <b>原地重置,不 dispose</b>:同一个 xterm 实例、同一个 wrapper、同一组 listener。只是 <code>term.reset()</code> + 清 buffer + 重拉 snapshot + 写入 + 滚到底。<br>
-        · 重做的是顶层 → 该 wrapper 自己的遮罩亮起来(蓝色"重做中…"),走完揭开。<br>
-        · 重做的是非顶层 → <b>不显示遮罩</b>(用户也看不到),后台静默走完。万一用户中途切过来,看到的就是 reload 当前进行到哪一步的样子 —— 接受这个 corner case,不专门处理。<br>
-        · reload 走的是同一条路径,顶层 / 非顶层的区别只在"要不要显示遮罩"。
-      </p>
+      <div class="tag">reload</div>
+      <b>原地刷</b>
+      <p><code>term.reset()</code> + 重拉 snapshot + 写入,<b>不 dispose</b>。顶层显示遮罩,非顶层静默走完不显示。</p>
     </div>
     <div class="rule">
-      <div class="tag">操作 3</div>
-      <b>复制 (copy session)</b>
-      <p>
-        · 调用方拿到新 sid(已有产品行为,不改)。<br>
-        · 复制的是当前顶层 session → 新 sid 立刻打开,走第一次点击冷启动(顶上来),原 session 下沉。<br>
-        · 复制的是非顶层 → 新 sid 只在 sidebar 出现,不自动抢顶层,等用户主动点才冷启动。<br>
-        · 复制的是从没看过的 session → 新 sid 在 sidebar 出现,不自动打开。
-      </p>
+      <div class="tag">copy</div>
+      <b>新 session</b>
+      <p>调用方拿到新 sid。用户点了才 attach,走正常冷启动。</p>
     </div>
   </div>
 </section>
 
-<!-- ====================== 6. Sidebar 高亮 ====================== -->
+<!-- ====================== 5. 兜底 ====================== -->
 <section class="s">
-  <h2>6 · Sidebar 高亮</h2>
-  <p class="lede">每个 session 行可能有一个蓝色圆点,语义就一条:<b>蓝点 = z-stack 顶层,也就是右侧当前看得见的那个 session</b>。只表示 "现在显示的就是它"。</p>
-
-  <div class="rules">
-    <div class="rule">
-      <div class="tag">规则</div>
-      <b>activeSid = zStack[0]</b>
-      <p>
-        · activeSid = z-stack 顶层 sid。蓝色圆点跟着 activeSid 走。<br>
-        · State 0(右侧全黑):没有任何行有圆点。<br>
-        · State 1(冷启动中):用户点的那行有圆点(因为它即将上顶)。<br>
-        · State 2(秒切):z-stack 顶层 sid 那行有圆点。<br>
-        · 删除顶层 session:顶层 pop,下一层 sid 变成新顶层 → 圆点自动跳到 sidebar 那行。<br>
-        · 非顶层 reload / 非顶层 copy:顶层不变,圆点不动。<br>
-        · 实现一句话:<b>activeSid = zStack[0]</b>,sidebar 订阅这个值。
-      </p>
-    </div>
-  </div>
-</section>
-
-<!-- ====================== 7. 并发与取消 ====================== -->
-<section class="s">
-  <h2>7 · 并发与取消</h2>
-  <p class="lede">长跑 operation(冷启动 / reload)期间用户可能操作其他东西。下面是统一的处理方式 —— 两个 stop 信号,一个 shouldStop 检查点,没有 case-by-case 的 if/else。</p>
-
-  <h3 class="sub">两条规则</h3>
-  <div class="rules">
-    <div class="rule">
-      <div class="tag">规则 1</div>
-      <p><b>Shell 还存在吗?</b><br>
-        长跑 operation 在每个 await 之后检查 <code>shell.disposed</code>。disposed=true 就退出。delete 操作不直接 cancel operation,它只调 <code>disposeShell</code>,operation 自己会发现并退出。
-      </p>
-    </div>
-    <div class="rule">
-      <div class="tag">规则 2</div>
-      <p><b>这个 operation 还是 "最新的" 吗?</b><br>
-        同一 shell 同种 operation 新的覆盖旧的。每个 operation 启动时把自己写到 <code>shell.currentOp</code>。旧的在 await 之后看到 <code>currentOp !== self</code> 就退出。
-      </p>
-    </div>
-  </div>
-
-  <h3 class="sub">实现模式</h3>
-<pre>async function reload(sid) {
-  const shell = getShell(sid);
-  if (!shell) return;
-  const self = (shell.currentOp = {});  <span class="c">// 用对象身份做 token</span>
-
-  if (shell.isTop) shell.showMask();    <span class="c">// 非顶层不显示遮罩</span>
-
-  shell.pausePtySubscription();         if (shouldStop(shell, self)) return;
-  await drain();                        if (shouldStop(shell, self)) return;
-  term.reset();                         if (shouldStop(shell, self)) return;
-  const snap = await fetchSnapshot();   if (shouldStop(shell, self)) return;
-  term.write(snap);                     if (shouldStop(shell, self)) return;
-  term.scrollToBottom();
-  shell.resumePtySubscription();
-
-  if (shell.currentOp === self) {
-    shell.currentOp = null;
-    shell.hideMask();
-  }
-  <span class="c">// 没到这里就 return = 被新 op 顶替或 shell 已 dispose。</span>
-  <span class="c">// 遮罩 / 订阅 / currentOp 都不在这里清理 ——</span>
-  <span class="c">// 下一个 op 接手时会自己 showMask / setCurrentOp,</span>
-  <span class="c">// disposeShell 兜底统一释放。</span>
-}
-
-function shouldStop(shell, self) {
-  return shell.disposed || shell.currentOp !== self;
-}</pre>
-  <p style="margin:6px 0 12px; font-size:13px; color:var(--ink-2);"><b>整个 codebase 只有 shouldStop 一个判断函数。</b>每个 await 后都检查一次,幂等。被打断时直接 return,不做任何清理 —— 清理是下一个 op 或 <code>disposeShell</code> 的事。<b>不要</b>用 try/finally 在 cancel 路径上 hideMask,disposed 的 shell 引用可能已经无效,容易崩。</p>
-
-  <h3 class="sub">关键不变量</h3>
-  <ul style="margin:0 0 12px; padding-left:18px; font-size:13px; color:var(--ink-2);">
-    <li><b>遮罩是每个 shell wrapper 自己的</b> —— 不是右侧 host 共用一个。被打断的 op 直接 return,不清理遮罩;下一个 op (showMask 或不 show)接手,disposeShell 兜底。</li>
-    <li><b>切 session 不动正在跑的 operation</b> —— 只改 activeSid。operation 完成时<b>一次性判断</b> "我跑完了,activeSid 还是我吗?是 → showShell;不是 → 不抢顶层"。这是完成时的一次判断,不是 cancel 逻辑。</li>
-    <li><b>delete = 调 disposeShell</b> —— operation 自己看到 disposed 退出,delete 不需要知道有哪些 operation 在跑。</li>
-  </ul>
-
-  <h3 class="sub">term.reset() 跟 PTY chunk 怎么不打架</h3>
-  <p style="margin:0 0 8px; font-size:13px; color:var(--ink-2);">
-    每个 shell 一个简单的串行 op 序列(冷启动 / reload / dispose 都是 op)。平时 PTY chunk 直接写进 xterm,跟 op 无关。reload 这个 op 一启动就先 <b>pause PTY 订阅</b>(chunk 暂时不送进 xterm,在 main 端缓冲),然后 reset → fetchSnapshot → write snapshot → <b>resume 订阅</b>(main 把暂存的 chunk 一次性补回来,接上 snapshot 之后的内容)。这样 reset 跟 chunk 不会交错,xterm 看到的永远是 "snapshot + 之后顺序到达的 chunk"。
-  </p>
-
-  <h3 class="sub">冷启动时 chunk 比 xterm 早到怎么办</h3>
-  <p style="margin:0 0 12px; font-size:13px; color:var(--ink-2);">
-    顺序写死成:<b>先建 xterm + open + 写 snapshot,再 subscribe PTY</b>。snapshot 是 main 端某个时间点的镜像,subscribe 启动后 main 会从那个点之后的 chunk 开始往下发(main 一直在缓冲,没丢)。这样根本不存在 "chunk 来了 xterm 还没好" 的窗口,也不需要 renderer 端的 pending 数组。
-  </p>
-
-  <h3 class="sub">为什么不用 queue 处理用户操作</h3>
-  <p style="margin:0; font-size:13px; color:var(--ink-2);">
-    上面说的 "op 序列" 是 shell 内部串行(reload 之间互相 supersede,跟 PTY chunk 的同步用 pause/resume 解决)。<b>但用户连点 reload 时不排队</b> —— 用户后一下就是想覆盖前一下,FIFO 反而不对。新 reload 写入 <code>currentOp</code>,老的 shouldStop 拦下退出。两条规则 + shouldStop,够了。
-  </p>
-
-  <h3 class="sub">corner case 自然推论</h3>
-  <table class="f">
-    <thead>
-      <tr><th>场景</th><th>结果</th><th>为什么</th></tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td>reload A 中途 delete A</td>
-        <td>reload 自动退出</td>
-        <td><code>shell.disposed=true</code>,shouldStop 拦下</td>
-      </tr>
-      <tr>
-        <td>reload A 中途用户切走</td>
-        <td>reload 继续跑完,但不抢顶层</td>
-        <td>shell 还在,operation 仍是 currentOp;跑完时检查 activeSid 决定是否 showShell</td>
-      </tr>
-      <tr>
-        <td>reload A 中途又 reload A</td>
-        <td>第一个 reload 退出,第二个跑</td>
-        <td>第二个写入 currentOp,第一个 shouldStop 拦下</td>
-      </tr>
-      <tr>
-        <td>冷启动 B 中途切回 A</td>
-        <td>B 的冷启动继续跑;不抢顶层</td>
-        <td>同 reload 切走 case</td>
-      </tr>
-      <tr>
-        <td>冷启动 B 中途 delete B</td>
-        <td>冷启动自动退出,wrapper 不出现</td>
-        <td><code>shell.disposed=true</code></td>
-      </tr>
-      <tr>
-        <td>copy A 中途 delete A</td>
-        <td>不相干</td>
-        <td>copy 操作的是 newSid,A 的 delete 不影响 newSid</td>
-      </tr>
-    </tbody>
-  </table>
-</section>
-
-<!-- ====================== 8. 实现要点 ====================== -->
-<section class="s">
-  <h2>8 · 实现要点</h2>
-  <p class="lede">给后续 worker 看的落地清单。不是完整方案,只是关键决策。</p>
-
-  <h3 class="sub">每个 shell 的结构</h3>
-  <p style="margin:0 0 8px; font-size:13px; color:var(--ink-2);">
-    每个 visited session 对应一个 <code>Shell</code> 对象:一个 wrapper div、wrapper 里挂一个 xterm 实例、wrapper 里盖一个自己的遮罩 div、一个 PTY 订阅、<code>currentOp</code>、<code>disposed</code> 标志。<b>遮罩跟着 wrapper 走,不在 host 层共享</b> —— 切 session 时遮罩状态留在原 wrapper 里,新顶层 wrapper 自己有自己的遮罩(默认隐藏)。
-  </p>
-
-  <h3 class="sub">z-stack 怎么实现</h3>
-  <p style="margin:0 0 8px; font-size:13px; color:var(--ink-2);">
-    右侧 host 里放 N 个 wrapper div,每个 wrapper 里挂一个 xterm。切换只动 <code>display</code> 和 <code>z-index</code>:目标 shell <code>display:''</code>,其余 <code>display:'none'</code>。xterm 实例从不在 wrapper 之间 reparent。
-  </p>
-
-  <h3 class="sub">遮罩怎么做</h3>
-  <p style="margin:0 0 8px; font-size:13px; color:var(--ink-2);">
-    每个 shell wrapper 里有一个 <code>position:absolute; inset:0</code> 的遮罩 div(<b>不是 host 层共享</b>)。冷启动开始时 <code>display:''</code> 显示 "准备中…",建 xterm + 写 snapshot + 滚到底跑完后 <code>display:'none'</code> 揭开。秒切场景遮罩一直是 <code>display:'none'</code>。reload 顶层时同样亮自己 wrapper 的遮罩;reload 非顶层时不亮 —— 用户看不见,没意义。
-  </p>
-
-  <h3 class="sub">PTY 订阅时机</h3>
-  <p style="margin:0; font-size:13px; color:var(--ink-2);">
-    第一次点 session 的顺序<b>写死</b>:<code>建 xterm</code> → <code>term.open(wrapper)</code> → <code>fetchSnapshot</code> → <code>term.write(snapshot)</code> → <code>pty.open(sid)</code> 开始订阅。snapshot 是 main 端某个时间点的镜像,subscribe 之后 main 把那个点之后缓冲的 chunk 顺序补回来,接上 snapshot。这样 renderer 这边永远不会出现 "chunk 来了 xterm 还没好" 的窗口,不需要在 renderer 端搞 pending buffer。订阅一旦挂上就一直挂着,直到关 ccsm 调 <code>pty.close</code>;脱离前台<b>不</b>取消订阅,后台 session 的输出持续写进 scrollback,秒切回来就在那里。
+  <h2>5 · 兜底</h2>
+  <p class="lede">异常处理的原则。</p>
+  <p style="margin:0; font-size:13.5px; color:var(--ink-2);">
+    <b>任何状态卡住或异常,dispose 这个 shell + 重新 cold start。</b>不在 design 里穷举各种 race / cancellation / ordering 细节,实现者自己想 —— 反正最坏路径就是回到第一次点击那条路径。
   </p>
 </section>
 
