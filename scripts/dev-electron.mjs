@@ -61,22 +61,36 @@ function preflightPort4100() {
   if (!holderPid) return;
 
   const info = inspectProcessWin(holderPid);
-  // Auto-kill is reserved for processes we can prove belong to THIS
-  // repo's dev loop: the CommandLine must reference both a script
-  // inside this repo's node_modules AND the repo root path. That admits
-  // both the dev electron (electron.exe under node_modules/electron)
-  // and the sibling webpack-dev-server (node.exe spawned with
-  // node_modules/.bin/webpack.js); it excludes the installed CCSM (in
-  // Program Files / AppData with no repo path in its CommandLine).
+  // Auto-kill is reserved for a LEFTOVER ELECTRON from a previous dev
+  // loop of THIS repo. Two conditions must both hold:
+  //   (a) CommandLine references this repo's node_modules — proves it
+  //       belongs to this checkout, not the installed CCSM or some
+  //       other project.
+  //   (b) The process is electron itself — proves it's the one we want
+  //       to replace, not the sibling webpack-dev-server (node.exe
+  //       running webpack.js) that concurrently just spawned this run.
   //
-  // We deliberately do NOT use ExecutablePath as the discriminator:
-  // webpack-dev-server runs via the system node.exe in
-  // C:\Program Files\nodejs, which would false-negative.
+  // The earlier version of this check only required (a), which falsely
+  // matched the in-flight dev:web and killed it on startup. See task
+  // #67 for the incident. ExecutablePath is reliable for electron
+  // because the dev wrapper invokes node_modules\electron\dist\electron.exe
+  // directly.
   const lcCmd = (info?.commandLine || '').toLowerCase();
+  const lcExe = (info?.executablePath || '').toLowerCase();
   const lcRepo = repoRoot.toLowerCase();
   const lcRepoNm = `${lcRepo}\\node_modules`.toLowerCase();
+  // The holder we want to auto-kill is a LEFTOVER ELECTRON from a prior
+  // dev run — not the sibling webpack-dev-server we just spawned this
+  // run (which also lives under <repo>\node_modules). Discriminate on
+  // electron-ness: exe path contains "\electron\" OR cmdline points at
+  // node_modules\electron\... . webpack is node.exe with a webpack.js
+  // cmdline — both checks exclude it.
+  const looksLikeElectron =
+    lcExe.includes('\\electron\\') ||
+    lcExe.endsWith('\\electron.exe') ||
+    lcCmd.includes('\\node_modules\\electron\\');
   const looksLikeOurDev =
-    info && lcCmd.includes(lcRepoNm);
+    info && lcCmd.includes(lcRepoNm) && looksLikeElectron;
 
   if (looksLikeOurDev) {
     console.error(
@@ -85,6 +99,14 @@ function preflightPort4100() {
     spawnSync('taskkill', ['/F', '/T', '/PID', String(holderPid)]);
     return;
   }
+
+  // Sibling webpack-dev-server (this repo's node_modules, cmdline
+  // contains "webpack" — node.exe running webpack.js). That's the
+  // expected occupant of :4100 when `npm run dev` is in flight via
+  // concurrently. Don't kill it, don't bail — let electron start.
+  const looksLikeOurWebpack =
+    info && lcCmd.includes(lcRepoNm) && lcCmd.includes('webpack');
+  if (looksLikeOurWebpack) return;
 
   console.error(
     `\n[dev-electron] port 4100 is in use by PID=${holderPid}, ` +
