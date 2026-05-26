@@ -266,7 +266,7 @@
     <li>点过一次之后 <b>留住不放</b> —— xterm 实例和 PTY 订阅都不 dispose,所以再切回来是秒级。</li>
     <li><b>关 ccsm 才回收</b> —— 退出时一次性 dispose 所有留下来的 shell。</li>
     <li>右侧是 <b>z-stack</b> —— 看过的 shell 都叠在那里,点哪个哪个拉到顶。</li>
-    <li>z-stack 是 LRU 缓存 —— <b>暂不设上限</b>。单人一天用的 session 数远低于内存压力线。</li>
+    <li>看过就留,关 ccsm 一次性回收 —— <b>不做缓存上限,不做淘汰</b>。</li>
   </ul>
 </section>
 
