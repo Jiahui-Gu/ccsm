@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { useStore } from '../stores/store';
-import { applyTerminalScrollback } from '../terminal/xtermWarmRegistry';
+import { applyTerminalScrollback } from '../terminal/shellRegistry';
 
 /**
  * Hot-apply the `scrollbackLines` store field to every warm xterm entry.

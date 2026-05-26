@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, type MouseEvent } from 'react';
 import '@xterm/xterm/css/xterm.css';
 import { useTranslation } from '../i18n/useTranslation';
-import { usePtyAttachWarm, type PtyAttachState } from '../terminal/usePtyAttach.warm';
+import { usePtyAttachShell, type PtyAttachState } from '../terminal/usePtyAttachShell';
 import { useAtBottom } from '../terminal/useAtBottom';
-import { getActiveEntry } from '../terminal/xtermWarmRegistry';
+import { getTopShell } from '../terminal/shellRegistry';
 import { terminalCopy, terminalPaste } from '../terminal/paste';
 import { ScrollToBottomButton } from './ScrollToBottomButton';
 import { useStore } from '../stores/store';
@@ -12,12 +12,10 @@ import {
   TERMINAL_FONT_SIZE_MIN,
 } from '../stores/slices/types';
 
-// TerminalPane is the host shell for the per-session warm xterm view.
-// The registry (`src/terminal/xtermWarmRegistry.ts`) owns the actual
-// Terminal instances — this component just provides the reparent target
-// host div, overlays (Error / Exit), and wires right-click
-// copy/paste. Per-session warm state means switching sessions reparents
-// the wrapper rather than tearing down xterm.
+// TerminalPane is the host shell for the per-session shellRegistry view.
+// shellRegistry owns one xterm Terminal + wrapper + mask per visited sid;
+// switching is a z-stack flip on this host's children. Cold start is
+// gated behind a black mask div per shell. See `docs/attach-redesign.html`.
 //
 // The host div carries [data-terminal-host] and [data-active-sid={sessionId}]
 // so e2e probes can locate the active terminal deterministically.
@@ -31,34 +29,9 @@ export function TerminalPane({ sessionId, cwd }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const { t } = useTranslation();
 
-  const { state, onRetry } = usePtyAttachWarm(sessionId, cwd, hostRef);
-  // `atBottom` is intentionally unused — the button is always visible
-  // while ready (see ScrollToBottomButton). We keep the hook subscribed
-  // so the detection logic (and its tests) stays live for future use.
+  const { state, onRetry } = usePtyAttachShell(sessionId, cwd, hostRef);
   const { scrollToBottom } = useAtBottom(sessionId);
 
-  // Ctrl+MouseWheel zoom for the terminal font size. We attach via
-  // useEffect rather than React's `onWheel` prop because React synthesizes
-  // wheel events as passive on the document root (cannot preventDefault),
-  // and we need to suppress both the page-zoom default AND xterm's own
-  // wheel-to-scroll handler when Ctrl is held. Capture phase + non-passive
-  // is the only way that works across Chromium versions.
-  //
-  // The store action is no-op on equal value (clamped 8–32), and the
-  // app-effect subscriber dedupes and dispatches `applyTerminalFontSize`
-  // to the registry. We RAF-coalesce so a fast scroll fires one resize
-  // per frame instead of per wheel tick.
-  //
-  // Mouse-anchored scroll: before changing the font, we sample the
-  // logical line under the cursor (anchorLine = viewportY + offsetY/cellH).
-  // After the registry writes `term.options.fontSize` (synchronous reflow
-  // via the zustand subscriber), we read the new cell height and
-  // scrollToLine so the same anchorLine stays at the same screen-Y. This
-  // is what gives WT / iTerm2 their "zoom around the pointer" feel.
-  // Uses xterm internals (`_core._renderService.dimensions.css.cell`) —
-  // best-effort, wrapped in try/catch; on any failure we skip the
-  // re-anchor and the user still gets correct zoom, just without the
-  // pointer-fixing.
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
@@ -79,10 +52,6 @@ export function TerminalPane({ sessionId, cwd }: Props) {
       if (e.deltaY === 0) return;
       e.preventDefault();
       e.stopPropagation();
-      // Wheel-up (deltaY < 0) zooms IN (larger font); wheel-down zooms
-      // out. Step by 1 per wheel notch regardless of |deltaY| — touchpad
-      // pinch gestures (typically large continuous deltaY) still feel
-      // responsive because we step in the direction's sign only.
       pendingDelta += e.deltaY < 0 ? 1 : -1;
       pendingClientY = e.clientY;
       if (raf) return;
@@ -98,9 +67,8 @@ export function TerminalPane({ sessionId, cwd }: Props) {
           Math.min(TERMINAL_FONT_SIZE_MAX, cur + delta),
         );
         if (next === cur) return;
-        // Capture anchor before dispatch (cellH still reflects old font).
-        const active = getActiveEntry();
-        const term = active?.term;
+        const shell = getTopShell();
+        const term = shell?.term;
         let anchorLine: number | null = null;
         let anchorScreenRow: number | null = null;
         if (term) {
@@ -118,10 +86,6 @@ export function TerminalPane({ sessionId, cwd }: Props) {
           }
         }
         useStore.getState().setTerminalFontSizePx(next);
-        // After dispatch, the registry has synchronously written
-        // term.options.fontSize and called fit.fit(); cell metrics now
-        // reflect the new font. Reposition so anchorLine stays under
-        // the cursor (modulo sub-cell rounding).
         if (term && anchorLine != null && anchorScreenRow != null) {
           try {
             const cellHNew = readCellHeight(term);
@@ -158,14 +122,10 @@ export function TerminalPane({ sessionId, cwd }: Props) {
       } catch {
         // best-effort
       }
-      // Native CLI/terminal-emulator behaviour: right-click with selection
-      // copies + clears; without selection, pastes. Routed through the
-      // shared `paste` module, which operates on whichever warm entry is
-      // currently active. No popover.
-      const term = getActiveEntry()?.term;
+      const term = getTopShell()?.term;
       const copied = terminalCopy(term);
       if (!copied) {
-        void terminalPaste(() => getActiveEntry()?.term, sessionId, 'right-click');
+        void terminalPaste(() => getTopShell()?.term, sessionId, 'right-click');
       }
     },
     [sessionId],
@@ -176,12 +136,9 @@ export function TerminalPane({ sessionId, cwd }: Props) {
       className="relative flex-1 w-full h-full bg-black ring-1 ring-inset ring-white/5"
       data-terminal-host
       data-active-sid={sessionId}
-      data-ccsm-warm-xterm
+      data-ccsm-shell-host
       onContextMenu={onContextMenu}
     >
-      {/* The registry owns the inner wrapper(s); this host div is the
-          reparent target. The registry's `ensureAndShowEntry` does the
-          appendChild of its per-sid wrapper directly under the host. */}
       <div ref={hostRef} className="absolute inset-0" />
       <Overlay state={state} onRetry={onRetry} t={t} />
       {state.kind === 'ready' ? (
