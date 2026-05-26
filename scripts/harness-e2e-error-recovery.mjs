@@ -33,6 +33,7 @@ import {
   createIsolatedClaudeDir,
   dismissFirstRunModals,
   launchCcsmIsolated,
+  readXtermLines,
   seedSession,
   waitForTerminalReady,
   waitForXtermBuffer,
@@ -211,30 +212,86 @@ async function casePtyExitOverlayRetry({ win, tempDir }) {
   // `triggerDataEvent` path is flaky in headless / xvfb: focus-state races
   // and `onData` listener-arming timing can drop the keystroke before it
   // reaches pty stdin, while the direct IPC call guarantees the bytes
-  // land on the pty regardless of xterm focus. The first push of this
-  // PR went green locally with `sendToClaudeTui` but red on all 3 CI
-  // platforms — `disconnectedSessions[sid]` never populated within 60s
-  // because `/exit` never actually arrived at claude's stdin. Direct
-  // IPC bypasses the xterm focus/timing wrinkle while exercising the
-  // same downstream code path (`ipcMain.handle('pty:input')` →
-  // `entry.pty.write(data)` in `electron/ptyHost/lifecycle.ts`).
-  const sent = await win.evaluate(async ({ s, payload }) => {
-    if (!window.ccsmPty || typeof window.ccsmPty.input !== 'function') {
-      return { ok: false, reason: 'ccsmPty.input unavailable' };
-    }
-    try {
-      await window.ccsmPty.input(s, payload);
-      return { ok: true };
-    } catch (err) {
-      return { ok: false, reason: String(err?.message || err) };
-    }
-  }, { s: sid, payload: '/exit\r' });
+  // land on the pty regardless of xterm focus. Direct IPC bypasses the
+  // xterm focus/timing wrinkle while exercising the same downstream code
+  // path (`ipcMain.handle('pty:input')` → `entry.pty.write(data)` in
+  // `electron/ptyHost/lifecycle.ts`).
+  const sendIpc = async (payload) => {
+    return await win.evaluate(async ({ s, p }) => {
+      if (!window.ccsmPty || typeof window.ccsmPty.input !== 'function') {
+        return { ok: false, reason: 'ccsmPty.input unavailable' };
+      }
+      try {
+        await window.ccsmPty.input(s, p);
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, reason: String(err?.message || err) };
+      }
+    }, { s: sid, p: payload });
+  };
+
+  // Diagnostic: dump xterm buffer pre-exit so CI logs show what state
+  // claude's TUI is actually in before we type `/exit`. Without this we
+  // can only guess whether a modal is still up.
+  {
+    const linesPre = await readXtermLines(win, { lines: 40 }).catch(() => []);
+    console.log(`[case=pty-exit-overlay-retry] pre-exit buffer (${linesPre.length} lines):`);
+    for (const ln of linesPre) console.log(`  | ${ln}`);
+  }
+
+  const sent = await sendIpc('/exit\r');
   if (!sent.ok) {
     throw new Error(`ccsmPty.input('/exit\\r') failed: ${sent.reason}`);
   }
 
-  // Wait for the store's disconnectedSessions slice to surface the exit.
-  const exitRec = await waitForPtyExitInStore(win, sid, { timeout: 60_000 });
+  // Poll for exit with progressive fallbacks. claude's TUI sometimes
+  // doesn't react to `/exit\r` in headless CI (focus quirks, prompt-not-
+  // ready races, or claude version differences). Try alternative clean-
+  // exit triggers at intervals before giving up:
+  //   t+15s: re-send `/exit\r`
+  //   t+25s: send Ctrl+D (EOF) — standard POSIX clean-exit, bypasses TUI
+  //          slash-command parsing entirely
+  //   t+35s: send Ctrl+C followed by Ctrl+D (in case a prompt is mid-edit)
+  //   t+45s: dump current buffer for diagnostic
+  let exitRec = null;
+  {
+    const start = Date.now();
+    const deadline = start + 60_000;
+    const sched = [
+      { at: 15_000, label: 're-send /exit\\r', fn: () => sendIpc('/exit\r') },
+      { at: 25_000, label: 'send Ctrl+D (\\x04)', fn: () => sendIpc('\x04') },
+      { at: 35_000, label: 'send Ctrl+C then Ctrl+D', fn: async () => {
+        await sendIpc('\x03');
+        await sleep(300);
+        return sendIpc('\x04');
+      } },
+    ];
+    let idx = 0;
+    while (Date.now() < deadline) {
+      exitRec = await win.evaluate((s) => {
+        const useStore = window.__ccsmStore;
+        if (!useStore) return null;
+        return useStore.getState().disconnectedSessions[s] ?? null;
+      }, sid);
+      if (exitRec) break;
+      const elapsed = Date.now() - start;
+      while (idx < sched.length && elapsed >= sched[idx].at) {
+        const step = sched[idx++];
+        const r = await step.fn().catch((e) => ({ ok: false, reason: String(e) }));
+        console.log(`[case=pty-exit-overlay-retry] fallback t+${Math.round(elapsed)}ms: ${step.label} -> ${JSON.stringify(r)}`);
+      }
+      await sleep(200);
+    }
+  }
+
+  if (!exitRec) {
+    // Dump xterm buffer so we can see what state the TUI is stuck in.
+    const linesPost = await readXtermLines(win, { lines: 60 }).catch(() => []);
+    console.log(`[case=pty-exit-overlay-retry] TIMEOUT buffer (${linesPost.length} lines):`);
+    for (const ln of linesPost) console.log(`  | ${ln}`);
+    throw new Error(`waitForPtyExitInStore: disconnectedSessions[${sid}] never populated within 60000ms after /exit + fallbacks`);
+  }
+
   console.log(`[case=pty-exit-overlay-retry] store exit: ${JSON.stringify(exitRec)}`);
   if (exitRec.kind !== 'clean') {
     throw new Error(
