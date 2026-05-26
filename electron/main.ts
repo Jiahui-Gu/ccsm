@@ -44,11 +44,23 @@ initLog();
 // in the logger instead of silently terminating the process. We deliberately
 // do NOT call app.exit() — preserves current default-throw behavior in tests
 // and mirrors the renderer's "log + degrade" stance.
+//
+// We ALSO mirror the full reason + stack to stderr directly. The structured
+// `log.error` call routes through electron-log's console transport, which
+// formats records as `[level] [tag] msg` and elides the structured `fields`
+// object — so a real crash showed up in `npm run dev` as a single useless
+// line `[error] [main] unhandledRejection` with no error message, no stack,
+// and no clue what code path threw. Direct console.error keeps the file sink
+// + Sentry pipeline intact while giving the dev terminal the actual stack so
+// the next regression is debuggable in one pass instead of requiring a
+// diagnostic shim to be added by the engineer chasing the bug.
 process.on('unhandledRejection', (reason, _promise) => {
   const err = reason instanceof Error ? reason : new Error(String(reason));
+  console.error('[main] unhandledRejection:', err);
   log.error('main', 'unhandledRejection', { error: normalizeError(err) });
 });
 process.on('uncaughtException', (err) => {
+  console.error('[main] uncaughtException:', err);
   log.error('main', 'uncaughtException', { error: normalizeError(err) });
 });
 
