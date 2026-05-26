@@ -124,176 +124,176 @@
 <div class="page">
 
 <header class="head">
-  <h1>Attach redesign — from scratch</h1>
-  <div class="sub">If we wrote ccsm’s attach path today, what would it look like? Discard the 19-step incumbent and the patches on top of it. Design only.</div>
-  <div class="meta">scope: pty attach + xterm mount + sidebar coupling · companion to docs/attach-timeline-review.html (history)</div>
+  <h1>Attach 重新设计 —— 从零开始</h1>
+  <div class="sub">如果今天从头写 ccsm 的 attach 路径,它会是什么样?抛掉当前 19 步流程,以及打在上面的补丁。只谈设计。</div>
+  <div class="meta">范围:pty attach + xterm mount + 侧边栏耦合 · 配套文档 docs/attach-timeline-review.html(历史)</div>
 </header>
 
 <!-- ====================== 1. PRINCIPLES ====================== -->
 <section class="s">
-  <h2>1 · Design principles</h2>
-  <p class="lede">Five things every later decision answers to.</p>
+  <h2>1 · 设计原则</h2>
+  <p class="lede">后面每个决策都要回答的五条原则。</p>
   <div class="principles">
     <div class="princ"><div class="n">P1</div><div>
-      <b>First frame = final frame.</b>
-      <div class="body">Before <code>display:''</code>, the user perceives nothing. After it, the user must see a finished picture: scrolled to the right line, atlas warm, dims final. Step count between mount and reveal is irrelevant; the cut line is what matters.</div>
+      <b>第一帧 = 最终帧。</b>
+      <div class="body"><code>display:''</code> 之前,用户什么都感知不到。之后,用户必须看到一张完成的画面:滚到正确的行、atlas 已预热、尺寸为最终值。mount 到 reveal 之间步骤数无所谓;切线在哪才是关键。</div>
     </div></div>
     <div class="princ"><div class="n">P2</div><div>
-      <b>The Terminal is a long-lived per-sid object, not a per-attach artifact.</b>
-      <div class="body">Allocation, <code>term.open</code>, addon load, atlas warm-up, and the live data subscription happen the first time we have any reason to care about a sid (e.g. it’s in the sidebar). “Attach” is reduced to <i>making one of these visible</i>. Switching sessions never disposes or re-opens xterm.</div>
+      <b>Terminal 是 per-sid 的长寿对象,不是 per-attach 的临时产物。</b>
+      <div class="body">分配、<code>term.open</code>、addon 加载、atlas 预热、live 数据订阅,都在我们第一次有理由关心某个 sid 时发生(例如它进了侧边栏)。"Attach" 退化为<i>让其中之一可见</i>。切换会话从不 dispose 或重新 open xterm。</div>
     </div></div>
     <div class="princ"><div class="n">P3</div><div>
-      <b>Data subscription is independent of visibility.</b>
-      <div class="body">Per-sid chunks flow into the per-sid Terminal continuously, from spawn/restore to dispose. There is no “buffering listener” mode that toggles around attach — the listener is always the Terminal itself. Visibility is a DOM concern only.</div>
+      <b>数据订阅独立于可见性。</b>
+      <div class="body">per-sid chunk 从 spawn/restore 到 dispose 持续流入 per-sid Terminal。不存在围绕 attach 切换的 "buffering listener" 模式 —— listener 永远是 Terminal 自己。可见性纯粹是 DOM 层的事。</div>
     </div></div>
     <div class="princ"><div class="n">P4</div><div>
-      <b>Sidebar runs on its own data plane.</b>
-      <div class="body">Sidebar state (agent state, title, badge, archived flag) comes from <code>session:state</code> / <code>session:title</code> — already independent of PTY chunks. Redesign keeps it that way; no last-line preview parsing of PTY output anywhere.</div>
+      <b>侧边栏跑在自己的数据面上。</b>
+      <div class="body">侧边栏状态(agent 状态、标题、徽标、归档标志)来自 <code>session:state</code> / <code>session:title</code> —— 本就独立于 PTY chunk。重设计延续这一点;任何地方都不再解析 PTY 输出做最后一行预览。</div>
     </div></div>
     <div class="princ"><div class="n">P5</div><div>
-      <b>Parallel where independent. One barrier. Then serial. Then reveal.</b>
-      <div class="body">Independent work (snapshot fetch, layout commit, addon warm-up) runs concurrently in invisible space. A single <code>await Promise.all</code> meets them. The serial tail does only the bits with real ordering (write snapshot → drain live tail → pin viewport). Reveal is the last instruction.</div>
+      <b>能并行就并行。一次 barrier。然后串行。然后 reveal。</b>
+      <div class="body">互相独立的工作(snapshot 拉取、布局 commit、addon 预热)在不可见空间内并发跑。一次 <code>await Promise.all</code> 汇合。串行尾部只做真正有顺序约束的事(写 snapshot → drain live tail → 钉住 viewport)。Reveal 是最后一条指令。</div>
     </div></div>
   </div>
 </section>
 
 <!-- ====================== 2. HIGH-LEVEL PHASES ====================== -->
 <section class="s">
-  <h2>2 · High-level architecture</h2>
-  <p class="lede">Five phases. Read left to right.</p>
+  <h2>2 · 总体架构</h2>
+  <p class="lede">五个阶段。从左往右读。</p>
   <div class="phases">
     <div class="phase">
       <div class="ph">Phase 0</div>
       <b>Provision</b>
-      <div class="desc">When a sid enters the sidebar, allocate a renderer-side <code>SessionShell</code>: xterm Terminal in an offscreen container, addons loaded, live stream subscription opened. No user-visible side effect.</div>
+      <div class="desc">sid 进入侧边栏时,在 renderer 侧分配一个 <code>SessionShell</code>:offscreen 容器里的 xterm Terminal、addon 已加载、live 流订阅已开启。无用户可见副作用。</div>
     </div>
     <div class="phase live">
       <div class="ph">Phase 1</div>
-      <b>Stream-live</b>
-      <div class="desc">PTY chunks land in the per-sid Terminal continuously. Sidebar receives <code>session:state</code> independently. Both run forever, regardless of which sid is active.</div>
+      <b>持续 stream</b>
+      <div class="desc">PTY chunk 持续落入 per-sid Terminal。侧边栏独立接收 <code>session:state</code>。两条线永远在跑,与当前激活的是哪个 sid 无关。</div>
     </div>
     <div class="phase">
       <div class="ph">Phase 2</div>
-      <b>Prepare-visible</b>
-      <div class="desc">User picks a sid. Parallel: reparent the SessionShell into the visible host (still <code>display:'none'</code>), commit layout, fit to real dims, restore last viewport (warm) or snap to bottom (cold).</div>
+      <b>准备可见</b>
+      <div class="desc">用户选中某个 sid。并行:把 SessionShell reparent 到可见宿主(仍 <code>display:'none'</code>)、commit 布局、按真实尺寸 fit、恢复上次 viewport(warm)或贴底(cold)。</div>
     </div>
     <div class="phase reveal">
       <div class="ph">Phase 3</div>
       <b>Reveal</b>
-      <div class="desc">One assignment: <code>display:''</code>. Viewport, atlas, dims, content — all already final. <i>This is the only frame the user sees.</i></div>
+      <div class="desc">一条赋值:<code>display:''</code>。viewport、atlas、尺寸、内容 —— 都已为最终态。<i>这是用户看到的唯一一帧。</i></div>
     </div>
     <div class="phase">
       <div class="ph">Phase 4</div>
-      <b>Post-reveal</b>
-      <div class="desc">Wire input passthrough (it’s already wired at the Terminal layer; we only flip a routing flag), focus, mark active in store, install/refresh ResizeObserver baseline.</div>
+      <b>Reveal 之后</b>
+      <div class="desc">接通输入路由(在 Terminal 层早已接好,只翻一个路由标志)、focus、在 store 标记 active、安装/刷新 ResizeObserver 基线。</div>
     </div>
   </div>
 
-  <h3 class="sub">Why this shape</h3>
+  <h3 class="sub">为什么是这个形状</h3>
   <p style="margin:0; font-size:13px; color:var(--ink-2);">
-    The current path conflates four orthogonal things — Terminal lifecycle, data subscription, layout, and visibility — into one mega-procedure called “attach.” Untangling them moves all the heavy lifting out of the click path. By the time the user clicks a session, the bytes have already been streaming for seconds; “attach” becomes “show.”
+    当前路径把四件正交的事 —— Terminal 生命周期、数据订阅、布局、可见性 —— 揉成一个叫 "attach" 的大过程。把它们解耦,所有重活都从点击路径中移走。等用户点会话时,字节已经流了几秒;"attach" 退化为 "show"。
   </p>
 </section>
 
 <!-- ====================== 3. PARALLEL FLOW ====================== -->
 <section class="s">
-  <h2>3 · Parallel flow inside Phase 2</h2>
-  <p class="lede">What can run concurrently while still in <code>display:'none'</code>, what must serialize, and where reveal sits.</p>
+  <h2>3 · Phase 2 内部的并行流</h2>
+  <p class="lede">仍在 <code>display:'none'</code> 时可以并发跑什么、什么必须串行、reveal 落在何处。</p>
 
   <div class="flow">
 
     <div class="lanes">
       <div class="lane">
-        <div class="lh">Lane A · Data</div>
-        <div class="item"><b>A1.</b> Request <code>pty.snapshotAt(sid, sinceSeq?)</code> if shell hasn’t written a snapshot yet, else skip (already live).</div>
-        <div class="item"><b>A2.</b> Apply <code>writeAsync(snapshot)</code> into the Terminal’s scrollback. Drain.</div>
-        <div class="item"><b>A3.</b> Drain in-flight live chunks up to <i>now</i> (single explicit <code>await term.write('', cb)</code> barrier — only place we use it).</div>
+        <div class="lh">Lane A · 数据</div>
+        <div class="item"><b>A1.</b> 若 shell 尚未写过 snapshot,调 <code>pty.snapshotAt(sid, sinceSeq?)</code>;否则跳过(已 live)。</div>
+        <div class="item"><b>A2.</b> <code>writeAsync(snapshot)</code> 写入 Terminal scrollback。Drain。</div>
+        <div class="item"><b>A3.</b> Drain 截至<i>当前</i>的 in-flight live chunk(一次显式 <code>await term.write('', cb)</code> barrier —— 全流程唯一使用处)。</div>
       </div>
       <div class="lane">
         <div class="lh">Lane B · DOM</div>
-        <div class="item"><b>B1.</b> Reparent SessionShell from offscreen pool into visible <code>&lt;TerminalSlot/&gt;</code>, still <code>display:'none'</code>.</div>
-        <div class="item"><b>B2.</b> <code>await rAF</code> — let layout commit. Assert <code>clientWidth/Height &gt; 0</code> (else go to error path F3).</div>
-        <div class="item"><b>B3.</b> <code>fit.fit()</code> → compute final cols/rows from real dims.</div>
+        <div class="item"><b>B1.</b> 把 SessionShell 从 offscreen pool reparent 到可见 <code>&lt;TerminalSlot/&gt;</code>,仍 <code>display:'none'</code>。</div>
+        <div class="item"><b>B2.</b> <code>await rAF</code> —— 让布局 commit。断言 <code>clientWidth/Height &gt; 0</code>(否则进入错误路径 F3)。</div>
+        <div class="item"><b>B3.</b> <code>fit.fit()</code> → 按真实尺寸算出最终 cols/rows。</div>
       </div>
       <div class="lane">
-        <div class="lh">Lane C · Viewport plan</div>
-        <div class="item"><b>C1.</b> Read shell’s <code>lastViewportY</code> (warm) or <code>null</code> (cold).</div>
-        <div class="item"><b>C2.</b> Decide target: warm → restore Y; cold+resume → bottom; cold+empty → bottom (no-op).</div>
-        <div class="item"><b>C3.</b> Precompute via shell’s scrollback line count; no terminal mutation yet.</div>
+        <div class="lh">Lane C · Viewport 计划</div>
+        <div class="item"><b>C1.</b> 读 shell 的 <code>lastViewportY</code>(warm)或 <code>null</code>(cold)。</div>
+        <div class="item"><b>C2.</b> 决定目标:warm → 恢复 Y;cold+resume → 贴底;cold+空 → 贴底(no-op)。</div>
+        <div class="item"><b>C3.</b> 借 shell 的 scrollback 行数预算;此时不修改 terminal。</div>
       </div>
     </div>
 
     <div class="arrow">▼</div>
     <div class="barrier">
       await Promise.all([ A, B, C ])
-      <span class="sub">single barrier — three lanes fully settled</span>
+      <span class="sub">单点 barrier —— 三条 lane 全部就绪</span>
     </div>
     <div class="arrow">▼</div>
 
     <div class="serial">
-      <div class="sh">Serial tail · still display:'none'</div>
-      <div class="item"><b>S1.</b> If <code>fit.cols ≠ pty.cols</code>: <code>pty.resize(sid, cols, rows)</code>. The resulting SIGWINCH echo lands in the live stream (already going to this Terminal); we don’t re-fetch a snapshot — the parser will catch up.</div>
-      <div class="item"><b>S2.</b> One <code>await term.write('', cb)</code> drain — catches both the live tail from A3 <i>and</i> any SIGWINCH echo from S1.</div>
-      <div class="item"><b>S3.</b> Apply viewport plan from C: <code>term.scrollToLine(targetY)</code> or <code>term.scrollToBottom()</code>. Once. Exact.</div>
+      <div class="sh">串行尾部 · 仍 display:'none'</div>
+      <div class="item"><b>S1.</b> 若 <code>fit.cols ≠ pty.cols</code>:<code>pty.resize(sid, cols, rows)</code>。引发的 SIGWINCH 回显落在 live 流(已指向该 Terminal);不重新拉 snapshot —— parser 会追上。</div>
+      <div class="item"><b>S2.</b> 一次 <code>await term.write('', cb)</code> drain —— 同时吸收 A3 的 live tail<i>和</i> S1 的 SIGWINCH 回显。</div>
+      <div class="item"><b>S3.</b> 应用 lane C 的 viewport 计划:<code>term.scrollToLine(targetY)</code> 或 <code>term.scrollToBottom()</code>。一次。精确。</div>
     </div>
 
     <div class="arrow">▼</div>
 
     <div class="reveal">
       slot.style.display = ''
-      <span class="sub">user’s first frame — already final</span>
+      <span class="sub">用户看到的第一帧 —— 已是最终态</span>
     </div>
 
     <div class="arrow">▼</div>
 
     <div class="serial">
-      <div class="sh">Phase 4 · After reveal · order-free</div>
-      <div class="item"><b>P1.</b> Flip <code>activeSid</code> in store → input routing now sends keystrokes for this sid to <code>pty.input</code>.</div>
-      <div class="item"><b>P2.</b> <code>term.focus()</code>.</div>
-      <div class="item"><b>P3.</b> Install ResizeObserver baseline (eat the first spurious tick from display flip, same rationale as today).</div>
+      <div class="sh">Phase 4 · reveal 之后 · 无序</div>
+      <div class="item"><b>P1.</b> 在 store 翻转 <code>activeSid</code> → 输入路由开始把击键送到该 sid 的 <code>pty.input</code>。</div>
+      <div class="item"><b>P2.</b> <code>term.focus()</code>。</div>
+      <div class="item"><b>P3.</b> 安装 ResizeObserver 基线(吃掉 display 翻转引起的第一个伪 tick,与当前实现同理)。</div>
     </div>
 
   </div>
 
-  <h3 class="sub">Dependency notes</h3>
+  <h3 class="sub">依赖说明</h3>
   <ul style="margin:0; padding-left:18px; font-size:13px; color:var(--ink-2);">
-    <li>A is independent of B/C. A can complete before B reparents — the writes go into a Terminal that just isn’t on screen yet, which is fine (Phase 1 / P3).</li>
-    <li>B2 (rAF) is the only DOM-timed barrier. It is cheap and predictable: at most one frame, typically &lt;16ms.</li>
-    <li>C is pure computation. It exists as its own lane to make the warm-vs-cold decision an explicit data input to S3 rather than a branching mess inside it.</li>
+    <li>A 与 B/C 独立。A 可以在 B reparent 之前完成 —— 写入会进入一个尚未上屏的 Terminal,没问题(Phase 1 / P3)。</li>
+    <li>B2(rAF)是唯一 DOM 时序 barrier。便宜、可预测:至多一帧,通常 &lt;16ms。</li>
+    <li>C 是纯计算。独立成一条 lane,是为了把 warm/cold 决策作为 S3 的显式数据输入,而非藏在 S3 里的分支泥潭。</li>
   </ul>
 </section>
 
 <!-- ====================== 4. FIRST-FRAME SCENARIOS ====================== -->
 <section class="s">
-  <h2>4 · First-frame guarantees per scenario</h2>
-  <p class="lede">The only two scenarios that exist from the user’s point of view. What they see and the invariant that makes it true.</p>
+  <h2>4 · 各场景下的第一帧保证</h2>
+  <p class="lede">从用户视角看只存在两种场景。各自看到什么,以及保证它成立的不变量。</p>
   <div class="two">
 
     <div class="scen">
-      <h4>Scenario A — cold + resume<span class="tag">first attach of a session with history</span></h4>
+      <h4>场景 A —— cold + resume<span class="tag">有历史的会话首次 attach</span></h4>
       <div class="frame">
-        <b>First frame:</b> full xterm canvas at final size, scrollback rendered to the last line of the resume snapshot, scrollbar at bottom, cursor where the CLI left it. No empty frame, no upward drift, no late snap.
+        <b>第一帧:</b>最终尺寸的完整 xterm 画布,scrollback 渲染到 resume snapshot 的最后一行,滚动条贴底,光标停在 CLI 离开的位置。无空帧、无向上漂移、无延迟 snap。
       </div>
       <ul>
-        <li><b>How:</b> snapshot write (A1–A2) and live-tail drain (A3, S2) complete <i>before</i> reveal. Viewport target is computed in C (bottom) and applied in S3 once. Reveal happens after S3.</li>
-        <li><b>Why no race:</b> there is no fire-and-forget write. The single drain barrier in S2 is the only point where parser queue can be non-empty before reveal, and we wait on it explicitly.</li>
+        <li><b>怎么做到:</b>snapshot 写入(A1–A2)和 live-tail drain(A3、S2)都在 reveal <i>之前</i>完成。Viewport 目标在 C 计算(贴底),在 S3 一次性应用。Reveal 在 S3 之后。</li>
+        <li><b>为何无 race:</b>没有 fire-and-forget 的写。S2 的单点 drain barrier 是 reveal 前 parser 队列可能非空的唯一位置,我们显式 await 它。</li>
       </ul>
       <div class="inv">
-        <b>Invariant:</b> at the moment of <code>display:''</code>, <code>term.buffer.baseY === lastWrittenBaseY</code> and <code>ydisp === baseY</code>. Both follow from S2 (no pending writes) and S3 (exactly one pin).
+        <b>不变量:</b><code>display:''</code> 那一刻,<code>term.buffer.baseY === lastWrittenBaseY</code> 且 <code>ydisp === baseY</code>。两者由 S2(无 pending 写入)和 S3(恰好一次钉位)共同保证。
       </div>
     </div>
 
     <div class="scen">
-      <h4>Scenario B — warm switch<span class="tag">previously attached, switching back</span></h4>
+      <h4>场景 B —— warm 切换<span class="tag">之前 attach 过,切回</span></h4>
       <div class="frame">
-        <b>First frame:</b> the exact viewport position the user left, including mid-scrollback positions. Scrollbar aligned. If new chunks arrived while detached, they are in the scrollback below the viewport (not auto-scrolled to).
+        <b>第一帧:</b>用户离开时的精确 viewport 位置,包括 scrollback 中间位置。滚动条对齐。脱离期间到达的新 chunk 在 viewport 下方的 scrollback 中(不会被自动滚到)。
       </div>
       <ul>
-        <li><b>How:</b> the SessionShell was never disposed (P2). Lane A is a no-op — chunks have been streaming into this Terminal the whole time. Lane C reads the persisted <code>lastViewportY</code> (captured on each visibility-loss). S3 calls <code>scrollToLine(targetY)</code>.</li>
-        <li><b>Reparent considerations:</b> reparent (B1) does not reset xterm internal state. We still gate on rAF (B2) to be safe against width changes between hosts.</li>
+        <li><b>怎么做到:</b>SessionShell 从未被 dispose(P2)。Lane A 是 no-op —— chunk 一直流入这个 Terminal。Lane C 读取已持久化的 <code>lastViewportY</code>(每次失去可见性时记下)。S3 调 <code>scrollToLine(targetY)</code>。</li>
+        <li><b>Reparent 考虑:</b>reparent(B1)不会重置 xterm 内部状态。仍走 rAF(B2)gate,以防宿主之间宽度变化。</li>
       </ul>
       <div class="inv">
-        <b>Invariant:</b> the renderer state for sid X is identical immediately before deactivation and immediately after reactivation, save for <code>baseY</code> which may have advanced from live chunks (which is correct — they should be in the buffer, just not pulling the viewport).
+        <b>不变量:</b>sid X 的 renderer 状态在 deactivate 之前与 reactivate 之后相同,除了 <code>baseY</code> 可能因 live chunk 前进过(这是正确的 —— 它们应在 buffer 里,只是不拉动 viewport)。
       </div>
     </div>
 
@@ -302,139 +302,138 @@
 
 <!-- ====================== 5. IPC CONTRACT ====================== -->
 <section class="s">
-  <h2>5 · IPC contract proposal</h2>
-  <p class="lede">Main ↔ renderer surface. Smaller and more explicit than today.</p>
+  <h2>5 · IPC 契约提案</h2>
+  <p class="lede">主进程 ↔ renderer 接口面。比现在更小、更显式。</p>
 
-<pre><span class="c">// ─── main → renderer broadcasts ─────────────────────────────────────────</span>
+<pre><span class="c">// ─── main → renderer 广播 ───────────────────────────────────────────────</span>
 
-<span class="c">// One channel, per-sid stream. Emits from spawn to dispose. Renderer</span>
-<span class="c">// attaches a Terminal as the sole consumer per sid; main does NOT gate</span>
-<span class="c">// emission on any "viewer count". This is what kills the buffering-mode</span>
-<span class="c">// dance: the consumer is always present.</span>
+<span class="c">// 单一通道,per-sid 流。从 spawn 到 dispose 都在 emit。renderer 以</span>
+<span class="c">// Terminal 作为该 sid 的唯一消费者;主进程不按 "viewer count" gate</span>
+<span class="c">// emit。这正是杀掉 buffering-mode 把戏的关键:消费者永远在线。</span>
 <span class="k">channel</span> <span class="s">'pty:chunk'</span>: { sid: string; seq: number; data: <span class="t">Uint8Array</span> }
 
-<span class="c">// Lifecycle. Separate from chunks so consumers don't have to parse them.</span>
+<span class="c">// 生命周期。与 chunk 分开,消费者无需解析 chunk。</span>
 <span class="k">channel</span> <span class="s">'pty:exit'</span>: { sid: string; code: number | null; signal: string | null }
 
-<span class="c">// Sidebar's data plane. Unchanged from today, listed for completeness.</span>
+<span class="c">// 侧边栏数据面。与现状一致,此处列出以求完整。</span>
 <span class="k">channel</span> <span class="s">'session:state'</span>: { sid: string; state: SessionState }
 <span class="k">channel</span> <span class="s">'session:title'</span>: { sid: string; title: string }
 
 <span class="c">// ─── renderer → main RPC ────────────────────────────────────────────────</span>
 
-<span class="c">// Open a SessionShell. Idempotent. Called once per sid that enters the</span>
-<span class="c">// sidebar; the renderer treats this as "start streaming to me". Returns</span>
-<span class="c">// the seq cursor the renderer should treat as the live floor.</span>
+<span class="c">// 打开一个 SessionShell。幂等。每个进入侧边栏的 sid 调用一次;</span>
+<span class="c">// renderer 视其为 "开始 stream 给我"。返回 renderer 应视为 live floor</span>
+<span class="c">// 的 seq 游标。</span>
 <span class="k">rpc</span> <span class="t">pty.open</span>(sid): Promise&lt;{ pid: number; cols: number; rows: number; seq: number }&gt;
 
-<span class="c">// One-shot historical snapshot. Returned snapshot is everything up to</span>
-<span class="c">// `seq` (exclusive). Renderer writes snapshot, then plays chunks with</span>
-<span class="c">// seq &gt;= returned.seq. Replaces the 'buffering listener' indirection.</span>
+<span class="c">// 一次性历史 snapshot。返回的 snapshot 覆盖到 `seq`(不含)之前的全部</span>
+<span class="c">// 内容。renderer 写入 snapshot,再播放 seq &gt;= returned.seq 的 chunk。</span>
+<span class="c">// 替代 'buffering listener' 这一层间接。</span>
 <span class="k">rpc</span> <span class="t">pty.snapshotAt</span>(sid, opts?: { sinceSeq?: number }): Promise&lt;{
   snapshot: <span class="t">Uint8Array</span>;
-  seq: number;     <span class="c">// exclusive upper bound covered by `snapshot`</span>
+  seq: number;     <span class="c">// `snapshot` 覆盖的上界(不含)</span>
   cols: number;
   rows: number;
 }&gt;
 
-<span class="c">// Resize is a hint; if cols/rows match current, main returns without</span>
-<span class="c">// emitting SIGWINCH. No-op-safe to call after every fit().</span>
+<span class="c">// Resize 是 hint;若 cols/rows 与当前一致,主进程返回但不 emit SIGWINCH。</span>
+<span class="c">// 每次 fit() 后无副作用地调用都是安全的。</span>
 <span class="k">rpc</span> <span class="t">pty.resize</span>(sid, cols, rows): Promise&lt;{ applied: boolean }&gt;
 
-<span class="c">// Input is fire-and-forget, ordered per-sid.</span>
-<span class="k">channel</span> <span class="s">'pty:input'</span>: { sid: string; data: string }   <span class="c">// renderer → main, one-way</span>
+<span class="c">// 输入是 fire-and-forget,per-sid 有序。</span>
+<span class="k">channel</span> <span class="s">'pty:input'</span>: { sid: string; data: string }   <span class="c">// renderer → main,单向</span>
 
-<span class="c">// Drop the SessionShell. Main may keep the PTY alive (other windows /</span>
-<span class="c">// background) but stops emitting chunks for this sid to this window.</span>
+<span class="c">// 丢弃该 SessionShell。主进程可能保留 PTY 存活(其他窗口 / 后台),</span>
+<span class="c">// 但停止向本窗口 emit 该 sid 的 chunk。</span>
 <span class="k">rpc</span> <span class="t">pty.close</span>(sid): Promise&lt;void&gt;
 
-<span class="c">// ─── what we deliberately do NOT have ───────────────────────────────────</span>
-<span class="c">// • No pty.attach / pty.detach. Subscription is implicit in pty.open.</span>
-<span class="c">// • No getBufferSnapshot/attach split. Replaced by pty.snapshotAt, which</span>
-<span class="c">//   is callable at any time and returns a self-consistent {snapshot, seq}.</span>
-<span class="c">// • No sidebar preview channel. Sidebar reads agent state only.</span>
+<span class="c">// ─── 我们刻意不提供的东西 ───────────────────────────────────────────────</span>
+<span class="c">// • 没有 pty.attach / pty.detach。订阅隐含在 pty.open 里。</span>
+<span class="c">// • 没有 getBufferSnapshot/attach 拆分。由 pty.snapshotAt 替代,</span>
+<span class="c">//   可在任意时刻调用,返回自洽的 {snapshot, seq}。</span>
+<span class="c">// • 没有侧边栏预览通道。侧边栏只读 agent 状态。</span>
 </pre>
 
-  <h3 class="sub">Why these shapes</h3>
+  <h3 class="sub">为何是这些形状</h3>
   <ul style="margin:0; padding-left:18px; font-size:13px; color:var(--ink-2);">
-    <li><b><code>pty.open</code> instead of <code>pty.attach</code></b> — “open” describes truth: the renderer is committing to consume this sid’s stream until <code>pty.close</code>. There is no transient attach/detach inside a window’s lifetime; switching sids doesn’t touch main.</li>
-    <li><b>Chunks carry <code>seq</code></b> — makes snapshot/live join trivially correct (drop chunks with <code>seq &lt; snapshotSeq</code>, write the rest). No timestamp races, no “did I miss any.”</li>
-    <li><b><code>pty.snapshotAt</code> is decoupled from open</b> — the renderer can call it lazily (first time it actually needs to render history) or eagerly. The IPC is the same. Avoids the “attach implies snapshot” bundling that locks ordering.</li>
-    <li><b><code>resize.applied</code> return</b> — lets the renderer skip the “did SIGWINCH fire” heuristic; main is the source of truth.</li>
+    <li><b><code>pty.open</code> 而非 <code>pty.attach</code></b> —— "open" 更贴合事实:renderer 承诺消费该 sid 的流直到 <code>pty.close</code>。窗口生命周期内不存在瞬态 attach/detach;切换 sid 不触及主进程。</li>
+    <li><b>chunk 携带 <code>seq</code></b> —— 让 snapshot/live 拼接天然正确(丢弃 <code>seq &lt; snapshotSeq</code> 的 chunk,其余写入)。无时间戳竞争,无 "是否漏了"。</li>
+    <li><b><code>pty.snapshotAt</code> 与 open 解耦</b> —— renderer 可以懒调(首次真正需要渲染历史时)或主动调,IPC 形状一致。避免 "attach 即 snapshot" 的捆绑锁死顺序。</li>
+    <li><b><code>resize.applied</code> 返回值</b> —— 让 renderer 跳过 "SIGWINCH 是否触发了" 的猜测;主进程是事实源。</li>
   </ul>
 </section>
 
 <!-- ====================== 6. STATE MACHINE ====================== -->
 <section class="s">
-  <h2>6 · Renderer state per SessionShell</h2>
-  <p class="lede">Discriminated union; transitions are the only places anything can go wrong, so they’re explicit.</p>
+  <h2>6 · 每个 SessionShell 的 renderer 状态</h2>
+  <p class="lede">Discriminated union;转移是唯一可能出错的地方,所以显式列出。</p>
 
 <pre><span class="k">type</span> <span class="t">SessionShell</span> = {
   sid: string;
-  term: <span class="t">Terminal</span>;            <span class="c">// xterm instance, created at provisioning</span>
-  container: <span class="t">HTMLElement</span>;   <span class="c">// offscreen by default; reparented to slot on activate</span>
-  lastViewportY: number | null; <span class="c">// captured on each deactivate; null until first</span>
+  term: <span class="t">Terminal</span>;            <span class="c">// xterm 实例,在 provision 时创建</span>
+  container: <span class="t">HTMLElement</span>;   <span class="c">// 默认 offscreen;activate 时 reparent 到 slot</span>
+  lastViewportY: number | null; <span class="c">// 每次 deactivate 时记录;首次之前为 null</span>
   status: <span class="t">ShellStatus</span>;
 };
 
 <span class="k">type</span> <span class="t">ShellStatus</span> =
-  | { kind: <span class="s">'provisioning'</span> }                                   <span class="c">// term created, awaiting pty.open</span>
-  | { kind: <span class="s">'streaming'</span>; seq: number }                         <span class="c">// pty.open done, chunks flowing, no snapshot yet written</span>
-  | { kind: <span class="s">'hydrating'</span>; snapshotSeq: number }                 <span class="c">// snapshot fetched, currently writing</span>
-  | { kind: <span class="s">'live'</span>; baseSeq: number }                          <span class="c">// snapshot drained, live chunks applied directly</span>
-  | { kind: <span class="s">'exited'</span>; code: number | null }                    <span class="c">// pty.onExit received; terminal becomes read-only</span>
+  | { kind: <span class="s">'provisioning'</span> }                                   <span class="c">// term 已创建,等待 pty.open</span>
+  | { kind: <span class="s">'streaming'</span>; seq: number }                         <span class="c">// pty.open 完成,chunk 流动,尚未写过 snapshot</span>
+  | { kind: <span class="s">'hydrating'</span>; snapshotSeq: number }                 <span class="c">// snapshot 已拉,正在写入</span>
+  | { kind: <span class="s">'live'</span>; baseSeq: number }                          <span class="c">// snapshot 已 drain,live chunk 直接应用</span>
+  | { kind: <span class="s">'exited'</span>; code: number | null }                    <span class="c">// 收到 pty.onExit;terminal 转为只读</span>
   | { kind: <span class="s">'error'</span>; reason: <span class="t">ShellError</span>; recoverable: boolean };
 
 <span class="k">type</span> <span class="t">ShellError</span> =
-  | <span class="s">'open-failed'</span>             <span class="c">// pty.open rejected (claude binary missing, spawn EPERM, etc.)</span>
-  | <span class="s">'snapshot-failed'</span>         <span class="c">// pty.snapshotAt rejected after retry</span>
-  | <span class="s">'host-zero-size'</span>           <span class="c">// rAF settled and slot is still 0×0 — layout never gave us space</span>
-  | <span class="s">'stream-disconnected'</span>;    <span class="c">// chunk channel went silent without an exit event</span>
+  | <span class="s">'open-failed'</span>             <span class="c">// pty.open 被拒(claude 二进制缺失、spawn EPERM 等)</span>
+  | <span class="s">'snapshot-failed'</span>         <span class="c">// pty.snapshotAt 重试后仍失败</span>
+  | <span class="s">'host-zero-size'</span>           <span class="c">// rAF 已 settle,slot 仍为 0×0 —— 布局未给空间</span>
+  | <span class="s">'stream-disconnected'</span>;    <span class="c">// chunk 通道静默,但未收到 exit 事件</span>
 
-<span class="c">// Visibility is OUTSIDE the shell — orthogonal axis:</span>
+<span class="c">// 可见性在 shell 之外 —— 正交轴:</span>
 <span class="k">type</span> <span class="t">SlotState</span> =
   | { kind: <span class="s">'empty'</span> }
-  | { kind: <span class="s">'mounting'</span>; sid: string }       <span class="c">// reparented, display:'none', running Phase 2 serial tail</span>
-  | { kind: <span class="s">'visible'</span>; sid: string };       <span class="c">// post-reveal</span>
+  | { kind: <span class="s">'mounting'</span>; sid: string }       <span class="c">// 已 reparent,display:'none',跑 Phase 2 串行尾部</span>
+  | { kind: <span class="s">'visible'</span>; sid: string };       <span class="c">// reveal 之后</span>
 </pre>
   <p style="margin:10px 0 0; font-size:13px; color:var(--ink-2);">
-    The product of <code>ShellStatus × SlotState</code> spells out every situation. Most attach-path bugs today are illegal states in this model (e.g. <i>visible but not yet live</i>), which the redesign makes unrepresentable: the slot transition from <code>mounting → visible</code> is the same call site as <code>display:''</code>, and that call site requires <code>shell.status.kind === 'live'</code>.
+    <code>ShellStatus × SlotState</code> 的笛卡尔积穷尽了所有情况。当前 attach 路径的多数 bug 在这个模型里都是非法态(例如<i>已可见但还没 live</i>),重设计让它们无法表达:<code>mounting → visible</code> 的 slot 转移与 <code>display:''</code> 是同一个调用点,而该调用点要求 <code>shell.status.kind === 'live'</code>。
   </p>
 </section>
 
 <!-- ====================== 7. FAILURE PATHS ====================== -->
 <section class="s">
-  <h2>7 · Failure paths</h2>
-  <p class="lede">Every error has a name, a user-visible artifact, and a recovery.</p>
+  <h2>7 · 失败路径</h2>
+  <p class="lede">每个错误都有名字、用户可见表现、恢复方式。</p>
   <table class="f">
     <thead>
-      <tr><th>Failure</th><th>What the user sees</th><th>Recovery</th></tr>
+      <tr><th>失败</th><th>用户看到什么</th><th>恢复</th></tr>
     </thead>
     <tbody>
       <tr>
         <td class="what">F1 · open-failed</td>
-        <td class="user">Slot stays empty; an inline error card replaces the xterm canvas: <i>“Couldn’t start Claude for this session. [Retry] [View logs]”</i>. Sidebar row gets a small error pip.</td>
-        <td>Retry button calls <code>pty.open</code> again; on third failure we surface the claude-missing guide (existing UI).</td>
+        <td class="user">Slot 保持空;内联错误卡替代 xterm 画布:<i>"无法为该会话启动 Claude。[重试] [查看日志]"</i>。侧边栏行带小错误标点。</td>
+        <td>重试按钮再次调 <code>pty.open</code>;第三次失败时弹出 claude-missing 指引(沿用现有 UI)。</td>
       </tr>
       <tr>
         <td class="what">F2 · snapshot-failed</td>
-        <td class="user">If shell never wrote a snapshot: same inline error card as F1. If shell was already live and this was a re-snapshot (rare, e.g. after dropped chunks): no UI change — we continue with current buffer and toast a non-blocking warning.</td>
-        <td>Auto-retry once after 250ms; on second failure escalate to the error card.</td>
+        <td class="user">若 shell 从未写过 snapshot:同 F1 的内联错误卡。若 shell 已 live、这次是重新 snapshot(罕见,如 chunk 丢失之后):无 UI 变化 —— 继续沿用当前 buffer,toast 非阻塞警告。</td>
+        <td>250ms 后自动重试一次;第二次失败升级为错误卡。</td>
       </tr>
       <tr>
         <td class="what">F3 · host-zero-size</td>
-        <td class="user">Slot stays in <code>mounting</code> with a subtle spinner (typically &lt;200ms). If it persists &gt;2s: error card <i>“Terminal area has no space — try resizing the window.”</i></td>
-        <td>Keep re-rAFing on every ResizeObserver tick of the slot. The moment we get nonzero dims, resume Phase 2 at B3.</td>
+        <td class="user">Slot 停留在 <code>mounting</code> 并显示淡 spinner(通常 &lt;200ms)。若超过 2s:错误卡 <i>"终端区域无空间 —— 试试调整窗口大小。"</i></td>
+        <td>每次 slot 的 ResizeObserver tick 都重排 rAF。一旦拿到非零尺寸,从 B3 恢复 Phase 2。</td>
       </tr>
       <tr>
         <td class="what">F4 · stream-disconnected</td>
-        <td class="user">Banner across the top of the terminal: <i>“Live updates paused — reconnecting…”</i>. Existing scrollback stays readable; input is disabled.</td>
-        <td>Re-subscribe via <code>pty.open</code>; if seq jumped, run a delta snapshot via <code>pty.snapshotAt(sid, {sinceSeq})</code> and apply.</td>
+        <td class="user">终端顶部横幅:<i>"实时更新已暂停 —— 重连中…"</i>。已有 scrollback 仍可读;输入禁用。</td>
+        <td>通过 <code>pty.open</code> 重新订阅;若 seq 跳跃,调 <code>pty.snapshotAt(sid, {sinceSeq})</code> 做增量 snapshot 并应用。</td>
       </tr>
       <tr>
         <td class="what">F5 · exited</td>
-        <td class="user">Terminal goes read-only; ghost cursor; sidebar agent state moves to exited. A footer chip shows the exit code, with a Restart button.</td>
-        <td>Restart spawns a fresh sid (re-uses the SessionShell container with a new Terminal); existing sessions never silently resurrect.</td>
+        <td class="user">终端转只读;光标变灰;侧边栏 agent 状态变为 exited。底部 chip 显示退出码,带重启按钮。</td>
+        <td>重启 spawn 一个新 sid(复用 SessionShell 容器,搭配新的 Terminal);已有会话不会静默复活。</td>
       </tr>
     </tbody>
   </table>
@@ -442,57 +441,57 @@
 
 <!-- ====================== 8. CONTRAST ====================== -->
 <section class="s">
-  <h2>8 · Contrast with the current 19-step path</h2>
-  <p class="lede">Not a diff — a structural comparison.</p>
+  <h2>8 · 与当前 19 步路径的对比</h2>
+  <p class="lede">不是 diff,是结构性对比。</p>
 
   <div class="cmp">
     <div class="col old">
-      <h4>Current</h4>
+      <h4>当前</h4>
       <ul>
-        <li><b>19 sequential steps</b> in <code>usePtyAttach.warm.ts</code> + <code>xtermWarmRegistry.ts</code>, mixing data, DOM, layout, and ordering decisions.</li>
-        <li><b>Terminal lifecycle tied to attach:</b> <code>allocEntry</code> on cold, <code>display</code> toggle on warm — different code paths.</li>
-        <li><b>Buffering-listener mode</b> exists to bridge the gap between subscribing and being ready to render. It is correct but is a workaround for the deeper coupling.</li>
-        <li><b>Two <code>scrollToBottom</code> calls</b> (L479 + L551) because the first one is structurally too early.</li>
-        <li><b>Fit happens after attach</b>, forcing a SIGWINCH echo that arrives after the first pin (QP-3).</li>
-        <li><b>Live-tail writes are fire-and-forget</b> (QP-1) — the highest-priority bug.</li>
-        <li><b><code>term.open</code> runs in stale-or-zero layout</b> (QP-2), CanvasAddon atlas warms up while visible (QP-4).</li>
+        <li><b>19 个串行步骤</b>分布在 <code>usePtyAttach.warm.ts</code> + <code>xtermWarmRegistry.ts</code>,数据、DOM、布局、顺序决策混在一起。</li>
+        <li><b>Terminal 生命周期绑死 attach:</b>cold 走 <code>allocEntry</code>,warm 走 <code>display</code> toggle —— 两条不同代码路径。</li>
+        <li><b>buffering-listener 模式</b>用来弥合订阅与可渲染之间的空档。它是正确的,但本质是更深层耦合的 workaround。</li>
+        <li><b>两次 <code>scrollToBottom</code></b>(L479 + L551),因为第一次结构上太早。</li>
+        <li><b>fit 在 attach 之后发生</b>,导致 SIGWINCH 回显出现在第一次钉位之后(QP-3)。</li>
+        <li><b>live-tail 写入是 fire-and-forget</b>(QP-1)—— 最高优先级的 bug。</li>
+        <li><b><code>term.open</code> 在过期或零尺寸布局中执行</b>(QP-2),CanvasAddon atlas 在可见状态预热(QP-4)。</li>
       </ul>
     </div>
     <div class="col new">
-      <h4>Redesigned</h4>
+      <h4>重设计</h4>
       <ul>
-        <li><b>5 phases</b>, of which only Phase 2 has internal ordering — and that ordering is three independent lanes joined by one barrier.</li>
-        <li><b>One Terminal lifecycle</b>: created at sidebar-provision, disposed at <code>pty.close</code>. Switching sids never touches xterm internals.</li>
-        <li><b>No buffering mode</b>: chunks always flow to a Terminal that exists. The data plane has no “waiting room.”</li>
-        <li><b>One pin</b>: S3. Computed in lane C, applied once, after drain, before reveal.</li>
-        <li><b>Fit runs before any resize negotiation</b> (B3 → S1). SIGWINCH echo, if any, is absorbed in S2’s drain — never a separate event the timeline needs to worry about.</li>
-        <li><b>All writes are awaited</b>. The drain barrier in S2 is structural, not a patched-in <code>writeAsync('')</code>.</li>
-        <li><b><code>term.open</code> runs after rAF + nonzero assert</b>. Reveal is the last instruction, so atlas warm-up is invisible by construction.</li>
+        <li><b>5 个阶段</b>,只有 Phase 2 有内部顺序 —— 且这个顺序是三条独立 lane 加一次 barrier。</li>
+        <li><b>单一 Terminal 生命周期</b>:侧边栏 provision 时创建,<code>pty.close</code> 时 dispose。切换 sid 永远不触碰 xterm 内部。</li>
+        <li><b>无 buffering 模式</b>:chunk 永远流向一个已存在的 Terminal。数据面没有 "等候室"。</li>
+        <li><b>一次钉位</b>:S3。在 lane C 算好,drain 后、reveal 前一次应用。</li>
+        <li><b>Fit 在任何 resize 协商之前发生</b>(B3 → S1)。SIGWINCH 回显(若有)被 S2 的 drain 吸收 —— 时间线不需要单独操心。</li>
+        <li><b>所有写入都被 await</b>。S2 的 drain barrier 是结构性的,不是补丁式的 <code>writeAsync('')</code>。</li>
+        <li><b><code>term.open</code> 在 rAF + 非零尺寸断言之后运行</b>。Reveal 是最后一条指令,所以 atlas 预热在结构上不可见。</li>
       </ul>
     </div>
   </div>
 
-  <h3 class="sub">Races that cannot occur in the new architecture</h3>
+  <h3 class="sub">在新架构下不可能发生的 race</h3>
   <ul style="margin:0; padding-left:18px; font-size:13px; color:var(--ink-2);">
-    <li><b>QP-1 (live-tail vs pin):</b> there is no fire-and-forget tail. S2 is a single explicit drain; nothing writes between S2 and S3.</li>
-    <li><b>QP-2 (stale-dim open):</b> <code>term.open</code> only runs when the container has live dims (P0 offscreen has fixed dims; B2 rAF guards the visible path).</li>
-    <li><b>QP-3 (fit-after-attach SIGWINCH echo):</b> fit is computed before <code>pty.resize</code> is called, and the resize response is drained by S2.</li>
-    <li><b>QP-4 (atlas-warm in user-visible window):</b> atlas warms up at provisioning (Phase 0) when the Terminal first <code>open</code>s into an offscreen container with real dims. By the time anything reveals, atlas is hot.</li>
-    <li><b>StrictMode double-mount (QP-5):</b> shell provisioning is idempotent (keyed by sid in a renderer registry), so re-running effects is a no-op rather than a re-allocation.</li>
+    <li><b>QP-1(live-tail vs 钉位):</b>不存在 fire-and-forget tail。S2 是单点显式 drain;S2 与 S3 之间无任何写入。</li>
+    <li><b>QP-2(stale-dim open):</b><code>term.open</code> 只在容器有 live 尺寸时运行(P0 offscreen 有固定尺寸;B2 rAF 保护可见路径)。</li>
+    <li><b>QP-3(fit-after-attach SIGWINCH 回显):</b>fit 在 <code>pty.resize</code> 之前算好,resize 的响应被 S2 drain。</li>
+    <li><b>QP-4(用户可见窗口内 atlas 预热):</b>atlas 在 provision(Phase 0)即预热 —— 此时 Terminal 首次 <code>open</code> 到带真实尺寸的 offscreen 容器。等任何东西 reveal 时,atlas 已热。</li>
+    <li><b>StrictMode 双 mount(QP-5):</b>shell provisioning 是幂等的(在 renderer registry 中以 sid 为键),所以 effect 重跑就是 no-op,不会重新分配。</li>
   </ul>
 
-  <h3 class="sub">Code that can be deleted</h3>
+  <h3 class="sub">可以删掉的代码</h3>
   <ul style="margin:0; padding-left:18px; font-size:13px; color:var(--ink-2);">
-    <li><span class="kill"><code>src/terminal/usePtyAttach.warm.ts</code></span> — the 19-step procedure. Replaced by a small <code>useVisibleShell(sid)</code> hook that toggles <code>SlotState</code>.</li>
-    <li><span class="kill"><code>xtermWarmRegistry.ts::ensureAndShowEntry / applySnapshot / pinViewportToBottom</code></span> — collapse into a <code>shellRegistry</code> with <code>provision/close/getSnapshot</code>.</li>
-    <li><span class="kill">"buffering" listener mode</span> — gone with the data-plane separation.</li>
-    <li><span class="kill"><code>pty:attach</code> and <code>pty:detach</code> IPC channels</span> — replaced by <code>pty.open</code> / <code>pty.close</code>; the per-window stream is implicit.</li>
-    <li><span class="kill">Defensive <code>term.reset()</code> before snapshot</span> — the shell registry guarantees terminals are either fresh or already live; reset has no caller.</li>
+    <li><span class="kill"><code>src/terminal/usePtyAttach.warm.ts</code></span> —— 19 步过程。由一个小 <code>useVisibleShell(sid)</code> hook 取代,只翻 <code>SlotState</code>。</li>
+    <li><span class="kill"><code>xtermWarmRegistry.ts::ensureAndShowEntry / applySnapshot / pinViewportToBottom</code></span> —— 折叠成 <code>shellRegistry</code>,只暴露 <code>provision/close/getSnapshot</code>。</li>
+    <li><span class="kill">"buffering" listener 模式</span> —— 随数据面解耦一并消失。</li>
+    <li><span class="kill"><code>pty:attach</code> 与 <code>pty:detach</code> IPC 通道</span> —— 由 <code>pty.open</code> / <code>pty.close</code> 取代;per-window 流是隐式的。</li>
+    <li><span class="kill">snapshot 前的防御性 <code>term.reset()</code></span> —— shell registry 保证 terminal 要么全新,要么已 live;reset 无人调用。</li>
   </ul>
 </section>
 
 <footer>
-  Companion document. The current implementation’s annotated timeline lives in <code>docs/attach-timeline-review.html</code> and remains the historical record — do not edit it. This file is the “if we started today” counter-proposal.
+  配套文档。当前实现的标注时间线在 <code>docs/attach-timeline-review.html</code>,作为历史记录保留 —— 不要编辑。本文件是 "如果今天从头来" 的对立提案。
 </footer>
 
 </div>
