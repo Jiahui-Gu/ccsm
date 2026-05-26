@@ -1,0 +1,500 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Attach redesign — from scratch</title>
+<style>
+  :root {
+    --bg: #f7f7f6;
+    --panel: #ffffff;
+    --ink: #1a1a1a;
+    --ink-2: #4a4a4a;
+    --ink-3: #6b6b6b;
+    --line: #e3e3e0;
+    --line-2: #d4d4d0;
+    --accent: #2962ff;
+    --accent-bg: #eaf0ff;
+    --ok: #1b873f;
+    --ok-bg: #e6f4ec;
+    --warn: #d97706;
+    --warn-bg: #fff3df;
+    --err: #c8281a;
+    --err-bg: #fdecea;
+    --par: #5d3aa0;
+    --par-bg: #f4eefb;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); font-size: 14px; line-height: 1.55; }
+  .page { max-width: 1500px; margin: 0 auto; padding: 32px 28px 80px; }
+
+  header.head { margin-bottom: 28px; }
+  header.head h1 { font-size: 22px; font-weight: 600; margin: 0 0 6px; letter-spacing: -0.01em; }
+  header.head .sub { color: var(--ink-3); font-size: 13px; }
+  header.head .meta { color: var(--ink-3); font-family: var(--mono); font-size: 12px; margin-top: 6px; }
+
+  section.s { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 20px 22px; margin-bottom: 22px; }
+  section.s > h2 { font-size: 16px; font-weight: 600; margin: 0 0 4px; }
+  section.s > .lede { color: var(--ink-3); font-size: 12.5px; margin: 0 0 16px; }
+
+  h3.sub { font-size: 12.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-2); margin: 16px 0 8px; }
+
+  code, .mono { font-family: var(--mono); }
+  code { background: #f0efec; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; color: var(--ink); }
+  pre { background: #fafaf8; border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; overflow-x: auto; font-family: var(--mono); font-size: 12.5px; line-height: 1.55; margin: 8px 0; color: var(--ink); }
+  pre .k { color: var(--par); }
+  pre .s { color: var(--ok); }
+  pre .c { color: var(--ink-3); font-style: italic; }
+  pre .t { color: #006b8f; }
+
+  .principles { display: grid; gap: 10px; }
+  .princ { display: grid; grid-template-columns: 28px 1fr; gap: 12px; align-items: start; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: #fafaf8; }
+  .princ .n { font-family: var(--mono); font-size: 11px; color: var(--ink-3); padding-top: 1px; }
+  .princ b { font-size: 13.5px; }
+  .princ .body { color: var(--ink-2); font-size: 13px; margin-top: 2px; }
+
+  /* phases */
+  .phases { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-top: 8px; }
+  @media (max-width: 1100px) { .phases { grid-template-columns: 1fr 1fr; } }
+  .phase { border: 1px solid var(--line); border-radius: 8px; padding: 12px 12px 10px; background: #fff; position: relative; }
+  .phase .ph { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.06em; }
+  .phase b { display: block; font-size: 13.5px; margin: 4px 0; }
+  .phase .desc { font-size: 12px; color: var(--ink-2); }
+  .phase.live { border-color: #c5e3ce; background: var(--ok-bg); }
+  .phase.reveal { border-color: #cfdbff; background: var(--accent-bg); }
+
+  /* parallel flow */
+  .flow { background: #fafaf8; border: 1px dashed var(--line-2); border-radius: 10px; padding: 16px; }
+  .lanes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  @media (max-width: 1000px) { .lanes { grid-template-columns: 1fr; } }
+  .lane { border: 1.5px dashed #b9a8df; border-radius: 8px; background: #fbf8ff; padding: 10px 12px; }
+  .lane .lh { font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--par); font-weight: 700; margin-bottom: 6px; }
+  .lane .item { font-size: 12.5px; margin: 4px 0; padding-left: 12px; position: relative; color: var(--ink-2); }
+  .lane .item::before { content: "›"; position: absolute; left: 0; color: var(--par); font-weight: 700; }
+  .lane .item b { color: var(--ink); }
+  .arrow { text-align: center; color: #b9a8df; font-size: 18px; line-height: 1; margin: 6px 0; }
+  .barrier { padding: 10px 12px; border: 2px solid var(--ok); background: var(--ok-bg); border-radius: 8px; text-align: center; font-weight: 600; color: #0e4019; font-family: var(--mono); font-size: 13px; }
+  .barrier .sub { display: block; font-weight: 400; font-size: 11.5px; color: var(--ok); margin-top: 3px; font-family: var(--sans); }
+  .serial { border: 1.5px solid #c5e3ce; background: #f4faf6; border-radius: 8px; padding: 10px 12px; }
+  .serial .sh { font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ok); font-weight: 700; margin-bottom: 6px; }
+  .serial .item { font-size: 12.5px; margin: 4px 0; padding-left: 12px; position: relative; color: var(--ink-2); }
+  .serial .item::before { content: "→"; position: absolute; left: 0; color: var(--ok); font-weight: 700; }
+  .serial .item b { color: var(--ink); }
+  .reveal { margin-top: 6px; padding: 12px; border: 2px solid var(--accent); background: var(--accent-bg); border-radius: 8px; text-align: center; font-weight: 600; color: #15327a; font-family: var(--mono); font-size: 13.5px; }
+  .reveal .sub { display: block; font-weight: 400; font-size: 11.5px; color: var(--accent); margin-top: 3px; font-family: var(--sans); }
+
+  /* scenario two-up */
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 900px) { .two { grid-template-columns: 1fr; } }
+  .scen { border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; background: #fafaf8; }
+  .scen h4 { font-size: 13.5px; margin: 0 0 6px; }
+  .scen h4 .tag { font-size: 10.5px; padding: 2px 7px; border-radius: 4px; margin-left: 6px; vertical-align: 2px; background: #fff; border: 1px solid var(--line-2); color: var(--ink-3); font-family: var(--mono); font-weight: 500; }
+  .scen .frame { background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; font-size: 12.5px; color: var(--ink-2); margin: 8px 0; }
+  .scen ul { padding-left: 18px; margin: 6px 0; font-size: 12.5px; color: var(--ink-2); }
+  .scen ul li { margin: 3px 0; }
+  .scen ul li b { color: var(--ink); }
+  .inv { background: #fff; border-left: 3px solid var(--ok); padding: 6px 10px; font-size: 12px; color: #134d24; border-radius: 0 6px 6px 0; margin: 6px 0; }
+  .inv b { color: #0e4019; }
+
+  /* failure table */
+  table.f { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 4px; }
+  table.f th, table.f td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  table.f th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-3); font-weight: 600; background: #fafaf8; }
+  table.f td.what { font-family: var(--mono); color: var(--ink); width: 22%; }
+  table.f td.user { color: var(--ink-2); width: 32%; }
+
+  /* compare */
+  .cmp { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 900px) { .cmp { grid-template-columns: 1fr; } }
+  .cmp .col { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; background: #fafaf8; }
+  .cmp .col h4 { margin: 0 0 6px; font-size: 13px; }
+  .cmp .col.old h4 { color: var(--err); }
+  .cmp .col.new h4 { color: var(--ok); }
+  .cmp ul { padding-left: 18px; margin: 4px 0; font-size: 12.5px; color: var(--ink-2); }
+  .cmp ul li { margin: 4px 0; }
+
+  .kill { text-decoration: line-through; color: var(--err); }
+
+  footer { color: var(--ink-3); font-size: 12px; margin-top: 24px; }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header class="head">
+  <h1>Attach redesign — from scratch</h1>
+  <div class="sub">If we wrote ccsm’s attach path today, what would it look like? Discard the 19-step incumbent and the patches on top of it. Design only.</div>
+  <div class="meta">scope: pty attach + xterm mount + sidebar coupling · companion to docs/attach-timeline-review.html (history)</div>
+</header>
+
+<!-- ====================== 1. PRINCIPLES ====================== -->
+<section class="s">
+  <h2>1 · Design principles</h2>
+  <p class="lede">Five things every later decision answers to.</p>
+  <div class="principles">
+    <div class="princ"><div class="n">P1</div><div>
+      <b>First frame = final frame.</b>
+      <div class="body">Before <code>display:''</code>, the user perceives nothing. After it, the user must see a finished picture: scrolled to the right line, atlas warm, dims final. Step count between mount and reveal is irrelevant; the cut line is what matters.</div>
+    </div></div>
+    <div class="princ"><div class="n">P2</div><div>
+      <b>The Terminal is a long-lived per-sid object, not a per-attach artifact.</b>
+      <div class="body">Allocation, <code>term.open</code>, addon load, atlas warm-up, and the live data subscription happen the first time we have any reason to care about a sid (e.g. it’s in the sidebar). “Attach” is reduced to <i>making one of these visible</i>. Switching sessions never disposes or re-opens xterm.</div>
+    </div></div>
+    <div class="princ"><div class="n">P3</div><div>
+      <b>Data subscription is independent of visibility.</b>
+      <div class="body">Per-sid chunks flow into the per-sid Terminal continuously, from spawn/restore to dispose. There is no “buffering listener” mode that toggles around attach — the listener is always the Terminal itself. Visibility is a DOM concern only.</div>
+    </div></div>
+    <div class="princ"><div class="n">P4</div><div>
+      <b>Sidebar runs on its own data plane.</b>
+      <div class="body">Sidebar state (agent state, title, badge, archived flag) comes from <code>session:state</code> / <code>session:title</code> — already independent of PTY chunks. Redesign keeps it that way; no last-line preview parsing of PTY output anywhere.</div>
+    </div></div>
+    <div class="princ"><div class="n">P5</div><div>
+      <b>Parallel where independent. One barrier. Then serial. Then reveal.</b>
+      <div class="body">Independent work (snapshot fetch, layout commit, addon warm-up) runs concurrently in invisible space. A single <code>await Promise.all</code> meets them. The serial tail does only the bits with real ordering (write snapshot → drain live tail → pin viewport). Reveal is the last instruction.</div>
+    </div></div>
+  </div>
+</section>
+
+<!-- ====================== 2. HIGH-LEVEL PHASES ====================== -->
+<section class="s">
+  <h2>2 · High-level architecture</h2>
+  <p class="lede">Five phases. Read left to right.</p>
+  <div class="phases">
+    <div class="phase">
+      <div class="ph">Phase 0</div>
+      <b>Provision</b>
+      <div class="desc">When a sid enters the sidebar, allocate a renderer-side <code>SessionShell</code>: xterm Terminal in an offscreen container, addons loaded, live stream subscription opened. No user-visible side effect.</div>
+    </div>
+    <div class="phase live">
+      <div class="ph">Phase 1</div>
+      <b>Stream-live</b>
+      <div class="desc">PTY chunks land in the per-sid Terminal continuously. Sidebar receives <code>session:state</code> independently. Both run forever, regardless of which sid is active.</div>
+    </div>
+    <div class="phase">
+      <div class="ph">Phase 2</div>
+      <b>Prepare-visible</b>
+      <div class="desc">User picks a sid. Parallel: reparent the SessionShell into the visible host (still <code>display:'none'</code>), commit layout, fit to real dims, restore last viewport (warm) or snap to bottom (cold).</div>
+    </div>
+    <div class="phase reveal">
+      <div class="ph">Phase 3</div>
+      <b>Reveal</b>
+      <div class="desc">One assignment: <code>display:''</code>. Viewport, atlas, dims, content — all already final. <i>This is the only frame the user sees.</i></div>
+    </div>
+    <div class="phase">
+      <div class="ph">Phase 4</div>
+      <b>Post-reveal</b>
+      <div class="desc">Wire input passthrough (it’s already wired at the Terminal layer; we only flip a routing flag), focus, mark active in store, install/refresh ResizeObserver baseline.</div>
+    </div>
+  </div>
+
+  <h3 class="sub">Why this shape</h3>
+  <p style="margin:0; font-size:13px; color:var(--ink-2);">
+    The current path conflates four orthogonal things — Terminal lifecycle, data subscription, layout, and visibility — into one mega-procedure called “attach.” Untangling them moves all the heavy lifting out of the click path. By the time the user clicks a session, the bytes have already been streaming for seconds; “attach” becomes “show.”
+  </p>
+</section>
+
+<!-- ====================== 3. PARALLEL FLOW ====================== -->
+<section class="s">
+  <h2>3 · Parallel flow inside Phase 2</h2>
+  <p class="lede">What can run concurrently while still in <code>display:'none'</code>, what must serialize, and where reveal sits.</p>
+
+  <div class="flow">
+
+    <div class="lanes">
+      <div class="lane">
+        <div class="lh">Lane A · Data</div>
+        <div class="item"><b>A1.</b> Request <code>pty.snapshotAt(sid, sinceSeq?)</code> if shell hasn’t written a snapshot yet, else skip (already live).</div>
+        <div class="item"><b>A2.</b> Apply <code>writeAsync(snapshot)</code> into the Terminal’s scrollback. Drain.</div>
+        <div class="item"><b>A3.</b> Drain in-flight live chunks up to <i>now</i> (single explicit <code>await term.write('', cb)</code> barrier — only place we use it).</div>
+      </div>
+      <div class="lane">
+        <div class="lh">Lane B · DOM</div>
+        <div class="item"><b>B1.</b> Reparent SessionShell from offscreen pool into visible <code>&lt;TerminalSlot/&gt;</code>, still <code>display:'none'</code>.</div>
+        <div class="item"><b>B2.</b> <code>await rAF</code> — let layout commit. Assert <code>clientWidth/Height &gt; 0</code> (else go to error path F3).</div>
+        <div class="item"><b>B3.</b> <code>fit.fit()</code> → compute final cols/rows from real dims.</div>
+      </div>
+      <div class="lane">
+        <div class="lh">Lane C · Viewport plan</div>
+        <div class="item"><b>C1.</b> Read shell’s <code>lastViewportY</code> (warm) or <code>null</code> (cold).</div>
+        <div class="item"><b>C2.</b> Decide target: warm → restore Y; cold+resume → bottom; cold+empty → bottom (no-op).</div>
+        <div class="item"><b>C3.</b> Precompute via shell’s scrollback line count; no terminal mutation yet.</div>
+      </div>
+    </div>
+
+    <div class="arrow">▼</div>
+    <div class="barrier">
+      await Promise.all([ A, B, C ])
+      <span class="sub">single barrier — three lanes fully settled</span>
+    </div>
+    <div class="arrow">▼</div>
+
+    <div class="serial">
+      <div class="sh">Serial tail · still display:'none'</div>
+      <div class="item"><b>S1.</b> If <code>fit.cols ≠ pty.cols</code>: <code>pty.resize(sid, cols, rows)</code>. The resulting SIGWINCH echo lands in the live stream (already going to this Terminal); we don’t re-fetch a snapshot — the parser will catch up.</div>
+      <div class="item"><b>S2.</b> One <code>await term.write('', cb)</code> drain — catches both the live tail from A3 <i>and</i> any SIGWINCH echo from S1.</div>
+      <div class="item"><b>S3.</b> Apply viewport plan from C: <code>term.scrollToLine(targetY)</code> or <code>term.scrollToBottom()</code>. Once. Exact.</div>
+    </div>
+
+    <div class="arrow">▼</div>
+
+    <div class="reveal">
+      slot.style.display = ''
+      <span class="sub">user’s first frame — already final</span>
+    </div>
+
+    <div class="arrow">▼</div>
+
+    <div class="serial">
+      <div class="sh">Phase 4 · After reveal · order-free</div>
+      <div class="item"><b>P1.</b> Flip <code>activeSid</code> in store → input routing now sends keystrokes for this sid to <code>pty.input</code>.</div>
+      <div class="item"><b>P2.</b> <code>term.focus()</code>.</div>
+      <div class="item"><b>P3.</b> Install ResizeObserver baseline (eat the first spurious tick from display flip, same rationale as today).</div>
+    </div>
+
+  </div>
+
+  <h3 class="sub">Dependency notes</h3>
+  <ul style="margin:0; padding-left:18px; font-size:13px; color:var(--ink-2);">
+    <li>A is independent of B/C. A can complete before B reparents — the writes go into a Terminal that just isn’t on screen yet, which is fine (Phase 1 / P3).</li>
+    <li>B2 (rAF) is the only DOM-timed barrier. It is cheap and predictable: at most one frame, typically &lt;16ms.</li>
+    <li>C is pure computation. It exists as its own lane to make the warm-vs-cold decision an explicit data input to S3 rather than a branching mess inside it.</li>
+  </ul>
+</section>
+
+<!-- ====================== 4. FIRST-FRAME SCENARIOS ====================== -->
+<section class="s">
+  <h2>4 · First-frame guarantees per scenario</h2>
+  <p class="lede">The only two scenarios that exist from the user’s point of view. What they see and the invariant that makes it true.</p>
+  <div class="two">
+
+    <div class="scen">
+      <h4>Scenario A — cold + resume<span class="tag">first attach of a session with history</span></h4>
+      <div class="frame">
+        <b>First frame:</b> full xterm canvas at final size, scrollback rendered to the last line of the resume snapshot, scrollbar at bottom, cursor where the CLI left it. No empty frame, no upward drift, no late snap.
+      </div>
+      <ul>
+        <li><b>How:</b> snapshot write (A1–A2) and live-tail drain (A3, S2) complete <i>before</i> reveal. Viewport target is computed in C (bottom) and applied in S3 once. Reveal happens after S3.</li>
+        <li><b>Why no race:</b> there is no fire-and-forget write. The single drain barrier in S2 is the only point where parser queue can be non-empty before reveal, and we wait on it explicitly.</li>
+      </ul>
+      <div class="inv">
+        <b>Invariant:</b> at the moment of <code>display:''</code>, <code>term.buffer.baseY === lastWrittenBaseY</code> and <code>ydisp === baseY</code>. Both follow from S2 (no pending writes) and S3 (exactly one pin).
+      </div>
+    </div>
+
+    <div class="scen">
+      <h4>Scenario B — warm switch<span class="tag">previously attached, switching back</span></h4>
+      <div class="frame">
+        <b>First frame:</b> the exact viewport position the user left, including mid-scrollback positions. Scrollbar aligned. If new chunks arrived while detached, they are in the scrollback below the viewport (not auto-scrolled to).
+      </div>
+      <ul>
+        <li><b>How:</b> the SessionShell was never disposed (P2). Lane A is a no-op — chunks have been streaming into this Terminal the whole time. Lane C reads the persisted <code>lastViewportY</code> (captured on each visibility-loss). S3 calls <code>scrollToLine(targetY)</code>.</li>
+        <li><b>Reparent considerations:</b> reparent (B1) does not reset xterm internal state. We still gate on rAF (B2) to be safe against width changes between hosts.</li>
+      </ul>
+      <div class="inv">
+        <b>Invariant:</b> the renderer state for sid X is identical immediately before deactivation and immediately after reactivation, save for <code>baseY</code> which may have advanced from live chunks (which is correct — they should be in the buffer, just not pulling the viewport).
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ====================== 5. IPC CONTRACT ====================== -->
+<section class="s">
+  <h2>5 · IPC contract proposal</h2>
+  <p class="lede">Main ↔ renderer surface. Smaller and more explicit than today.</p>
+
+<pre><span class="c">// ─── main → renderer broadcasts ─────────────────────────────────────────</span>
+
+<span class="c">// One channel, per-sid stream. Emits from spawn to dispose. Renderer</span>
+<span class="c">// attaches a Terminal as the sole consumer per sid; main does NOT gate</span>
+<span class="c">// emission on any "viewer count". This is what kills the buffering-mode</span>
+<span class="c">// dance: the consumer is always present.</span>
+<span class="k">channel</span> <span class="s">'pty:chunk'</span>: { sid: string; seq: number; data: <span class="t">Uint8Array</span> }
+
+<span class="c">// Lifecycle. Separate from chunks so consumers don't have to parse them.</span>
+<span class="k">channel</span> <span class="s">'pty:exit'</span>: { sid: string; code: number | null; signal: string | null }
+
+<span class="c">// Sidebar's data plane. Unchanged from today, listed for completeness.</span>
+<span class="k">channel</span> <span class="s">'session:state'</span>: { sid: string; state: SessionState }
+<span class="k">channel</span> <span class="s">'session:title'</span>: { sid: string; title: string }
+
+<span class="c">// ─── renderer → main RPC ────────────────────────────────────────────────</span>
+
+<span class="c">// Open a SessionShell. Idempotent. Called once per sid that enters the</span>
+<span class="c">// sidebar; the renderer treats this as "start streaming to me". Returns</span>
+<span class="c">// the seq cursor the renderer should treat as the live floor.</span>
+<span class="k">rpc</span> <span class="t">pty.open</span>(sid): Promise&lt;{ pid: number; cols: number; rows: number; seq: number }&gt;
+
+<span class="c">// One-shot historical snapshot. Returned snapshot is everything up to</span>
+<span class="c">// `seq` (exclusive). Renderer writes snapshot, then plays chunks with</span>
+<span class="c">// seq &gt;= returned.seq. Replaces the 'buffering listener' indirection.</span>
+<span class="k">rpc</span> <span class="t">pty.snapshotAt</span>(sid, opts?: { sinceSeq?: number }): Promise&lt;{
+  snapshot: <span class="t">Uint8Array</span>;
+  seq: number;     <span class="c">// exclusive upper bound covered by `snapshot`</span>
+  cols: number;
+  rows: number;
+}&gt;
+
+<span class="c">// Resize is a hint; if cols/rows match current, main returns without</span>
+<span class="c">// emitting SIGWINCH. No-op-safe to call after every fit().</span>
+<span class="k">rpc</span> <span class="t">pty.resize</span>(sid, cols, rows): Promise&lt;{ applied: boolean }&gt;
+
+<span class="c">// Input is fire-and-forget, ordered per-sid.</span>
+<span class="k">channel</span> <span class="s">'pty:input'</span>: { sid: string; data: string }   <span class="c">// renderer → main, one-way</span>
+
+<span class="c">// Drop the SessionShell. Main may keep the PTY alive (other windows /</span>
+<span class="c">// background) but stops emitting chunks for this sid to this window.</span>
+<span class="k">rpc</span> <span class="t">pty.close</span>(sid): Promise&lt;void&gt;
+
+<span class="c">// ─── what we deliberately do NOT have ───────────────────────────────────</span>
+<span class="c">// • No pty.attach / pty.detach. Subscription is implicit in pty.open.</span>
+<span class="c">// • No getBufferSnapshot/attach split. Replaced by pty.snapshotAt, which</span>
+<span class="c">//   is callable at any time and returns a self-consistent {snapshot, seq}.</span>
+<span class="c">// • No sidebar preview channel. Sidebar reads agent state only.</span>
+</pre>
+
+  <h3 class="sub">Why these shapes</h3>
+  <ul style="margin:0; padding-left:18px; font-size:13px; color:var(--ink-2);">
+    <li><b><code>pty.open</code> instead of <code>pty.attach</code></b> — “open” describes truth: the renderer is committing to consume this sid’s stream until <code>pty.close</code>. There is no transient attach/detach inside a window’s lifetime; switching sids doesn’t touch main.</li>
+    <li><b>Chunks carry <code>seq</code></b> — makes snapshot/live join trivially correct (drop chunks with <code>seq &lt; snapshotSeq</code>, write the rest). No timestamp races, no “did I miss any.”</li>
+    <li><b><code>pty.snapshotAt</code> is decoupled from open</b> — the renderer can call it lazily (first time it actually needs to render history) or eagerly. The IPC is the same. Avoids the “attach implies snapshot” bundling that locks ordering.</li>
+    <li><b><code>resize.applied</code> return</b> — lets the renderer skip the “did SIGWINCH fire” heuristic; main is the source of truth.</li>
+  </ul>
+</section>
+
+<!-- ====================== 6. STATE MACHINE ====================== -->
+<section class="s">
+  <h2>6 · Renderer state per SessionShell</h2>
+  <p class="lede">Discriminated union; transitions are the only places anything can go wrong, so they’re explicit.</p>
+
+<pre><span class="k">type</span> <span class="t">SessionShell</span> = {
+  sid: string;
+  term: <span class="t">Terminal</span>;            <span class="c">// xterm instance, created at provisioning</span>
+  container: <span class="t">HTMLElement</span>;   <span class="c">// offscreen by default; reparented to slot on activate</span>
+  lastViewportY: number | null; <span class="c">// captured on each deactivate; null until first</span>
+  status: <span class="t">ShellStatus</span>;
+};
+
+<span class="k">type</span> <span class="t">ShellStatus</span> =
+  | { kind: <span class="s">'provisioning'</span> }                                   <span class="c">// term created, awaiting pty.open</span>
+  | { kind: <span class="s">'streaming'</span>; seq: number }                         <span class="c">// pty.open done, chunks flowing, no snapshot yet written</span>
+  | { kind: <span class="s">'hydrating'</span>; snapshotSeq: number }                 <span class="c">// snapshot fetched, currently writing</span>
+  | { kind: <span class="s">'live'</span>; baseSeq: number }                          <span class="c">// snapshot drained, live chunks applied directly</span>
+  | { kind: <span class="s">'exited'</span>; code: number | null }                    <span class="c">// pty.onExit received; terminal becomes read-only</span>
+  | { kind: <span class="s">'error'</span>; reason: <span class="t">ShellError</span>; recoverable: boolean };
+
+<span class="k">type</span> <span class="t">ShellError</span> =
+  | <span class="s">'open-failed'</span>             <span class="c">// pty.open rejected (claude binary missing, spawn EPERM, etc.)</span>
+  | <span class="s">'snapshot-failed'</span>         <span class="c">// pty.snapshotAt rejected after retry</span>
+  | <span class="s">'host-zero-size'</span>           <span class="c">// rAF settled and slot is still 0×0 — layout never gave us space</span>
+  | <span class="s">'stream-disconnected'</span>;    <span class="c">// chunk channel went silent without an exit event</span>
+
+<span class="c">// Visibility is OUTSIDE the shell — orthogonal axis:</span>
+<span class="k">type</span> <span class="t">SlotState</span> =
+  | { kind: <span class="s">'empty'</span> }
+  | { kind: <span class="s">'mounting'</span>; sid: string }       <span class="c">// reparented, display:'none', running Phase 2 serial tail</span>
+  | { kind: <span class="s">'visible'</span>; sid: string };       <span class="c">// post-reveal</span>
+</pre>
+  <p style="margin:10px 0 0; font-size:13px; color:var(--ink-2);">
+    The product of <code>ShellStatus × SlotState</code> spells out every situation. Most attach-path bugs today are illegal states in this model (e.g. <i>visible but not yet live</i>), which the redesign makes unrepresentable: the slot transition from <code>mounting → visible</code> is the same call site as <code>display:''</code>, and that call site requires <code>shell.status.kind === 'live'</code>.
+  </p>
+</section>
+
+<!-- ====================== 7. FAILURE PATHS ====================== -->
+<section class="s">
+  <h2>7 · Failure paths</h2>
+  <p class="lede">Every error has a name, a user-visible artifact, and a recovery.</p>
+  <table class="f">
+    <thead>
+      <tr><th>Failure</th><th>What the user sees</th><th>Recovery</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="what">F1 · open-failed</td>
+        <td class="user">Slot stays empty; an inline error card replaces the xterm canvas: <i>“Couldn’t start Claude for this session. [Retry] [View logs]”</i>. Sidebar row gets a small error pip.</td>
+        <td>Retry button calls <code>pty.open</code> again; on third failure we surface the claude-missing guide (existing UI).</td>
+      </tr>
+      <tr>
+        <td class="what">F2 · snapshot-failed</td>
+        <td class="user">If shell never wrote a snapshot: same inline error card as F1. If shell was already live and this was a re-snapshot (rare, e.g. after dropped chunks): no UI change — we continue with current buffer and toast a non-blocking warning.</td>
+        <td>Auto-retry once after 250ms; on second failure escalate to the error card.</td>
+      </tr>
+      <tr>
+        <td class="what">F3 · host-zero-size</td>
+        <td class="user">Slot stays in <code>mounting</code> with a subtle spinner (typically &lt;200ms). If it persists &gt;2s: error card <i>“Terminal area has no space — try resizing the window.”</i></td>
+        <td>Keep re-rAFing on every ResizeObserver tick of the slot. The moment we get nonzero dims, resume Phase 2 at B3.</td>
+      </tr>
+      <tr>
+        <td class="what">F4 · stream-disconnected</td>
+        <td class="user">Banner across the top of the terminal: <i>“Live updates paused — reconnecting…”</i>. Existing scrollback stays readable; input is disabled.</td>
+        <td>Re-subscribe via <code>pty.open</code>; if seq jumped, run a delta snapshot via <code>pty.snapshotAt(sid, {sinceSeq})</code> and apply.</td>
+      </tr>
+      <tr>
+        <td class="what">F5 · exited</td>
+        <td class="user">Terminal goes read-only; ghost cursor; sidebar agent state moves to exited. A footer chip shows the exit code, with a Restart button.</td>
+        <td>Restart spawns a fresh sid (re-uses the SessionShell container with a new Terminal); existing sessions never silently resurrect.</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ====================== 8. CONTRAST ====================== -->
+<section class="s">
+  <h2>8 · Contrast with the current 19-step path</h2>
+  <p class="lede">Not a diff — a structural comparison.</p>
+
+  <div class="cmp">
+    <div class="col old">
+      <h4>Current</h4>
+      <ul>
+        <li><b>19 sequential steps</b> in <code>usePtyAttach.warm.ts</code> + <code>xtermWarmRegistry.ts</code>, mixing data, DOM, layout, and ordering decisions.</li>
+        <li><b>Terminal lifecycle tied to attach:</b> <code>allocEntry</code> on cold, <code>display</code> toggle on warm — different code paths.</li>
+        <li><b>Buffering-listener mode</b> exists to bridge the gap between subscribing and being ready to render. It is correct but is a workaround for the deeper coupling.</li>
+        <li><b>Two <code>scrollToBottom</code> calls</b> (L479 + L551) because the first one is structurally too early.</li>
+        <li><b>Fit happens after attach</b>, forcing a SIGWINCH echo that arrives after the first pin (QP-3).</li>
+        <li><b>Live-tail writes are fire-and-forget</b> (QP-1) — the highest-priority bug.</li>
+        <li><b><code>term.open</code> runs in stale-or-zero layout</b> (QP-2), CanvasAddon atlas warms up while visible (QP-4).</li>
+      </ul>
+    </div>
+    <div class="col new">
+      <h4>Redesigned</h4>
+      <ul>
+        <li><b>5 phases</b>, of which only Phase 2 has internal ordering — and that ordering is three independent lanes joined by one barrier.</li>
+        <li><b>One Terminal lifecycle</b>: created at sidebar-provision, disposed at <code>pty.close</code>. Switching sids never touches xterm internals.</li>
+        <li><b>No buffering mode</b>: chunks always flow to a Terminal that exists. The data plane has no “waiting room.”</li>
+        <li><b>One pin</b>: S3. Computed in lane C, applied once, after drain, before reveal.</li>
+        <li><b>Fit runs before any resize negotiation</b> (B3 → S1). SIGWINCH echo, if any, is absorbed in S2’s drain — never a separate event the timeline needs to worry about.</li>
+        <li><b>All writes are awaited</b>. The drain barrier in S2 is structural, not a patched-in <code>writeAsync('')</code>.</li>
+        <li><b><code>term.open</code> runs after rAF + nonzero assert</b>. Reveal is the last instruction, so atlas warm-up is invisible by construction.</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3 class="sub">Races that cannot occur in the new architecture</h3>
+  <ul style="margin:0; padding-left:18px; font-size:13px; color:var(--ink-2);">
+    <li><b>QP-1 (live-tail vs pin):</b> there is no fire-and-forget tail. S2 is a single explicit drain; nothing writes between S2 and S3.</li>
+    <li><b>QP-2 (stale-dim open):</b> <code>term.open</code> only runs when the container has live dims (P0 offscreen has fixed dims; B2 rAF guards the visible path).</li>
+    <li><b>QP-3 (fit-after-attach SIGWINCH echo):</b> fit is computed before <code>pty.resize</code> is called, and the resize response is drained by S2.</li>
+    <li><b>QP-4 (atlas-warm in user-visible window):</b> atlas warms up at provisioning (Phase 0) when the Terminal first <code>open</code>s into an offscreen container with real dims. By the time anything reveals, atlas is hot.</li>
+    <li><b>StrictMode double-mount (QP-5):</b> shell provisioning is idempotent (keyed by sid in a renderer registry), so re-running effects is a no-op rather than a re-allocation.</li>
+  </ul>
+
+  <h3 class="sub">Code that can be deleted</h3>
+  <ul style="margin:0; padding-left:18px; font-size:13px; color:var(--ink-2);">
+    <li><span class="kill"><code>src/terminal/usePtyAttach.warm.ts</code></span> — the 19-step procedure. Replaced by a small <code>useVisibleShell(sid)</code> hook that toggles <code>SlotState</code>.</li>
+    <li><span class="kill"><code>xtermWarmRegistry.ts::ensureAndShowEntry / applySnapshot / pinViewportToBottom</code></span> — collapse into a <code>shellRegistry</code> with <code>provision/close/getSnapshot</code>.</li>
+    <li><span class="kill">"buffering" listener mode</span> — gone with the data-plane separation.</li>
+    <li><span class="kill"><code>pty:attach</code> and <code>pty:detach</code> IPC channels</span> — replaced by <code>pty.open</code> / <code>pty.close</code>; the per-window stream is implicit.</li>
+    <li><span class="kill">Defensive <code>term.reset()</code> before snapshot</span> — the shell registry guarantees terminals are either fresh or already live; reset has no caller.</li>
+  </ul>
+</section>
+
+<footer>
+  Companion document. The current implementation’s annotated timeline lives in <code>docs/attach-timeline-review.html</code> and remains the historical record — do not edit it. This file is the “if we started today” counter-proposal.
+</footer>
+
+</div>
+</body>
+</html>
