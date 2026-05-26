@@ -21,7 +21,7 @@
 // Run:
 //   node scripts/harness-e2e-import-from-claude.mjs
 
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -36,11 +36,37 @@ import { startFakeAnthropicApi } from './fixtures/fake-anthropic-api.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// claude encodes a project's absolute cwd into the projectDir name by
-// replacing path separators + colons with `-`. Match the upstream encoder
-// (also used by `harness-real-cli.mjs:caseImportResume`).
-function encodeCwdForClaude(cwd) {
+// ccsm's `cwdToProjectKey` (electron/sessionWatcher/projectKey.ts) replaces
+// `\`, `/`, `:` with `-`. The import-scanner uses this encoder, so the
+// scanner-read path under `<HOME>/.claude/projects/` must be named with
+// it.
+function encodeCwdForCcsmScanner(cwd) {
   return cwd.replace(/[\\/:]/g, '-');
+}
+
+// The real claude binary uses a STRICTER encoder: every non-alphanumeric
+// character collapses to `-`. Extracted from the upstream claude-agent-sdk
+// (`sdk.mjs`):
+//
+//   function x1($) { let X = $.replace(/[^a-zA-Z0-9]/g, "-");
+//                    if (X.length <= 200) return X;
+//                    return `${X.slice(0,200)}-${hash($)}`; }
+//
+// Plus claude NFC-normalizes the cwd and resolves symlinks BEFORE encoding
+// (`(await fs.promises.realpath($)).normalize("NFC")`). The harness must
+// match this exactly when seeding `<HOME>/projects/<claude-encoded>/<sid>.jsonl`,
+// otherwise `claude --resume` reports "No conversation found".
+//
+// Divergence from ccsm's encoder matters for any cwd containing `_`, `.`,
+// `~`, or other non-alphanumeric characters — including macOS tmpdir
+// (`/var/folders/p8/qyz0lmpd2mld64f_f4c66y4c0000gn/T/...`, underscores)
+// and Windows tmpdir 8.3 short names (`C:\Users\RUNNER~1\...`, tilde).
+function encodeCwdForClaudeBinary(cwd) {
+  const normalized = cwd.normalize('NFC');
+  const encoded = normalized.replace(/[^a-zA-Z0-9]/g, '-');
+  // Path-length truncation: we never produce >200-char paths in this
+  // harness (tmpdir paths are short), so omit the hash branch.
+  return encoded.length <= 200 ? encoded : encoded.slice(0, 200);
 }
 
 function seedMinimalOnboarding(tempDir, trustedCwd) {
@@ -108,17 +134,41 @@ async function caseImportResume({ fakeApi }) {
   //      scanner output and the ImportDialog row would be empty.
   // A sibling of tempDir under TMP_ROOT, with a non-`ccsm-` prefix,
   // satisfies all three.
-  const seedCwd = mkdtempSync(path.join(tmpdir(), 'probe-cwd-'));
+  //
+  // Additionally: the real claude binary canonicalizes the cwd before
+  // encoding (resolves symlinks AND, on Windows, expands 8.3 short names
+  // via `uv_fs_realpath`). `realpathSync.native` exposes the same OS-level
+  // resolver — JS-level `realpathSync` does NOT expand `RUNNER~1` →
+  // `runneradmin` on Windows. On macOS it also collapses
+  // `/var/folders/...` → `/private/var/folders/...`. Both encoders
+  // (claude + ccsm scanner) below operate on the canonical form so
+  // their on-disk seed paths line up with what claude's own
+  // `process.cwd()` will resolve to at spawn time.
+  const rawSeedCwd = mkdtempSync(path.join(tmpdir(), 'probe-cwd-'));
+  const seedCwd = realpathSync.native(rawSeedCwd);
   seedMinimalOnboarding(tempDir, seedCwd);
 
-  // Seed the JSONL under BOTH `<tempDir>/.claude/projects/...` (the import
-  // scanner's read path) and `<tempDir>/projects/...` (claude --resume's
-  // read path under CLAUDE_CONFIG_DIR=tempDir). The scanner copies on
-  // import; seeding both up front side-steps a race with that copy.
+  // Seed the JSONL under BOTH the scanner-read path (ccsm's `cwdToProjectKey`
+  // encoding under `<HOME>/.claude/projects/`) AND the claude-read path
+  // (claude binary's stricter `replace(/[^a-zA-Z0-9]/g,'-')` + NFC
+  // normalize encoding under `<CLAUDE_CONFIG_DIR>/projects/`). The two
+  // encoders DIVERGE on any non-`[\\/:]` non-alphanumeric char (e.g. `_`,
+  // `.`, `~`) — concrete cases observed in CI:
+  //   macOS:   `/var/folders/p8/qyz0lmpd2mld64f_f4c66y4c0000gn/T/...`
+  //            ccsm    → `-private-var-folders-p8-qyz0lmpd2mld64f_f4c66y4c0000gn-T-...`
+  //            claude  → `-private-var-folders-p8-qyz0lmpd2mld64f-f4c66y4c0000gn-T-...`
+  //                                                            ^ `_` → `-`
+  //   Windows: `C:\Users\runneradmin\AppData\Local\Temp\probe-cwd-Xy7`
+  //            ccsm    → `C--Users-runneradmin-AppData-Local-Temp-probe-cwd-Xy7`
+  //            claude  → `C--Users-runneradmin-AppData-Local-Temp-probe-cwd-Xy7`
+  //                       (post-realpath.native — identical here)
+  // Seeding both paths lets each consumer find its expected directory
+  // without depending on a downstream cross-encoder copy.
   const seedSid = randomUUID();
-  const projectDirName = encodeCwdForClaude(seedCwd);
-  const scannerProjectDir = path.join(tempDir, '.claude', 'projects', projectDirName);
-  const claudeProjectDir = path.join(tempDir, 'projects', projectDirName);
+  const ccsmProjectDirName = encodeCwdForCcsmScanner(seedCwd);
+  const claudeProjectDirName = encodeCwdForClaudeBinary(seedCwd);
+  const scannerProjectDir = path.join(tempDir, '.claude', 'projects', ccsmProjectDirName);
+  const claudeProjectDir = path.join(tempDir, 'projects', claudeProjectDirName);
   mkdirSync(scannerProjectDir, { recursive: true });
   mkdirSync(claudeProjectDir, { recursive: true });
 
@@ -276,7 +326,8 @@ async function caseImportResume({ fakeApi }) {
       '[import-resume] disk state:',
       JSON.stringify({
         seedCwd,
-        projectDirName,
+        ccsmProjectDirName,
+        claudeProjectDirName,
         scannerSeedExists: existsSync(path.join(scannerProjectDir, `${seedSid}.jsonl`)),
         claudeSeedExists: existsSync(path.join(claudeProjectDir, `${seedSid}.jsonl`)),
       }),
@@ -313,6 +364,9 @@ async function caseImportResume({ fakeApi }) {
     if (app) try { await app.close(); } catch { /* ignore */ }
     try { rmSync(userDataDir, { recursive: true, force: true }); } catch { /* ignore */ }
     try { rmSync(seedCwd, { recursive: true, force: true }); } catch { /* ignore */ }
+    if (rawSeedCwd !== seedCwd) {
+      try { rmSync(rawSeedCwd, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
     isolated.cleanup?.();
   }
 }
