@@ -25,8 +25,8 @@ const fakeTerm = {
   scrollToBottom: scrollToBottomSpy,
 };
 
-vi.mock('../../src/terminal/xtermWarmRegistry', () => ({
-  getActiveEntry: vi.fn(() => ({ term: fakeTerm })),
+vi.mock('../../src/terminal/shellRegistry', () => ({
+  getActiveShell: vi.fn(() => ({ term: fakeTerm })),
 }));
 
 import { useAtBottom } from '../../src/terminal/useAtBottom';

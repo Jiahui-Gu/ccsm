@@ -17,7 +17,7 @@
 // `sessionCrudSlice` (split per Task #736 / PR #754 review).
 
 import { classifyPtyExit } from '../../lib/ptyExitClassifier';
-import { disposeEntry } from '../../terminal/xtermWarmRegistry';
+import { disposeShell } from '../../terminal/shellRegistry';
 import type { RootStore, SetFn, GetFn } from './types';
 
 export type SessionRuntimeSlice = Pick<
@@ -117,7 +117,7 @@ export function createSessionRuntimeSlice(
       // never calls `pty.spawn` — the PTY is dead and the UI is stale.
       // See PR #1361 / bug #1360 root cause.
       try {
-        disposeEntry(sid, 'reload');
+        disposeShell(sid, 'reload');
       } catch {
         /* registry may be absent in unit tests — non-fatal */
       }

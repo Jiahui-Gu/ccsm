@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { getActiveEntry } from './xtermWarmRegistry';
+import { getActiveShell } from './shellRegistry';
 
 // Reads the active warm-entry xterm's buffer position and reports whether
 // the viewport is parked at the bottom (i.e. xterm's "follow live output"
@@ -31,7 +31,7 @@ export type AtBottomState = {
 };
 
 function readAtBottom(): boolean {
-  const term = getActiveEntry()?.term;
+  const term = getActiveShell()?.term;
   if (!term) return true; // no terminal yet → don't show the button
   const buf = term.buffer.active;
   return buf.baseY - buf.viewportY <= 1;
@@ -44,7 +44,7 @@ export function useAtBottom(sessionId: string | null): AtBottomState {
   const [atBottom, setAtBottom] = useState<boolean>(true);
 
   useEffect(() => {
-    const term = getActiveEntry()?.term;
+    const term = getActiveShell()?.term;
     if (!term) {
       // Registry hasn't allocated yet (StrictMode double-invoke or first
       // mount before usePtyAttachWarm runs). Re-check on next frame; if
@@ -73,7 +73,7 @@ export function useAtBottom(sessionId: string | null): AtBottomState {
   return {
     atBottom,
     scrollToBottom: () => {
-      const term = getActiveEntry()?.term;
+      const term = getActiveShell()?.term;
       if (!term) return;
       // xterm's public API: scrolls viewport such that `viewportY === baseY`,
       // which restores the "follow live output" behaviour automatically.
