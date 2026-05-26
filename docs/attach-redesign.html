@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Attach redesign — from scratch</title>
+<style>
+  :root {
+    --bg: #f7f7f6;
+    --panel: #ffffff;
+    --ink: #1a1a1a;
+    --ink-2: #4a4a4a;
+    --ink-3: #6b6b6b;
+    --line: #e3e3e0;
+    --line-2: #d4d4d0;
+    --accent: #2962ff;
+    --accent-bg: #eaf0ff;
+    --ok: #1b873f;
+    --ok-bg: #e6f4ec;
+    --warn: #d97706;
+    --warn-bg: #fff3df;
+    --err: #c8281a;
+    --err-bg: #fdecea;
+    --par: #5d3aa0;
+    --par-bg: #f4eefb;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); font-size: 14px; line-height: 1.55; }
+  .page { max-width: 1500px; margin: 0 auto; padding: 32px 28px 80px; }
+
+  header.head { margin-bottom: 28px; }
+  header.head h1 { font-size: 22px; font-weight: 600; margin: 0 0 6px; letter-spacing: -0.01em; }
+  header.head .sub { color: var(--ink-3); font-size: 13px; }
+  header.head .meta { color: var(--ink-3); font-family: var(--mono); font-size: 12px; margin-top: 6px; }
+
+  section.s { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 20px 22px; margin-bottom: 22px; }
+  section.s > h2 { font-size: 16px; font-weight: 600; margin: 0 0 4px; }
+  section.s > .lede { color: var(--ink-3); font-size: 12.5px; margin: 0 0 16px; }
+
+  h3.sub { font-size: 12.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-2); margin: 16px 0 8px; }
+
+  code, .mono { font-family: var(--mono); }
+  code { background: #f0efec; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; color: var(--ink); }
+  pre { background: #fafaf8; border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; overflow-x: auto; font-family: var(--mono); font-size: 12.5px; line-height: 1.55; margin: 8px 0; color: var(--ink); white-space: pre; }
+
+  /* callout (rule cards) */
+  .rules { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 900px) { .rules { grid-template-columns: 1fr; } }
+  .rule { padding: 14px 16px; border-radius: 10px; border: 2px solid var(--line); background: #fff; }
+  .rule.cold { border-color: var(--accent); background: var(--accent-bg); }
+  .rule.warm { border-color: var(--ok); background: var(--ok-bg); }
+  .rule .tag { font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); margin-bottom: 4px; }
+  .rule.cold .tag { color: var(--accent); }
+  .rule.warm .tag { color: var(--ok); }
+  .rule b { font-size: 15px; display: block; margin-bottom: 6px; }
+  .rule p { margin: 0; font-size: 13px; color: var(--ink-2); }
+
+  /* state mock (ascii-ish layout) */
+  .states { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  @media (max-width: 1100px) { .states { grid-template-columns: 1fr; } }
+  .state { border: 1px solid var(--line); border-radius: 10px; background: #fafaf8; padding: 12px 14px; }
+  .state .stag { font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); }
+  .state h4 { margin: 4px 0 8px; font-size: 13.5px; }
+  .state .caption { font-size: 12.5px; color: var(--ink-2); margin-top: 8px; }
+  .mock { display: grid; grid-template-columns: 110px 1fr; gap: 0; border: 1px solid var(--line-2); border-radius: 6px; background: #fff; overflow: hidden; height: 200px; font-family: var(--mono); font-size: 11px; }
+  .mock .side { background: #f4f4f1; border-right: 1px solid var(--line-2); padding: 8px 10px; color: var(--ink-2); }
+  .mock .side .row { padding: 4px 6px; margin: 2px -6px; border-radius: 4px; }
+  .mock .side .row.act { background: var(--accent); color: #fff; }
+  .mock .side .row.dim { color: var(--ink-3); }
+  .mock .right { position: relative; background: #1a1a1a; color: #d8d8d8; padding: 10px 12px; overflow: hidden; }
+  .mock .right .blackout { position: absolute; inset: 0; background: #1a1a1a; display: flex; align-items: center; justify-content: center; color: #6b6b6b; font-size: 11px; }
+  .mock .right .mask { position: absolute; inset: 0; background: rgba(26,26,26,0.94); display: flex; align-items: center; justify-content: center; color: #b9a8df; font-size: 11px; backdrop-filter: blur(2px); border: 1px dashed #5d3aa0; }
+  .mock .right .layer { position: absolute; inset: 6px 8px; padding: 4px 6px; border-radius: 4px; }
+  .mock .right .layer.top { background: #0e0e0e; border: 1px solid #2962ff; z-index: 3; }
+  .mock .right .layer.mid { background: #161616; border: 1px solid #444; z-index: 2; transform: translate(8px, 8px); opacity: 0.55; }
+  .mock .right .layer.bot { background: #1c1c1c; border: 1px solid #333; z-index: 1; transform: translate(16px, 16px); opacity: 0.3; }
+  .mock .right .layer .lh { font-size: 10px; color: var(--ink-3); margin-bottom: 4px; }
+  .mock .right .layer .ln { color: #e0e0e0; margin: 1px 0; font-size: 10.5px; }
+
+  footer { color: var(--ink-3); font-size: 12px; margin-top: 24px; }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header class="head">
+  <h1>Attach 重新设计 —— UX 模型</h1>
+  <div class="sub">右侧内容区怎么呈现 session。只解两个问题:第一次别 flicker,看过的切回要瞬间。</div>
+  <div class="meta">范围:pty attach + xterm mount · 历史时间线 docs/attach-timeline-review.html</div>
+</header>
+
+<!-- ====================== 1. UX 三种状态 ====================== -->
+<section class="s">
+  <h2>1 · UX —— 三种状态</h2>
+  <p class="lede">右侧内容区就这三种样子,sidebar 固定。</p>
+
+  <div class="states">
+
+    <div class="state">
+      <div class="stag">State 0</div>
+      <h4>刚打开 ccsm</h4>
+      <div class="mock">
+        <div class="side">
+          <div class="row dim">session A</div>
+          <div class="row dim">session B</div>
+          <div class="row dim">session C</div>
+        </div>
+        <div class="right">
+          <div class="blackout">— 空 —</div>
+        </div>
+      </div>
+      <div class="caption">右侧全黑。还没人 attach 过,什么都没准备。</div>
+    </div>
+
+    <div class="state">
+      <div class="stag">State 1</div>
+      <h4>冷启动中</h4>
+      <div class="mock">
+        <div class="side">
+          <div class="row act">session A</div>
+          <div class="row dim">session B</div>
+          <div class="row dim">session C</div>
+        </div>
+        <div class="right">
+          <div class="layer bot"><div class="lh">(底层旧 shell,被盖住)</div></div>
+          <div class="mask">准备中…</div>
+        </div>
+      </div>
+      <div class="caption">遮罩盖住右侧。后台拉 snapshot、建 xterm、写入、滚到底,好了揭开。用户看不到半成品。</div>
+    </div>
+
+    <div class="state">
+      <div class="stag">State 2</div>
+      <h4>已 attach 切换</h4>
+      <div class="mock">
+        <div class="side">
+          <div class="row act">session A</div>
+          <div class="row dim">session B</div>
+          <div class="row dim">session C</div>
+        </div>
+        <div class="right">
+          <div class="layer bot"><div class="lh">session C</div></div>
+          <div class="layer mid"><div class="lh">session B</div></div>
+          <div class="layer top">
+            <div class="lh">session A · 顶层</div>
+            <div class="ln">$ npm test</div>
+            <div class="ln">PASS  ./foo.test.ts</div>
+            <div class="ln">▍</div>
+          </div>
+        </div>
+      </div>
+      <div class="caption">右侧是 z-stack。点谁谁拉到顶,各自保留上次离开的位置,无遮罩、无冷启动。</div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ====================== 2. 两条规则 ====================== -->
+<section class="s">
+  <h2>2 · 两条规则</h2>
+  <p class="lede">资源策略,一句话。</p>
+
+  <div class="rules">
+    <div class="rule cold">
+      <div class="tag">规则 1</div>
+      <b>没看过 = 零资源</b>
+      <p>没点过的 session 完全不准备 —— 不订 PTY,不建 xterm,什么都不占。</p>
+    </div>
+    <div class="rule warm">
+      <div class="tag">规则 2</div>
+      <b>看过 = 留着不放</b>
+      <p>点过一次之后 xterm 和 PTY 订阅都留住。关 ccsm 才一次性回收。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ====================== 3. 怎么做 ====================== -->
+<section class="s">
+  <h2>3 · 怎么做</h2>
+  <p class="lede">三块东西凑起来,不展开。</p>
+
+  <ul style="margin:0; padding-left:18px; font-size:13.5px; color:var(--ink-2);">
+    <li><b>z-stack</b> —— 右侧 host 里挂 N 个 wrapper,每个 wrapper 内有自己的 xterm。切换只改 <code>display</code> 和 <code>z-index</code>,xterm 实例<b>从不</b>在 wrapper 之间 reparent。这是"看过的切回瞬间、位置不变"的根本。</li>
+    <li><b>per-shell mask</b> —— 每个 wrapper 自带一个遮罩 div。冷启动期间这个 wrapper 的遮罩亮,其它 wrapper 的遮罩状态各自独立,切走切回都不串。</li>
+    <li><b>服务端 snapshot</b> —— main 进程用 <code>@xterm/headless</code> + <code>SerializeAddon</code> 保留每个 session 的镜像,renderer 冷启动时拉一次写进 xterm 就行。</li>
+  </ul>
+</section>
+
+<!-- ====================== 4. 其他操作 ====================== -->
+<section class="s">
+  <h2>4 · 其他操作</h2>
+  <p class="lede">delete / reload / copy,各一句话,不引入新概念。</p>
+
+  <div class="rules" style="grid-template-columns: 1fr 1fr 1fr;">
+    <div class="rule">
+      <div class="tag">delete</div>
+      <b>移除</b>
+      <p>移除 shell + wrapper。删的是顶层 → z-stack 自动塌到下一层;塌到空 → 回 State 0 黑屏。</p>
+    </div>
+    <div class="rule">
+      <div class="tag">reload</div>
+      <b>原地刷</b>
+      <p><code>term.reset()</code> + 重拉 snapshot + 写入,<b>不 dispose</b>。顶层显示遮罩,非顶层静默走完不显示。</p>
+    </div>
+    <div class="rule">
+      <div class="tag">copy</div>
+      <b>新 session</b>
+      <p>调用方拿到新 sid。用户点了才 attach,走正常冷启动。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ====================== 5. 兜底 ====================== -->
+<section class="s">
+  <h2>5 · 兜底</h2>
+  <p class="lede">异常处理的原则。</p>
+  <p style="margin:0; font-size:13.5px; color:var(--ink-2);">
+    <b>任何状态卡住或异常,dispose 这个 shell + 重新 cold start。</b>不在 design 里穷举各种 race / cancellation / ordering 细节,实现者自己想 —— 反正最坏路径就是回到第一次点击那条路径。
+  </p>
+</section>
+
+<footer>
+  配套文档。当前实现的标注时间线在 <code>docs/attach-timeline-review.html</code>,作为历史档案保留 —— 别去改。本文件描述目标 UX 模型,实现细节由后续 plan/PR 落地。
+</footer>
+
+</div>
+</body>
+</html>
