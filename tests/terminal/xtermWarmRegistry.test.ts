@@ -146,9 +146,37 @@ describe('xtermWarmRegistry', () => {
     // clear is exactly 1 (the sid-b alloc).
     expect(ctorCallsForReshow).toBe(1);
     expect(getActiveSid()).toBe('sid-a');
-    // sid-a's wrapper is back under host after the reparent.
+    // sid-a's wrapper is back under host after the show.
     expect(e2.wrapper.parentElement).toBe(host);
     document.body.removeChild(host2);
+  });
+
+  it('hide toggles display:none on previous active wrapper (no reparent — bug #69 fix)', () => {
+    // Switching A→B must NOT detach A's wrapper from the layout tree:
+    // webkit drops `.xterm-viewport.scrollTop` on layout-tree detach, and
+    // that causes the first-frame scrollbar flash users perceive as a
+    // jump-to-top on switch-back. Under the display-switch model the
+    // wrapper stays in the tree; only `style.display` flips.
+    const { entry: a } = ensureAndShowEntry('sid-a', host);
+    expect(a.wrapper.parentElement).toBe(host);
+    expect(a.wrapper.style.display).toBe('');
+    ensureAndShowEntry('sid-b', host);
+    // A's wrapper is still under the SAME host (no reparent), just
+    // hidden. This is the load-bearing assertion for the no-flicker
+    // invariant — if a regression reparents A back to an offscreen
+    // holder, this expectation breaks.
+    expect(a.wrapper.parentElement).toBe(host);
+    expect(a.wrapper.style.display).toBe('none');
+    // B is the visible one now.
+    const b = getEntry('sid-b');
+    expect(b?.wrapper.style.display).toBe('');
+    expect(b?.wrapper.parentElement).toBe(host);
+    // Switch back: A becomes visible again, B hides, neither reparents.
+    ensureAndShowEntry('sid-a', host);
+    expect(a.wrapper.style.display).toBe('');
+    expect(a.wrapper.parentElement).toBe(host);
+    expect(b?.wrapper.style.display).toBe('none');
+    expect(b?.wrapper.parentElement).toBe(host);
   });
 
   it('LRU-evicts the least-recently-shown entry on overflow (active sid + just-allocated sid exempt)', () => {
@@ -319,12 +347,12 @@ describe('xtermWarmRegistry', () => {
 
   it('defers term.open() until first ensureAndShowEntry (renderer-init invariant)', () => {
     // Regression lock: a prior bug called term.open(wrapper) inside
-    // allocEntry while wrapper was parented in a 0x0 visibility:hidden
-    // offscreen holder. xterm 5.5's renderer latched onto that geometry
-    // and the paint scheduler stayed quiesced — chunks parsed but DOM
-    // stayed empty. Fix defers open() to first show, when wrapper is in
-    // the visible host. This test asserts the deferred-open contract
-    // directly so the bug can't silently come back.
+    // allocEntry while wrapper was unparented + display:none (0x0). xterm
+    // 5.5's renderer latched onto that geometry and the paint scheduler
+    // stayed quiesced — chunks parsed but DOM stayed empty. Fix defers
+    // open() to first show, when wrapper is parented in the host AND
+    // display has been flipped back to ''. This test asserts the
+    // deferred-open contract directly so the bug can't silently come back.
     const { entry } = ensureAndShowEntry('sid-deferred', host);
     // Mock terminal exposes `open` as a vi.fn(). It MUST have been called
     // exactly once, and with the wrapper that is now host-parented.

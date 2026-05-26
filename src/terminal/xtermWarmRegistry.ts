@@ -6,8 +6,12 @@
 // Goal (user-stated): "我一个session本来是打开的, 我理解切到另一个session,
 // 当前session只是被放在后台了, 就像图层一样, 被盖住了, 那切回来的时候只是简单
 // 把他调到最上层." Translation: VS Code-style layer model — each session
-// keeps its own xterm Terminal alive in memory; switching sessions is just
-// reparenting a DOM wrapper, NOT rebuilding state.
+// keeps its own xterm Terminal alive in memory; switching sessions is a
+// `display:none / display:''` toggle on a single persistent host, NOT a
+// reparent and NOT a rebuild. (The reparent-to-offscreen-holder model used
+// from PR #1355 through #1374 was replaced for bug #69: webkit drops
+// `.xterm-viewport.scrollTop` on layout-tree detach, and no
+// post-show restore can avoid the first-frame scrollbar flash.)
 //
 // The registry owns the per-entry xterm Terminal AND all input-side
 // behaviours that used to live on the legacy singleton: IME composition
@@ -64,9 +68,17 @@ export type WarmEntry = {
   term: Terminal;
   fit: FitAddon;
   /**
-   * DOM wrapper that owns the xterm canvases. Either parented under the
-   * active TerminalPane host (visible) or under {@link getOffscreenHolder}
-   * (hidden). Reparenting is the entire mechanism for show/hide.
+   * DOM wrapper that owns the xterm canvases. Lives under the TerminalPane
+   * host AS A SIBLING of other warm entries' wrappers; visibility is
+   * toggled via `wrapper.style.display` (hidden = 'none', visible = '').
+   *
+   * The wrapper NEVER leaves the layout tree during a session switch —
+   * that's the whole fix for bug #69. Webkit drops `.xterm-viewport
+   * .scrollTop` when an element is reparented out of the layout tree, and
+   * any post-show restore (synchronous write, RAF, scrollToLine) can only
+   * close the gap on frame 2+, leaving frame 1 visibly at scrollTop=0.
+   * Keeping the wrapper in-tree under `display:none` preserves `scrollTop`
+   * across the hide window so the user never sees a 0-scroll frame.
    */
   wrapper: HTMLDivElement;
   /**
@@ -89,9 +101,10 @@ export type WarmEntry = {
    * Whether `term.open(wrapper)` has been called. Deferred from
    * {@link allocEntry} to the first {@link ensureAndShowEntry} so the
    * xterm renderer initializes against the visible host's real geometry
-   * rather than the 0x0 / visibility:hidden offscreen holder — the
-   * latter leaves the paint scheduler permanently quiesced under xterm
-   * 5.5's CanvasAddon/DOM renderer.
+   * rather than the wrapper's pre-attach state (the wrapper is unparented
+   * + `display:none` between alloc and first show, which leaves xterm's
+   * 5.5 CanvasAddon paint scheduler permanently quiesced if open() runs
+   * too early).
    */
   opened: boolean;
   /**
@@ -130,22 +143,12 @@ export type WarmEntry = {
    * {@link applyTerminalFontSize} for non-active warm entries when the
    * global Ctrl+wheel zoom changes — applying live to every hidden entry
    * would fan out N snapshot IPCs concurrently and stutter the UI. We
-   * apply lazily in {@link ensureAndShowEntry} just before reparent, and
-   * run a single resize-replay for the entry being shown. Null means
-   * the entry's current `term.options.fontSize` is already up to date.
+   * apply lazily in {@link ensureAndShowEntry} just before the display
+   * toggle, and run a single resize-replay for the entry being shown.
+   * Null means the entry's current `term.options.fontSize` is already
+   * up to date.
    */
   pendingFontSize: number | null;
-  /**
-   * Last `.xterm-viewport.scrollTop` captured at hide time. Webkit drops
-   * scrollTop when an element is reparented out of the layout tree, so
-   * xterm's internal `viewportY` stays at e.g. 148 but the visible
-   * scrollbar thumb snaps back to 0 on show. We snapshot before the hide
-   * reparent and restore after the show reparent — the canvas was already
-   * painting the correct logical rows (viewportY preserved), so the only
-   * thing the user noticed was the thumb jumping to the top.
-   * `null` means "no snapshot yet" (first show) — treated as no-op.
-   */
-  savedScrollTop: number | null;
 };
 
 /**
@@ -186,7 +189,6 @@ const entryRouters: Map<string, EntryRouter> = new Map();
 
 const warm: Map<string, WarmEntry> = new Map();
 let activeSid: string | null = null;
-let offscreenHolder: HTMLDivElement | null = null;
 
 // Global PTY exit subscription (Major 2 fix from cold review).
 //
@@ -254,19 +256,6 @@ function installUnloadCleanupOnce(): void {
   window.addEventListener('beforeunload', beforeUnloadHandler);
 }
 
-function getOffscreenHolder(): HTMLDivElement {
-  if (offscreenHolder && offscreenHolder.isConnected) return offscreenHolder;
-  offscreenHolder = document.createElement('div');
-  offscreenHolder.setAttribute('data-ccsm-warm-offscreen', '');
-  // visibility:hidden + zero size (NOT display:none) so any addon RAF
-  // callback that queries the wrapper's metrics gets sensible zero values
-  // rather than throwing. `fit()` is never invoked while parented here.
-  offscreenHolder.style.cssText =
-    'position:absolute;width:0;height:0;overflow:hidden;visibility:hidden;left:-9999px;top:-9999px;';
-  document.body.appendChild(offscreenHolder);
-  return offscreenHolder;
-}
-
 /** Number of warm entries currently held — primarily for probe payloads. */
 export function getWarmCacheSize(): number {
   return warm.size;
@@ -290,8 +279,9 @@ export function getActiveEntry(): WarmEntry | undefined {
 /**
  * Construct a fresh xterm Terminal + addons for `sid`, allocate its DOM
  * wrapper, install the per-entry PTY data subscription, and insert into
- * the registry. Returns the new entry parented in the offscreen holder —
- * caller must subsequently call {@link showEntry} to make it visible.
+ * the registry. Returns the new entry with its wrapper unparented and
+ * `display:none` — caller must subsequently call {@link ensureAndShowEntry}
+ * to append it into the live host and make it visible.
  *
  * LRU evicts an existing entry if registry is at cap. Active sid and the
  * just-allocated sid are exempt.
@@ -366,13 +356,21 @@ function allocEntry(sid: string): WarmEntry {
   const wrapper = document.createElement('div');
   wrapper.setAttribute('data-ccsm-warm-sid', sid);
   wrapper.className = 'absolute inset-0';
-  // Park under the offscreen holder until showEntry() reparents it.
+  // Start hidden — the first {@link ensureAndShowEntry} for this sid
+  // will appendChild into the live host and flip display back to ''.
+  // We do NOT parent under any holder here: parking the wrapper under a
+  // hidden offscreen holder (the legacy approach) means subsequent
+  // session switches have to REPARENT the wrapper into the live host,
+  // and webkit drops `.xterm-viewport.scrollTop` on every layout-tree
+  // detach — producing the bug #69 first-frame scrollbar flash. Under
+  // the new design the wrapper, once parented under the host on first
+  // show, NEVER moves; visibility is toggled via `style.display`.
+  wrapper.style.display = 'none';
   // NOTE: do NOT call `term.open(wrapper)` here — xterm 5.5's renderer
-  // latches onto wrapper geometry at open() time, and the offscreen
-  // holder is 0x0 / visibility:hidden, which leaves the paint scheduler
+  // latches onto wrapper geometry at open() time, and an unparented or
+  // `display:none` wrapper has 0x0 dims which leaves the paint scheduler
   // permanently quiesced. The first ensureAndShowEntry() calls open()
-  // against the visible host instead.
-  getOffscreenHolder().appendChild(wrapper);
+  // against the wrapper AFTER it has been parented + made visible.
 
   // Per-entry PTY data subscription. Filters by sid (NOT by the global
   // active sid) so hidden sessions keep ingesting live output. The bytes
@@ -482,7 +480,6 @@ function allocEntry(sid: string): WarmEntry {
     keyboardPasteHandled: false,
     inputDisposers: [],
     pendingFontSize: null,
-    savedScrollTop: null,
   };
   warm.set(sid, entry);
 
@@ -761,51 +758,55 @@ function installInputListeners(entry: WarmEntry): void {
 }
 
 /**
- * Ensure an entry exists for `sid`. Reparents its wrapper into `host` and
- * promotes it to active. Returns `{ entry, isCold }` — `isCold` is true
- * iff the entry was just allocated (caller should run cold-attach IPC).
+ * Ensure an entry exists for `sid`. Toggles visibility so this entry is
+ * the only visible warm wrapper under `host`, and promotes it to active.
+ * Returns `{ entry, isCold }` — `isCold` is true iff the entry was just
+ * allocated (caller should run cold-attach IPC).
  *
  * Side effects:
- *   1. Previously active entry's wrapper is reparented to the offscreen
- *      holder (a `terminal.warmHide` probe fires).
- *   2. New entry's wrapper is appended into `host`. `appendChild` moves
- *      the node when it already has a parent — this IS the reparent.
+ *   1. Previously active entry's wrapper has `style.display = 'none'`
+ *      applied (NO reparent — that's the bug #69 fix). A
+ *      `terminal.warmHide` probe fires.
+ *   2. Target entry's wrapper is parented under `host` if not already
+ *      (only happens on the entry's first show, or if TerminalPane
+ *      remounted and produced a different host node), then has
+ *      `style.display = ''` applied so it paints.
  *   3. `activeSid` is set to `sid`; `lastAccessedAt` is bumped.
  *   4. `window.__ccsmTerm` is repointed at the new entry's term so e2e
  *      probes always reach the foreground terminal.
- *   5. On first show after alloc: `term.open()` runs against the visible
- *      host, then textarea-dependent input listeners are installed.
+ *   5. On first show after alloc: `term.open()` runs against the
+ *      now-parented + visible wrapper, then textarea-dependent input
+ *      listeners are installed.
+ *
+ * Display-switch model (replaces the prior reparent-to-offscreen model):
+ * the same `host` div is the long-lived parent of every warm wrapper for
+ * sessions the user has visited. Hiding is a single property write; the
+ * wrapper never leaves the layout tree, so webkit never zeroes
+ * `.xterm-viewport.scrollTop` and there is no first-frame flicker on
+ * switch-back. TerminalPane is rendered without a `key` keyed on sid in
+ * App.tsx, so the host node is stable across session switches in the
+ * common path.
  */
 export function ensureAndShowEntry(
   sid: string,
   host: HTMLElement,
   cause: 'session-switch' | 'mount' | 'retry' = 'session-switch',
 ): { entry: WarmEntry; isCold: boolean } {
-  // Hide previous active entry (reparent into offscreen holder).
+  // Hide previous active entry — display:none only, no reparent. The
+  // wrapper stays in the layout tree so its `.xterm-viewport.scrollTop`
+  // is preserved across the hide window (bug #69 fix).
   if (activeSid && activeSid !== sid) {
     const prev = warm.get(activeSid);
     if (prev) {
-      // Snapshot `.xterm-viewport.scrollTop` BEFORE the reparent.
-      // Webkit drops scrollTop when an element leaves its containing
-      // block (the offscreen holder is display:none / out-of-tree). Read
-      // synchronously to capture the user's current scroll position;
-      // restore in the symmetric show branch below.
       try {
-        const vp = prev.wrapper.querySelector('.xterm-viewport');
-        if (vp instanceof HTMLElement) prev.savedScrollTop = vp.scrollTop;
-      } catch {
-        /* snapshot best-effort */
-      }
-      try {
-        getOffscreenHolder().appendChild(prev.wrapper);
+        prev.wrapper.style.display = 'none';
       } catch (e) {
-        warn('xterm-warm', 'hide reparent failed', e);
+        warn('xterm-warm', 'hide display toggle failed', e);
       }
       try {
         log.event('terminal.warmHide', {
           sid: activeSid,
           lruSize: warm.size,
-          savedScrollTop: prev.savedScrollTop ?? -1,
         });
       } catch {
         /* probe failure tolerated */
@@ -819,55 +820,41 @@ export function ensureAndShowEntry(
     entry = allocEntry(sid);
   }
 
-  // Reparent (or initial-parent) into the live host.
-  try {
-    host.appendChild(entry.wrapper);
-  } catch (e) {
-    warn('xterm-warm', 'show reparent failed', e);
+  // Parent the wrapper under `host` if needed. In the common path the
+  // wrapper is already a child of `host` (it was appended on first show
+  // and never reparented), so this is just the first-show / host-changed
+  // case. Reparenting in the host-changed case (e.g. TerminalPane remount
+  // for a structural reason) is unavoidable but acceptable: it's the rare
+  // path, not the per-switch path.
+  if (entry.wrapper.parentElement !== host) {
+    try {
+      host.appendChild(entry.wrapper);
+    } catch (e) {
+      warn('xterm-warm', 'show appendChild failed', e);
+    }
   }
 
-  // Restore `.xterm-viewport.scrollTop` captured at the symmetric hide.
-  // xterm's internal `viewportY` survives the offscreen detour (canvas
-  // keeps painting the right rows), but webkit zeroes the DOM scrollTop
-  // when the element leaves the layout tree — so without this the
-  // scrollbar thumb snaps to the top while the canvas content shows
-  // a mid-buffer position. Write AFTER the reparent (element must be
-  // back in the layout tree) and synchronously so the user never
-  // observes a frame at scrollTop=0.
-  if (entry.savedScrollTop != null) {
-    let restoreApplied = -1;
-    let restoreActual = -1;
-    try {
-      const vp = entry.wrapper.querySelector('.xterm-viewport');
-      if (vp instanceof HTMLElement) {
-        vp.scrollTop = entry.savedScrollTop;
-        restoreApplied = entry.savedScrollTop;
-        restoreActual = vp.scrollTop;
-      }
-    } catch {
-      /* restore best-effort */
-    }
-    try {
-      log.event('terminal.warmShow.scrollRestore', {
-        sid,
-        savedScrollTop: entry.savedScrollTop,
-        applied: restoreApplied,
-        actualAfterWrite: restoreActual,
-      });
-    } catch {
-      /* probe failure tolerated */
-    }
+  // Make the wrapper visible. Flipping `display` from 'none' to '' may
+  // fire xterm's internal ResizeObserver (the wrapper's content-box goes
+  // 0x0 → real), which can trigger a Viewport refresh — but ydisp is
+  // stable across the hide window so the refresh re-derives the same
+  // scrollTop and there is no visible jump. Verified empirically by the
+  // `scripts/dogfood-bug-69-no-flicker.mjs` per-frame probe.
+  try {
+    entry.wrapper.style.display = '';
+  } catch (e) {
+    warn('xterm-warm', 'show display toggle failed', e);
   }
 
   // First-time open: deferred from allocEntry so the xterm renderer
-  // initializes against real visible geometry rather than the 0x0
-  // offscreen holder (see WarmEntry.opened docs). We do NOT call
-  // fit.fit() here — host layout may not have settled on the same
-  // microtask, and (cold path) usePtyAttach.warm.ts calls fit.fit()
-  // after term.resize() + snapshot write a few ms later, which sizes
-  // the canvas atlas against fully-laid-out dimensions. The eager fit
-  // here would either redundantly force layout or compute cols=0 when
-  // host itself is still hidden.
+  // initializes against the wrapper's real visible geometry rather than
+  // the 0x0 unparented + display:none state at alloc time (see
+  // WarmEntry.opened docs). We do NOT call fit.fit() here — host layout
+  // may not have settled on the same microtask, and (cold path)
+  // usePtyAttach.warm.ts calls fit.fit() after term.resize() + snapshot
+  // write a few ms later, which sizes the canvas atlas against fully-
+  // laid-out dimensions. The eager fit here would either redundantly
+  // force layout or compute cols=0 when host itself is still hidden.
   if (!entry.opened) {
     try {
       entry.term.open(entry.wrapper);
@@ -1274,7 +1261,7 @@ export async function applyTerminalFontSize(px: number): Promise<void> {
  * No resize-replay, no IME guard, no `pending*` deferral — assigning
  * `term.options.scrollback = n` is cheap and side-effect-free with respect
  * to fontMetrics / cell layout / cursor / IME compositions. Safe to fan
- * out across all entries (active and offscreen) in one synchronous pass.
+ * out across all entries (active and hidden) in one synchronous pass.
  *
  * Transparent-transport invariant unchanged: this only resizes the
  * renderer-side display buffer. The PTY byte stream and the main-side
@@ -1296,8 +1283,7 @@ export function applyTerminalScrollback(n: number): void {
 /**
  * Test-only: drop all entries without emitting probes (tests don't want
  * probe noise polluting their own assertions). Also resets the
- * offscreen-holder pointer + the unload-listener flag so the next test
- * starts from a clean slate.
+ * unload-listener flag so the next test starts from a clean slate.
  */
 export function __resetRegistryForTests(): void {
   for (const entry of warm.values()) {
@@ -1328,14 +1314,6 @@ export function __resetRegistryForTests(): void {
   warm.clear();
   entryRouters.clear();
   activeSid = null;
-  if (offscreenHolder) {
-    try {
-      offscreenHolder.remove();
-    } catch {
-      /* ignore */
-    }
-  }
-  offscreenHolder = null;
   // Detach the beforeunload listener — leaving it attached across vitest
   // re-imports leaks stale closures that reference disposed entries
   // (Minor 7 from cold review).
