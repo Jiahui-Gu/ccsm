@@ -1386,3 +1386,69 @@ export function __resetRegistryForTests(): void {
     }
   }
 }
+
+/**
+ * Restore the user's pre-hide viewport position on a warm reshow.
+ *
+ * Bug #66 / PR #1385 follow-up: the first fix tried `term.scrollToLine
+ * (savedViewportY)` after fit+focus. That doesn't work because xterm's
+ * `scrollToLine` is `scrollLines(line - ydisp)` and early-returns when
+ * `line === ydisp` (CoreTerminal.ts:219). After the offscreen
+ * hide/reparent detour, `buffer.ydisp` IS preserved at savedViewportY —
+ * the canvas paints the right rows — so `scrollToLine(savedViewportY)` is
+ * a no-op: no `onScroll` event, no Viewport `syncScrollArea`, no DOM
+ * `.xterm-viewport.scrollTop` write. The scrollbar thumb stays at the
+ * top (where webkit left it when the wrapper was offscreen) while the
+ * canvas content is correctly positioned — the precise reported symptom.
+ *
+ * The fix forces a non-zero scroll diff so `onScroll` fires, which is
+ * the trigger Viewport listens to for re-syncing the DOM scrollTop:
+ *
+ *   1. `scrollToBottom()` — sets `ydisp = ybase` if not already there.
+ *      Always fires `onScroll` when the buffer has any scrollback to
+ *      cover; safe no-op otherwise.
+ *   2. If we need a mid-buffer position, `scrollToLine(target)` from
+ *      `ybase` back to the saved row — this diff is non-zero (negative)
+ *      and fires `onScroll` again.
+ *
+ * The two synchronous calls execute in one microtask so the user sees a
+ * single RAF — no flash of the "bottom" intermediate state. Net result:
+ * `ydisp` lands at `savedViewportY` (canvas unchanged) AND Viewport's
+ * `_innerRefresh` fires on the next animation frame to write the correct
+ * DOM scrollTop from `ydisp * rowHeight`.
+ *
+ * Edge cases (handled internally by xterm's clamping):
+ *   - `savedViewportY >= baseY` (user was at the live tail, or buffer
+ *     shrank between hide and show): only call `scrollToBottom()`. The
+ *     fire-state depends on whether `ydisp === ybase` already, but at the
+ *     live tail the DOM scrollbar is at 100% and the natural cold-pin
+ *     handles the rest. We also tolerate ybase having grown while hidden.
+ *   - `savedViewportY < 0`: clamped by xterm's `Math.max(..., 0)` in
+ *     `scrollLines`. We additionally guard with `Math.max(0, ...)`.
+ *
+ * Exported for the unit test in tests/terminal/scrollbarRestore.test.ts.
+ */
+export function restoreWarmScrollPosition(
+  term: Terminal,
+  savedViewportY: number | null,
+): void {
+  if (savedViewportY == null) return;
+  const buf = term.buffer.active;
+  const baseY = buf.baseY;
+  if (savedViewportY >= baseY) {
+    // Was at (or beyond) the live tail. scrollToBottom is the
+    // future-proof choice — if ybase grew while hidden, this lands at
+    // the new tail rather than the now-historical saved row.
+    term.scrollToBottom();
+    return;
+  }
+  // Mid-buffer restore. Force a non-zero scroll diff so xterm fires
+  // `onScroll` and Viewport.syncScrollArea writes the DOM scrollTop.
+  // Step 1: jump to bottom (diff = ybase - ydisp; non-zero when user
+  // was scrolled up, which is the case-of-interest here).
+  // Step 2: scroll back to the saved row (diff = saved - ybase < 0).
+  // Each step fires onScroll; net visual position = saved row.
+  term.scrollToBottom();
+  const target = Math.max(0, Math.min(savedViewportY, baseY));
+  term.scrollToLine(target);
+}

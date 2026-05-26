@@ -60,6 +60,7 @@ import {
   ensureAndShowEntry,
   getActiveSid,
   getEntry,
+  restoreWarmScrollPosition,
   runResizeReplayForEntry,
 } from './xtermWarmRegistry';
 
@@ -336,30 +337,20 @@ export function usePtyAttachWarm(
           }
           snapVp('after-focus');
 
-          // Restore the user's pre-hide scroll position via xterm's
-          // `scrollToLine` — the only safe ordering. Background:
-          //   - The registry captures `savedViewportY` (xterm logical
-          //     `buffer.active.viewportY`) at hide-time.
-          //   - The DOM `.xterm-viewport.scrollTop` is zeroed by webkit
-          //     when the wrapper leaves the layout tree, AND would be
-          //     clobbered by the immediately-preceding `fit.fit()`
-          //     (`term.resize()` rewrites scrollTop from `ydisp * cellH`)
-          //     and `term.focus()` (calls `_keepCursorInViewport()`).
-          //   - `scrollToLine` is one xterm public-API call that updates
-          //     both `buffer.ydisp` (canvas paint row) AND
-          //     `.xterm-viewport.scrollTop` (the DOM scrollbar thumb),
-          //     so the visual scrollbar and the painted content stay in
-          //     sync at the position the user left them.
-          // Edge cases:
-          //   - `savedViewportY === null`: first show, never hidden →
-          //     skip restore. Natural cold-path bottom-pin is correct.
-          //   - `savedViewportY === baseY` (was at "follow-live" bottom):
-          //     call `scrollToBottom()` explicitly. Future-proof (e.g.
-          //     against scrollback growth between hide and show pushing
-          //     baseY further out) — `scrollToLine(savedViewportY)`
-          //     would land at the now-historical row.
-          //   - Buffer shrank between hide and show (scrollback cap
-          //     purged old rows): clamp target to current `baseY`.
+          // Restore the user's pre-hide scroll position. Bug #66
+          // follow-up: the first attempt at this fix called
+          // `term.scrollToLine(savedViewportY)` directly, but `ydisp` is
+          // already preserved at `savedViewportY` after the offscreen
+          // detour — so `scrollToLine` early-returned (scrollAmount=0),
+          // no `onScroll` event fired, and Viewport never re-synced the
+          // DOM `.xterm-viewport.scrollTop`. Thumb stuck at the top.
+          //
+          // The real fix lives in `restoreWarmScrollPosition` (registry
+          // module): force a non-zero scroll diff via
+          // `scrollToBottom()` + `scrollToLine(target)` so `onScroll`
+          // fires and Viewport refreshes the scrollbar thumb to match
+          // the painted canvas position. See full rationale in the
+          // helper's JSDoc.
           const savedViewportY = entry.savedViewportY;
           if (savedViewportY != null) {
             const savedScrollTop = entry.savedScrollTop ?? -1;
@@ -371,14 +362,7 @@ export function usePtyAttachWarm(
               /* probe payload best-effort */
             }
             try {
-              const buf = entry.term.buffer.active;
-              const baseY = buf.baseY;
-              if (savedViewportY >= baseY) {
-                entry.term.scrollToBottom();
-              } else {
-                const target = Math.max(0, Math.min(savedViewportY, baseY));
-                entry.term.scrollToLine(target);
-              }
+              restoreWarmScrollPosition(entry.term, savedViewportY);
             } catch (e) {
               warn('attach-warm', 'scroll restore failed', e);
             }

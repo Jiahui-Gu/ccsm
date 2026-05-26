@@ -332,10 +332,14 @@ describe('usePtyAttachWarm — scrollbar restore on warm switch (P1)', () => {
     expect(a2.result.current.state.kind).toBe('ready');
 
     // Primary assertion: scrollToLine was called with the saved viewportY.
-    expect(termA.scrollToLine).toHaveBeenCalledTimes(1);
     expect(termA.scrollToLine).toHaveBeenCalledWith(120);
-    // Not at bottom, so scrollToBottom must NOT have been used here.
-    expect(termA.scrollToBottom).not.toHaveBeenCalled();
+    // Mid-buffer restore: the fix calls scrollToBottom() FIRST to force
+    // a non-zero scroll diff (so xterm's onScroll fires and Viewport
+    // re-syncs DOM scrollTop), then scrollToLine(saved) lands ydisp
+    // back at the saved row. Both are expected — see
+    // `restoreWarmScrollPosition` JSDoc in xtermWarmRegistry.ts.
+    expect(termA.scrollToBottom).toHaveBeenCalledTimes(1);
+    expect(termA.scrollToLine).toHaveBeenCalledTimes(1);
 
     // Probe assertion: the new `terminal.warmShow.scrollAfterFit` event
     // fires with savedViewportY === 120. (restoredViewportY tracks the
