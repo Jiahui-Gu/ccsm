@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { useStore } from '../stores/store';
-import { applyTerminalFontSize } from '../terminal/shellRegistry';
+import { applyTerminalFontSize } from '../terminal/xtermWarmRegistry';
 
 /**
  * Bridge the persisted `terminalFontSizePx` store field to the warm xterm

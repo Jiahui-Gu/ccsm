@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { getTopShell } from './shellRegistry';
+import { getActiveEntry } from './xtermWarmRegistry';
 
 // Reads the active warm-entry xterm's buffer position and reports whether
 // the viewport is parked at the bottom (i.e. xterm's "follow live output"
@@ -31,25 +31,39 @@ export type AtBottomState = {
 };
 
 function readAtBottom(): boolean {
-  const term = getTopShell()?.term;
-  if (!term) return true;
+  const term = getActiveEntry()?.term;
+  if (!term) return true; // no terminal yet → don't show the button
   const buf = term.buffer.active;
   return buf.baseY - buf.viewportY <= 1;
 }
 
 export function useAtBottom(sessionId: string | null): AtBottomState {
+  // Default to `true` so the button starts hidden and only appears once
+  // the user has actually scrolled away. Initial mount may race with the
+  // registry allocating the entry; we re-poll on the first effect tick.
   const [atBottom, setAtBottom] = useState<boolean>(true);
 
   useEffect(() => {
-    const term = getTopShell()?.term;
+    const term = getActiveEntry()?.term;
     if (!term) {
+      // Registry hasn't allocated yet (StrictMode double-invoke or first
+      // mount before usePtyAttachWarm runs). Re-check on next frame; if
+      // still missing, give up — the attach hook will trigger another
+      // render once the entry exists.
       const id = requestAnimationFrame(() => setAtBottom(readAtBottom()));
       return () => cancelAnimationFrame(id);
     }
+
     const recompute = (): void => setAtBottom(readAtBottom());
+    // Session swap: re-read immediately. The warm path replaces the
+    // active term across switches; the new term may be at any scroll
+    // position, so recompute right away rather than waiting for the
+    // first onScroll / onLineFeed.
     recompute();
+
     const scrollDisposable = term.onScroll(recompute);
     const lineFeedDisposable = term.onLineFeed(recompute);
+
     return () => {
       scrollDisposable.dispose();
       lineFeedDisposable.dispose();
@@ -59,8 +73,10 @@ export function useAtBottom(sessionId: string | null): AtBottomState {
   return {
     atBottom,
     scrollToBottom: () => {
-      const term = getTopShell()?.term;
+      const term = getActiveEntry()?.term;
       if (!term) return;
+      // xterm's public API: scrolls viewport such that `viewportY === baseY`,
+      // which restores the "follow live output" behaviour automatically.
       term.scrollToBottom();
     },
   };
