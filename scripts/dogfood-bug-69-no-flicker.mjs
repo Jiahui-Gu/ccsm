@@ -47,7 +47,7 @@ async function readScrollState(win) {
     // multiple .xterm-viewport elements on the page (one per warm wrapper
     // under the new design) — pick the one whose ancestor wrapper is
     // visible.
-    const wrappers = Array.from(document.querySelectorAll('[data-ccsm-warm-sid]'));
+    const wrappers = Array.from(document.querySelectorAll('[data-ccsm-shell-sid]'));
     const visible = wrappers.find((w) => w instanceof HTMLElement && w.style.display !== 'none');
     const vp = (visible ?? document).querySelector('.xterm-viewport');
     return {
@@ -114,11 +114,11 @@ async function main() {
       const startedAt = performance.now();
       const DURATION_MS = 800;
       const tick = () => {
-        const wrappers = Array.from(document.querySelectorAll('[data-ccsm-warm-sid]'));
+        const wrappers = Array.from(document.querySelectorAll('[data-ccsm-shell-sid]'));
         // Find sidA's wrapper specifically (by data attr) so we sample the
         // entry whose scroll position we care about even mid-switch.
         const target = wrappers.find(
-          (w) => w instanceof HTMLElement && w.getAttribute('data-ccsm-warm-sid') === expectedSid,
+          (w) => w instanceof HTMLElement && w.getAttribute('data-ccsm-shell-sid') === expectedSid,
         );
         let scrollTop = null;
         let display = null;
