@@ -2,16 +2,17 @@
 //
 // The only PTY-attach path in the renderer: there is no longer a legacy
 // singleton variant or a `CCSM_WARM_XTERM` flag. The warm registry owns
-// one xterm Terminal per sid and switching sessions is a wrapper
-// reparent, not a teardown.
+// one xterm Terminal per sid and switching sessions is a display-toggle
+// on a single persistent host (bug #69 fix — replaces reparent model).
 //
 // Architectural contract (per parent decisions, design doc §3):
 //   * COLD path (first time we ever see `sid` in this renderer):
 //       1. Registry allocates a fresh entry — this installs the
 //          per-sid `pty.onData` subscription that writes live chunks
 //          to `entry.term` immediately (independent of visibility).
-//       2. We reparent the entry's wrapper into the host (showEntry
-//          inside `ensureAndShowEntry` does this — visible).
+//       2. Registry appends the entry's wrapper into the host on its
+//          first show (`ensureAndShowEntry` does this) and flips
+//          `style.display` from 'none' to ''.
 //       3. We resize the entry's term to the spawn cols/rows, run the
 //          fit against the live host, push the post-fit cols/rows to
 //          the PTY (claude needs SIGWINCH for correct wrapping).
@@ -271,7 +272,7 @@ export function usePtyAttachWarm(
           // We still need to (a) fit() locally so the canvas atlas
           // matches the post-reparent host dims, and (b) tell the PTY
           // about any cols/rows change that happened while this entry
-          // was offscreen — but BOTH are fire-and-forget. We don't
+          // was hidden — but BOTH are fire-and-forget. We don't
           // await them before flipping to 'ready'. Reasons:
           //   - The terminal DOM is already showing the correct content.
           //     A stale cols/rows for one PTY tick is harmless (claude
@@ -695,11 +696,12 @@ export function usePtyAttachWarm(
     };
 
     // Gate the replay on actual contentRect dimension change. Warm
-    // session switches reparent the entry's wrapper from the offscreen
-    // holder back to the live host, but this `host` div (per-pane,
-    // observed below) doesn't itself change size — so the offscreen
-    // ↔ live transition fires RO with dims identical to the live
-    // baseline. Without this gate, every warm switch ran the replay
+    // session switches toggle `display:none` / `display:''` on the warm
+    // entry's wrapper under a persistent host; this `host` div (per-pane,
+    // observed below) doesn't itself change size, but the wrapper going
+    // from `display:none` to '' fires xterm's internal ResizeObserver
+    // and Chromium may also fire ours with dims identical to the prior
+    // live baseline. Without this gate, every warm switch ran the replay
     // path which calls `entry.term.reset()` and re-applies a snapshot —
     // wiping ydisp/baseY/scrollback. Dogfood frame log on the bug:
     // viewportY 294 → 0, baseY 344 → 0, scrollHeight 6015 → 855 within
