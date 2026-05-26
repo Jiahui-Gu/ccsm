@@ -17,20 +17,20 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, fireEvent } from '@testing-library/react';
 
-const { copySpy, pasteSpy, getTopShellSpy } = vi.hoisted(() => ({
+const { copySpy, pasteSpy, getActiveEntrySpy } = vi.hoisted(() => ({
   copySpy: vi.fn(),
   pasteSpy: vi.fn(),
-  getTopShellSpy: vi.fn(() => ({ term: { id: 'fake-term' } })),
+  getActiveEntrySpy: vi.fn(() => ({ term: { id: 'fake-term' } })),
 }));
 
-vi.mock('../../src/terminal/usePtyAttachShell', () => ({
-  usePtyAttachShell: () => ({ state: { kind: 'ready' }, onRetry: vi.fn() }),
+vi.mock('../../src/terminal/usePtyAttach.warm', () => ({
+  usePtyAttachWarm: () => ({ state: { kind: 'ready' }, onRetry: vi.fn() }),
 }));
 vi.mock('../../src/terminal/useAtBottom', () => ({
   useAtBottom: () => ({ atBottom: true, scrollToBottom: vi.fn() }),
 }));
-vi.mock('../../src/terminal/shellRegistry', () => ({
-  getTopShell: getTopShellSpy,
+vi.mock('../../src/terminal/xtermWarmRegistry', () => ({
+  getActiveEntry: getActiveEntrySpy,
 }));
 vi.mock('../../src/terminal/paste', () => ({
   terminalCopy: copySpy,
