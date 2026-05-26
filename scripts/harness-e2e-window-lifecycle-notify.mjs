@@ -1,9 +1,24 @@
 // Workflow group VI — window-lifecycle-notify e2e harness.
 //
-// Covers three cross-cutting flows that exercise the close-to-tray + notify
-// + pty-cleanup pipelines end-to-end. Sibling agents own groups I–V; this
-// file is conflict-free (no overlap with harness-ui, harness-real-cli, or
-// other harness-e2e-* files).
+// Covers cross-cutting flows that exercise the close-to-tray + pty-cleanup
+// pipelines end-to-end. Sibling agents own groups I–V; this file is
+// conflict-free (no overlap with harness-ui, harness-real-cli, or other
+// harness-e2e-* files).
+//
+// Registered (run by default):
+//   1. close-action-dialog-tray (group: shared)
+//   2. pty-subtree-killed-on-quit (group: standalone, requires claude bin)
+//
+// Deferred (NOT registered — see notify-seam TODO below):
+//   - notify-fires-and-click-focuses-session
+//     The in-tree `fake-anthropic-api.mjs` does not emit the OSC title
+//     transitions (`\x1b]2;...waiting\x07` / idle) that the real Anthropic
+//     backend produces, so the notify producer pipeline
+//     (sessionWatcher → OscTitleSniffer → notifyDecider → toastSink) never
+//     fires under headless e2e. The function definition is kept below as
+//     documentation; it will be re-registered once the fake API gains an
+//     OSC-emitting seam (or once a sessionWatcher inject-event seam lands).
+//     See `harness-real-cli-ci.mjs` lines 51-66 for the same exclusion.
 //
 // Cases:
 //   1. close-action-dialog-tray (group: shared)
@@ -307,6 +322,9 @@ async function caseCloseActionDialogTray({ electronApp, win }) {
 // Case 2: notify-fires-and-click-focuses-session (shared, requires claude bin)
 // ============================================================================
 
+// TODO(notify-seam): register once fake API drives real OSC waiting/idle transitions
+// (or once a sessionWatcher inject-event seam lands). Until then this case
+// cannot reach idle in headless e2e and is intentionally NOT in CASE_REGISTRY.
 async function caseNotifyFiresAndClickFocusesSession({ electronApp, win, tempDir }) {
   if (!claudeBinAvailable()) {
     console.log('[HARNESS]   SKIPPED: no `claude` binary on PATH');
@@ -522,7 +540,7 @@ async function casePtySubtreeKilledOnQuit() {
 
 const CASE_REGISTRY = [
   { name: 'close-action-dialog-tray',           group: 'shared',     run: caseCloseActionDialogTray },
-  { name: 'notify-fires-and-click-focuses-session', group: 'shared', run: caseNotifyFiresAndClickFocusesSession },
+  // notify-fires-and-click-focuses-session deferred — see TODO(notify-seam) above.
   { name: 'pty-subtree-killed-on-quit',         group: 'standalone', run: casePtySubtreeKilledOnQuit },
 ];
 
