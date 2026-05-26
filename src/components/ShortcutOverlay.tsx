@@ -21,18 +21,6 @@ type Group = { titleKey: string; rows: Row[] };
 function buildGroups(): Group[] {
   return [
     {
-      titleKey: 'shortcuts.groupChat',
-      rows: [
-        // InputBar.tsx — Enter (no shift) sends, shift+Enter inserts newline.
-        { keys: 'Enter', actionKey: 'shortcuts.actionSend' },
-        { keys: `${SHIFT} + Enter`, actionKey: 'shortcuts.actionNewline' },
-        // InputBar.tsx — document-level Esc interrupts the running turn.
-        { keys: 'Esc', actionKey: 'shortcuts.actionStop' },
-        // InputBar.tsx:558 — Esc in slash-command picker dismisses it.
-        { keys: 'Esc', actionKey: 'shortcuts.actionDismissPicker' }
-      ]
-    },
-    {
       titleKey: 'shortcuts.groupSidebar',
       rows: [
         // App.tsx — Ctrl+Shift+N creates a new group.
