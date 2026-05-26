@@ -337,40 +337,97 @@
 <!-- ====================== 7. 并发与取消 ====================== -->
 <section class="s">
   <h2>7 · 并发与取消</h2>
-  <p class="lede">用户操作可能踩在一起 —— 比如 reload 中途 delete、冷启动中途切走。下面是统一的处理方式,corner case 一次想清楚。</p>
+  <p class="lede">长跑 operation(冷启动 / reload)期间用户可能操作其他东西。下面是统一的处理方式 —— 两个 stop 信号,一个 shouldStop 检查点,没有 case-by-case 的 if/else。</p>
 
-  <h3 class="sub">机制</h3>
-  <ul style="margin:0 0 12px; padding-left:18px; font-size:13px; color:var(--ink-2);">
-    <li>每个 shell 上挂一个 <code>currentOp: { token, kind }</code>。</li>
-    <li>新操作开始前:先 <code>cancel</code> 同一 sid 的旧操作,await 它的 finally 块(确保遮罩、资源已清理),再启动新的。</li>
-    <li>遮罩的揭开 / shell 的 dispose / 资源释放,<b>永远由当前操作自己在 finally 里负责</b> —— 其他操作不碰。</li>
-  </ul>
-
-  <h3 class="sub">取消语义(谁取消谁、什么时候不取消)</h3>
+  <h3 class="sub">两条规则</h3>
   <div class="rules">
     <div class="rule">
-      <div class="tag">场景表</div>
-      <p>
-        · <b>reload 中途 delete</b> → delete cancel reload,reload finally dispose 收尾,顶层下沉。<br>
-        · <b>reload 中途用户切走</b> → reload <b>不 cancel</b> —— 继续跑完,但完成后<b>不抢顶层</b>(activeSid 已不是它)。<br>
-        · <b>reload 中途用户又 reload</b> → cancel 第一个,启动第二个(用户最后操作 wins)。<br>
-        · <b>冷启动 B 中途切回 A</b> → B 不 cancel,继续 hydrate;activeSid=A;B 完成后<b>不抢顶层</b>。<br>
-        · <b>冷启动 B 中途 delete B</b> → cancel coldStart,移除 wrapper,activeSid 回到下一层。<br>
-        · <b>copy A 中途 delete A</b> → copy 已经产生 newSid(产品行为);原 A 的 delete 正常走。
+      <div class="tag">规则 1</div>
+      <p><b>Shell 还存在吗?</b><br>
+        长跑 operation 在每个 await 之后检查 <code>shell.disposed</code>。disposed=true 就退出。delete 操作不直接 cancel operation,它只调 <code>disposeShell</code>,operation 自己会发现并退出。
+      </p>
+    </div>
+    <div class="rule">
+      <div class="tag">规则 2</div>
+      <p><b>这个 operation 还是 "最新的" 吗?</b><br>
+        同一 shell 同种 operation 新的覆盖旧的。每个 operation 启动时把自己写到 <code>shell.currentOp</code>。旧的在 await 之后看到 <code>currentOp !== self</code> 就退出。
       </p>
     </div>
   </div>
 
+  <h3 class="sub">实现模式</h3>
+<pre>async function reload(sid) {
+  const shell = getShell(sid);
+  if (!shell) return;
+  const op = { token: Symbol() };
+  shell.currentOp = op;
+  try {
+    shell.showMask();
+    await drain();           if (shouldStop(shell, op)) return;
+    await term.reset();      if (shouldStop(shell, op)) return;
+    await fetchSnapshot();   if (shouldStop(shell, op)) return;
+    await write(snapshot);   if (shouldStop(shell, op)) return;
+    term.scrollToBottom();
+  } finally {
+    if (shell.currentOp === op) shell.currentOp = null;
+    shell.hideMask();  // 永远揭开,成功 / 失败 / cancel 都揭
+  }
+}
+
+function shouldStop(shell, op) {
+  return shell.disposed || shell.currentOp !== op;
+}</pre>
+  <p style="margin:6px 0 12px; font-size:13px; color:var(--ink-2);"><b>整个 codebase 只有 shouldStop 一个判断函数。</b></p>
+
   <h3 class="sub">关键不变量</h3>
   <ul style="margin:0 0 12px; padding-left:18px; font-size:13px; color:var(--ink-2);">
-    <li>"活操作" 至多一个 per sid。</li>
-    <li>遮罩的可见性由 ownership 决定:谁开的谁关。</li>
-    <li>z-stack 顶层 = activeSid;操作完成后<b>不一定上顶</b>,只有用户行为或冷启动初次完成才上顶。</li>
+    <li><b>遮罩永远在 finally 里清理</b> —— delete / 切走 / cancel 都不用 carry mask 状态。</li>
+    <li><b>切 session 不动正在跑的 operation</b> —— 只改 activeSid。operation 完成时<b>一次性判断</b> "我跑完了,activeSid 还是我吗?是 → showShell;不是 → 不抢顶层"。这是完成时的一次判断,不是 cancel 逻辑。</li>
+    <li><b>delete = 调 disposeShell</b> —— operation 自己看到 disposed 退出,delete 不需要知道有哪些 operation 在跑。</li>
   </ul>
+
+  <h3 class="sub">corner case 自然推论</h3>
+  <table class="f">
+    <thead>
+      <tr><th>场景</th><th>结果</th><th>为什么</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>reload A 中途 delete A</td>
+        <td>reload 自动退出</td>
+        <td><code>shell.disposed=true</code>,shouldStop 拦下</td>
+      </tr>
+      <tr>
+        <td>reload A 中途用户切走</td>
+        <td>reload 继续跑完,但不抢顶层</td>
+        <td>shell 还在,operation 仍是 currentOp;跑完时检查 activeSid 决定是否 showShell</td>
+      </tr>
+      <tr>
+        <td>reload A 中途又 reload A</td>
+        <td>第一个 reload 退出,第二个跑</td>
+        <td>第二个写入 currentOp,第一个 shouldStop 拦下</td>
+      </tr>
+      <tr>
+        <td>冷启动 B 中途切回 A</td>
+        <td>B 的冷启动继续跑;不抢顶层</td>
+        <td>同 reload 切走 case</td>
+      </tr>
+      <tr>
+        <td>冷启动 B 中途 delete B</td>
+        <td>冷启动自动退出,wrapper 不出现</td>
+        <td><code>shell.disposed=true</code></td>
+      </tr>
+      <tr>
+        <td>copy A 中途 delete A</td>
+        <td>不相干</td>
+        <td>copy 操作的是 newSid,A 的 delete 不影响 newSid</td>
+      </tr>
+    </tbody>
+  </table>
 
   <h3 class="sub">为什么不用 queue</h3>
   <p style="margin:0; font-size:13px; color:var(--ink-2);">
-    queue 是 FIFO,但用户后一个操作就是想覆盖前一个 —— FIFO 反而不对。cancellation token + finally 是更轻的方案,没有"卡顿"感。
+    queue 是 FIFO,但用户后一个操作就是想覆盖前一个,FIFO 反而不对。两条规则 + shouldStop 更轻,没 "卡顿" 感。
   </p>
 </section>
 
