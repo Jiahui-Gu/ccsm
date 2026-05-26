@@ -88,6 +88,7 @@ vi.mock('@xterm/xterm', () => ({
       reset: vi.fn(),
       focus: vi.fn(),
       scrollToBottom: vi.fn(),
+      scrollToLine: vi.fn(),
       onData: vi.fn(() => ({ dispose: vi.fn() })),
       resize: vi.fn(),
       cols: 80,
@@ -112,16 +113,17 @@ vi.mock('@xterm/addon-clipboard', () => ({ ClipboardAddon: vi.fn(function () { r
 vi.mock('@xterm/addon-unicode11', () => ({ Unicode11Addon: vi.fn(function () { return {}; }) }));
 vi.mock('@xterm/addon-canvas', () => ({ CanvasAddon: vi.fn(function () { return {}; }) }));
 
-// Silence log.event probes.
+// Silence log.event probes (but expose the spy for assertions).
+const { logEventSpy } = vi.hoisted(() => ({ logEventSpy: vi.fn() }));
 vi.mock('../../src/shared/log', () => ({
-  log: { event: vi.fn(), info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn() },
+  log: { event: logEventSpy, info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn() },
   warn: vi.fn(),
   error: vi.fn(),
 }));
 
 // ---- imports (must come AFTER vi.mock calls) ----------------------------
 import { usePtyAttachWarm } from '../../src/terminal/usePtyAttach.warm';
-import { __resetRegistryForTests } from '../../src/terminal/xtermWarmRegistry';
+import { __resetRegistryForTests, getEntry } from '../../src/terminal/xtermWarmRegistry';
 
 // ---- pty bridge helpers --------------------------------------------------
 function installFakePty(): void {
@@ -167,6 +169,7 @@ describe('usePtyAttachWarm — disconnectedSessions race (round-2 review Major)'
     storeState.disconnectedSessions = {};
     clearPtyExitSpy.mockClear();
     applyPtyExitSpy.mockClear();
+    logEventSpy.mockClear();
   });
 
   afterEach(() => {
@@ -249,5 +252,173 @@ describe('usePtyAttachWarm — disconnectedSessions race (round-2 review Major)'
     }
     expect(clearPtyExitSpy).not.toHaveBeenCalled();
     second.unmount();
+  });
+});
+
+// Regression test for the P1 scroll bug: switching A→B→A leaves the
+// xterm canvas painting the user's pre-hide rows but the scrollbar thumb
+// stuck at the top. Root cause was that the registry's `vp.scrollTop =
+// savedScrollTop` restore was clobbered by the warm-attach effect's
+// immediately-subsequent `fit.fit()` (which calls `term.resize()` and
+// rewrites scrollTop from `ydisp * cellH`) and `term.focus()` (which
+// calls `_keepCursorInViewport()`). The fix moves the restore to AFTER
+// fit+focus and drives it via `term.scrollToLine(savedViewportY)` — an
+// xterm public API that atomically updates BOTH `buffer.ydisp` (canvas
+// paint row) AND `.xterm-viewport.scrollTop` (DOM scrollbar thumb).
+describe('usePtyAttachWarm — scrollbar restore on warm switch (P1)', () => {
+  let host: HTMLDivElement;
+  let hostRef: { current: HTMLDivElement | null };
+
+  beforeEach(() => {
+    installFakePty();
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    hostRef = { current: host };
+    storeState.pendingForkSource = {};
+    storeState.reloadNonce = {};
+    storeState.disconnectedSessions = {};
+    clearPtyExitSpy.mockClear();
+    applyPtyExitSpy.mockClear();
+    logEventSpy.mockClear();
+  });
+
+  afterEach(() => {
+    __resetRegistryForTests();
+    document.body.removeChild(host);
+    uninstallFakePty();
+  });
+
+  it('restores scroll via term.scrollToLine after fit+focus on warm reshow, NOT via DOM scrollTop poke', async () => {
+    // Step 1: cold attach for A — populates the registry, sets up its term.
+    const a = renderHook(() => usePtyAttachWarm('sid-A', '/tmp', hostRef));
+    await settleAttach();
+    expect(a.result.current.state.kind).toBe('ready');
+
+    const entryA = getEntry('sid-A');
+    expect(entryA).toBeDefined();
+    if (!entryA) throw new Error('entryA missing');
+    const termA = entryA.term as unknown as {
+      scrollToLine: ReturnType<typeof vi.fn>;
+      scrollToBottom: ReturnType<typeof vi.fn>;
+      buffer: { active: { viewportY: number; baseY: number; cursorY: number; length: number; type: 'normal' } };
+    };
+    // Simulate the user scrolling A up: viewportY=120, baseY=300 (not at
+    // bottom). The xterm stub's buffer.active is a plain object so we
+    // mutate it directly.
+    termA.buffer.active.baseY = 300;
+    termA.buffer.active.viewportY = 120;
+    termA.scrollToLine.mockClear();
+    termA.scrollToBottom.mockClear();
+
+    // Step 2: switch to B — this hides A (registry captures savedViewportY).
+    a.unmount();
+    const b = renderHook(() => usePtyAttachWarm('sid-B', '/tmp', hostRef));
+    await settleAttach();
+    expect(b.result.current.state.kind).toBe('ready');
+
+    // After the hide, A's entry should have captured the snapshot.
+    expect(entryA.savedViewportY).toBe(120);
+
+    // Step 3: switch back to A — this is the warm reshow path. The hook
+    // must (a) NOT poke scrollTop in ensureAndShowEntry (we removed that),
+    // (b) call term.scrollToLine(120) AFTER fit+focus, (c) emit the
+    // terminal.warmShow.scrollAfterFit probe with savedViewportY=120.
+    b.unmount();
+    logEventSpy.mockClear();
+    termA.scrollToLine.mockClear();
+    termA.scrollToBottom.mockClear();
+    const a2 = renderHook(() => usePtyAttachWarm('sid-A', '/tmp', hostRef));
+    await settleAttach();
+    expect(a2.result.current.state.kind).toBe('ready');
+
+    // Primary assertion: scrollToLine was called with the saved viewportY.
+    expect(termA.scrollToLine).toHaveBeenCalledTimes(1);
+    expect(termA.scrollToLine).toHaveBeenCalledWith(120);
+    // Not at bottom, so scrollToBottom must NOT have been used here.
+    expect(termA.scrollToBottom).not.toHaveBeenCalled();
+
+    // Probe assertion: the new `terminal.warmShow.scrollAfterFit` event
+    // fires with savedViewportY === 120. (restoredViewportY tracks the
+    // stub's buffer.active.viewportY, which the stub doesn't auto-update
+    // from scrollToLine — assert savedViewportY only.)
+    const scrollProbe = logEventSpy.mock.calls.find(
+      (c) => c[0] === 'terminal.warmShow.scrollAfterFit',
+    );
+    expect(scrollProbe).toBeDefined();
+    if (scrollProbe) {
+      const payload = scrollProbe[1] as Record<string, unknown>;
+      expect(payload.sid).toBe('sid-A');
+      expect(payload.savedViewportY).toBe(120);
+    }
+
+    // After the restore the saved fields are cleared so a subsequent
+    // re-render of the same effect doesn't re-restore a stale row.
+    expect(entryA.savedViewportY).toBeNull();
+    expect(entryA.savedScrollTop).toBeNull();
+    a2.unmount();
+  });
+
+  it('warm reshow when user was at bottom (viewportY === baseY) calls scrollToBottom instead of scrollToLine', async () => {
+    // Cold attach A.
+    const a = renderHook(() => usePtyAttachWarm('sid-A', '/tmp', hostRef));
+    await settleAttach();
+    const entryA = getEntry('sid-A');
+    if (!entryA) throw new Error('entryA missing');
+    const termA = entryA.term as unknown as {
+      scrollToLine: ReturnType<typeof vi.fn>;
+      scrollToBottom: ReturnType<typeof vi.fn>;
+      buffer: { active: { viewportY: number; baseY: number; cursorY: number; length: number; type: 'normal' } };
+    };
+    // User left A pinned to the live bottom: viewportY === baseY.
+    termA.buffer.active.baseY = 300;
+    termA.buffer.active.viewportY = 300;
+
+    a.unmount();
+    const b = renderHook(() => usePtyAttachWarm('sid-B', '/tmp', hostRef));
+    await settleAttach();
+    expect(entryA.savedViewportY).toBe(300);
+    b.unmount();
+
+    termA.scrollToLine.mockClear();
+    termA.scrollToBottom.mockClear();
+    const a2 = renderHook(() => usePtyAttachWarm('sid-A', '/tmp', hostRef));
+    await settleAttach();
+    expect(termA.scrollToBottom).toHaveBeenCalledTimes(1);
+    expect(termA.scrollToLine).not.toHaveBeenCalled();
+    a2.unmount();
+  });
+
+  it('warm reshow when buffer shrank (savedViewportY > current baseY) clamps to baseY', async () => {
+    const a = renderHook(() => usePtyAttachWarm('sid-A', '/tmp', hostRef));
+    await settleAttach();
+    const entryA = getEntry('sid-A');
+    if (!entryA) throw new Error('entryA missing');
+    const termA = entryA.term as unknown as {
+      scrollToLine: ReturnType<typeof vi.fn>;
+      scrollToBottom: ReturnType<typeof vi.fn>;
+      buffer: { active: { viewportY: number; baseY: number; cursorY: number; length: number; type: 'normal' } };
+    };
+    // User was at viewportY=250 with baseY=400 when hidden.
+    termA.buffer.active.baseY = 400;
+    termA.buffer.active.viewportY = 250;
+    a.unmount();
+    const b = renderHook(() => usePtyAttachWarm('sid-B', '/tmp', hostRef));
+    await settleAttach();
+    expect(entryA.savedViewportY).toBe(250);
+    b.unmount();
+
+    // Between hide and show, the scrollback cap purged old rows: baseY
+    // is now only 100, well below the saved viewportY of 250. Per the
+    // design's edge case, treat this as "savedViewportY >= baseY" and
+    // pin to bottom (future-proof default).
+    termA.buffer.active.baseY = 100;
+    termA.buffer.active.viewportY = 100;
+    termA.scrollToLine.mockClear();
+    termA.scrollToBottom.mockClear();
+    const a2 = renderHook(() => usePtyAttachWarm('sid-A', '/tmp', hostRef));
+    await settleAttach();
+    expect(termA.scrollToBottom).toHaveBeenCalledTimes(1);
+    expect(termA.scrollToLine).not.toHaveBeenCalled();
+    a2.unmount();
   });
 });

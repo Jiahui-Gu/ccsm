@@ -19,6 +19,7 @@ const { terminalCtor, addonCtor } =
         reset: vi.fn(),
         focus: vi.fn(),
         scrollToBottom: vi.fn(),
+        scrollToLine: vi.fn(),
         onData: vi.fn(() => ({ dispose: vi.fn() })),
         resize: vi.fn(),
         cols: 80,

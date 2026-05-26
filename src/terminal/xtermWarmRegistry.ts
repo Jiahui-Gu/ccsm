@@ -144,8 +144,33 @@ export type WarmEntry = {
    * painting the correct logical rows (viewportY preserved), so the only
    * thing the user noticed was the thumb jumping to the top.
    * `null` means "no snapshot yet" (first show) — treated as no-op.
+   *
+   * Retained as a diagnostic-only payload field in the
+   * `terminal.warmHide` / `terminal.warmShow.scrollAfterFit` probes; the
+   * actual restore is now driven by {@link savedViewportY} via xterm's
+   * `scrollToLine` API (which atomically updates both logical viewportY
+   * AND the DOM scrollbar) AFTER the warm-attach `fit()` + `focus()` in
+   * `usePtyAttach.warm.ts`. Writing scrollTop directly here is lost to
+   * the immediately-subsequent `term.resize()` (rewrites scrollTop from
+   * `ydisp * cellH`) and `_keepCursorInViewport()` (focus-triggered).
    */
   savedScrollTop: number | null;
+  /**
+   * `buffer.active.viewportY` captured at hide time. xterm's logical scroll
+   * position — the canonical source of truth for "where the user was". We
+   * restore via `term.scrollToLine(savedViewportY)` after the warm-attach
+   * `fit()` + `focus()` run, which is the only ordering that survives
+   * xterm's own scrollTop rewrites from `resize()` and
+   * `_keepCursorInViewport()`. `scrollToLine` is one atomic call that
+   * updates both `buffer.ydisp` (canvas paint) and `.xterm-viewport.scrollTop`
+   * (scrollbar thumb), so they stay in sync.
+   *
+   * `null` means "no snapshot yet" (first show, never hidden) — treated
+   * as no-op so the natural cold-path bottom-pin remains in force.
+   * Cleared back to `null` after a successful restore so a subsequent
+   * show without an intervening hide doesn't re-restore a stale position.
+   */
+  savedViewportY: number | null;
 };
 
 /**
@@ -483,6 +508,7 @@ function allocEntry(sid: string): WarmEntry {
     inputDisposers: [],
     pendingFontSize: null,
     savedScrollTop: null,
+    savedViewportY: null,
   };
   warm.set(sid, entry);
 
@@ -790,9 +816,22 @@ export function ensureAndShowEntry(
       // block (the offscreen holder is display:none / out-of-tree). Read
       // synchronously to capture the user's current scroll position;
       // restore in the symmetric show branch below.
+      //
+      // ALSO snapshot `buffer.active.viewportY` — xterm's logical scroll
+      // position. This is the source of truth used by the post-fit/focus
+      // restore in `usePtyAttach.warm.ts` (the DOM scrollTop write is
+      // immediately clobbered by `term.resize()`'s `ydisp * cellH`
+      // rewrite + focus-triggered `_keepCursorInViewport()`, so we drive
+      // the restore through `term.scrollToLine` instead — which updates
+      // both buffer.ydisp AND the DOM scrollbar in one atomic call).
       try {
         const vp = prev.wrapper.querySelector('.xterm-viewport');
         if (vp instanceof HTMLElement) prev.savedScrollTop = vp.scrollTop;
+      } catch {
+        /* snapshot best-effort */
+      }
+      try {
+        prev.savedViewportY = prev.term.buffer.active.viewportY;
       } catch {
         /* snapshot best-effort */
       }
@@ -806,6 +845,7 @@ export function ensureAndShowEntry(
           sid: activeSid,
           lruSize: warm.size,
           savedScrollTop: prev.savedScrollTop ?? -1,
+          savedViewportY: prev.savedViewportY ?? -1,
         });
       } catch {
         /* probe failure tolerated */
@@ -826,38 +866,18 @@ export function ensureAndShowEntry(
     warn('xterm-warm', 'show reparent failed', e);
   }
 
-  // Restore `.xterm-viewport.scrollTop` captured at the symmetric hide.
-  // xterm's internal `viewportY` survives the offscreen detour (canvas
-  // keeps painting the right rows), but webkit zeroes the DOM scrollTop
-  // when the element leaves the layout tree — so without this the
-  // scrollbar thumb snaps to the top while the canvas content shows
-  // a mid-buffer position. Write AFTER the reparent (element must be
-  // back in the layout tree) and synchronously so the user never
-  // observes a frame at scrollTop=0.
-  if (entry.savedScrollTop != null) {
-    let restoreApplied = -1;
-    let restoreActual = -1;
-    try {
-      const vp = entry.wrapper.querySelector('.xterm-viewport');
-      if (vp instanceof HTMLElement) {
-        vp.scrollTop = entry.savedScrollTop;
-        restoreApplied = entry.savedScrollTop;
-        restoreActual = vp.scrollTop;
-      }
-    } catch {
-      /* restore best-effort */
-    }
-    try {
-      log.event('terminal.warmShow.scrollRestore', {
-        sid,
-        savedScrollTop: entry.savedScrollTop,
-        applied: restoreApplied,
-        actualAfterWrite: restoreActual,
-      });
-    } catch {
-      /* probe failure tolerated */
-    }
-  }
+  // NOTE: scrollbar restore (formerly: `vp.scrollTop = entry.savedScrollTop`
+  // here) has moved OUT of this function. Writing scrollTop here is
+  // immediately clobbered by the warm-attach effect's subsequent
+  // `entry.fit.fit()` (which calls `term.resize()` and rewrites scrollTop
+  // from `ydisp * cellH`) and `term.focus()` (which calls
+  // `_keepCursorInViewport()` and rewrites scrollTop again). The restore
+  // is now done via `term.scrollToLine(entry.savedViewportY)` AFTER
+  // fit+focus in `usePtyAttach.warm.ts` — `scrollToLine` is xterm's
+  // public API that atomically updates BOTH `buffer.ydisp` (canvas
+  // paint) AND `.xterm-viewport.scrollTop` (DOM scrollbar thumb), so
+  // both layers stay in sync. See the `terminal.warmShow.scrollAfterFit`
+  // probe emitted from the warm-attach effect.
 
   // First-time open: deferred from allocEntry so the xterm renderer
   // initializes against real visible geometry rather than the 0x0
