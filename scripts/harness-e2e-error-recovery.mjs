@@ -34,7 +34,6 @@ import {
   dismissFirstRunModals,
   launchCcsmIsolated,
   seedSession,
-  sendToClaudeTui,
   waitForTerminalReady,
   waitForXtermBuffer,
 } from './probe-utils-real-cli.mjs';
@@ -205,9 +204,34 @@ async function casePtyExitOverlayRetry({ win, tempDir }) {
 
   // Drive `/exit`. claude's TUI registers the slash command and quits with
   // exit code 0 once it finishes its flush.
-  await sendToClaudeTui(win, '/exit');
-  await sleep(300);
-  await sendToClaudeTui(win, '\r');
+  //
+  // We use the main-process IPC bridge (`window.ccsmPty.input(sid, data)`)
+  // rather than `sendToClaudeTui` (which goes through xterm's
+  // `triggerDataEvent` → `onData` → `ccsmPty.input`). Empirically, the
+  // `triggerDataEvent` path is flaky in headless / xvfb: focus-state races
+  // and `onData` listener-arming timing can drop the keystroke before it
+  // reaches pty stdin, while the direct IPC call guarantees the bytes
+  // land on the pty regardless of xterm focus. The first push of this
+  // PR went green locally with `sendToClaudeTui` but red on all 3 CI
+  // platforms — `disconnectedSessions[sid]` never populated within 60s
+  // because `/exit` never actually arrived at claude's stdin. Direct
+  // IPC bypasses the xterm focus/timing wrinkle while exercising the
+  // same downstream code path (`ipcMain.handle('pty:input')` →
+  // `entry.pty.write(data)` in `electron/ptyHost/lifecycle.ts`).
+  const sent = await win.evaluate(async ({ s, payload }) => {
+    if (!window.ccsmPty || typeof window.ccsmPty.input !== 'function') {
+      return { ok: false, reason: 'ccsmPty.input unavailable' };
+    }
+    try {
+      await window.ccsmPty.input(s, payload);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, reason: String(err?.message || err) };
+    }
+  }, { s: sid, payload: '/exit\r' });
+  if (!sent.ok) {
+    throw new Error(`ccsmPty.input('/exit\\r') failed: ${sent.reason}`);
+  }
 
   // Wait for the store's disconnectedSessions slice to surface the exit.
   const exitRec = await waitForPtyExitInStore(win, sid, { timeout: 60_000 });
