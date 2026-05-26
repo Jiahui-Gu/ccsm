@@ -362,7 +362,12 @@ export function usePtyAttachWarm(
               /* probe payload best-effort */
             }
             try {
-              restoreWarmScrollPosition(entry.term, savedViewportY);
+              restoreWarmScrollPosition(
+                entry.term,
+                savedViewportY,
+                entry.wrapper,
+                entry.savedScrollTop,
+              );
             } catch (e) {
               warn('attach-warm', 'scroll restore failed', e);
             }

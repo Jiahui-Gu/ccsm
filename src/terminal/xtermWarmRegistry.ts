@@ -1390,65 +1390,130 @@ export function __resetRegistryForTests(): void {
 /**
  * Restore the user's pre-hide viewport position on a warm reshow.
  *
- * Bug #66 / PR #1385 follow-up: the first fix tried `term.scrollToLine
- * (savedViewportY)` after fit+focus. That doesn't work because xterm's
- * `scrollToLine` is `scrollLines(line - ydisp)` and early-returns when
- * `line === ydisp` (CoreTerminal.ts:219). After the offscreen
- * hide/reparent detour, `buffer.ydisp` IS preserved at savedViewportY —
- * the canvas paints the right rows — so `scrollToLine(savedViewportY)` is
- * a no-op: no `onScroll` event, no Viewport `syncScrollArea`, no DOM
- * `.xterm-viewport.scrollTop` write. The scrollbar thumb stays at the
- * top (where webkit left it when the wrapper was offscreen) while the
- * canvas content is correctly positioned — the precise reported symptom.
+ * Bug #66 root cause (re-diagnosed from real chromium trace after two
+ * failed fixes):
  *
- * The fix forces a non-zero scroll diff so `onScroll` fires, which is
- * the trigger Viewport listens to for re-syncing the DOM scrollTop:
+ *   The previous two attempts (`scrollToLine(savedViewportY)`, then
+ *   `scrollToBottom() + scrollToLine(target)`) both go through xterm's
+ *   `scrollLines(diff)` which early-returns when `diff === 0`. The trace
+ *   showed the real pre-hide state was `viewportY === baseY` (user pinned
+ *   to live tail, NOT scrolled up) with DOM `scrollTop = 2314` mid-buffer
+ *   because earlier output had ydisp tracking baseY upward and the
+ *   Viewport addon synced scrollTop along the way. After reparent, the
+ *   DOM `.xterm-viewport.scrollTop` resets to 0 (webkit drops it on
+ *   layout-tree detach), but `ydisp === baseY` already, so:
  *
- *   1. `scrollToBottom()` — sets `ydisp = ybase` if not already there.
- *      Always fires `onScroll` when the buffer has any scrollback to
- *      cover; safe no-op otherwise.
- *   2. If we need a mid-buffer position, `scrollToLine(target)` from
- *      `ybase` back to the saved row — this diff is non-zero (negative)
- *      and fires `onScroll` again.
+ *     - `scrollToBottom()` → `scrollLines(baseY - ydisp)` → `scrollLines(0)`
+ *       → early-return, no `onScroll` fire.
+ *     - `Viewport.syncScrollArea` checks `_lastScrollTop !==
+ *       ydisp*rowHeight` — but `_lastScrollTop` was cached at the
+ *       pre-hide DOM scrollTop (2314), which still equals `ydisp*rowHeight`,
+ *       so syncScrollArea ALSO early-returns. No `_innerRefresh`. No
+ *       `scrollTop` write. Thumb stuck at 0.
  *
- * The two synchronous calls execute in one microtask so the user sees a
- * single RAF — no flash of the "bottom" intermediate state. Net result:
- * `ydisp` lands at `savedViewportY` (canvas unchanged) AND Viewport's
- * `_innerRefresh` fires on the next animation frame to write the correct
- * DOM scrollTop from `ydisp * rowHeight`.
+ *   Every code path that tries to "ask xterm nicely" to re-sync the DOM
+ *   scrollbar hits one of these early-returns under the
+ *   `ydisp === baseY` warm-reshow case.
  *
- * Edge cases (handled internally by xterm's clamping):
- *   - `savedViewportY >= baseY` (user was at the live tail, or buffer
- *     shrank between hide and show): only call `scrollToBottom()`. The
- *     fire-state depends on whether `ydisp === ybase` already, but at the
- *     live tail the DOM scrollbar is at 100% and the natural cold-pin
- *     handles the rest. We also tolerate ybase having grown while hidden.
- *   - `savedViewportY < 0`: clamped by xterm's `Math.max(..., 0)` in
- *     `scrollLines`. We additionally guard with `Math.max(0, ...)`.
+ * Fix: bypass xterm's sync logic entirely. After the show reparent,
+ * write `vp.scrollTop` DIRECTLY on the `.xterm-viewport` element, using
+ * the saved DOM scrollTop captured at hide time as the authoritative
+ * value. We do this on a double-RAF so it lands AFTER:
+ *
+ *   1. layout settles post-reparent (offsetParent becomes non-null), and
+ *   2. any xterm `_innerRefresh` that might run on the first frame
+ *      (which would otherwise clobber our write).
+ *
+ * We ALSO call `term.scrollToLine(target)` first for the mid-buffer
+ * case so xterm's logical `ydisp` matches the visual scrollbar
+ * position (otherwise a subsequent user scroll would compute a wrong
+ * diff). When the saved position is at-or-beyond the live tail, we
+ * just write scrollTop to the max and let xterm's natural live-tail
+ * pinning continue.
  *
  * Exported for the unit test in tests/terminal/scrollbarRestore.test.ts.
+ * NB: the unit test runs under jsdom which has NO layout engine — it
+ * cannot exercise the `.xterm-viewport.scrollTop` write path. The
+ * authoritative coverage is the chromium probe at
+ * `scripts/dogfood-pr-1374-warm-scroll-preserved.mjs`.
  */
 export function restoreWarmScrollPosition(
   term: Terminal,
   savedViewportY: number | null,
+  wrapper?: HTMLElement,
+  savedScrollTop?: number | null,
 ): void {
   if (savedViewportY == null) return;
   const buf = term.buffer.active;
   const baseY = buf.baseY;
-  if (savedViewportY >= baseY) {
-    // Was at (or beyond) the live tail. scrollToBottom is the
-    // future-proof choice — if ybase grew while hidden, this lands at
-    // the new tail rather than the now-historical saved row.
-    term.scrollToBottom();
-    return;
+
+  // Step 1: update xterm's logical ydisp if it disagrees with saved.
+  // For the at-bottom (savedViewportY >= baseY) case this is a no-op
+  // because ydisp is already at baseY post-detour. For the scrolled-up
+  // case scrollToLine will fire onScroll and Viewport will RAF a
+  // refresh — but its `_innerRefresh` writes `ydisp * rowHeight` which
+  // may not match the user's exact pre-hide DOM scrollTop in the
+  // bottom-pin case (where DOM scrollTop was sub-max). So we follow up
+  // with a direct DOM write in step 2.
+  if (savedViewportY < baseY) {
+    // Mid-buffer: force a non-zero diff via scrollToBottom + scrollToLine
+    // so onScroll fires. Use try/catch so unit-test mocks without these
+    // methods (older mocks) don't crash.
+    try {
+      term.scrollToBottom();
+    } catch {
+      /* ignore */
+    }
+    const target = Math.max(0, Math.min(savedViewportY, baseY));
+    try {
+      term.scrollToLine(target);
+    } catch {
+      /* ignore */
+    }
+  } else {
+    // At-or-beyond live tail: ensure ydisp matches baseY (in case ybase
+    // grew while hidden). scrollToBottom is a no-op if already there.
+    try {
+      term.scrollToBottom();
+    } catch {
+      /* ignore */
+    }
   }
-  // Mid-buffer restore. Force a non-zero scroll diff so xterm fires
-  // `onScroll` and Viewport.syncScrollArea writes the DOM scrollTop.
-  // Step 1: jump to bottom (diff = ybase - ydisp; non-zero when user
-  // was scrolled up, which is the case-of-interest here).
-  // Step 2: scroll back to the saved row (diff = saved - ybase < 0).
-  // Each step fires onScroll; net visual position = saved row.
-  term.scrollToBottom();
-  const target = Math.max(0, Math.min(savedViewportY, baseY));
-  term.scrollToLine(target);
+
+  // Step 2: directly write the DOM scrollTop on the next RAF, AFTER
+  // xterm's Viewport addon has had a chance to run its own
+  // _innerRefresh (which can early-return under the cache-equality
+  // check above). We write the EXACT saved scrollTop pixel value
+  // (captured pre-hide while the Viewport had synced normally), which
+  // is the authoritative source for "what the user saw".
+  //
+  // Double-RAF: the first RAF lets layout settle (offsetParent
+  // becomes truthy so the Viewport `_handleScroll` guard at line 185
+  // of Viewport.ts no longer bails); the second lets any xterm refresh
+  // scheduled during the first RAF run before we land our write.
+  if (wrapper && savedScrollTop != null && savedScrollTop > 0) {
+    const writeScrollTop = (): void => {
+      try {
+        const vp = wrapper.querySelector('.xterm-viewport');
+        if (vp instanceof HTMLElement) {
+          // Clamp to the element's current scroll range — if buffer
+          // shrank while hidden, savedScrollTop may exceed max.
+          const max = Math.max(0, vp.scrollHeight - vp.clientHeight);
+          vp.scrollTop = Math.min(savedScrollTop, max);
+        }
+      } catch {
+        /* best-effort — wrapper may have been disposed mid-RAF */
+      }
+    };
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(writeScrollTop);
+      });
+    } else {
+      // jsdom / test path — synchronous fallback so unit tests don't
+      // wait on a missing RAF. Has no effect in jsdom (no layout) but
+      // keeps the call shape identical.
+      writeScrollTop();
+    }
+  }
 }
