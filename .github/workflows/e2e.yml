@@ -134,20 +134,17 @@ jobs:
           "
       - name: Run e2e (Linux with xvfb)
         if: runner.os == 'Linux'
-        # E2E_SKIP=harness-real-cli,harness-ime-overflow — the full real-cli
-        # harness stays skipped because its remaining cases assert on real
-        # LLM reply content (ALPHA / PONG / 180s notify waits etc.) which
-        # the CI fake API cannot satisfy deterministically. The CI subset
-        # in `harness-real-cli-ci.mjs` runs the cases that don't need real
-        # model responses. `harness-ime-overflow` stays skipped per #1324.
+        # `harness-ime-overflow` stays skipped per #1324. The old
+        # `harness-real-cli` was deleted in 2026-05 (new workflow-grouped
+        # e2e harnesses replace it).
         run: xvfb-run -a npm run probe:e2e
         env:
-          E2E_SKIP: harness-real-cli,harness-ime-overflow
+          E2E_SKIP: harness-ime-overflow
       - name: Run e2e (mac/win)
         if: runner.os != 'Linux'
         run: npm run probe:e2e
         env:
-          E2E_SKIP: harness-real-cli,harness-ime-overflow
+          E2E_SKIP: harness-ime-overflow
       - name: Upload e2e logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
