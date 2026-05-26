@@ -129,11 +129,63 @@ function norm(p) {
 function seedOnboarding(tempDir) {
   // Skip claude's trust / welcome modals so cases don't burn 12 iterations
   // of dismissFirstRunModals on every spawn. Shape lifted from
-  // harness-real-cli-ci.mjs#seedMinimalOnboarding.
+  // harness-real-cli-ci.mjs#seedMinimalOnboarding + harness-real-cli.mjs
+  // (per-cwd `hasTrustDialogAccepted`).
+  //
+  // CRITICAL — per-folder trust pre-seed (CI fix for cases 1/3/4 on
+  // macOS-latest + windows-latest):
+  //   With only the global `hasCompletedOnboarding` flag set, claude still
+  //   shows the "Do you trust the files in this folder?" modal once per
+  //   unseen cwd. On CI's slow runners, that modal is still on screen when
+  //   the harness types its first token, so the token never reaches the
+  //   shell. Locally (Windows dev box) the modal dismisses fast enough that
+  //   the cases pass, masking the bug.
+  //
+  //   Cases 1/3/4 type tokens into a session whose cwd is `tempDir` (the
+  //   "+" button uses `userHome` which we override to tempDir; seedSession
+  //   in cases 3/4 also passes `cwd: tempDir`). Pre-trust that path here.
+  //   Case 2 uses a random projectDir under tempDir — it lets
+  //   `dismissFirstRunModals` handle the single per-cwd trust prompt and
+  //   still passes on all 3 platforms.
+  //
+  //   Shape mirrors harness-real-cli.mjs (around line 1428). We write BOTH
+  //   the platform-native path and the forward-slash variant because
+  //   claude has been observed to key under either form depending on
+  //   build / platform normalization.
+  const trustedEntry = {
+    allowedTools: [],
+    mcpContextUris: [],
+    mcpServers: {},
+    enabledMcpjsonServers: [],
+    disabledMcpjsonServers: [],
+    hasClaudeMdExternalIncludesApproved: false,
+    hasClaudeMdExternalIncludesWarningShown: false,
+    hasTrustDialogAccepted: true,
+    projectOnboardingSeenCount: 1,
+  };
+  const projects = {};
+  projects[tempDir] = trustedEntry;
+  const tempDirFwd = tempDir.replace(/\\/g, '/');
+  if (tempDirFwd !== tempDir) projects[tempDirFwd] = trustedEntry;
   writeFileSync(
     path.join(tempDir, '.claude.json'),
     JSON.stringify(
-      { hasCompletedOnboarding: true, bypassPermissionsModeAccepted: true, projects: {} },
+      {
+        hasCompletedOnboarding: true,
+        bypassPermissionsModeAccepted: true,
+        // Pre-approve the fake API key so claude does NOT show the
+        // "Detected a custom API key … Do you want to use this API key?"
+        // modal on first launch. Without this, `dismissFirstRunModals`'s
+        // bare `\r` lands on the default-highlighted "No (recommended)"
+        // option and claude exits. Same shape as
+        // `.github/workflows/e2e.yml`'s "Pre-approve fake API key" step,
+        // but applied to the isolated tempdir that claude actually reads
+        // (HOME/CLAUDE_CONFIG_DIR are pointed at tempDir by
+        // launchCcsmIsolated, so claude looks here — not at the runner's
+        // real `~/.claude.json`).
+        customApiKeyResponses: { approved: ['fake-ci-key'] },
+        projects,
+      },
       null,
       2,
     ),
