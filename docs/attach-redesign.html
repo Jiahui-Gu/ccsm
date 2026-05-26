@@ -334,9 +334,49 @@
   </div>
 </section>
 
-<!-- ====================== 7. 实现要点 ====================== -->
+<!-- ====================== 7. 并发与取消 ====================== -->
 <section class="s">
-  <h2>7 · 实现要点</h2>
+  <h2>7 · 并发与取消</h2>
+  <p class="lede">用户操作可能踩在一起 —— 比如 reload 中途 delete、冷启动中途切走。下面是统一的处理方式,corner case 一次想清楚。</p>
+
+  <h3 class="sub">机制</h3>
+  <ul style="margin:0 0 12px; padding-left:18px; font-size:13px; color:var(--ink-2);">
+    <li>每个 shell 上挂一个 <code>currentOp: { token, kind }</code>。</li>
+    <li>新操作开始前:先 <code>cancel</code> 同一 sid 的旧操作,await 它的 finally 块(确保遮罩、资源已清理),再启动新的。</li>
+    <li>遮罩的揭开 / shell 的 dispose / 资源释放,<b>永远由当前操作自己在 finally 里负责</b> —— 其他操作不碰。</li>
+  </ul>
+
+  <h3 class="sub">取消语义(谁取消谁、什么时候不取消)</h3>
+  <div class="rules">
+    <div class="rule">
+      <div class="tag">场景表</div>
+      <p>
+        · <b>reload 中途 delete</b> → delete cancel reload,reload finally dispose 收尾,顶层下沉。<br>
+        · <b>reload 中途用户切走</b> → reload <b>不 cancel</b> —— 继续跑完,但完成后<b>不抢顶层</b>(activeSid 已不是它)。<br>
+        · <b>reload 中途用户又 reload</b> → cancel 第一个,启动第二个(用户最后操作 wins)。<br>
+        · <b>冷启动 B 中途切回 A</b> → B 不 cancel,继续 hydrate;activeSid=A;B 完成后<b>不抢顶层</b>。<br>
+        · <b>冷启动 B 中途 delete B</b> → cancel coldStart,移除 wrapper,activeSid 回到下一层。<br>
+        · <b>copy A 中途 delete A</b> → copy 已经产生 newSid(产品行为);原 A 的 delete 正常走。
+      </p>
+    </div>
+  </div>
+
+  <h3 class="sub">关键不变量</h3>
+  <ul style="margin:0 0 12px; padding-left:18px; font-size:13px; color:var(--ink-2);">
+    <li>"活操作" 至多一个 per sid。</li>
+    <li>遮罩的可见性由 ownership 决定:谁开的谁关。</li>
+    <li>z-stack 顶层 = activeSid;操作完成后<b>不一定上顶</b>,只有用户行为或冷启动初次完成才上顶。</li>
+  </ul>
+
+  <h3 class="sub">为什么不用 queue</h3>
+  <p style="margin:0; font-size:13px; color:var(--ink-2);">
+    queue 是 FIFO,但用户后一个操作就是想覆盖前一个 —— FIFO 反而不对。cancellation token + finally 是更轻的方案,没有"卡顿"感。
+  </p>
+</section>
+
+<!-- ====================== 8. 实现要点 ====================== -->
+<section class="s">
+  <h2>8 · 实现要点</h2>
   <p class="lede">给后续 worker 看的落地清单。不是完整方案,只是关键决策。</p>
 
   <h3 class="sub">替换掉的现有代码</h3>
