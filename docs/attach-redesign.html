@@ -270,9 +270,50 @@
   </ul>
 </section>
 
-<!-- ====================== 4. 实现要点 ====================== -->
+<!-- ====================== 5. 其他操作的行为 ====================== -->
 <section class="s">
-  <h2>4 · 实现要点</h2>
+  <h2>5 · 其他操作的行为</h2>
+  <p class="lede">sidebar 上的三个操作:删除、重做、复制。都不引入新的 UX 概念,只是套用前面两条规则。</p>
+
+  <div class="rules" style="grid-template-columns: 1fr 1fr 1fr;">
+    <div class="rule">
+      <div class="tag">操作 1</div>
+      <b>删除 (delete)</b>
+      <p>
+        · sidebar 那行消失。<br>
+        · 后台 dispose 这个 session 的 xterm,解订 PTY。<br>
+        · 删的是当前顶层 → 顶层移走,z-stack 下一层自动露出(上次看的那个)。<br>
+        · 删的是 z-stack 里非顶层 → 用户看不到任何变化。<br>
+        · 删的是从没看过的 session → 啥都不发生,本来就没建。<br>
+        · 删的是正在冷启动的 session → cancel,遮罩消失,顶层退回下一层。
+      </p>
+    </div>
+    <div class="rule">
+      <div class="tag">操作 2</div>
+      <b>重做 (reload)</b>
+      <p>
+        · sid 不变,xterm 实例复用,不重建,不破坏 z-stack 缓存。<br>
+        · 走和第一次点一样的冷启动流程:盖遮罩 → 清屏 + 重拉 snapshot + 写入 + 滚到底 → 揭开。<br>
+        · 视觉上等于这个 session 当场重做一次冷启动。<br>
+        · z-stack 里其他 shell 不受影响,顺序不变。
+      </p>
+    </div>
+    <div class="rule">
+      <div class="tag">操作 3</div>
+      <b>复制 (copy session)</b>
+      <p>
+        · 调用方拿到新 sid,这部分是已有产品行为,不改。<br>
+        · 新 sid 通常会立刻被打开 → 走第一次点击的冷启动路径。<br>
+        · 原 session 在 z-stack 里照常保留,顺序不变。<br>
+        · 设计上不需要特殊路径,等同于自动 click(newSid)。
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ====================== 6. 实现要点 ====================== -->
+<section class="s">
+  <h2>6 · 实现要点</h2>
   <p class="lede">给后续 worker 看的落地清单。不是完整方案,只是关键决策。</p>
 
   <h3 class="sub">替换掉的现有代码</h3>
