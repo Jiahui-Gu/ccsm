@@ -125,34 +125,34 @@
 
 <header class="head">
   <h1>Attach 重新设计 —— 从零开始</h1>
-  <div class="sub">如果今天从头写 ccsm 的 attach 路径,它会是什么样?抛掉当前 19 步流程,以及打在上面的补丁。只谈设计。</div>
+  <div class="sub">如果今天从头写 ccsm 的 attach,会长成什么样。当前 19 步流程和上面的补丁全不看,只谈设计。</div>
   <div class="meta">范围:pty attach + xterm mount + 侧边栏耦合 · 配套文档 docs/attach-timeline-review.html(历史)</div>
 </header>
 
 <!-- ====================== 1. PRINCIPLES ====================== -->
 <section class="s">
   <h2>1 · 设计原则</h2>
-  <p class="lede">后面每个决策都要回答的五条原则。</p>
+  <p class="lede">五条原则,后面所有决策都要回答它们。</p>
   <div class="principles">
     <div class="princ"><div class="n">P1</div><div>
       <b>第一帧 = 最终帧。</b>
-      <div class="body"><code>display:''</code> 之前,用户什么都感知不到。之后,用户必须看到一张完成的画面:滚到正确的行、atlas 已预热、尺寸为最终值。mount 到 reveal 之间步骤数无所谓;切线在哪才是关键。</div>
+      <div class="body">用户看到画面的那一瞬间,画面就得是最终态:滚到对的行、字体已渲染好、尺寸已就位。当前问题是用户能看见 "空白 → 内容 → 跳一下" 的过程。新设计把所有准备工作藏在 <code>display:'none'</code> 后面,翻成 <code>display:''</code> 就是结果。</div>
     </div></div>
     <div class="princ"><div class="n">P2</div><div>
-      <b>Terminal 是 per-sid 的长寿对象,不是 per-attach 的临时产物。</b>
-      <div class="body">分配、<code>term.open</code>、addon 加载、atlas 预热、live 数据订阅,都在我们第一次有理由关心某个 sid 时发生(例如它进了侧边栏)。"Attach" 退化为<i>让其中之一可见</i>。切换会话从不 dispose 或重新 open xterm。</div>
+      <b>Terminal 是 per-sid 的长寿对象,不是 attach 的副产物。</b>
+      <div class="body">xterm 实例、addon、字体预热、PTY 数据订阅 —— 都在我们第一次关心这个 sid 时一次性建好,之后一直留着。当前 "切会话就重新走一遍" 的代价直接消失。"Attach" 退化成 "把已经准备好的东西显示出来"。</div>
     </div></div>
     <div class="princ"><div class="n">P3</div><div>
-      <b>数据订阅独立于可见性。</b>
-      <div class="body">per-sid chunk 从 spawn/restore 到 dispose 持续流入 per-sid Terminal。不存在围绕 attach 切换的 "buffering listener" 模式 —— listener 永远是 Terminal 自己。可见性纯粹是 DOM 层的事。</div>
+      <b>数据订阅与可见性无关。</b>
+      <div class="body">PTY chunk 从进程启动到结束一直流进对应的 Terminal,不管它是否在屏幕上。当前为了等 attach 才订阅,中间有个 "buffering listener" 模式做缓冲 —— 这个中间层在新设计里直接没有,因为消费者永远在线。</div>
     </div></div>
     <div class="princ"><div class="n">P4</div><div>
-      <b>侧边栏跑在自己的数据面上。</b>
-      <div class="body">侧边栏状态(agent 状态、标题、徽标、归档标志)来自 <code>session:state</code> / <code>session:title</code> —— 本就独立于 PTY chunk。重设计延续这一点;任何地方都不再解析 PTY 输出做最后一行预览。</div>
+      <b>侧边栏走自己的数据通道。</b>
+      <div class="body">侧边栏要的是 agent 状态、标题、徽标,这些早就由 <code>session:state</code> / <code>session:title</code> 单独推送。它和 PTY chunk 没关系,新设计继续保持这种解耦,绝不去解析 PTY 输出做侧边栏预览。</div>
     </div></div>
     <div class="princ"><div class="n">P5</div><div>
-      <b>能并行就并行。一次 barrier。然后串行。然后 reveal。</b>
-      <div class="body">互相独立的工作(snapshot 拉取、布局 commit、addon 预热)在不可见空间内并发跑。一次 <code>await Promise.all</code> 汇合。串行尾部只做真正有顺序约束的事(写 snapshot → drain live tail → 钉住 viewport)。Reveal 是最后一条指令。</div>
+      <b>能并行就并行,一次汇合,然后串行,最后 reveal。</b>
+      <div class="body">独立的事情(拉 snapshot、做布局、算 viewport)同时跑,用一次 <code>await Promise.all</code> 等齐。真正有顺序要求的(写 snapshot → drain → 钉位)再串行。Reveal 是整个流程的最后一条指令。</div>
     </div></div>
   </div>
 </section>
@@ -160,45 +160,45 @@
 <!-- ====================== 2. HIGH-LEVEL PHASES ====================== -->
 <section class="s">
   <h2>2 · 总体架构</h2>
-  <p class="lede">五个阶段。从左往右读。</p>
+  <p class="lede">五个阶段,从左到右。前两个阶段在用户点会话之前就已经在跑。</p>
   <div class="phases">
     <div class="phase">
       <div class="ph">Phase 0</div>
-      <b>Provision</b>
-      <div class="desc">sid 进入侧边栏时,在 renderer 侧分配一个 <code>SessionShell</code>:offscreen 容器里的 xterm Terminal、addon 已加载、live 流订阅已开启。无用户可见副作用。</div>
+      <b>Provision(lazy)</b>
+      <div class="desc">侧边栏里的 session 行<i>进入可视区</i>(IntersectionObserver)才 provision:在 offscreen 容器里建 xterm Terminal、加 addon、订阅 PTY 流。滚出可视区不 dispose,关闭 ccsm 才回收。归档分组里的 session 要<i>展开 + 进入可视区</i>才 provision —— 几百条归档不会一起吃内存。</div>
     </div>
     <div class="phase live">
       <div class="ph">Phase 1</div>
       <b>持续 stream</b>
-      <div class="desc">PTY chunk 持续落入 per-sid Terminal。侧边栏独立接收 <code>session:state</code>。两条线永远在跑,与当前激活的是哪个 sid 无关。</div>
+      <div class="desc">已 provision 的 sid,PTY chunk 持续流进它的 Terminal,直到进程退出。侧边栏状态走另一条通道。谁在前台无所谓。</div>
     </div>
     <div class="phase">
       <div class="ph">Phase 2</div>
       <b>准备可见</b>
-      <div class="desc">用户选中某个 sid。并行:把 SessionShell reparent 到可见宿主(仍 <code>display:'none'</code>)、commit 布局、按真实尺寸 fit、恢复上次 viewport(warm)或贴底(cold)。</div>
+      <div class="desc">用户点了某个 sid。并行做三件事:把 SessionShell reparent 到可见容器(仍 <code>display:'none'</code>)、commit 布局拿到真实尺寸、算好 viewport 要停在哪。</div>
     </div>
     <div class="phase reveal">
       <div class="ph">Phase 3</div>
       <b>Reveal</b>
-      <div class="desc">一条赋值:<code>display:''</code>。viewport、atlas、尺寸、内容 —— 都已为最终态。<i>这是用户看到的唯一一帧。</i></div>
+      <div class="desc">一条赋值:<code>display:''</code>。viewport、字体、尺寸、内容全是最终态。<i>用户看到的就是这一帧。</i></div>
     </div>
     <div class="phase">
       <div class="ph">Phase 4</div>
       <b>Reveal 之后</b>
-      <div class="desc">接通输入路由(在 Terminal 层早已接好,只翻一个路由标志)、focus、在 store 标记 active、安装/刷新 ResizeObserver 基线。</div>
+      <div class="desc">把输入路由切到这个 sid、focus、装 ResizeObserver 基线。顺序无所谓,因为用户已经看到结果。</div>
     </div>
   </div>
 
-  <h3 class="sub">为什么是这个形状</h3>
+  <h3 class="sub">为什么这么分</h3>
   <p style="margin:0; font-size:13px; color:var(--ink-2);">
-    当前路径把四件正交的事 —— Terminal 生命周期、数据订阅、布局、可见性 —— 揉成一个叫 "attach" 的大过程。把它们解耦,所有重活都从点击路径中移走。等用户点会话时,字节已经流了几秒;"attach" 退化为 "show"。
+    当前 attach 把四件事 —— 建 Terminal、订阅数据、做布局、改可见性 —— 揉成一个大过程,所以又慢又容易出 bug。把它们拆开做,重活在用户点之前就跑完了。等用户点会话,字节其实已经流进 Terminal 几秒,所谓的 "attach" 就只剩 "把这个 Terminal 显示出来" 而已。
   </p>
 </section>
 
 <!-- ====================== 3. PARALLEL FLOW ====================== -->
 <section class="s">
   <h2>3 · Phase 2 内部的并行流</h2>
-  <p class="lede">仍在 <code>display:'none'</code> 时可以并发跑什么、什么必须串行、reveal 落在何处。</p>
+  <p class="lede">用户点会话后到 reveal 之前发生的事。仍 <code>display:'none'</code>,所以做多少步用户都看不到。</p>
 
   <div class="flow">
 
@@ -257,43 +257,43 @@
 
   <h3 class="sub">依赖说明</h3>
   <ul style="margin:0; padding-left:18px; font-size:13px; color:var(--ink-2);">
-    <li>A 与 B/C 独立。A 可以在 B reparent 之前完成 —— 写入会进入一个尚未上屏的 Terminal,没问题(Phase 1 / P3)。</li>
-    <li>B2(rAF)是唯一 DOM 时序 barrier。便宜、可预测:至多一帧,通常 &lt;16ms。</li>
-    <li>C 是纯计算。独立成一条 lane,是为了把 warm/cold 决策作为 S3 的显式数据输入,而非藏在 S3 里的分支泥潭。</li>
+    <li>A 和 B、C 互不依赖。A 可以在 B reparent 之前就写完 —— 写入进一个还没上屏的 Terminal,完全没问题。</li>
+    <li>B2(rAF)是唯一一处要等 DOM 的地方。便宜、可预测,通常一帧就够,&lt;16ms。</li>
+    <li>C 是纯计算,单独成一条 lane 是为了让 warm/cold 的决策作为 S3 的明确输入,而不是塞在 S3 里一堆 if/else。</li>
   </ul>
 </section>
 
 <!-- ====================== 4. FIRST-FRAME SCENARIOS ====================== -->
 <section class="s">
   <h2>4 · 各场景下的第一帧保证</h2>
-  <p class="lede">从用户视角看只存在两种场景。各自看到什么,以及保证它成立的不变量。</p>
+  <p class="lede">从用户角度只有两种情况:第一次点开有历史的会话,或者切回之前看过的会话。下面是各自看到什么、为什么不会出问题。</p>
   <div class="two">
 
     <div class="scen">
-      <h4>场景 A —— cold + resume<span class="tag">有历史的会话首次 attach</span></h4>
+      <h4>场景 A —— cold + resume<span class="tag">第一次 attach 有历史的会话</span></h4>
       <div class="frame">
-        <b>第一帧:</b>最终尺寸的完整 xterm 画布,scrollback 渲染到 resume snapshot 的最后一行,滚动条贴底,光标停在 CLI 离开的位置。无空帧、无向上漂移、无延迟 snap。
+        <b>第一帧:</b>完整的 xterm 画布、尺寸最终、scrollback 已渲染到 snapshot 最后一行、滚动条贴底、光标停在 CLI 离开的位置。不会出现空帧、向上漂、迟到的 snap。
       </div>
       <ul>
-        <li><b>怎么做到:</b>snapshot 写入(A1–A2)和 live-tail drain(A3、S2)都在 reveal <i>之前</i>完成。Viewport 目标在 C 计算(贴底),在 S3 一次性应用。Reveal 在 S3 之后。</li>
-        <li><b>为何无 race:</b>没有 fire-and-forget 的写。S2 的单点 drain barrier 是 reveal 前 parser 队列可能非空的唯一位置,我们显式 await 它。</li>
+        <li><b>怎么做到的:</b>snapshot 写入(A1–A2)和 live tail drain(A3、S2)都在 reveal 之前完成。Viewport 位置在 C 算好,在 S3 一次性 scroll 到位。Reveal 排在 S3 后面。</li>
+        <li><b>为什么不会 race:</b>没有 fire-and-forget 的写。S2 是唯一可能有 pending 写的位置,这里我们 await 它。</li>
       </ul>
       <div class="inv">
-        <b>不变量:</b><code>display:''</code> 那一刻,<code>term.buffer.baseY === lastWrittenBaseY</code> 且 <code>ydisp === baseY</code>。两者由 S2(无 pending 写入)和 S3(恰好一次钉位)共同保证。
+        <b>不变量:</b><code>display:''</code> 那一刻,<code>term.buffer.baseY === lastWrittenBaseY</code> 且 <code>ydisp === baseY</code>。前者来自 S2(无 pending 写入),后者来自 S3(恰好一次钉位)。
       </div>
     </div>
 
     <div class="scen">
-      <h4>场景 B —— warm 切换<span class="tag">之前 attach 过,切回</span></h4>
+      <h4>场景 B —— warm 切换<span class="tag">之前 attach 过,再切回来</span></h4>
       <div class="frame">
-        <b>第一帧:</b>用户离开时的精确 viewport 位置,包括 scrollback 中间位置。滚动条对齐。脱离期间到达的新 chunk 在 viewport 下方的 scrollback 中(不会被自动滚到)。
+        <b>第一帧:</b>用户离开时的 viewport 位置,包括停在 scrollback 中间。滚动条对齐。脱离期间新到的 chunk 在 viewport 下方,不会自动滚到。
       </div>
       <ul>
-        <li><b>怎么做到:</b>SessionShell 从未被 dispose(P2)。Lane A 是 no-op —— chunk 一直流入这个 Terminal。Lane C 读取已持久化的 <code>lastViewportY</code>(每次失去可见性时记下)。S3 调 <code>scrollToLine(targetY)</code>。</li>
-        <li><b>Reparent 考虑:</b>reparent(B1)不会重置 xterm 内部状态。仍走 rAF(B2)gate,以防宿主之间宽度变化。</li>
+        <li><b>怎么做到的:</b>SessionShell 一直没 dispose(P2)。Lane A 完全是 no-op —— chunk 一直在流。Lane C 读上次离开时记的 <code>lastViewportY</code>。S3 调一次 <code>scrollToLine(targetY)</code>。</li>
+        <li><b>关于 reparent:</b>reparent(B1)不会动 xterm 内部状态。仍然走 rAF(B2),防止换宿主后宽度变了。</li>
       </ul>
       <div class="inv">
-        <b>不变量:</b>sid X 的 renderer 状态在 deactivate 之前与 reactivate 之后相同,除了 <code>baseY</code> 可能因 live chunk 前进过(这是正确的 —— 它们应在 buffer 里,只是不拉动 viewport)。
+        <b>不变量:</b>同一个 sid,deactivate 前和 reactivate 后 renderer 状态一致,只有 <code>baseY</code> 可能因为 live chunk 往前涨过 —— 这是对的,新数据应在 buffer 里,只是不应拽动 viewport。
       </div>
     </div>
 
@@ -303,32 +303,35 @@
 <!-- ====================== 5. IPC CONTRACT ====================== -->
 <section class="s">
   <h2>5 · IPC 契约提案</h2>
-  <p class="lede">主进程 ↔ renderer 接口面。比现在更小、更显式。</p>
+  <p class="lede">主进程和 renderer 之间的接口。比现在更少、更明确。</p>
 
 <pre><span class="c">// ─── main → renderer 广播 ───────────────────────────────────────────────</span>
 
-<span class="c">// 单一通道,per-sid 流。从 spawn 到 dispose 都在 emit。renderer 以</span>
-<span class="c">// Terminal 作为该 sid 的唯一消费者;主进程不按 "viewer count" gate</span>
-<span class="c">// emit。这正是杀掉 buffering-mode 把戏的关键:消费者永远在线。</span>
+<span class="c">// 单一通道,per-sid 一条流。从进程启动 emit 到 dispose。</span>
+<span class="c">// renderer 让对应的 Terminal 当唯一消费者;主进程不根据 "有没有人在看"</span>
+<span class="c">// 来 gate emit。正因如此,buffering-mode 那一套缓冲层就没必要了 —— </span>
+<span class="c">// 消费者永远在。</span>
 <span class="k">channel</span> <span class="s">'pty:chunk'</span>: { sid: string; seq: number; data: <span class="t">Uint8Array</span> }
 
-<span class="c">// 生命周期。与 chunk 分开,消费者无需解析 chunk。</span>
+<span class="c">// 生命周期。和 chunk 分开,消费者不用解析 chunk 去判断进程是否退出。</span>
 <span class="k">channel</span> <span class="s">'pty:exit'</span>: { sid: string; code: number | null; signal: string | null }
 
-<span class="c">// 侧边栏数据面。与现状一致,此处列出以求完整。</span>
+<span class="c">// 侧边栏自己的数据通道,和现状一致,这里列出来求完整。</span>
 <span class="k">channel</span> <span class="s">'session:state'</span>: { sid: string; state: SessionState }
 <span class="k">channel</span> <span class="s">'session:title'</span>: { sid: string; title: string }
 
 <span class="c">// ─── renderer → main RPC ────────────────────────────────────────────────</span>
 
-<span class="c">// 打开一个 SessionShell。幂等。每个进入侧边栏的 sid 调用一次;</span>
-<span class="c">// renderer 视其为 "开始 stream 给我"。返回 renderer 应视为 live floor</span>
-<span class="c">// 的 seq 游标。</span>
+<span class="c">// 打开 SessionShell。幂等。何时调:</span>
+<span class="c">//   • 普通 session 行进入侧边栏可视区(IntersectionObserver 触发)</span>
+<span class="c">//   • 归档分组被展开 且 行进入可视区</span>
+<span class="c">// 不调:行滚出可视区(保留 shell)、关闭归档分组(保留 shell)。</span>
+<span class="c">// 退出时 close。返回 renderer 应视作 live 起点的 seq 游标。</span>
 <span class="k">rpc</span> <span class="t">pty.open</span>(sid): Promise&lt;{ pid: number; cols: number; rows: number; seq: number }&gt;
 
 <span class="c">// 一次性历史 snapshot。返回的 snapshot 覆盖到 `seq`(不含)之前的全部</span>
-<span class="c">// 内容。renderer 写入 snapshot,再播放 seq &gt;= returned.seq 的 chunk。</span>
-<span class="c">// 替代 'buffering listener' 这一层间接。</span>
+<span class="c">// 内容。renderer 先写 snapshot,再播放 seq &gt;= returned.seq 的 chunk。</span>
+<span class="c">// 替代 'buffering listener' 那层间接。</span>
 <span class="k">rpc</span> <span class="t">pty.snapshotAt</span>(sid, opts?: { sinceSeq?: number }): Promise&lt;{
   snapshot: <span class="t">Uint8Array</span>;
   seq: number;     <span class="c">// `snapshot` 覆盖的上界(不含)</span>
@@ -336,37 +339,37 @@
   rows: number;
 }&gt;
 
-<span class="c">// Resize 是 hint;若 cols/rows 与当前一致,主进程返回但不 emit SIGWINCH。</span>
-<span class="c">// 每次 fit() 后无副作用地调用都是安全的。</span>
+<span class="c">// Resize 是 hint;若 cols/rows 和当前一致,主进程返回但不 emit SIGWINCH。</span>
+<span class="c">// 所以每次 fit() 后无脑调一下都安全。</span>
 <span class="k">rpc</span> <span class="t">pty.resize</span>(sid, cols, rows): Promise&lt;{ applied: boolean }&gt;
 
 <span class="c">// 输入是 fire-and-forget,per-sid 有序。</span>
 <span class="k">channel</span> <span class="s">'pty:input'</span>: { sid: string; data: string }   <span class="c">// renderer → main,单向</span>
 
-<span class="c">// 丢弃该 SessionShell。主进程可能保留 PTY 存活(其他窗口 / 后台),</span>
-<span class="c">// 但停止向本窗口 emit 该 sid 的 chunk。</span>
+<span class="c">// 丢掉 SessionShell。主进程可能让 PTY 继续活着(给其他窗口或后台),</span>
+<span class="c">// 但不再向本窗口 emit 该 sid 的 chunk。</span>
 <span class="k">rpc</span> <span class="t">pty.close</span>(sid): Promise&lt;void&gt;
 
-<span class="c">// ─── 我们刻意不提供的东西 ───────────────────────────────────────────────</span>
-<span class="c">// • 没有 pty.attach / pty.detach。订阅隐含在 pty.open 里。</span>
-<span class="c">// • 没有 getBufferSnapshot/attach 拆分。由 pty.snapshotAt 替代,</span>
-<span class="c">//   可在任意时刻调用,返回自洽的 {snapshot, seq}。</span>
+<span class="c">// ─── 故意不要的东西 ─────────────────────────────────────────────────────</span>
+<span class="c">// • 没有 pty.attach / pty.detach。订阅就藏在 pty.open 里。</span>
+<span class="c">// • 没有 getBufferSnapshot/attach 拆分。换成 pty.snapshotAt,</span>
+<span class="c">//   任何时候调都行,返回自洽的 {snapshot, seq}。</span>
 <span class="c">// • 没有侧边栏预览通道。侧边栏只读 agent 状态。</span>
 </pre>
 
-  <h3 class="sub">为何是这些形状</h3>
+  <h3 class="sub">为什么是这些形状</h3>
   <ul style="margin:0; padding-left:18px; font-size:13px; color:var(--ink-2);">
-    <li><b><code>pty.open</code> 而非 <code>pty.attach</code></b> —— "open" 更贴合事实:renderer 承诺消费该 sid 的流直到 <code>pty.close</code>。窗口生命周期内不存在瞬态 attach/detach;切换 sid 不触及主进程。</li>
-    <li><b>chunk 携带 <code>seq</code></b> —— 让 snapshot/live 拼接天然正确(丢弃 <code>seq &lt; snapshotSeq</code> 的 chunk,其余写入)。无时间戳竞争,无 "是否漏了"。</li>
-    <li><b><code>pty.snapshotAt</code> 与 open 解耦</b> —— renderer 可以懒调(首次真正需要渲染历史时)或主动调,IPC 形状一致。避免 "attach 即 snapshot" 的捆绑锁死顺序。</li>
-    <li><b><code>resize.applied</code> 返回值</b> —— 让 renderer 跳过 "SIGWINCH 是否触发了" 的猜测;主进程是事实源。</li>
+    <li><b>叫 <code>pty.open</code> 不叫 <code>pty.attach</code></b> —— "open" 才符合事实:renderer 承诺一直消费到 <code>pty.close</code>。窗口生命周期里不会有反复 attach/detach,切 sid 完全不打扰主进程。</li>
+    <li><b>chunk 自带 <code>seq</code></b> —— snapshot 和 live 拼接天然对得上(<code>seq &lt; snapshotSeq</code> 的丢掉,其余写)。不靠时间戳,不用问 "我有没有漏接"。</li>
+    <li><b><code>pty.snapshotAt</code> 和 open 分开</b> —— renderer 想懒拉就懒拉(真要渲染历史时再调),想立刻拉也行,IPC 一样。不再绑死 "一 attach 就 snapshot"。</li>
+    <li><b><code>resize.applied</code> 有返回值</b> —— renderer 不用猜 SIGWINCH 有没有发出来,主进程说了算。</li>
   </ul>
 </section>
 
 <!-- ====================== 6. STATE MACHINE ====================== -->
 <section class="s">
   <h2>6 · 每个 SessionShell 的 renderer 状态</h2>
-  <p class="lede">Discriminated union;转移是唯一可能出错的地方,所以显式列出。</p>
+  <p class="lede">用 discriminated union 表达。状态本身不容易出错,出错的都是状态转移,所以把它们写明。</p>
 
 <pre><span class="k">type</span> <span class="t">SessionShell</span> = {
   sid: string;
@@ -397,14 +400,14 @@
   | { kind: <span class="s">'visible'</span>; sid: string };       <span class="c">// reveal 之后</span>
 </pre>
   <p style="margin:10px 0 0; font-size:13px; color:var(--ink-2);">
-    <code>ShellStatus × SlotState</code> 的笛卡尔积穷尽了所有情况。当前 attach 路径的多数 bug 在这个模型里都是非法态(例如<i>已可见但还没 live</i>),重设计让它们无法表达:<code>mounting → visible</code> 的 slot 转移与 <code>display:''</code> 是同一个调用点,而该调用点要求 <code>shell.status.kind === 'live'</code>。
+    把 <code>ShellStatus</code> 和 <code>SlotState</code> 两轴叉乘,所有可能的情况都在表里。当前 attach 路径的大多数 bug 在这个模型里是非法态(比如<i>已经可见但还没 live</i>),新设计让这种态写不出来:<code>mounting → visible</code> 的切换和 <code>display:''</code> 是同一个调用点,而这个点要求 <code>shell.status.kind === 'live'</code>,编译器/类型系统就拦住了。
   </p>
 </section>
 
 <!-- ====================== 7. FAILURE PATHS ====================== -->
 <section class="s">
   <h2>7 · 失败路径</h2>
-  <p class="lede">每个错误都有名字、用户可见表现、恢复方式。</p>
+  <p class="lede">每种错误都有名字、用户看到什么、怎么恢复。</p>
   <table class="f">
     <thead>
       <tr><th>失败</th><th>用户看到什么</th><th>恢复</th></tr>
@@ -412,28 +415,33 @@
     <tbody>
       <tr>
         <td class="what">F1 · open-failed</td>
-        <td class="user">Slot 保持空;内联错误卡替代 xterm 画布:<i>"无法为该会话启动 Claude。[重试] [查看日志]"</i>。侧边栏行带小错误标点。</td>
-        <td>重试按钮再次调 <code>pty.open</code>;第三次失败时弹出 claude-missing 指引(沿用现有 UI)。</td>
+        <td class="user">Slot 保持空;xterm 画布位置换成内联错误卡:<i>"无法为该会话启动 Claude。[重试] [查看日志]"</i>。侧边栏行带小错误标点。</td>
+        <td>重试按钮再调一次 <code>pty.open</code>;第三次失败时弹出 claude-missing 指引(沿用现有 UI)。</td>
       </tr>
       <tr>
         <td class="what">F2 · snapshot-failed</td>
-        <td class="user">若 shell 从未写过 snapshot:同 F1 的内联错误卡。若 shell 已 live、这次是重新 snapshot(罕见,如 chunk 丢失之后):无 UI 变化 —— 继续沿用当前 buffer,toast 非阻塞警告。</td>
-        <td>250ms 后自动重试一次;第二次失败升级为错误卡。</td>
+        <td class="user">如果 shell 从未写过 snapshot:同 F1 的错误卡。如果 shell 已经 live、这次是补一次 snapshot(罕见,比如 chunk 丢了):UI 不变,继续用当前 buffer,弹一个非阻塞 toast 提醒。</td>
+        <td>250ms 后自动重试一次;第二次失败升级成错误卡。</td>
       </tr>
       <tr>
         <td class="what">F3 · host-zero-size</td>
-        <td class="user">Slot 停留在 <code>mounting</code> 并显示淡 spinner(通常 &lt;200ms)。若超过 2s:错误卡 <i>"终端区域无空间 —— 试试调整窗口大小。"</i></td>
-        <td>每次 slot 的 ResizeObserver tick 都重排 rAF。一旦拿到非零尺寸,从 B3 恢复 Phase 2。</td>
+        <td class="user">Slot 停在 <code>mounting</code>,显示一个淡 spinner(通常 &lt;200ms)。超过 2s:错误卡 <i>"终端区域没有空间 —— 试着调整窗口大小。"</i></td>
+        <td>每次 slot 的 ResizeObserver tick 都重排 rAF;一拿到非零尺寸,从 B3 继续走 Phase 2。</td>
       </tr>
       <tr>
         <td class="what">F4 · stream-disconnected</td>
         <td class="user">终端顶部横幅:<i>"实时更新已暂停 —— 重连中…"</i>。已有 scrollback 仍可读;输入禁用。</td>
-        <td>通过 <code>pty.open</code> 重新订阅;若 seq 跳跃,调 <code>pty.snapshotAt(sid, {sinceSeq})</code> 做增量 snapshot 并应用。</td>
+        <td>再调 <code>pty.open</code> 重新订阅;若 seq 跳跃,调 <code>pty.snapshotAt(sid, {sinceSeq})</code> 做增量 snapshot 并应用。</td>
       </tr>
       <tr>
         <td class="what">F5 · exited</td>
-        <td class="user">终端转只读;光标变灰;侧边栏 agent 状态变为 exited。底部 chip 显示退出码,带重启按钮。</td>
-        <td>重启 spawn 一个新 sid(复用 SessionShell 容器,搭配新的 Terminal);已有会话不会静默复活。</td>
+        <td class="user">终端只读;光标变灰;侧边栏 agent 状态变 exited。底部 chip 显示退出码,带重启按钮。</td>
+        <td>重启 spawn 一个新 sid(复用 SessionShell 容器,装一个新的 Terminal);已有会话不会静默复活。</td>
+      </tr>
+      <tr>
+        <td class="what">F6 · shell-not-ready</td>
+        <td class="user">边缘情况 —— 用户刚加完 session 立刻点,Phase 0 的 provision 还没跑完。Slot 进入 <code>mounting</code> 显示淡 spinner(典型 &lt;500ms),provision 完成立刻接着走 Phase 2。</td>
+        <td>不用用户操作。如果 provision 本身失败,降级为 F1。</td>
       </tr>
     </tbody>
   </table>
@@ -442,56 +450,56 @@
 <!-- ====================== 8. CONTRAST ====================== -->
 <section class="s">
   <h2>8 · 与当前 19 步路径的对比</h2>
-  <p class="lede">不是 diff,是结构性对比。</p>
+  <p class="lede">不是 diff,是结构对比。两栏,一句话一条。</p>
 
   <div class="cmp">
     <div class="col old">
       <h4>当前</h4>
       <ul>
-        <li><b>19 个串行步骤</b>分布在 <code>usePtyAttach.warm.ts</code> + <code>xtermWarmRegistry.ts</code>,数据、DOM、布局、顺序决策混在一起。</li>
-        <li><b>Terminal 生命周期绑死 attach:</b>cold 走 <code>allocEntry</code>,warm 走 <code>display</code> toggle —— 两条不同代码路径。</li>
-        <li><b>buffering-listener 模式</b>用来弥合订阅与可渲染之间的空档。它是正确的,但本质是更深层耦合的 workaround。</li>
-        <li><b>两次 <code>scrollToBottom</code></b>(L479 + L551),因为第一次结构上太早。</li>
-        <li><b>fit 在 attach 之后发生</b>,导致 SIGWINCH 回显出现在第一次钉位之后(QP-3)。</li>
-        <li><b>live-tail 写入是 fire-and-forget</b>(QP-1)—— 最高优先级的 bug。</li>
-        <li><b><code>term.open</code> 在过期或零尺寸布局中执行</b>(QP-2),CanvasAddon atlas 在可见状态预热(QP-4)。</li>
+        <li>19 个串行步骤,数据、DOM、布局、顺序全混在一起。</li>
+        <li>Terminal 生命周期和 attach 绑死:cold 和 warm 走两条代码路径。</li>
+        <li>有个 buffering-listener 模式专门缓冲 attach 之前的 chunk。</li>
+        <li>调了两次 <code>scrollToBottom</code>(L479 + L551),因为第一次太早。</li>
+        <li>fit 在 attach 之后才做,SIGWINCH 回显追在第一次钉位后面(QP-3)。</li>
+        <li>live-tail 写入是 fire-and-forget(QP-1)—— 最严重的 bug。</li>
+        <li><code>term.open</code> 在过期或零尺寸布局里跑(QP-2),CanvasAddon atlas 当着用户面预热(QP-4)。</li>
       </ul>
     </div>
     <div class="col new">
       <h4>重设计</h4>
       <ul>
-        <li><b>5 个阶段</b>,只有 Phase 2 有内部顺序 —— 且这个顺序是三条独立 lane 加一次 barrier。</li>
-        <li><b>单一 Terminal 生命周期</b>:侧边栏 provision 时创建,<code>pty.close</code> 时 dispose。切换 sid 永远不触碰 xterm 内部。</li>
-        <li><b>无 buffering 模式</b>:chunk 永远流向一个已存在的 Terminal。数据面没有 "等候室"。</li>
-        <li><b>一次钉位</b>:S3。在 lane C 算好,drain 后、reveal 前一次应用。</li>
-        <li><b>Fit 在任何 resize 协商之前发生</b>(B3 → S1)。SIGWINCH 回显(若有)被 S2 的 drain 吸收 —— 时间线不需要单独操心。</li>
-        <li><b>所有写入都被 await</b>。S2 的 drain barrier 是结构性的,不是补丁式的 <code>writeAsync('')</code>。</li>
-        <li><b><code>term.open</code> 在 rAF + 非零尺寸断言之后运行</b>。Reveal 是最后一条指令,所以 atlas 预热在结构上不可见。</li>
+        <li>5 个阶段,只有 Phase 2 内部有顺序,而且就是 "三 lane 并行 + 一次汇合"。</li>
+        <li>Terminal 只建一次、关 ccsm 才 dispose。切 sid 完全不动 xterm。</li>
+        <li>没有 buffering 模式,因为 chunk 永远流进一个已存在的 Terminal。</li>
+        <li>只有一次钉位:S3,drain 完之后、reveal 之前。</li>
+        <li>Fit 排在任何 resize 协商之前(B3 → S1),SIGWINCH 回显被 S2 的 drain 顺手吃掉。</li>
+        <li>所有写入都 await,S2 的 drain 是结构性的,不是补丁。</li>
+        <li><code>term.open</code> 在 rAF + 非零尺寸断言之后才跑,reveal 是最后一步,atlas 预热永远在用户看不到的地方。</li>
       </ul>
     </div>
   </div>
 
-  <h3 class="sub">在新架构下不可能发生的 race</h3>
+  <h3 class="sub">新架构里压根不会发生的 race</h3>
   <ul style="margin:0; padding-left:18px; font-size:13px; color:var(--ink-2);">
-    <li><b>QP-1(live-tail vs 钉位):</b>不存在 fire-and-forget tail。S2 是单点显式 drain;S2 与 S3 之间无任何写入。</li>
-    <li><b>QP-2(stale-dim open):</b><code>term.open</code> 只在容器有 live 尺寸时运行(P0 offscreen 有固定尺寸;B2 rAF 保护可见路径)。</li>
-    <li><b>QP-3(fit-after-attach SIGWINCH 回显):</b>fit 在 <code>pty.resize</code> 之前算好,resize 的响应被 S2 drain。</li>
-    <li><b>QP-4(用户可见窗口内 atlas 预热):</b>atlas 在 provision(Phase 0)即预热 —— 此时 Terminal 首次 <code>open</code> 到带真实尺寸的 offscreen 容器。等任何东西 reveal 时,atlas 已热。</li>
-    <li><b>StrictMode 双 mount(QP-5):</b>shell provisioning 是幂等的(在 renderer registry 中以 sid 为键),所以 effect 重跑就是 no-op,不会重新分配。</li>
+    <li><b>QP-1(live tail vs 钉位):</b>没有 fire-and-forget tail,S2 显式 drain,S2 和 S3 之间不写任何东西。</li>
+    <li><b>QP-2(stale-dim open):</b><code>term.open</code> 只在容器有真实尺寸时跑(P0 offscreen 容器有固定尺寸,B2 rAF 保护可见路径)。</li>
+    <li><b>QP-3(fit-after-attach SIGWINCH 回显):</b>fit 在 <code>pty.resize</code> 之前算好,resize 的回响被 S2 吃掉。</li>
+    <li><b>QP-4(用户能看见 atlas 预热):</b>atlas 在 Phase 0 就预热完了 —— 那时容器在 offscreen,用户根本看不见。</li>
+    <li><b>StrictMode 双 mount(QP-5):</b>provision 以 sid 为 key 幂等,effect 重跑就是 no-op。</li>
   </ul>
 
   <h3 class="sub">可以删掉的代码</h3>
   <ul style="margin:0; padding-left:18px; font-size:13px; color:var(--ink-2);">
-    <li><span class="kill"><code>src/terminal/usePtyAttach.warm.ts</code></span> —— 19 步过程。由一个小 <code>useVisibleShell(sid)</code> hook 取代,只翻 <code>SlotState</code>。</li>
-    <li><span class="kill"><code>xtermWarmRegistry.ts::ensureAndShowEntry / applySnapshot / pinViewportToBottom</code></span> —— 折叠成 <code>shellRegistry</code>,只暴露 <code>provision/close/getSnapshot</code>。</li>
-    <li><span class="kill">"buffering" listener 模式</span> —— 随数据面解耦一并消失。</li>
-    <li><span class="kill"><code>pty:attach</code> 与 <code>pty:detach</code> IPC 通道</span> —— 由 <code>pty.open</code> / <code>pty.close</code> 取代;per-window 流是隐式的。</li>
-    <li><span class="kill">snapshot 前的防御性 <code>term.reset()</code></span> —— shell registry 保证 terminal 要么全新,要么已 live;reset 无人调用。</li>
+    <li><span class="kill"><code>src/terminal/usePtyAttach.warm.ts</code></span> —— 19 步过程,被一个只翻 <code>SlotState</code> 的小 hook <code>useVisibleShell(sid)</code> 取代。</li>
+    <li><span class="kill"><code>xtermWarmRegistry.ts::ensureAndShowEntry / applySnapshot / pinViewportToBottom</code></span> —— 折成 <code>shellRegistry</code>,只暴露 <code>provision/close/getSnapshot</code>。</li>
+    <li><span class="kill">"buffering" listener 模式</span> —— 数据面解耦之后没人需要它了。</li>
+    <li><span class="kill"><code>pty:attach</code> 和 <code>pty:detach</code> IPC 通道</span> —— 由 <code>pty.open</code> / <code>pty.close</code> 取代,per-window 的流是隐式的。</li>
+    <li><span class="kill">snapshot 前的防御性 <code>term.reset()</code></span> —— shell registry 保证 terminal 要么是新的、要么已 live,reset 没人调。</li>
   </ul>
 </section>
 
 <footer>
-  配套文档。当前实现的标注时间线在 <code>docs/attach-timeline-review.html</code>,作为历史记录保留 —— 不要编辑。本文件是 "如果今天从头来" 的对立提案。
+  配套文档。当前实现的标注时间线在 <code>docs/attach-timeline-review.html</code>,作为历史档案保留 —— 别去改。本文件是 "如果今天从头来" 的对照提案。
 </footer>
 
 </div>
