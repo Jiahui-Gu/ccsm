@@ -253,7 +253,7 @@ export function makeEntry(
     args = [flag, claudeSid];
   }
 
-  const spawnCwd = resolveSpawnCwd(cwd);
+  const spawnCwd = resolveSpawnCwd(cwd, sid);
 
   // See `ensureResumeJsonlAtSpawnCwd` for the bug context (#603) — copies
   // the import-source JSONL into the spawn cwd's projectDir so
