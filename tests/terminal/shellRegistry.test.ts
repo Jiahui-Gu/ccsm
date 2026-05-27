@@ -346,20 +346,15 @@ describe('shellRegistry', () => {
     expect((b.term.options as { scrollback?: number }).scrollback).toBe(5000);
   });
 
-  it('pty.onExit dispatches to store._applyPtyExit for both visible and hidden sids', () => {
+  it('does NOT install a module-level pty.onExit listener (bridge in App.tsx owns dispatch)', () => {
+    // Regression for PR #1396's reload bug: a second listener here
+    // caused dual-dispatch of `_applyPtyExit` per pty:exit IPC, which
+    // defeated reloadSession's expectedExits suppression and surfaced
+    // the "claude crashed" overlay on every healthy reload. The
+    // app-level `usePtyExitBridge` is the only legitimate caller.
     createShell('sid-a', host);
     createShell('sid-b', host);
-    expect(onExitListeners.length).toBe(1);
-    onExitListeners[0]({ sessionId: 'sid-a', code: 0, signal: null });
-    onExitListeners[0]({ sessionId: 'sid-b', code: 1, signal: null });
-    expect(applyPtyExitSpy).toHaveBeenCalledTimes(2);
-    expect(applyPtyExitSpy).toHaveBeenCalledWith('sid-a', { code: 0, signal: null });
-    expect(applyPtyExitSpy).toHaveBeenCalledWith('sid-b', { code: 1, signal: null });
-  });
-
-  it('pty.onExit ignores events with no sessionId', () => {
-    createShell('sid-a', host);
-    onExitListeners[0]({ sessionId: '', code: 0, signal: null });
+    expect(onExitListeners.length).toBe(0);
     expect(applyPtyExitSpy).not.toHaveBeenCalled();
   });
 });

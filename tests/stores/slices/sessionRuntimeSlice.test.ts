@@ -205,6 +205,22 @@ describe('sessionRuntimeSlice', () => {
       expect(h.state().disconnectedSessions['a']).toBeDefined();
     });
 
+    // RED regression: the renderer wires TWO independent pty.onExit
+    // listeners (App.tsx → usePtyExitBridge AND shellRegistry's module-
+    // level installExitListenerOnce). A single main → renderer pty:exit
+    // IPC therefore fans out to `_applyPtyExit` TWICE per sid. The
+    // expectedExits counter only suppresses one call, so the second call
+    // re-populates `disconnectedSessions[sid]` with a stale crash entry
+    // for the pty we ourselves killed — surfacing the "claude crashed"
+    // overlay on the freshly-spawned healthy session. This was the
+    // user-visible bug after PR #1396's counter fix landed: green CI,
+    // overlay still appeared in dev.
+    //
+    // The fix lives at the listener layer (shellRegistry stops
+    // installing a second listener — see tests/terminal/shellRegistry
+    // .test.ts "does NOT install a module-level pty.onExit listener").
+    // The slice contract is preserved: exactly ONE post-reload exit
+    // event is suppressed per `reloadSession` call.
     it('suppression is per-sid (other sids unaffected)', async () => {
       const h = harness({ sessions: [mkSession('a', 'g1'), mkSession('b', 'g1')] });
       await h.runtime.reloadSession('a');

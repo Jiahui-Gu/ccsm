@@ -58,30 +58,20 @@ export type Shell = {
 const shells: Map<string, Shell> = new Map();
 let topSid: string | null = null;
 
-// Single module-level PTY exit listener — dispatches to the store for
-// every sid (visible OR hidden). Mirrors the legacy behaviour: hidden
-// session crashes must surface their exit classification so the user
-// sees the right overlay on switch-back.
-let exitUnsubscribe: (() => void) | null = null;
-function installExitListenerOnce(): void {
-  if (exitUnsubscribe) return;
-  const pty = typeof window !== 'undefined' ? window.ccsmPty : undefined;
-  if (!pty?.onExit) return;
-  exitUnsubscribe = pty.onExit(
-    (evt: { sessionId: string; code?: number | null; signal?: string | number | null }) => {
-      const sid = evt.sessionId;
-      if (!sid) return;
-      try {
-        useStore.getState()._applyPtyExit(sid, {
-          code: evt.code ?? null,
-          signal: evt.signal ?? null,
-        });
-      } catch (e) {
-        warn('shell', 'exit dispatch failed', e);
-      }
-    },
-  );
-}
+// NOTE: pty.onExit → store._applyPtyExit dispatch lives EXCLUSIVELY on
+// the app-level bridge (`src/app-effects/usePtyExitBridge.ts` wired in
+// App.tsx). That bridge is mounted unconditionally for every sid, so
+// hidden-session crashes still populate `disconnectedSessions[sid]` and
+// surface the correct overlay on switch-back.
+//
+// We deliberately do NOT install a second module-level listener here.
+// Doing so caused PR #1396's user-visible reload bug: a single pty:exit
+// IPC fanned out to BOTH the bridge and the shell-registry listener,
+// dispatching `_applyPtyExit` twice per event. `reloadSession`'s
+// expectedExits counter only suppresses one call — the second call then
+// re-populated `disconnectedSessions[sid]` with a stale crash entry for
+// the pty we ourselves just killed, surfacing the "claude crashed"
+// overlay on every healthy reload.
 
 let beforeUnloadHandler: (() => void) | null = null;
 function installUnloadCleanupOnce(): void {
@@ -118,7 +108,6 @@ export function shellCount(): number {
  */
 export function createShell(sid: string, host: HTMLElement): Shell {
   installUnloadCleanupOnce();
-  installExitListenerOnce();
 
   const existing = shells.get(sid);
   if (existing) {
@@ -645,14 +634,6 @@ export function __resetShellRegistryForTests(): void {
     }
   }
   beforeUnloadHandler = null;
-  if (exitUnsubscribe) {
-    try {
-      exitUnsubscribe();
-    } catch {
-      /* ignore */
-    }
-  }
-  exitUnsubscribe = null;
   if (typeof window !== 'undefined') {
     try {
       delete window.__ccsmTerm;
