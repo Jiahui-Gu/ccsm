@@ -17,7 +17,6 @@
 // `sessionCrudSlice` (split per Task #736 / PR #754 review).
 
 import { classifyPtyExit } from '../../lib/ptyExitClassifier';
-import { disposeEntry } from '../../terminal/xtermWarmRegistry';
 import type { RootStore, SetFn, GetFn } from './types';
 
 export type SessionRuntimeSlice = Pick<
@@ -25,6 +24,7 @@ export type SessionRuntimeSlice = Pick<
   | 'flashStates'
   | 'disconnectedSessions'
   | 'reloadNonce'
+  | 'expectedExits'
   | '_applySessionState'
   | '_setFlash'
   | '_applyCwdRedirect'
@@ -43,6 +43,7 @@ export function createSessionRuntimeSlice(
     flashStates: {},
     disconnectedSessions: {},
     reloadNonce: {},
+    expectedExits: {},
 
     _applySessionState: (sid, state) => {
       set((s) => {
@@ -83,6 +84,30 @@ export function createSessionRuntimeSlice(
     },
 
     _applyPtyExit: (sid, payload) => {
+      // Reload-race guard: `reloadSession` increments
+      // `expectedExits[sid]` before issuing the kill so the OLD pty's
+      // exit event (which travels through main → renderer IPC
+      // asynchronously and lands AFTER reloadSession's `set()`
+      // returns) doesn't show up in `disconnectedSessions` and trip
+      // the "claude crashed" overlay on the freshly-spawned pty. Each
+      // recorded reload swallows exactly one subsequent exit; if the
+      // OLD pty had already exited before kill was called the counter
+      // stays armed and quietly absorbs the next real exit instead —
+      // chosen as the lesser evil vs. surfacing a bogus crash overlay
+      // every time the user clicks reload on a healthy session. A
+      // truly crashed reloaded session still surfaces because the
+      // crash exit increments well after the suppressor has been
+      // consumed by the kill's own exit event.
+      const expected = (_get().expectedExits ?? {})[sid] ?? 0;
+      if (expected > 0) {
+        set((s) => {
+          const nextExpected = { ...s.expectedExits };
+          if (nextExpected[sid]! <= 1) delete nextExpected[sid];
+          else nextExpected[sid] = nextExpected[sid]! - 1;
+          return { expectedExits: nextExpected };
+        });
+        return;
+      }
       const kind = classifyPtyExit({ code: payload.code, signal: payload.signal });
       set((s) => ({
         disconnectedSessions: {
@@ -102,30 +127,28 @@ export function createSessionRuntimeSlice(
     },
 
     reloadSession: async (sid) => {
-      // Kill the current pty (best-effort — it may already be exiting,
-      // in which case `kill` resolves with `ok: false` which we ignore).
-      // The renderer's preload bridge swallows IPC errors via `.catch()`
-      // pattern at other call sites; we mirror that here.
+      // Arm the exit-suppressor BEFORE kill: the kill's exit event will
+      // land asynchronously and would otherwise pollute the
+      // disconnectedSessions slice with a stale crash entry for the
+      // pty we ourselves asked to die. See `_applyPtyExit` for the
+      // matching consume-side.
+      set((s) => ({
+        expectedExits: {
+          ...s.expectedExits,
+          [sid]: ((s.expectedExits ?? {})[sid] ?? 0) + 1,
+        },
+      }));
+      // Kill the current PTY (best-effort — it may already be exiting).
       try {
         await window.ccsmPty?.kill(sid);
       } catch {
         /* renderer started without preload (tests) — no-op */
       }
-      // Tear down the warm xterm entry for this sid. Without this the
-      // attach effect's next pass (driven by the reloadNonce bump below)
-      // hits a still-present warm entry, takes the WARM branch, and
-      // never calls `pty.spawn` — the PTY is dead and the UI is stale.
-      // See PR #1361 / bug #1360 root cause.
-      try {
-        disposeEntry(sid, 'reload');
-      } catch {
-        /* registry may be absent in unit tests — non-fatal */
-      }
-      // Drop any stale exit-classification entry from the previous pty
-      // so the sidebar red dot doesn't linger across the reload window
-      // (the new pty's attach effect will also clearPtyExit on success,
-      // but doing it eagerly here avoids a brief flash for crashed-then-
-      // reload-to-recover sequences).
+      // Per attach-redesign §4: reload is term.reset() in-place, NOT
+      // dispose. The attach hook observes the reloadNonce bump below and
+      // runs the "reset + snapshot + write + subscribe" suffix against
+      // the freshly spawned PTY. Hidden-shell reloads are silent (no
+      // mask); top-shell reloads show the mask while the suffix runs.
       set((s) => {
         const nextDisc = s.disconnectedSessions[sid]
           ? (() => {

@@ -15,6 +15,7 @@
 
 import type { Group, Session } from '../../types';
 import { CLAUDE_CODE_AGENT_ID } from '../../shared/agentIds';
+import { disposeShell } from '../../terminal/shellRegistry';
 import { hydrateDrafts as _unused, deleteDrafts, snapshotDraft, restoreDraft } from '../drafts';
 import { resolvePreferredGroup } from '../lib/preferredGroupResolver';
 import {
@@ -378,6 +379,13 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
         void window.ccsmPty?.kill(id).catch(() => {});
       } catch {
         /* renderer started without preload (tests) — no-op */
+      }
+      // attach-redesign §4: delete removes the shell. z-stack collapses
+      // to the next remaining shell, or back to State 0 (blank) if empty.
+      try {
+        disposeShell(id);
+      } catch {
+        /* registry absent (tests / non-renderer contexts) — non-fatal */
       }
       return snapshot;
     },
