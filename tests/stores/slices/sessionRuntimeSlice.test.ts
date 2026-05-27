@@ -162,5 +162,56 @@ describe('sessionRuntimeSlice', () => {
       await h.runtime.reloadSession('a');
       expect(h.state().reloadNonce['a']).toBe(1);
     });
+
+    // Bug: clicking "reload" on a healthy session was showing the
+    // crashed-overlay because the OLD pty's kill produces an
+    // asynchronous exit event that arrives at `_applyPtyExit` AFTER
+    // `reloadSession` clears `disconnectedSessions`. Without
+    // suppression, the slice re-populates with a stale crash entry
+    // for the pty we ourselves killed, and `usePtyAttachShell`'s
+    // disconnect watcher flips state to `exit` on top of the
+    // freshly-spawned healthy pty.
+    //
+    // Contract: after `reloadSession`, the very next
+    // `_applyPtyExit(sid, ...)` for the same sid is suppressed (the
+    // kill we just issued is "expected"). Subsequent exits — e.g. the
+    // NEW pty actually crashing later — flow through normally.
+    it('arms expectedExits[sid] so the kill-induced exit is suppressed', async () => {
+      const h = harness({ sessions: [mkSession('a', 'g1')] });
+      await h.runtime.reloadSession('a');
+      // After reload arms the counter, the OLD pty's exit event
+      // (which would otherwise land here) is consumed silently.
+      h.runtime._applyPtyExit('a', { code: 1, signal: null });
+      expect(h.state().disconnectedSessions['a']).toBeUndefined();
+      // Counter consumed: the NEXT exit (the new pty actually
+      // crashing) IS recorded normally.
+      h.runtime._applyPtyExit('a', { code: 137, signal: 'SIGKILL' });
+      expect(h.state().disconnectedSessions['a']).toBeDefined();
+      expect(h.state().disconnectedSessions['a'].kind).toBe('crashed');
+    });
+
+    it('each reload arms exactly one suppressed exit (counter stacks)', async () => {
+      const h = harness({ sessions: [mkSession('a', 'g1')] });
+      // User mashes reload twice while old pty is still being killed.
+      await h.runtime.reloadSession('a');
+      await h.runtime.reloadSession('a');
+      // Both kill-exits are suppressed.
+      h.runtime._applyPtyExit('a', { code: 1, signal: null });
+      expect(h.state().disconnectedSessions['a']).toBeUndefined();
+      h.runtime._applyPtyExit('a', { code: 1, signal: null });
+      expect(h.state().disconnectedSessions['a']).toBeUndefined();
+      // The third exit (new pty's genuine crash) IS recorded.
+      h.runtime._applyPtyExit('a', { code: 1, signal: null });
+      expect(h.state().disconnectedSessions['a']).toBeDefined();
+    });
+
+    it('suppression is per-sid (other sids unaffected)', async () => {
+      const h = harness({ sessions: [mkSession('a', 'g1'), mkSession('b', 'g1')] });
+      await h.runtime.reloadSession('a');
+      // Session b's exit is unrelated to a's reload and must surface.
+      h.runtime._applyPtyExit('b', { code: 1, signal: null });
+      expect(h.state().disconnectedSessions['b']).toBeDefined();
+      expect(h.state().disconnectedSessions['a']).toBeUndefined();
+    });
   });
 });

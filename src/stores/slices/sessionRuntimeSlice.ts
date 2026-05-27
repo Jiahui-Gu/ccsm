@@ -24,6 +24,7 @@ export type SessionRuntimeSlice = Pick<
   | 'flashStates'
   | 'disconnectedSessions'
   | 'reloadNonce'
+  | 'expectedExits'
   | '_applySessionState'
   | '_setFlash'
   | '_applyCwdRedirect'
@@ -42,6 +43,7 @@ export function createSessionRuntimeSlice(
     flashStates: {},
     disconnectedSessions: {},
     reloadNonce: {},
+    expectedExits: {},
 
     _applySessionState: (sid, state) => {
       set((s) => {
@@ -82,6 +84,30 @@ export function createSessionRuntimeSlice(
     },
 
     _applyPtyExit: (sid, payload) => {
+      // Reload-race guard: `reloadSession` increments
+      // `expectedExits[sid]` before issuing the kill so the OLD pty's
+      // exit event (which travels through main → renderer IPC
+      // asynchronously and lands AFTER reloadSession's `set()`
+      // returns) doesn't show up in `disconnectedSessions` and trip
+      // the "claude crashed" overlay on the freshly-spawned pty. Each
+      // recorded reload swallows exactly one subsequent exit; if the
+      // OLD pty had already exited before kill was called the counter
+      // stays armed and quietly absorbs the next real exit instead —
+      // chosen as the lesser evil vs. surfacing a bogus crash overlay
+      // every time the user clicks reload on a healthy session. A
+      // truly crashed reloaded session still surfaces because the
+      // crash exit increments well after the suppressor has been
+      // consumed by the kill's own exit event.
+      const expected = (_get().expectedExits ?? {})[sid] ?? 0;
+      if (expected > 0) {
+        set((s) => {
+          const nextExpected = { ...s.expectedExits };
+          if (nextExpected[sid]! <= 1) delete nextExpected[sid];
+          else nextExpected[sid] = nextExpected[sid]! - 1;
+          return { expectedExits: nextExpected };
+        });
+        return;
+      }
       const kind = classifyPtyExit({ code: payload.code, signal: payload.signal });
       set((s) => ({
         disconnectedSessions: {
@@ -101,6 +127,17 @@ export function createSessionRuntimeSlice(
     },
 
     reloadSession: async (sid) => {
+      // Arm the exit-suppressor BEFORE kill: the kill's exit event will
+      // land asynchronously and would otherwise pollute the
+      // disconnectedSessions slice with a stale crash entry for the
+      // pty we ourselves asked to die. See `_applyPtyExit` for the
+      // matching consume-side.
+      set((s) => ({
+        expectedExits: {
+          ...s.expectedExits,
+          [sid]: ((s.expectedExits ?? {})[sid] ?? 0) + 1,
+        },
+      }));
       // Kill the current PTY (best-effort — it may already be exiting).
       try {
         await window.ccsmPty?.kill(sid);

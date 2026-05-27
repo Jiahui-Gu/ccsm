@@ -97,6 +97,16 @@ export type State = {
    * Not persisted — purely a transient nudge for the attach hook.
    */
   reloadNonce: Record<string, number>;
+  /**
+   * Per-session counter of pty-exit events that `reloadSession()` has
+   * pre-armed itself to ignore. The kill issued by reload produces an
+   * async exit event that races the slice's `set()` clearing
+   * `disconnectedSessions` — without this guard the OLD pty's exit
+   * lands AFTER the clear and pollutes the slice with a stale crash
+   * entry, surfacing the "claude crashed" overlay on the freshly
+   * spawned pty. `_applyPtyExit` consumes one tick per arrival.
+   */
+  expectedExits: Record<string, number>;
   /** Transient UI signal: when a session is freshly copied (`copySession`),
    *  this holds its id so the matching `<SessionRow>` mounts directly into
    *  inline-rename mode. Cleared by the row after it consumes the flag, or

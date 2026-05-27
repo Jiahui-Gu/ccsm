@@ -205,6 +205,34 @@ async function main() {
       console.log('PASS Reload: mask shown then hidden');
     }
 
+    // RELOAD regression — after reload completes the session must NOT
+    // show the "claude crashed" exit overlay (which was the user-visible
+    // symptom of the stale-OLD-pty-exit race: kill triggers an async
+    // pty-exit IPC that arrived after the slice cleared the
+    // disconnectedSessions map, repopulating it with a bogus crash
+    // entry on the freshly-spawned healthy pty).
+    {
+      const overlay = await win.evaluate((id) => {
+        const disc = window.__ccsmStore.getState().disconnectedSessions ?? {};
+        const entry = disc[id] ?? null;
+        // Also probe the DOM for the exit overlay's signature copy.
+        const bodyText = document.body?.innerText ?? '';
+        const overlayShown = bodyText.includes('claude crashed') ||
+          bodyText.includes('underlying claude CLI exited unexpectedly');
+        return { entry, overlayShown };
+      }, sidA);
+      console.log(`reload post-state for sidA: ${JSON.stringify(overlay)}`);
+      if (overlay.entry) {
+        fail(`Reload regression: disconnectedSessions[sidA] populated after reload (kill-induced exit leaked): ${JSON.stringify(overlay.entry)}`);
+        return;
+      }
+      if (overlay.overlayShown) {
+        fail('Reload regression: "claude crashed" exit overlay shown after reload of healthy session');
+        return;
+      }
+      console.log('PASS Reload: no exit overlay, no stale disconnect entry');
+    }
+
     // DELETE top (currently sidA) → expect z-stack to collapse to sidB
     // without showing a mask on sidB (it's already warmed).
     // First inspect sidB state to verify mask is hidden BEFORE delete.
