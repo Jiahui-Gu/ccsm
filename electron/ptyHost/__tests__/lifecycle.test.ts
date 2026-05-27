@@ -187,6 +187,60 @@ describe('lifecycle.spawn', () => {
     deps.onExit('sid-A');
     expect(sessions.has('sid-A')).toBe(false);
   });
+
+  // Regression for Task #79b — "keyboard input dead after reload".
+  // Root cause: on Windows, `pty.kill('SIGKILL')` throws "Signals not
+  // supported on windows" in the kill timeout branch
+  // (KILL_EXIT_TIMEOUT_MS); the entry is then async-reaped via
+  // `killProcessSubtree`. The OLD pty's natural `onExit` fires LATE —
+  // BY THEN `reloadSession`'s fresh `spawn(sid, ...)` has already
+  // registered a NEW entry under the same sid. If the late onExit
+  // unconditionally `sessions.delete(sid)`s, it CLOBBERS the live fresh
+  // entry. Every subsequent `pty:input` IPC then finds nothing under
+  // the sid and is silently dropped — user-visible as "keystrokes
+  // dropped after reload" (the trust-folder prompt the user sees is
+  // painted by the still-running fresh claude, but its tracking entry
+  // is gone from main's `sessions` map so input goes nowhere).
+  //
+  // Fix: the onExit deps callback identity-guards the delete with
+  // `sessions.get(s) === entry` (the closure-captured original entry).
+  // The OLD pty's late onExit then no-ops because `sessions.get(sid)`
+  // returns the FRESH entry, not the old one.
+  it('onExit identity-guards the delete — stale onExit does not clobber a fresh entry under the same sid', () => {
+    const sessions = new Map<string, FakeEntry>();
+    // First spawn — captures its own onExit closure over `entryA`.
+    const entryA = makeFakeEntry({ pty: makeFakePty({ pid: 100 }) });
+    bus().makeEntry.mockReturnValueOnce(entryA);
+    L.spawn(sessions as any, 'sid-X', '/work', '/bin/claude');
+    expect(sessions.get('sid-X')).toBe(entryA);
+    const depsA = bus().makeEntry.mock.calls[0][5] as { onExit: (s: string) => void };
+
+    // Simulate reload: kill timeout branch already evicted entryA (see
+    // lifecycle.ts line 254). reloadSession then spawns FRESH entry under
+    // same sid before entryA's late onExit fires.
+    sessions.delete('sid-X');
+    const entryB = makeFakeEntry({ pty: makeFakePty({ pid: 200 }) });
+    bus().makeEntry.mockReturnValueOnce(entryB);
+    L.spawn(sessions as any, 'sid-X', '/work', '/bin/claude');
+    expect(sessions.get('sid-X')).toBe(entryB);
+
+    // OLD pty's natural onExit fires LATE — must NOT clobber entryB.
+    depsA.onExit('sid-X');
+    expect(sessions.get('sid-X')).toBe(entryB);
+  });
+
+  // Sanity: the OLD entry's onExit still self-cleans when no fresh entry
+  // has replaced it (the common case — pty exits normally, no reload).
+  it('onExit still removes the entry when no replacement has been registered', () => {
+    const sessions = new Map<string, FakeEntry>();
+    const entry = makeFakeEntry();
+    bus().makeEntry.mockReturnValue(entry);
+    L.spawn(sessions as any, 'sid-Y', '/work', '/bin/claude');
+    const deps = bus().makeEntry.mock.calls[0][5] as { onExit: (s: string) => void };
+    expect(sessions.has('sid-Y')).toBe(true);
+    deps.onExit('sid-Y');
+    expect(sessions.has('sid-Y')).toBe(false);
+  });
 });
 
 // ─── list / get ───────────────────────────────────────────────────────────
