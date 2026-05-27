@@ -74,7 +74,19 @@ export function spawn(
     cols,
     rows,
     {
-      onExit: (s) => { sessions.delete(s); },
+      // Identity-guarded delete: when reload races with a wedged-pty
+      // kill (Windows: `pty.kill('SIGKILL')` throws "Signals not supported
+      // on windows", the timeout branch async-reaps via
+      // `killProcessSubtree`, the OLD pty's actual `onExit` fires LATE),
+      // the OLD entry's onExit must not clobber a FRESH entry that
+      // `reloadSession` already registered under the same sid. Without
+      // this guard, sessions.get(sid) returns undefined for the live
+      // fresh pty and every subsequent `pty:input` IPC is silently
+      // dropped — user-visible as "reload made keyboard input dead"
+      // (Task #79b empirical repro).
+      onExit: (s) => {
+        if (sessions.get(s) === entry) sessions.delete(s);
+      },
       onCwdRedirect: opts?.onCwdRedirect,
     },
     opts?.forkSourceSid,
