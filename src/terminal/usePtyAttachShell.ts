@@ -100,7 +100,20 @@ async function runColdStartSuffix(
   if (!res) {
     const forkSourceSid =
       useStore.getState().pendingForkSource[sessionId] ?? undefined;
-    const spawnResult = (await pty.spawn(sessionId, cwd ?? '', forkSourceSid)) as
+    // Resolve cwd from the live store at spawn time. The `cwd` prop can
+    // be stale (a tool-driven `_applyCwdRedirect` updates `session.cwd`
+    // mid-session and the new value may not yet have rendered down to
+    // this hook) or empty (App.tsx falls back to `''` if `active.cwd`
+    // is missing). An empty/missing cwd makes main's `resolveSpawnCwd`
+    // fall back to `homedir()` — that's what was triggering the "trust
+    // this folder?" prompt on reload (#79a). The store is the source of
+    // truth for the session's current cwd; the prop is a render-time
+    // shadow that can lag.
+    const storeCwd = useStore
+      .getState()
+      .sessions.find((x) => x.id === sessionId)?.cwd;
+    const spawnCwd = storeCwd && storeCwd.length > 0 ? storeCwd : (cwd ?? '');
+    const spawnResult = (await pty.spawn(sessionId, spawnCwd, forkSourceSid)) as
       | { ok: true; sid: string; pid: number; cols: number; rows: number }
       | { ok: false; error: string };
     if (forkSourceSid) {
