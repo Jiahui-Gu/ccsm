@@ -23,16 +23,20 @@
 //   - reload of hidden: same shape but mask stays off the whole time
 //     because the shell isn't on top.
 //
-// Bailout: any throw → setState('error') + disposeShell(sid). User taps
-// Retry → onRetry calls disposeShell + sets a nonce so the effect re-runs
-// from scratch (i.e., cold-starts a fresh shell).
+// Bailout: any throw inside cold/reload/retry → setState('error') + leave
+// the shell mounted under the host (wrapper + term + per-shell mask stay
+// in the DOM so the error overlay floats above a real `.xterm`, matching
+// the legacy warm-registry contract that the e2e wiring probe asserts).
+// User taps Retry → onRetry bumps retryNonce; the effect's retry branch
+// resets the shell in place (term.reset + mask) and re-runs the cold-start
+// suffix against a freshly spawned PTY. Hard-bailout only happens at
+// shell teardown (sid removal / app quit), not on transient attach error.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../stores/store';
 import { warn, log } from '../shared/log';
 import {
   createShell,
-  disposeShell,
   getShell,
   resetShellForReload,
   setMask,
@@ -216,6 +220,15 @@ export function usePtyAttachShell(
     sid: sessionId,
     nonce: reloadNonce,
   });
+  // Same tracking for retryNonce — when the user clicks Retry on the
+  // error overlay the existing shell stays in the registry (DOM intact);
+  // we reset it in place and re-run the cold-start suffix instead of
+  // disposing + rebuilding (avoids a flash of blank host, matches the
+  // legacy warm-registry contract).
+  const lastRetryAppliedRef = useRef<{ sid: string; nonce: number }>({
+    sid: sessionId,
+    nonce: 0,
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -225,6 +238,12 @@ export function usePtyAttachShell(
       reloadNonce !== last.nonce &&
       getShell(sessionId) != null;
     lastReloadAppliedRef.current = { sid: sessionId, nonce: reloadNonce };
+    const lastRetry = lastRetryAppliedRef.current;
+    const isRetry =
+      lastRetry.sid === sessionId &&
+      retryNonce !== lastRetry.nonce &&
+      getShell(sessionId) != null;
+    lastRetryAppliedRef.current = { sid: sessionId, nonce: retryNonce };
 
     void (async () => {
       const pty = window.ccsmPty;
@@ -241,7 +260,10 @@ export function usePtyAttachShell(
       // RELOAD path — sessionRuntimeSlice already killed the PTY; we
       // term.reset() the shell, mask if top, then run cold-start suffix
       // against the freshly spawned PTY.
-      if (isReload) {
+      // RETRY path — user clicked Retry on the error overlay. Shell DOM
+      // is still mounted (cold/reload catch keeps it). Same shape as
+      // reload: reset in place + re-run cold-start suffix.
+      if (isReload || isRetry) {
         const shell = resetShellForReload(sessionId);
         if (!shell) return;
         setState({ kind: 'attaching' });
@@ -254,10 +276,13 @@ export function usePtyAttachShell(
           }
         } catch (err) {
           if (cancelled) return;
+          // Same rationale as cold-path catch — keep the DOM mounted,
+          // surface the error overlay above the existing term. Retry
+          // re-runs the cold-start suffix via the retryNonce path.
           try {
-            disposeShell(sessionId);
+            setMask(sessionId, true);
           } catch {
-            /* ignore */
+            /* cosmetic */
           }
           const message = err instanceof Error ? err.message : String(err);
           setState({ kind: 'error', message });
@@ -301,10 +326,17 @@ export function usePtyAttachShell(
         }
       } catch (err) {
         if (cancelled) return;
+        // Do NOT disposeShell here — we keep the wrapper + term DOM
+        // mounted under the host so the error overlay floats above an
+        // already-attached `.xterm` (matches the legacy warm-registry
+        // contract; the e2e wiring probe relies on this). Retry re-runs
+        // the cold-start suffix in place via `resetShellForReload` —
+        // same shape as a reloadNonce bump. No flash of blank host, no
+        // re-create cost on retry.
         try {
-          disposeShell(sessionId);
+          setMask(sessionId, true);
         } catch {
-          /* ignore */
+          /* mask is cosmetic — overlay covers anyway */
         }
         const message = err instanceof Error ? err.message : String(err);
         setState({ kind: 'error', message });
@@ -377,11 +409,6 @@ export function usePtyAttachShell(
   }, [sessionId, hostRef]);
 
   const onRetry = useCallback(() => {
-    try {
-      disposeShell(sessionId);
-    } catch {
-      /* ignore */
-    }
     try {
       clearPtyExitRef.current(sessionId);
     } catch {
