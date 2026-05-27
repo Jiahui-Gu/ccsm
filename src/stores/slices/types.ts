@@ -80,7 +80,7 @@ export type State = {
   scrollbackLines: number;
   /** xterm font size in px. Global, persisted, default 13, bounds 8–32.
    *  Controlled by Ctrl+MouseWheel over the terminal pane. Applied to the
-   *  active warm entry immediately and lazily to others on next show. */
+   *  top shell immediately and lazily to others on next show. */
   terminalFontSizePx: number;
   flashStates: Record<string, boolean>;
   hydrated: boolean;
@@ -92,7 +92,7 @@ export type State = {
   >;
   /**
    * Per-session counter bumped by `reloadSession()` to force the
-   * `usePtyAttach` effect to re-run for an unchanged sid (kill the
+   * `usePtyAttachShell` effect to re-run for an unchanged sid (kill the
    * current pty, then re-spawn via the existing spawn-on-null fallback).
    * Not persisted — purely a transient nudge for the attach hook.
    */
@@ -113,7 +113,7 @@ export type State = {
    *  by any subsequent `selectSession` to a different id. */
   pendingRenameId: string | null;
   /** Map newSid → source ccsm sid for sessions created via `copySession`.
-   *  `usePtyAttach` reads it on the very first `pty.spawn` for a given sid
+   *  `usePtyAttachShell` reads it on the very first `pty.spawn` for a given sid
    *  and threads the source through to main so the spawn args become
    *  `--resume <srcUuid> --fork-session --session-id <newUuid>`. The entry
    *  is cleared the moment the spawn IPC is dispatched so subsequent
@@ -146,7 +146,7 @@ export type Actions = {
   _clearPtyExit: (sid: string) => void;
   /**
    * Right-click "Reload session" — kill the current pty and bump the
-   * per-session reload nonce so the `usePtyAttach` effect re-runs and
+   * per-session reload nonce so the `usePtyAttachShell` effect re-runs and
    * spawns a fresh pty (via the existing spawn-on-null fallback).
    * Used to pick up env / config changes that require a new claude process.
    */

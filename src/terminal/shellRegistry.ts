@@ -50,6 +50,11 @@ export type Shell = {
   /** Set true after the first cold-start completes; used by the host to
    *  know whether a re-show should trigger any mask UI (it should not). */
   warmed: boolean;
+  /** Set true once `term.onData → pty.input` has been wired for this shell.
+   *  Used by `usePtyAttachShell` to avoid double-wiring across reload — the
+   *  Terminal instance is kept across reloads so the existing disposable
+   *  is still live. */
+  inputWired: boolean;
   /** Pending font size to apply on next show — set when a Ctrl+wheel zoom
    *  happens while this shell is hidden. */
   pendingFontSize: number | null;
@@ -203,6 +208,7 @@ export function createShell(sid: string, host: HTMLElement): Shell {
     composing: false,
     composingBuffer: [],
     warmed: false,
+    inputWired: false,
     pendingFontSize: null,
   };
   shells.set(sid, shell);

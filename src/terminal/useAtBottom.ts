@@ -19,9 +19,9 @@ import { getTopShell } from './shellRegistry';
 // programmatic scroll caused by new output) and on `onLineFeed` (covers
 // the case where output advances `baseY` without changing `viewportY` —
 // e.g. user scrolled up, new lines keep streaming; xterm bumps baseY but
-// no scroll event fires). The hook reads the registry's active entry
-// (warm xterm path — see `xtermWarmRegistry.ts`) so the listeners attach
-// to whichever Terminal is currently in the foreground.
+// no scroll event fires). The hook reads the registry's top shell
+// (z-stack path — see `shellRegistry.ts` / `usePtyAttachShell.ts`) so
+// the listeners attach to whichever Terminal is currently in the foreground.
 //
 // Returns a stable `atBottom` boolean and a `scrollToBottom` function
 // that delegates to xterm's public API.

@@ -145,10 +145,8 @@ async function runColdStartSuffix(
 
   // Wire term.onData → pty.input. Idempotent across reload because the
   // shell's previous inputDisposable was either left in place (we keep
-  // the term across reloads) — guard by stashing once.
-  const stashKey = '__ccsmInputWired' as const;
-  type Stashed = { [stashKey]: boolean };
-  if (!(shell as unknown as Stashed)[stashKey]) {
+  // the term across reloads) — guard by the typed `inputWired` flag.
+  if (!shell.inputWired) {
     const inputDisposable = shell.term.onData((data: string) => {
       if (getShell(sessionId)) window.ccsmPty.input(sessionId, data);
     });
@@ -159,7 +157,7 @@ async function runColdStartSuffix(
         /* ignore */
       }
     });
-    (shell as unknown as Stashed)[stashKey] = true;
+    shell.inputWired = true;
   }
 
   try {
