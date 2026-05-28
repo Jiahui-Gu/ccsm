@@ -10,13 +10,14 @@ Two test surfaces share one runner:
   many cases. Cases share the renderer + main process and rely on
   `scripts/probe-helpers/reset-between-cases.mjs` to scrub state between
   cases. Best for cases that are session-scoped and don't need a fresh
-  process. Currently:
-  - `harness-agent.mjs` — agent / streaming / inputbar UI (Phase-2 pilot).
+  process. Current harnesses: `harness-dnd.mjs`, `harness-ui.mjs`,
+  `harness-ime-overflow.mjs`, and the `harness-e2e-*.mjs` family
+  (`error-recovery`, `import-from-claude`, `paste-fidelity`,
+  `persistence-resume`, `session-lifecycle`, `window-lifecycle-notify`).
 
-`scripts/run-all-e2e.mjs` runs harnesses first, then the remaining per-file
-probes. Probes whose case has been moved into a harness are skipped via the
-in-file `MERGED_INTO_HARNESS` set; the source files stay as breadcrumbs with
-a top-of-file `// MERGED INTO scripts/harness-…mjs` marker.
+`scripts/run-all-e2e.mjs` discovers harnesses and probes by glob and runs
+harnesses first, then probes. There is no skip-list; if a case has been
+absorbed into a harness, delete the original per-file probe.
 
 ## Adding a new case
 
@@ -37,10 +38,9 @@ a top-of-file `// MERGED INTO scripts/harness-…mjs` marker.
      side effect (i18n language, theme, …), pass a restore function to
      `registerDispose(...)`. The runner drains these inside
      `resetBetweenCases` before the next case.
-3. **Update the runner skip list.** Add the suffix of the original
-   per-file probe (if any) to `MERGED_INTO_HARNESS` in
-   `scripts/run-all-e2e.mjs`, and prepend the breadcrumb header to the
-   source file.
+3. **Delete the original per-file probe** (if a probe was absorbed into a
+   harness). The runner has no skip-list — leftover duplicate cases will
+   just run twice.
 
 ## Harness-author gotchas
 
@@ -100,10 +100,9 @@ const electronApp = await electron.launch({
 ## Running locally
 
 ```bash
-npm run probe:e2e            # build + every harness + every non-merged probe
-node scripts/harness-agent.mjs                       # one harness, all cases
-node scripts/harness-agent.mjs --only=streaming      # one case
-node scripts/harness-agent.mjs --only=streaming,chat-copy  # subset
+npm run probe:e2e            # build + every harness + every probe
+node scripts/harness-ui.mjs                          # one harness, all cases
+node scripts/harness-e2e-session-lifecycle.mjs       # another harness
 ```
 
 `E2E_SKIP=streaming,tray` (or any comma list of probe / harness suffixes)
