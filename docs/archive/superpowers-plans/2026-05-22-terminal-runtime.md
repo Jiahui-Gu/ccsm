@@ -1,5 +1,16 @@
 # TerminalRuntime — design proposal (architectural plan)
 
+> **Status:** SUPERSEDED (archived 2026-05-28). The terminal layer was rewritten
+> along a different axis than this proposal recommended — see
+> `src/terminal/shellRegistry.ts` + `usePtyAttachShell.ts` and the
+> `docs/attach-redesign.html` design doc. Every file this proposal aimed to
+> replace (`xtermSingleton.ts`, `usePtyAttach.ts`, `useXtermSingleton`,
+> `useTerminalResize`, `setSnapshotReplay`) has been deleted. Kept for
+> historical context — the FSM-vs-per-shell-registry trade-off discussion
+> is still informative.
+
+---
+
 > **Status:** PROPOSAL — not an executable plan yet. The architecture audit
 > (4 parallel subagents, 2026-05-22) identified this as the highest-leverage
 > single refactor in the terminal layer. This document captures the design
