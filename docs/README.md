@@ -5,8 +5,8 @@
 - `design-system.md` — Tailwind v4 tokens
 
 ## Status
-- `status/STATUS.md`
-- `status/post-migration-gap-triage-*.md`
+- `status/STATUS.md` — pointer; current state lives in `git log` + `DEBT.md`
+- `status/post-migration-gap-triage-*.md` — dated snapshot, kept for history
 
 ## Reference
 - `reference/release.md`, `packaging.md`, `e2e-runner.md`

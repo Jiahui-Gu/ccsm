@@ -1,5 +1,15 @@
 # SessionActionIntent — design proposal (architectural plan)
 
+> **Status:** SUPERSEDED (archived 2026-05-28). Companion to
+> `2026-05-22-terminal-runtime.md`, which was itself superseded. This proposal
+> explicitly sequenced behind TerminalRuntime phase 1, so the precondition will
+> never be met. The coordination maps it targets (`reloadNonce`,
+> `pendingForkSource`, `pendingRenameId`) still exist in
+> `src/stores/slices/` — the consolidation argument is still defensible as a
+> standalone refactor, but would need re-scoping. Kept for historical context.
+
+---
+
 > **Status:** PROPOSAL — not an executable plan yet. Companion to
 > `2026-05-22-terminal-runtime.md`. This proposal targets the **second-
 > highest leverage** debt surfaced by the architecture audit (4 parallel
