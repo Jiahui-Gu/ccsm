@@ -25,7 +25,7 @@ shows what got paid down).
 | 1 | Electron 41 → 42 (Chromium CVE patches stop arriving on 41) | OPEN | M | HIGH | `package.json:96` |
 | 2 | `@anthropic-ai/claude-agent-sdk` 0.2 → 0.3 | OPEN | M | HIGH | `package.json:41` |
 | 3 | Renderer bundle 1.24 MB single chunk — lazy-load `ImportDialog`/`CommandPalette`/`SettingsDialog`. **DONE** ([#1417](https://github.com/Jiahui-Gu/ccsm/pull/1417), `39138a8`): 3 dialogs converted to `React.lazy` + `Suspense`, code-split out of the initial parse (3 async chunks confirmed in dist). The originally-listed `splitChunks` vendor grouping is **WONTFIX**: this is an Electron renderer loaded from `file://` (local disk, no network, no HTTP cache, no return-visit), so splitting `bundle.js` into a vendor chunk reorganizes bytes on disk without reducing startup parse or total load. The positive-ROI portion (deferring parse via lazy-load) is the part that landed. | DONE | M | HIGH | `src/App.tsx` |
-| 4 | God-files >500 LOC: `shellRegistry.ts` (650), `sessionCrudSlice.ts` (622), `createWindow.ts` (596), `mobileRemoteServer.ts` (535) | OPEN | L | HIGH | various |
+| 4 | God-files >500 LOC: `createWindow.ts` (717), `shellRegistry.ts` (686), `log.ts` (637), `sessionCrudSlice.ts` (622), `mobileRemoteServer.ts` (535) | OPEN | L | HIGH | various |
 | 5 | Session field "shotgun surgery" — adding one field touches slice + types + preload + IPC + db + components + `i18n/locales/{en,zh}.ts` (duplicated locales are the amplifier) | OPEN | M | HIGH | `src/i18n/locales/*` + chain |
 | 17 | No Content-Security-Policy — renderer ships no CSP. **DONE** ([#1413](https://github.com/Jiahui-Gu/ccsm/pull/1413), `78bd564`): CSP set via `onHeadersReceived` response header, dev/prod aware | DONE | M | HIGH | `electron/window/createWindow.ts` |
 | 18 | `npm audit` (2026-05-29, official registry): 8 prod vulns (1 HIGH, 7 mod). **DONE** ([#1412](https://github.com/Jiahui-Gu/ccsm/pull/1412), `5c8589a`): `npm audit fix` cleared all 8 prod vulns | DONE | S | HIGH | `package-lock.json` |
@@ -50,6 +50,7 @@ shows what got paid down).
 | 14 | `src/shared/*` exports and preload bridge methods lack consistent JSDoc | OPEN | M | LOW | `src/shared/*`, `electron/preload/bridges/*` |
 | 15 | `electron/__tests__/db-hardening.test.ts:172` has `it.todo` placeholder for SCHEMA_VERSION ≥2 migration test — un-block when v2 lands | OPEN | S | LOW | (file) |
 | 16 | `vitest.config.ts` lacks `retry: 1` — no flake guard. Currently no observed flakes, so leave as nil-debt; revisit if any case starts to flake | OPEN | S | LOW | `vitest.config.ts` |
+| 19 | `npm audit` (2026-05-29, official registry): 3 moderate vulns, all **dev-only** — `uuid` <11.1.1 (buffer bounds) via `sockjs` → `webpack-dev-server`. Not in the production dependency tree (does not ship in the packaged app). Fix requires `npm audit fix --force` (breaking `webpack-dev-server` downgrade), so deferred until a webpack-dev-server major bump clears it cleanly | OPEN | S | LOW | `package-lock.json` (devDeps) |
 
 ---
 
@@ -81,6 +82,8 @@ shows what got paid down).
 ---
 
 ## Audit history
+
+- **2026-05-29 (refresh)** — verification pass via `technical-debt` skill. Confirmed still-OPEN: #1 (Electron installed 41.x, latest 42.3.0), #2 (SDK installed 0.2.119, latest 0.3.156), #12 (IPC unbounded arrays, input boundary still validated via `isSafePath`/`fromMainFrame`). `madge --circular` clean (re-confirmed #6 fix holds). Source still 0 TODO/FIXME/HACK; no hardcoded secrets. Corrections to ledger: #4 god-file LOC refreshed (`createWindow.ts` 596→717, `shellRegistry.ts` 650→686, added `log.ts` 637) — files grew since last count. New #19: `npm audit` now shows 3 **dev-only** moderate vulns (uuid→sockjs→webpack-dev-server), distinct from the 8 prod vulns closed in #18; LOW because not in the shipped tree.
 
 - **2026-05-29 (closeout)** — #3 renderer bundle closed out. The lazy-load half (#1417, `39138a8`) is the positive-ROI part and is DONE: 3 dialogs deferred via `React.lazy`/`Suspense`, removing them from the startup parse. The originally-listed `splitChunks` vendor grouping is marked **WONTFIX** — ccsm's renderer loads from `file://` (local disk: no network, no HTTP cache, no return-visit), so a vendor chunk only reorganizes bytes on disk without cutting startup parse or total load. Splitting would add config surface for no measurable user-visible win. #6 merge SHA backfilled (`ca7ab2f`).
 - **2026-05-29 (paydown)** — #6 terminal↔store circular dependency. `madge --circular` confirmed a real cycle: `store.ts → stores/slices/sessionCrudSlice.ts → terminal/shellRegistry.ts → store.ts` (shellRegistry statically imported `useStore` to read `scrollbackLines`/`terminalFontSizePx` for `createShell`). Fixed minimally by inverting that one edge: shellRegistry now exposes `setShellAppearanceProvider`, and `store.ts` registers a lazy provider at boot — so the static graph is one-directional (store → terminal). `madge --circular --extensions ts,tsx src/` now reports "No circular dependency found". The `sessionCrudSlice → shellRegistry` (`disposeShell`) edge and other terminal→store reads are permitted one-way reads.
