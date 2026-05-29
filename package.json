@@ -28,6 +28,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
+    "audit": "npm audit --registry=https://registry.npmjs.org/",
+    "audit:fix": "npm audit fix --registry=https://registry.npmjs.org/",
     "probe:e2e": "npm run build && node scripts/run-all-e2e.mjs",
     "make": "npm run build && electron-builder --publish never",
     "make:win": "npm run build && electron-builder --win --publish never",
