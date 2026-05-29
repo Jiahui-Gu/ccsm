@@ -85,7 +85,17 @@ export function spawn(
       // dropped — user-visible as "reload made keyboard input dead"
       // (Task #79b empirical repro).
       onExit: (s) => {
-        if (sessions.get(s) === entry) sessions.delete(s);
+        if (sessions.get(s) === entry) {
+          sessions.delete(s);
+          // Stop the JSONL tail-watcher only when THIS entry is still the
+          // live one for that sid. Doing it here (inside the identity guard)
+          // rather than unconditionally in entryFactory's onExit pump means a
+          // stale pty's late exit can't tear down a FRESH session's watcher
+          // that a respawn registered under the same sid (Windows wedged-kill
+          // reload race) — which would otherwise stop session:state/title
+          // updates and wrongly drain the notify badge.
+          try { sessionWatcher.stopWatching(s); } catch { /* never throws */ }
+        }
       },
       onCwdRedirect: opts?.onCwdRedirect,
     },
