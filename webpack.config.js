@@ -33,6 +33,18 @@ module.exports = (_env, argv = {}) => ({
     ]
   },
   plugins: [new HtmlWebpackPlugin({ template: './src/index.html' })],
+  // Surface renderer bundle bloat without breaking CI. In production we warn
+  // (not error) once an asset/entrypoint exceeds 1.6 MiB; the current bundle is
+  // ~1.24 MB, so today's build stays quiet but future growth gets flagged. In
+  // dev mode hints are disabled to avoid noise during HMR rebuilds.
+  performance:
+    argv.mode === 'production'
+      ? {
+          hints: 'warning',
+          maxAssetSize: 1638400,
+          maxEntrypointSize: 1638400
+        }
+      : { hints: false },
   devServer: {
     port: Number(process.env.CCSM_DEV_PORT) || 4100,
     hot: true,
