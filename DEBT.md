@@ -27,19 +27,19 @@ shows what got paid down).
 | 3 | Renderer bundle 1.24 MB single chunk — add `splitChunks` + lazy-load `ImportDialog`/`CommandPalette`/`SettingsDialog` | OPEN | M | HIGH | `webpack.config.js` |
 | 4 | God-files >500 LOC: `shellRegistry.ts` (650), `sessionCrudSlice.ts` (622), `createWindow.ts` (596), `mobileRemoteServer.ts` (535) | OPEN | L | HIGH | various |
 | 5 | Session field "shotgun surgery" — adding one field touches slice + types + preload + IPC + db + components + `i18n/locales/{en,zh}.ts` (duplicated locales are the amplifier) | OPEN | M | HIGH | `src/i18n/locales/*` + chain |
-| 17 | No Content-Security-Policy — renderer ships no CSP (no `http-equiv` meta in `src/index.html`, no `onHeadersReceived` in main). Electron emits "Insecure CSP" warning. With `sandbox:false` (#13) the blast radius of any renderer XSS is wider | OPEN | M | HIGH | `src/index.html:3`, `electron/window/createWindow.ts` |
-| 18 | `npm audit` (2026-05-29, official registry): 8 prod vulns (1 HIGH, 7 mod). **HIGH** `tmp` <0.2.6 path-traversal ships in product; `@anthropic-ai/sdk` insecure file perms (fixed by SDK 0.3, see #2); `hono`/`ip-address`/`qs`/`fast-uri`/`brace-expansion` mod (mobile-remote web stack). All `npm audit fix`-able. (6 more in dev-only deps: ws/express/webpack-dev-server — not shipped) | OPEN | S | HIGH | `package-lock.json` |
+| 17 | No Content-Security-Policy — renderer ships no CSP. **DONE** ([#1413](https://github.com/Jiahui-Gu/ccsm/pull/1413), `78bd564`): CSP set via `onHeadersReceived` response header, dev/prod aware | DONE | M | HIGH | `electron/window/createWindow.ts` |
+| 18 | `npm audit` (2026-05-29, official registry): 8 prod vulns (1 HIGH, 7 mod). **DONE** ([#1412](https://github.com/Jiahui-Gu/ccsm/pull/1412), `5c8589a`): `npm audit fix` cleared all 8 prod vulns | DONE | S | HIGH | `package-lock.json` |
 
 ### P2 — MED impact, medium-small
 
 | ID | Item | Status | Effort | Impact | Location |
 |---|---|---|---|---|---|
 | 6 | Layering inversion: terminal modules read store state (`sessionRuntimeSlice` etc.) directly; verify whether a circular dep remains after the `xtermWarmRegistry` → `shellRegistry` rewrite | OPEN | S-M | MED | `src/stores/store.ts`, `src/terminal/shellRegistry.ts` |
-| 7 | `Sidebar.tsx` has 11 props — extract `SidebarActionsContext` for the 5 `onOpen*`/`onCreate*` callbacks | OPEN | S | MED | `src/components/Sidebar.tsx:47` |
+| 7 | `Sidebar.tsx` had 11 props — extracted `SidebarActionsContext` for the 5 `onOpen*`/`onCreate*` callbacks (now 6 props). **DONE** ([#1411](https://github.com/Jiahui-Gu/ccsm/pull/1411), `399225d`) | DONE | S | MED | `src/components/Sidebar.tsx` |
 | 8 | `AGENTS.md` + `CLAUDE.md` missing from repo root — new sessions / contributors lack project-level orientation | OPEN | M | MED | repo root |
 | 9 | `docs/README.md:8` references `STATUS.md` — resolved: `docs/status/STATUS.md` exists, link is valid | DONE | S | LOW | `docs/README.md` |
 | 10 | `npm audit` blocked by npmmirror registry — workaround: `npm audit --registry=https://registry.npmjs.org/`. Unblocked 2026-05-29; results captured in #18. Permanent fix: added `audit`/`audit:fix` npm scripts that pin the official registry | DONE | S | LOW | `package.json`, `.npmrc` |
-| 11 | `webpack.config.js` lacks `performance.hints` / size-limit gate — bundle bloat can land silently | OPEN | S | MED | `webpack.config.js` |
+| 11 | `webpack.config.js` lacked `performance.hints` / size-limit gate — bundle bloat could land silently. **DONE** ([#1410](https://github.com/Jiahui-Gu/ccsm/pull/1410), `aa342c0`): prod budget warns at 1.6 MiB asset/entrypoint | DONE | S | MED | `webpack.config.js` |
 | 12 | `import:scan`, `paths:exist`, `sessionTitles:listForProject` IPC return unbounded arrays — pagination/caps missing | OPEN | M | MED | `electron/ipc/utilityIpc.ts:125,178`, `electron/ipc/sessionIpc.ts:76` |
 | 13 | `sandbox: false` on BrowserWindow (Sentry preload `require` path) — known tracked security debt | OPEN | M | MED | `electron/window/createWindow.ts:353` |
 
@@ -66,8 +66,20 @@ shows what got paid down).
 
 ---
 
+## Done (paid down in audit batch 2026-05-29)
+
+| ID | Item | PR | Merge SHA |
+|---|---|---|---|
+| 11 | `webpack.config.js` lacked bundle-size budget — added prod `performance` gate (warn at 1.6 MiB) | [#1410](https://github.com/Jiahui-Gu/ccsm/pull/1410) | `aa342c0` |
+| 7 | `Sidebar.tsx` 11 props → 6 via `SidebarActionsContext` | [#1411](https://github.com/Jiahui-Gu/ccsm/pull/1411) | `399225d` |
+| 18 | 8 prod `npm audit` vulns (1 HIGH `tmp`) — cleared via `npm audit fix`; added `audit`/`audit:fix` scripts | [#1412](https://github.com/Jiahui-Gu/ccsm/pull/1412) | `5c8589a` |
+| 17 | No Content-Security-Policy — set via `onHeadersReceived` response header (dev/prod aware) | [#1413](https://github.com/Jiahui-Gu/ccsm/pull/1413) | `78bd564` |
+
+---
+
 ## Audit history
 
+- **2026-05-29 (paydown)** — debt-paydown batch landed 4 items: #11 webpack bundle budget ([#1410](https://github.com/Jiahui-Gu/ccsm/pull/1410)), #7 SidebarActionsContext ([#1411](https://github.com/Jiahui-Gu/ccsm/pull/1411)), #18 npm audit-fix + audit scripts ([#1412](https://github.com/Jiahui-Gu/ccsm/pull/1412)), #17 CSP response header ([#1413](https://github.com/Jiahui-Gu/ccsm/pull/1413)). Remaining HIGH: #1 Electron 41→42, #2 SDK 0.2→0.3, #3 bundle splitChunks, #4 god-files, #5 shotgun surgery.
 - **2026-05-29** — refresh via `technical-debt` skill. Still 0 TODO/FIXME/HACK markers. New: #17 missing CSP (HIGH, in flight). #9 resolved (STATUS.md exists). #10 unblocked — `npm audit` via official-registry workaround surfaced #18: 8 prod vulns (1 HIGH `tmp`, 7 mod), all `npm audit fix`-able; added `audit`/`audit:fix` scripts.
 - **2026-05-25** — full audit via `technical-debt` skill (Anthropic Claude harness). 42 rules across 10 categories. 6 items paid down in batch (D1–D6); see commits in week of 2026-05-25.
 
