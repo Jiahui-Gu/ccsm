@@ -31,6 +31,9 @@ vi.mock('../../src/terminal/useAtBottom', () => ({
 }));
 vi.mock('../../src/terminal/shellRegistry', () => ({
   getTopShell: getTopShellSpy,
+  // store.ts registers an appearance provider at module-eval via this
+  // export; the mock must surface it so importing the store doesn't throw.
+  setShellAppearanceProvider: vi.fn(),
 }));
 vi.mock('../../src/terminal/paste', () => ({
   terminalCopy: copySpy,

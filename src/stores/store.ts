@@ -15,7 +15,9 @@ import {
 } from './slices/appearanceSlice';
 import { createInstallerSlice } from './slices/installerSlice';
 import { createPopoverSlice } from './slices/popoverSlice';
+import { SCROLLBACK_LINES_DEFAULT, TERMINAL_FONT_SIZE_DEFAULT } from './slices/types';
 import type { State, RootStore } from './slices/types';
+import { setShellAppearanceProvider } from '../terminal/shellRegistry';
 
 export const useStore = create<RootStore>((set, get) => ({
   ...createSessionCrudSlice(set, get),
@@ -29,6 +31,20 @@ export const useStore = create<RootStore>((set, get) => ({
   // (no actions) nor persisted (lifecycle only).
   hydrated: false,
 }));
+
+// Hand the terminal layer a lazy read of the user's current appearance
+// (scrollback cap + terminal font size) WITHOUT shellRegistry importing
+// this module. A static back-import would close the module cycle
+// store → sessionCrudSlice → terminal/shellRegistry → store (DEBT #6);
+// registering a provider here keeps the static graph one-directional
+// (store → terminal) while still giving `createShell` live values.
+setShellAppearanceProvider(() => {
+  const s = useStore.getState();
+  return {
+    scrollbackLines: s.scrollbackLines ?? SCROLLBACK_LINES_DEFAULT,
+    terminalFontSizePx: s.terminalFontSizePx ?? TERMINAL_FONT_SIZE_DEFAULT,
+  };
+});
 
 let hydrated = false;
 

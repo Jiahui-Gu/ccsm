@@ -23,10 +23,47 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { ClipboardAddon } from '@xterm/addon-clipboard';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { CanvasAddon } from '@xterm/addon-canvas';
-import { useStore } from '../stores/store';
 import { SCROLLBACK_LINES_DEFAULT, TERMINAL_FONT_SIZE_DEFAULT } from '../stores/slices/types';
 import { warn, log } from '../shared/log';
 import { pasteIntoActivePty } from './paste';
+
+// Appearance defaults (scrollback cap + terminal font size) are owned by
+// the store, but a static `import { useStore }` here would close a module
+// cycle: store.ts → sessionCrudSlice → terminal/shellRegistry → store.ts
+// (DEBT #6). Instead the store registers a lazy provider at boot via
+// `setShellAppearanceProvider`. Until that runs (tests / non-renderer
+// contexts) we fall back to the compile-time defaults from `slices/types`,
+// which is the same value the store's appearance slice initialises with.
+export type ShellAppearance = {
+  scrollbackLines: number;
+  terminalFontSizePx: number;
+};
+
+let appearanceProvider: (() => ShellAppearance) | null = null;
+
+/**
+ * Register the live appearance source. Called once by `stores/store.ts`
+ * after the store is created so `createShell` can read the user's current
+ * scrollback / font-size without importing the store (which would form a
+ * cycle). Idempotent re-registration is allowed (last writer wins).
+ */
+export function setShellAppearanceProvider(provider: () => ShellAppearance): void {
+  appearanceProvider = provider;
+}
+
+function readAppearance(): ShellAppearance {
+  if (appearanceProvider) {
+    try {
+      return appearanceProvider();
+    } catch (e) {
+      warn('shell', 'appearance provider threw — using defaults', e);
+    }
+  }
+  return {
+    scrollbackLines: SCROLLBACK_LINES_DEFAULT,
+    terminalFontSizePx: TERMINAL_FONT_SIZE_DEFAULT,
+  };
+}
 
 export type Shell = {
   sid: string;
@@ -122,8 +159,7 @@ export function createShell(sid: string, host: HTMLElement): Shell {
     return existing;
   }
 
-  const scrollback = useStore.getState().scrollbackLines ?? SCROLLBACK_LINES_DEFAULT;
-  const fontSize = useStore.getState().terminalFontSizePx ?? TERMINAL_FONT_SIZE_DEFAULT;
+  const { scrollbackLines: scrollback, terminalFontSizePx: fontSize } = readAppearance();
   const term = new Terminal({
     fontFamily: 'Cascadia Mono, Consolas, "Courier New", monospace',
     fontSize,
