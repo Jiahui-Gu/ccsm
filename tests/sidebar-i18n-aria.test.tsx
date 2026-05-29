@@ -16,6 +16,7 @@ import React from 'react';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, act } from '@testing-library/react';
 import { Sidebar } from '../src/components/Sidebar';
+import { SidebarActionsProvider } from '../src/components/sidebar/SidebarActionsContext';
 import { useStore } from '../src/stores/store';
 import { usePreferences } from '../src/store/preferences';
 import { initI18n } from '../src/i18n';
@@ -67,18 +68,23 @@ afterEach(() => {
 function renderSidebar() {
   return render(
     <ToastProvider>
-      <Sidebar
-        activeSessionId=""
-        focusedGroupId={null}
-        sessions={[]}
-        onSelectSession={() => {}}
-        onFocusGroup={() => {}}
-        onMoveSession={() => {}}
-        onCreateSession={() => {}}
-        onOpenSettings={() => {}}
-        onOpenPalette={() => {}}
-        onOpenImport={() => {}}
-      />
+      <SidebarActionsProvider
+        value={{
+          onCreateSession: () => {},
+          onOpenSettings: () => {},
+          onOpenPalette: () => {},
+          onOpenImport: () => {},
+        }}
+      >
+        <Sidebar
+          activeSessionId=""
+          focusedGroupId={null}
+          sessions={[]}
+          onSelectSession={() => {}}
+          onFocusGroup={() => {}}
+          onMoveSession={() => {}}
+        />
+      </SidebarActionsProvider>
     </ToastProvider>
   );
 }

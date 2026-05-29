@@ -2,6 +2,7 @@ import React, { useEffect, useMemo } from 'react';
 import { TooltipProvider } from './components/ui/Tooltip';
 import { ToastProvider, useToast } from './components/ui/Toast';
 import { Sidebar } from './components/Sidebar';
+import { SidebarActionsProvider } from './components/sidebar/SidebarActionsContext';
 import { AppShell } from './components/AppShell';
 import { AppSkeleton } from './components/AppSkeleton';
 import { TerminalPane } from './components/TerminalPane';
@@ -450,19 +451,24 @@ export default function App() {
         <AppEffectsBridge />
         <AppShell
           sidebar={
-            <Sidebar
-              onCreateSession={newSession}
-              onCreateSessionWithCwd={newSessionWithCwd}
-              onOpenSettings={() => setSettingsOpen(true)}
-              onOpenPalette={() => setPaletteOpen(true)}
-              onOpenImport={() => setImportOpen(true)}
-              activeSessionId={activeId}
-              focusedGroupId={focusedGroupId}
-              onSelectSession={selectSession}
-              onFocusGroup={focusGroup}
-              sessions={sessions}
-              onMoveSession={moveSession}
-            />
+            <SidebarActionsProvider
+              value={{
+                onCreateSession: newSession,
+                onCreateSessionWithCwd: newSessionWithCwd,
+                onOpenSettings: () => setSettingsOpen(true),
+                onOpenPalette: () => setPaletteOpen(true),
+                onOpenImport: () => setImportOpen(true),
+              }}
+            >
+              <Sidebar
+                activeSessionId={activeId}
+                focusedGroupId={focusedGroupId}
+                onSelectSession={selectSession}
+                onFocusGroup={focusGroup}
+                sessions={sessions}
+                onMoveSession={moveSession}
+              />
+            </SidebarActionsProvider>
           }
           main={
             <main className="flex-1 flex flex-col min-w-0 right-pane-frame relative">

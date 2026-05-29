@@ -16,26 +16,13 @@ import { GroupRow } from './sidebar/GroupRow';
 import { NewSessionButton } from './sidebar/NewSessionButton';
 import { ArchivedSection } from './sidebar/ArchivedSection';
 import { useSidebarDnd } from './sidebar/useSidebarDnd';
+import { useSidebarActions } from './sidebar/SidebarActionsContext';
 
 // Session order inside a group is user-controlled (drag to reorder) — not
 // derived from state. The array order handed down from the store is the
 // source of truth; don't re-sort it here.
 
 export type SidebarProps = {
-  /** Create a new session in-place. The store seeds `cwd` from the user's
-   *  home directory (the always-true default per the new spec); the user
-   *  repicks via the StatusBar cwd chip. No modal involved — see
-   *  App.tsx::newSession. */
-  onCreateSession?: () => void;
-  /** Create a new session in a user-picked working directory. Routed
-   *  through App.tsx so the same `claudeAvailableRef !== true` gate that
-   *  protects the `+` button (#900 / #852) also covers the cwd-chevron
-   *  path — otherwise clicking the chevron during the boot probe still
-   *  stranded the user on a blank pane (#910 / #911). */
-  onCreateSessionWithCwd?: (cwd: string) => void;
-  onOpenSettings?: () => void;
-  onOpenPalette?: () => void;
-  onOpenImport?: () => void;
   activeSessionId: string;
   focusedGroupId: string | null;
   onSelectSession: (id: string) => void;
@@ -44,7 +31,13 @@ export type SidebarProps = {
   onMoveSession: (sessionId: string, targetGroupId: string, beforeSessionId: string | null) => void;
 };
 
-export function Sidebar({ onCreateSession, onCreateSessionWithCwd, onOpenSettings, onOpenPalette, onOpenImport, activeSessionId, focusedGroupId, onSelectSession, onFocusGroup, sessions, onMoveSession }: SidebarProps) {
+export function Sidebar({ activeSessionId, focusedGroupId, onSelectSession, onFocusGroup, sessions, onMoveSession }: SidebarProps) {
+  // Action callbacks (create session, open settings/palette/import) come from
+  // SidebarActionsContext rather than props — they're stable App-level handlers
+  // (DEBT.md #7). The cwd-chevron path (onCreateSessionWithCwd) is read here and
+  // forwarded into pickCwd below.
+  const { onCreateSession, onCreateSessionWithCwd, onOpenSettings, onOpenPalette, onOpenImport } =
+    useSidebarActions();
   const { t } = useTranslation();
   const groups = useStore((s) => s.groups);
   const createGroup = useStore((s) => s.createGroup);
