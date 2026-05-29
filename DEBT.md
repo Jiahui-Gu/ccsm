@@ -24,7 +24,7 @@ shows what got paid down).
 |---|---|---|---|---|---|
 | 1 | Electron 41 → 42 (Chromium CVE patches stop arriving on 41) | OPEN | M | HIGH | `package.json:96` |
 | 2 | `@anthropic-ai/claude-agent-sdk` 0.2 → 0.3 | OPEN | M | HIGH | `package.json:41` |
-| 3 | Renderer bundle 1.24 MB single chunk — add `splitChunks` + lazy-load `ImportDialog`/`CommandPalette`/`SettingsDialog` | OPEN | M | HIGH | `webpack.config.js` |
+| 3 | Renderer bundle 1.24 MB single chunk — add `splitChunks` + lazy-load `ImportDialog`/`CommandPalette`/`SettingsDialog`. **PARTIAL** ([#1417](https://github.com/Jiahui-Gu/ccsm/pull/1417)): 3 dialogs converted to `React.lazy` + `Suspense` so they code-split out of the initial parse. Remaining: explicit `splitChunks` vendor grouping (webpack 5 already async-splits the lazy chunks). | IN PROGRESS | M | HIGH | `src/App.tsx`, `webpack.config.js` |
 | 4 | God-files >500 LOC: `shellRegistry.ts` (650), `sessionCrudSlice.ts` (622), `createWindow.ts` (596), `mobileRemoteServer.ts` (535) | OPEN | L | HIGH | various |
 | 5 | Session field "shotgun surgery" — adding one field touches slice + types + preload + IPC + db + components + `i18n/locales/{en,zh}.ts` (duplicated locales are the amplifier) | OPEN | M | HIGH | `src/i18n/locales/*` + chain |
 | 17 | No Content-Security-Policy — renderer ships no CSP. **DONE** ([#1413](https://github.com/Jiahui-Gu/ccsm/pull/1413), `78bd564`): CSP set via `onHeadersReceived` response header, dev/prod aware | DONE | M | HIGH | `electron/window/createWindow.ts` |
