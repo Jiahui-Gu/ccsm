@@ -11,6 +11,10 @@ import {
 
 type MobileRemoteServer = {
   close: () => void;
+  /** The full local URL (including the bearer token) the desktop UI/user can
+   *  use to connect. Kept off stdout — the token is never logged in full — so
+   *  callers retrieve it from here rather than scraping the console. */
+  url: string;
 };
 
 type WsClient = {
@@ -19,8 +23,25 @@ type WsClient = {
   /** Accumulator for fragmented text messages (FIN=0). Reset on each
    *  complete message; non-empty means we're mid-fragment. */
   fragment: Buffer;
+  /** The single session id this client is currently viewing, set when the
+   *  client sends `session.snapshot` (the "select this session" signal).
+   *  pty.data is only forwarded to clients whose `subscribedSid` matches the
+   *  emitting sid — otherwise every client would receive every session's raw
+   *  terminal bytes (cross-session data leak). `null` = not subscribed yet. */
+  subscribedSid: string | null;
   send: (payload: unknown) => void;
 };
+
+/** Constant-time token comparison to avoid leaking a timing oracle on the
+ *  bearer token. Length is not secret, so an early length-mismatch return is
+ *  fine; the byte comparison itself is constant-time via timingSafeEqual. */
+function tokenMatches(provided: string | null, expected: string): boolean {
+  if (provided === null) return false;
+  const a = Buffer.from(provided);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
 
 const DEFAULT_PORT = 4177;
 const HOST = '127.0.0.1';
@@ -46,7 +67,7 @@ export function startMobileRemoteServer(): MobileRemoteServer | null {
     }
 
     if (url.pathname === '/') {
-      if (url.searchParams.get('token') !== token) {
+      if (!tokenMatches(url.searchParams.get('token'), token)) {
         sendText(res, 401, 'Unauthorized');
         return;
       }
@@ -59,7 +80,7 @@ export function startMobileRemoteServer(): MobileRemoteServer | null {
 
   server.on('upgrade', (req, socket) => {
     const url = parseRequestUrl(req.url);
-    if (!url || url.pathname !== '/ws' || url.searchParams.get('token') !== token) {
+    if (!url || url.pathname !== '/ws' || !tokenMatches(url.searchParams.get('token'), token)) {
       // socket.end() flushes the HTTP response before sending FIN; a bare
       // destroy() would race the kernel and the peer may miss the 401 body
       // on Windows. Same pattern PR #1341 applied to closeSocket().
@@ -79,6 +100,7 @@ export function startMobileRemoteServer(): MobileRemoteServer | null {
       socket,
       pending: Buffer.alloc(0),
       fragment: Buffer.alloc(0),
+      subscribedSid: null,
       send: (payload) => {
         if (socket.destroyed) return;
         socket.write(encodeFrame(JSON.stringify(payload)));
@@ -112,15 +134,33 @@ export function startMobileRemoteServer(): MobileRemoteServer | null {
   });
 
   const offPtyData = onPtyData((sid, chunk) => {
+    // seq is a per-session global ordering — computed once per chunk, OUTSIDE
+    // the client loop, regardless of how many clients (if any) are watching.
     const seq = (seqBySid.get(sid) ?? 0) + 1;
     seqBySid.set(sid, seq);
     for (const client of clients) {
+      // Only forward this session's bytes to clients viewing it. Without this
+      // gate every client receives every session's raw terminal output over
+      // the wire — a cross-session data leak (the HTML client only filters for
+      // display, not on the network).
+      if (client.subscribedSid !== sid) continue;
       client.send({ type: 'pty.data', sid, chunk, seq });
     }
   });
 
+  const url = `http://${HOST}:${port}/?token=${token}`;
+
   server.listen(port, HOST, () => {
-    console.log(`[mobile-remote] listening at http://${HOST}:${port}/?token=${token}`);
+    // Redact the bearer token in the persistent log line: stdout/stderr get
+    // captured into bug reports and shared, and a full token there is a
+    // credential leak. The host:port/path stay discoverable; the full URL
+    // (with token) is exposed on the returned handle's `url` field for the
+    // desktop UI/user to retrieve without it ever hitting the console.
+    const tokenHint = token.slice(0, 6);
+    console.log(
+      `[mobile-remote] listening at http://${HOST}:${port}/?token=${tokenHint}… ` +
+        `(full URL on the desktop session handle)`,
+    );
     console.log(`[mobile-remote] tailscale: tailscale serve --bg http://${HOST}:${port}`);
   });
 
@@ -129,6 +169,7 @@ export function startMobileRemoteServer(): MobileRemoteServer | null {
   });
 
   return {
+    url,
     close: () => {
       offPtyData();
       // Send a 1001 (going-away) close frame per client and let the FIN
@@ -167,6 +208,10 @@ async function handleClientMessage(client: WsClient, raw: string): Promise<void>
       client.send({ type: 'error', message: 'missing_sid' });
       return;
     }
+    // session.snapshot is the client's "select this session" signal. Record it
+    // so the pty.data broadcast only forwards this session's bytes to this
+    // client (see the onPtyData gate above).
+    client.subscribedSid = message.sid;
     const snapshot = await getBufferSnapshot(message.sid);
     const info = getPtySession(message.sid);
     client.send({
