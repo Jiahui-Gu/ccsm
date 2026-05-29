@@ -25,6 +25,7 @@ vi.mock('../../prefs/userCwds', () => ({
 }));
 
 import { registerUtilityIpc } from '../utilityIpc';
+import { resolveCwd } from '../../security/ipcGuards';
 
 type Handler = (e: unknown, ...args: unknown[]) => unknown;
 
@@ -100,5 +101,26 @@ describe('app:userCwds:push security gate (#804 risk #4)', () => {
     const safe = process.platform === 'win32' ? 'C:\\safe' : '/safe';
     push(e, safe);
     expect(pushUserCwdMock).not.toHaveBeenCalled();
+  });
+
+  // Regression: a tilde cwd (`~/projects/foo`) was silently rejected because
+  // the handler ran isSafePath on the raw `~`-prefixed string (not absolute →
+  // unsafe) instead of resolving it first like the sibling probePaths handler.
+  // The RESOLVED absolute path must be persisted, never the literal `~/...`.
+  it('expands a tilde path with resolveCwd and pushes the RESOLVED absolute path', () => {
+    const expected = resolveCwd('~/projects/foo');
+    // sanity: resolveCwd actually expanded the tilde to an absolute path
+    expect(expected).not.toBe('~/projects/foo');
+    push(mainFrameEvent(), '~/projects/foo');
+    expect(pushUserCwdMock).toHaveBeenCalledTimes(1);
+    expect(pushUserCwdMock).toHaveBeenCalledWith(expected);
+    // never the literal tilde form
+    expect(pushUserCwdMock).not.toHaveBeenCalledWith('~/projects/foo');
+  });
+
+  it('expands a bare "~" to the home directory before pushing', () => {
+    push(mainFrameEvent(), '~');
+    expect(pushUserCwdMock).toHaveBeenCalledTimes(1);
+    expect(pushUserCwdMock).toHaveBeenCalledWith(os.homedir());
   });
 });
