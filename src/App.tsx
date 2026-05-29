@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, lazy, Suspense } from 'react';
 import { TooltipProvider } from './components/ui/Tooltip';
 import { ToastProvider, useToast } from './components/ui/Toast';
 import { Sidebar } from './components/Sidebar';
@@ -7,9 +7,6 @@ import { AppShell } from './components/AppShell';
 import { AppSkeleton } from './components/AppSkeleton';
 import { TerminalPane } from './components/TerminalPane';
 import { ClaudeMissingGuide } from './components/ClaudeMissingGuide';
-import { SettingsDialog } from './components/SettingsDialog';
-import { CommandPalette } from './components/CommandPalette';
-import { ImportDialog } from './components/ImportDialog';
 import { ShortcutOverlay } from './components/ShortcutOverlay';
 import { DragRegion, WindowControls } from './components/WindowControls';
 import { InstallerCorruptBanner } from './components/InstallerCorruptBanner';
@@ -42,6 +39,18 @@ import { useNotifyFlashBridge } from './app-effects/useNotifyFlashBridge';
 import { useCwdRedirectedBridge } from './app-effects/useCwdRedirectedBridge';
 import { useHydrateSystemLocale } from './app-effects/useHydrateSystemLocale';
 import { useExitAnimation } from './app-effects/useExitAnimation';
+
+// Lazily-loaded modal dialogs — code-split into separate chunks so they
+// drop out of the initial bundle parse (fetched after App mount; debt #3).
+const SettingsDialog = lazy(() =>
+  import('./components/SettingsDialog').then((m) => ({ default: m.SettingsDialog }))
+);
+const CommandPalette = lazy(() =>
+  import('./components/CommandPalette').then((m) => ({ default: m.CommandPalette }))
+);
+const ImportDialog = lazy(() =>
+  import('./components/ImportDialog').then((m) => ({ default: m.ImportDialog }))
+);
 
 // Initialise i18next once, before any component renders. Subsequent
 // language changes flow through `applyLanguage` (called by the store
@@ -480,16 +489,18 @@ export default function App() {
             </main>
           }
         />
-        <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
-        <ImportDialog open={importOpen} onOpenChange={setImportOpen} />
-        <CommandPalette
-          open={paletteOpen}
-          onOpenChange={setPaletteOpen}
-          onOpenSettings={() => setSettingsOpen(true)}
-          onOpenImport={() => setImportOpen(true)}
-          onSelectSession={selectSession}
-          onFocusGroup={focusGroup}
-        />
+        <Suspense fallback={null}>
+          <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+          <ImportDialog open={importOpen} onOpenChange={setImportOpen} />
+          <CommandPalette
+            open={paletteOpen}
+            onOpenChange={setPaletteOpen}
+            onOpenSettings={() => setSettingsOpen(true)}
+            onOpenImport={() => setImportOpen(true)}
+            onSelectSession={selectSession}
+            onFocusGroup={focusGroup}
+          />
+        </Suspense>
         <ShortcutOverlay open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
         {closeActionDialog}
       </ToastProvider>
