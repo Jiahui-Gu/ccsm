@@ -37,6 +37,7 @@ interface FakeWin {
 let latestWin: FakeWin | null = null;
 let appQuitMock: ReturnType<typeof vi.fn>;
 let hasSwitchMock: ReturnType<typeof vi.fn<[string], boolean>>;
+let onHeadersReceivedMock: ReturnType<typeof vi.fn>;
 
 function makeFakeWin(opts: Record<string, unknown>): FakeWin {
   const listeners = new Map<string, (...args: unknown[]) => void>();
@@ -107,7 +108,14 @@ vi.mock('electron', () => {
       getSwitchValue: (_name: string) => '',
     },
   };
-  return { BrowserWindow, Menu, app };
+  const session = {
+    defaultSession: {
+      webRequest: {
+        onHeadersReceived: (...args: unknown[]) => onHeadersReceivedMock(...args),
+      },
+    },
+  };
+  return { BrowserWindow, Menu, app, session };
 });
 
 // Mock the close-action prefs module — both reads + writes are observed.
@@ -135,8 +143,11 @@ import {
   decideCloseAction,
   createWindow,
   CLOSE_ASK_TIMEOUT_MS,
+  buildCsp,
+  sentryIngestOrigin,
   __resetContextMenuSuppressionForTests,
   __resetSuppressIpcForTests,
+  __resetCspForTests,
   type CreateWindowDeps,
 } from '../createWindow';
 
@@ -553,6 +564,8 @@ describe('createWindow factory', () => {
     isQuittingFlag = false;
     appQuitMock = vi.fn();
     hasSwitchMock = vi.fn<[string], boolean>(() => false);
+    onHeadersReceivedMock = vi.fn();
+    __resetCspForTests();
     getCloseActionMock.mockReset().mockReturnValue('tray');
     setCloseActionMock.mockReset();
     ipcHandlers = new Map();
@@ -674,6 +687,29 @@ describe('createWindow factory', () => {
     const evt = { preventDefault: vi.fn() };
     willNav(evt, 'http://localhost:4100/index.html');
     expect(evt.preventDefault).not.toHaveBeenCalled();
+  });
+
+  // ─── CSP response-header injector (DEBT.md #17) ───────────────────────
+  it('registers a CSP onHeadersReceived hook and injects the header', () => {
+    createWindow(deps);
+    expect(onHeadersReceivedMock).toHaveBeenCalledTimes(1);
+    const hook = onHeadersReceivedMock.mock.calls[0][0] as (
+      details: { responseHeaders: Record<string, string[]> },
+      cb: (r: { responseHeaders: Record<string, string[]> }) => void,
+    ) => void;
+    let applied: Record<string, string[]> | null = null;
+    hook({ responseHeaders: { 'x-existing': ['1'] } }, (r) => {
+      applied = r.responseHeaders;
+    });
+    expect(applied!['Content-Security-Policy'][0]).toContain(`default-src 'self'`);
+    // Existing headers are preserved.
+    expect(applied!['x-existing']).toEqual(['1']);
+  });
+
+  it('only installs the CSP hook once across multiple createWindow calls', () => {
+    createWindow(deps);
+    createWindow(deps);
+    expect(onHeadersReceivedMock).toHaveBeenCalledTimes(1);
   });
 
   // ─── window-open handler denies popups (preload-leak hardening) ───────
@@ -902,5 +938,59 @@ describe('createWindow factory', () => {
   it('factory installs the context-menu listener on webContents', () => {
     createWindow(deps);
     expect(latestWin!.webContentsListeners.has('context-menu')).toBe(true);
+  });
+});
+
+describe('sentryIngestOrigin', () => {
+  it('returns the origin of a well-formed DSN', () => {
+    expect(
+      sentryIngestOrigin('https://abc123@o123.ingest.sentry.io/456'),
+    ).toBe('https://o123.ingest.sentry.io');
+  });
+
+  it('returns null for empty / undefined / unparseable input', () => {
+    expect(sentryIngestOrigin(undefined)).toBeNull();
+    expect(sentryIngestOrigin('')).toBeNull();
+    expect(sentryIngestOrigin('   ')).toBeNull();
+    expect(sentryIngestOrigin('not a url')).toBeNull();
+  });
+});
+
+describe('buildCsp', () => {
+  it('prod policy: self-only scripts, no unsafe-eval, inline styles allowed', () => {
+    const csp = buildCsp(false, undefined, undefined);
+    expect(csp).toContain(`default-src 'self'`);
+    expect(csp).toContain(`script-src 'self'`);
+    expect(csp).not.toContain('unsafe-eval');
+    expect(csp).toContain(`style-src 'self' 'unsafe-inline'`);
+    expect(csp).toContain(`img-src 'self' data:`);
+    expect(csp).toContain(`font-src 'self' data:`);
+    expect(csp).toContain(`connect-src 'self'`);
+    expect(csp).toContain(`object-src 'none'`);
+    expect(csp).toContain(`base-uri 'self'`);
+    expect(csp).toContain(`frame-src 'none'`);
+    // No dev-server origins leak into prod.
+    expect(csp).not.toContain('localhost');
+  });
+
+  it('dev policy: adds unsafe-eval + dev-server http/ws connect origins', () => {
+    const csp = buildCsp(true, '4100', undefined);
+    expect(csp).toContain(`script-src 'self' 'unsafe-eval'`);
+    expect(csp).toContain(`http://localhost:4100`);
+    expect(csp).toContain(`ws://localhost:4100`);
+  });
+
+  it('dev policy honors a custom CCSM_DEV_PORT', () => {
+    const csp = buildCsp(true, '5200', undefined);
+    expect(csp).toContain(`http://localhost:5200`);
+    expect(csp).toContain(`ws://localhost:5200`);
+    expect(csp).not.toContain('4100');
+  });
+
+  it('appends the Sentry ingest origin to connect-src when a DSN is set', () => {
+    const csp = buildCsp(false, undefined, 'https://k@o1.ingest.sentry.io/2');
+    expect(csp).toContain(
+      `connect-src 'self' https://o1.ingest.sentry.io`,
+    );
   });
 });
