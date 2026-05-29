@@ -40,8 +40,8 @@ import { useCwdRedirectedBridge } from './app-effects/useCwdRedirectedBridge';
 import { useHydrateSystemLocale } from './app-effects/useHydrateSystemLocale';
 import { useExitAnimation } from './app-effects/useExitAnimation';
 
-// Lazily-loaded modal dialogs — code-split into separate chunks so the
-// main bundle doesn't pay for them until first open (debt #3).
+// Lazily-loaded modal dialogs — code-split into separate chunks so they
+// drop out of the initial bundle parse (fetched after App mount; debt #3).
 const SettingsDialog = lazy(() =>
   import('./components/SettingsDialog').then((m) => ({ default: m.SettingsDialog }))
 );
