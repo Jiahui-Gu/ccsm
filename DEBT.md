@@ -34,7 +34,7 @@ shows what got paid down).
 
 | ID | Item | Status | Effort | Impact | Location |
 |---|---|---|---|---|---|
-| 6 | Layering inversion: terminal modules read store state (`sessionRuntimeSlice` etc.) directly; verify whether a circular dep remains after the `xtermWarmRegistry` → `shellRegistry` rewrite | OPEN | S-M | MED | `src/stores/store.ts`, `src/terminal/shellRegistry.ts` |
+| 6 | Layering inversion: terminal modules read store state directly — a real cycle existed: `store.ts → sessionCrudSlice → terminal/shellRegistry → store.ts` (shellRegistry statically imported `useStore` for appearance defaults). **DONE** (this PR): broke the `shellRegistry → store` edge via a registered appearance provider (`setShellAppearanceProvider`, store wires it at boot); `madge --circular` now clean. Remaining terminal→store reads are one-directional (permitted). | DONE | S-M | MED | `src/stores/store.ts`, `src/terminal/shellRegistry.ts` |
 | 7 | `Sidebar.tsx` had 11 props — extracted `SidebarActionsContext` for the 5 `onOpen*`/`onCreate*` callbacks (now 6 props). **DONE** ([#1411](https://github.com/Jiahui-Gu/ccsm/pull/1411), `399225d`) | DONE | S | MED | `src/components/Sidebar.tsx` |
 | 8 | `AGENTS.md` + `CLAUDE.md` missing from repo root — new sessions / contributors lack project-level orientation. **DONE** ([#1416](https://github.com/Jiahui-Gu/ccsm/pull/1416)): added root `AGENTS.md` (broad map) + `CLAUDE.md` (don't-break checklist) | DONE | M | MED | repo root |
 | 9 | `docs/README.md:8` references `STATUS.md` — resolved: `docs/status/STATUS.md` exists, link is valid | DONE | S | LOW | `docs/README.md` |
@@ -75,11 +75,13 @@ shows what got paid down).
 | 18 | 8 prod `npm audit` vulns (1 HIGH `tmp`) — cleared via `npm audit fix`; added `audit`/`audit:fix` scripts | [#1412](https://github.com/Jiahui-Gu/ccsm/pull/1412) | `5c8589a` |
 | 17 | No Content-Security-Policy — set via `onHeadersReceived` response header (dev/prod aware) | [#1413](https://github.com/Jiahui-Gu/ccsm/pull/1413) | `78bd564` |
 | 8 | `AGENTS.md` + `CLAUDE.md` missing from repo root — added both orientation docs | [#1416](https://github.com/Jiahui-Gu/ccsm/pull/1416) | (squash) |
+| 6 | Terminal↔store circular dep (`store → sessionCrudSlice → shellRegistry → store`) — broke `shellRegistry → store` edge via registered appearance provider; `madge --circular` clean | [#1418](https://github.com/Jiahui-Gu/ccsm/pull/1418) | — |
 
 ---
 
 ## Audit history
 
+- **2026-05-29 (paydown)** — #6 terminal↔store circular dependency. `madge --circular` confirmed a real cycle: `store.ts → stores/slices/sessionCrudSlice.ts → terminal/shellRegistry.ts → store.ts` (shellRegistry statically imported `useStore` to read `scrollbackLines`/`terminalFontSizePx` for `createShell`). Fixed minimally by inverting that one edge: shellRegistry now exposes `setShellAppearanceProvider`, and `store.ts` registers a lazy provider at boot — so the static graph is one-directional (store → terminal). `madge --circular --extensions ts,tsx src/` now reports "No circular dependency found". The `sessionCrudSlice → shellRegistry` (`disposeShell`) edge and other terminal→store reads are permitted one-way reads.
 - **2026-05-29 (paydown)** — debt-paydown batch landed 4 items: #11 webpack bundle budget ([#1410](https://github.com/Jiahui-Gu/ccsm/pull/1410)), #7 SidebarActionsContext ([#1411](https://github.com/Jiahui-Gu/ccsm/pull/1411)), #18 npm audit-fix + audit scripts ([#1412](https://github.com/Jiahui-Gu/ccsm/pull/1412)), #17 CSP response header ([#1413](https://github.com/Jiahui-Gu/ccsm/pull/1413)), #8 root AGENTS.md + CLAUDE.md ([#1416](https://github.com/Jiahui-Gu/ccsm/pull/1416)). Remaining HIGH: #1 Electron 41→42, #2 SDK 0.2→0.3, #3 bundle splitChunks (lazy-load half in flight), #4 god-files, #5 shotgun surgery.
 - **2026-05-29** — refresh via `technical-debt` skill. Still 0 TODO/FIXME/HACK markers. New: #17 missing CSP (HIGH, in flight). #9 resolved (STATUS.md exists). #10 unblocked — `npm audit` via official-registry workaround surfaced #18: 8 prod vulns (1 HIGH `tmp`, 7 mod), all `npm audit fix`-able; added `audit`/`audit:fix` scripts.
 - **2026-05-25** — full audit via `technical-debt` skill (Anthropic Claude harness). 42 rules across 10 categories. 6 items paid down in batch (D1–D6); see commits in week of 2026-05-25.
