@@ -161,22 +161,39 @@ export function resize(
   }
 }
 
-// Graceful-flush + teardown budget. Reload now sends a soft signal (Ctrl+C
-// via PTY — see `\x03` write in `kill()`) instead of going straight to
+// Graceful-flush + teardown budget. Reload sends a soft signal (Ctrl+C via
+// PTY — see `\x03` write in `kill()`) instead of going straight to
 // `pty.kill()`, which on Windows ConPTY translates to `TerminateProcess` and
-// delivers no signal to the child. The claude CLI's transcript writer
-// (`Km_`) buffers JSONL entries with a 100 ms `setTimeout` → `appendFile`
-// (no fsync), and its SIGINT/SIGTERM/SIGBREAK/SIGHUP handlers each await a
-// flush with a ~2 s internal budget. Without a graceful signal those queued
-// entries (plus any mid-stream tokens) are lost — after respawn
-// `claude --resume <sid>` reads JSONL from disk, so the missing tail is gone
-// permanently.
+// delivers no signal to the child. The soft signal lets claude's transcript
+// writer drain queued JSONL entries before exit.
 //
-// 3 s comfortably covers claude's 2 s flush window plus margin for OS
-// write-back / processKiller subtree walk on slow Windows boxes, while
-// staying short enough that a wedged kill doesn't feel broken (renderer
-// still falls through to the spawn-on-null fallback via the timer-branch
-// hard-kill below).
+// Empirically characterised against the native claude.exe (2.1.146) via
+// scripts/dogfood-jsonl-tail-loss-on-reload.mjs — the older code-reading note
+// here (legacy `cli.js`: `Km_` writer, 100 ms setTimeout → appendFile, no
+// fsync) is UNVERIFIABLE on the native binary and turned out to be the wrong
+// model for the user-reported "reload loses tail context" symptom. What the
+// probe actually established:
+//
+//   • User messages: ALWAYS survive reload (delays 0/30/80/150ms). The
+//     graceful window persists the user turn durably.
+//   • A COMPLETED assistant turn: written to JSONL as a single ATOMIC entry
+//     and fully survives reload + `--resume`.
+//   • An IN-FLIGHT (still streaming) assistant turn: claude does NOT flush
+//     partial tokens. The `\x03` SIGINT interrupts generation, claude writes
+//     `[Request interrupted by user]` and DISCARDS the unfinished reply — so
+//     `--resume` rebuilds context without it.
+//
+// That last case is the "lost tail", and it is BY DESIGN: interrupting a
+// half-generated reply discards it, identical to pressing Esc/Ctrl+C in a
+// normal claude session. It is NOT a flush race, so a longer budget cannot
+// recover it. No transcript-mechanism fix is warranted; any future mitigation
+// belongs at the product layer (e.g. warn before reload if the assistant is
+// mid-stream).
+//
+// 3 s comfortably covers claude's flush window plus margin for OS write-back /
+// processKiller subtree walk on slow Windows boxes, while staying short enough
+// that a wedged kill doesn't feel broken (renderer still falls through to the
+// spawn-on-null fallback via the timer-branch hard-kill below).
 export const KILL_EXIT_TIMEOUT_MS = 3000;
 
 // Dedupe re-entrant kills for the same sid (e.g. user spam-clicks Reload).
@@ -297,11 +314,11 @@ export function kill(sessions: Map<string, Entry>, sid: string): Promise<boolean
   // translated on stdin into a console CTRL_C_EVENT → SIGINT to the child;
   // on Unix the terminal line discipline converts `\x03` to SIGINT for the
   // foreground process group. One code path, both platforms — no FFI, no
-  // `process.kill` differences. claude registers SIGINT/SIGTERM/SIGBREAK/
-  // SIGHUP handlers that all funnel into `nK(code)` → awaits `dWH.flush()`
-  // (2 s internal budget), so this is the signal that lets the 100 ms
-  // buffered transcript writer drain before exit. If the process is already
-  // dead the write throws — the onExit listener or the timer covers us.
+  // `process.kill` differences. claude's signal handlers flush the transcript
+  // writer before exit, so this is what lets queued JSONL entries drain (see
+  // the KILL_EXIT_TIMEOUT_MS note above for the empirical flush/loss model).
+  // If the process is already dead the write throws — the onExit listener or
+  // the timer covers us.
   //
   // NOTE: this assumes interactive claude. Claude's `-p` / `--print`
   // non-interactive mode ignores SIGINT (it's designed to run to completion
