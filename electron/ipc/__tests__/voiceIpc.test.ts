@@ -1,4 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// voiceIpc imports transcriber, which reads electron's `app` at module
+// load. Mock electron so the test doesn't pull in the real binary.
+vi.mock('electron', () => ({
+  app: { getAppPath: () => '/repo' },
+}));
+
 import { validateVoicePayload, MAX_PCM_SAMPLES } from '../voiceIpc';
 
 describe('validateVoicePayload', () => {
