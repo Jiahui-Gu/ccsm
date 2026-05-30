@@ -6,8 +6,8 @@
 //   producer : OscTitleSniffer (#688, dual-mode OSC 0+2 since #713) — feeds
 //              raw titles per sid.
 //   decider  : runStateTracker (#721/#551) — owns per-sid run state, mute
-//              windows, dedupe, and calls notifyDecider.decide() with a
-//              synthesized Ctx. Pure module, no side effects.
+//              windows, the idle-confirmation window, and calls
+//              notifyDecider.decide() with a synthesized Ctx.
 //   sinks    : toastSink (Electron Notification) + flashSink (renderer
 //              flash state). Each is single-responsibility.
 //
@@ -84,17 +84,6 @@ export function installNotifyPipeline(opts: NotifyPipelineOptions): NotifyPipeli
     onNotified: opts.onNotified,
   });
   const flash = createFlashSink({ getMainWindow: opts.getMainWindow });
-  // Deferred-toast wiring (Task: "ring the last waiting"). The tracker
-  // strips toast:true from its synchronous return and instead schedules a
-  // RING_DEBOUNCE_MS timer per sid; on timer fire (no 'running' arrived
-  // in the meantime), it calls back here to ring exactly once. The
-  // `onNotified` badge bump still fires via toastSink.apply, so unread
-  // counts stay consistent regardless of which path the toast took.
-  const tracker = createRunStateTracker(decide, {
-    onDeferredToast: (decision) => {
-      toast.apply(decision);
-    },
-  });
 
   // Diagnostics for e2e probes — counts what each layer sees so we can tell
   // whether failure is "no PTY data", "no OSC titles", "titles seen but
@@ -119,6 +108,18 @@ export function installNotifyPipeline(opts: NotifyPipelineOptions): NotifyPipeli
     if (diag.titlesSeen.length > 10) diag.titlesSeen.shift();
   }
 
+  // The tracker holds the idle-confirmation window. An idle title no longer
+  // produces a synchronous decision; instead the tracker fires onConfirmedIdle
+  // once the window closes (a real stop) and we fan the decision out to both
+  // sinks here. A mid-task pause never reaches this callback.
+  const tracker = createRunStateTracker(decide, {
+    onConfirmedIdle: (decision) => {
+      if (diag) diag.decisions += 1;
+      toast.apply(decision);
+      flash.apply(decision);
+    },
+  });
+
   const onOsc = (evt: OscTitleEvent): void => {
     const now = Date.now();
     if (diag) diag.snifferEvents += 1;
@@ -139,12 +140,9 @@ export function installNotifyPipeline(opts: NotifyPipelineOptions): NotifyPipeli
     }
 
     if (diag && cls === 'idle') diag.decideCalls += 1;
-    const decision = tracker.onTitle(evt.sid, cls, now);
-    if (decision) {
-      if (diag) diag.decisions += 1;
-      toast.apply(decision);
-      flash.apply(decision);
-    }
+    // onTitle never returns a synchronous decision now — a confirmed idle is
+    // emitted asynchronously through onConfirmedIdle when the window closes.
+    tracker.onTitle(evt.sid, cls, now);
   };
 
   sniffer.on('osc-title', onOsc);
@@ -217,9 +215,9 @@ export function installNotifyPipeline(opts: NotifyPipelineOptions): NotifyPipeli
       // pipeline disposal — visible as a slow-growing handle count in
       // long-running tests / HMR reloads.
       flash.dispose();
-      // Cancel any outstanding deferred-toast timers held by the tracker.
+      // Cancel any outstanding idle-confirmation timers held by the tracker.
       // Same leak class as flashSink timers — without this, a still-pending
-      // ring would fire after the pipeline (and its sinks) are torn down,
+      // window would fire after the pipeline (and its sinks) are torn down,
       // attempting to toast against a destroyed BrowserWindow.
       tracker.dispose();
     },
