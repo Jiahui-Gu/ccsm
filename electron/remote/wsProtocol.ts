@@ -1,25 +1,19 @@
 import * as crypto from 'crypto';
 import type { Duplex } from 'stream';
+import type { PeerClient } from './peerClient';
 
-export type WsClient = {
+export type WsClient = PeerClient & {
   socket: Duplex;
   pending: Buffer;
   /** Accumulator for fragmented text messages (FIN=0). Reset on each
    *  complete message; non-empty means we're mid-fragment. */
   fragment: Buffer;
-  /** The single session id this client is currently viewing, set when the
-   *  client sends `session.snapshot` (the "select this session" signal).
-   *  pty.data is only forwarded to clients whose `subscribedSid` matches the
-   *  emitting sid — otherwise every client would receive every session's raw
-   *  terminal bytes (cross-session data leak). `null` = not subscribed yet. */
-  subscribedSid: string | null;
   /** Liveness flag for the heartbeat sweep. Set true on any inbound Pong or
    *  message; the sweep clears it before each Ping and reaps the client on the
    *  next sweep if it's still false — i.e. a full interval passed with no
    *  inbound traffic, meaning the socket is half-open (phone vanished without a
    *  TCP FIN). `socket.on('close')`/'error' can't catch that case. */
   isAlive: boolean;
-  send: (payload: unknown) => void;
 };
 
 /** Hard cap on a single inbound text message. Anything beyond this is a
