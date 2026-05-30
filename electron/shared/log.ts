@@ -31,7 +31,8 @@
 // failed to install correctly" when the binary stub returns no path. To
 // keep vitest under Node from blowing up the moment ANY ptyHost / commands-
 // loader test pulls in `entryFactory.ts → '../shared/log'`, all electron-
-// dependent loads are deferred behind `isElectronRuntime()`:
+// dependent loads are deferred behind `isElectronRuntime()` (see
+// `logRuntime.ts`):
 //   * `require('electron-log/main')` — lazy, inside `getElog()`
 //   * `require('electron')` for `app.getVersion()` / `app.getPath()` —
 //     lazy, inside `getApp()`
@@ -43,35 +44,10 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { scrub, normalizeError, setHomeDir, EVENT_ALLOWED_FIELDS, scrubConsoleArgs } from '../../src/shared/scrub';
-
-// Tighter LogLevel — electron-log's own includes `verbose | silly` which we
-// don't expose at the API layer. The four CCSM levels map straight onto
-// electron-log's homonymous methods.
-type LogLevel = 'debug' | 'info' | 'warn' | 'error';
-
-// Minimal subset of the electron-log surface we use, so the non-Electron
-// fallback can implement just these. Avoids declaring `any` while still
-// keeping the unknown shape opaque to callers.
-type ElogLike = {
-  initialize: () => void;
-  transports: {
-    console: { level: LogLevel | false; format?: (m: { data: unknown[]; level: string; message: { date: Date } }) => unknown[] };
-    file: {
-      level: LogLevel | false;
-      fileName?: string;
-      maxSize?: number;
-      format?: (params: { data: unknown[]; level: string; message: { date: Date } }) => unknown[];
-      archiveLogFn?: (oldLog: unknown) => void;
-      resolvePathFn?: (vars: unknown, message?: unknown) => string;
-      getFile?: () => { path: string };
-    };
-  };
-  create: (opts: { logId: string }) => ElogLike;
-  debug: (msg: string) => void;
-  info: (msg: string) => void;
-  warn: (msg: string) => void;
-  error: (msg: string) => void;
-};
+import { getApp, getElog, type LogLevel } from './logRuntime';
+import { LOG_SCHEMA_VERSION, readEnvFlags, loadPersistedLevel, persistLevel, type EnvFlags } from './logState';
+import { ensureHeader, jsonlFormat } from './logFormat';
+import { archiveMainLog, archiveRendererLog } from './logRotation';
 
 // Setting homedir for the path scrubber. Must happen before any record is
 // emitted; called eagerly at module load so the first uncaughtException
@@ -84,9 +60,6 @@ try {
   // regex-only path handling.
 }
 
-const LOG_SCHEMA_VERSION = 1;
-const LOG_LEVEL_KEY = 'ccsm.logLevel';
-
 // 100MB cap per process (10MB × 10 rotated files) per design v2 §1.
 const MAIN_LOG_MAX_BYTES = 10 * 1024 * 1024;
 // Renderer-local ring is much smaller — it's a fallback for the IPC bridge
@@ -95,70 +68,6 @@ const RENDERER_LOG_MAX_BYTES = 1 * 1024 * 1024;
 
 let _initialized = false;
 let _currentLevel: LogLevel = 'info';
-let _elog: ElogLike | null = null;
-
-/** True when running under Electron (main process with the binary live).
- *  vitest under plain Node has `process.versions.electron === undefined`,
- *  so this returns false and every electron-dependent path falls back to
- *  console-only / no-op. Cheaper than env probing; immune to e2e runs that
- *  forget to set NODE_ENV / VITEST. */
-function isElectronRuntime(): boolean {
-  return typeof process !== 'undefined' && typeof process.versions?.electron === 'string';
-}
-
-/** Lazily resolve `electron-log/main`. Returns null outside Electron so
- *  callers can fall back to console-only without crashing on the
- *  `require('electron')` inside electron-log's own boot. */
-function getElog(): ElogLike | null {
-  if (_elog) return _elog;
-  if (!isElectronRuntime()) return null;
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const mod = require('electron-log/main') as { default?: ElogLike } & ElogLike;
-    _elog = (mod.default ?? mod) as ElogLike;
-    return _elog;
-  } catch {
-    // electron-log threw on load (e.g. the binary path resolver hit a
-    // corrupt install). Fall back to console-only; logging is best-effort.
-    return null;
-  }
-}
-
-/** Lazily resolve `electron.app`. Same rationale as `getElog`. Returns
- *  null outside Electron. */
-function getApp(): {
-  getVersion?: () => string;
-  getPath?: (name: string) => string;
-  isPackaged?: boolean;
-} | null {
-  if (!isElectronRuntime()) return null;
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const electron = require('electron') as {
-      app?: {
-        getVersion?: () => string;
-        getPath?: (name: string) => string;
-        isPackaged?: boolean;
-      };
-    };
-    return electron.app ?? null;
-  } catch {
-    return null;
-  }
-}
-
-type EnvFlags = {
-  level: LogLevel | null;
-  enableFile: boolean;
-};
-
-function readEnvFlags(): EnvFlags {
-  const raw = process.env.CCSM_LOG_LEVEL?.toLowerCase();
-  const valid: LogLevel[] = ['debug', 'info', 'warn', 'error'];
-  const level = raw && (valid as string[]).includes(raw) ? (raw as LogLevel) : null;
-  const enableFile = process.env.CCSM_LOG_ENABLE_FILE === '1';
-  return { level, enableFile };
-}
 
 /** Module-level latch tracking whether the file sink actually got wired in
  *  `initLog()`. The menu builder reads this via `getLogFileEnabled()` to grey
@@ -186,117 +95,6 @@ function shouldEnableFileSink(env: EnvFlags): boolean {
   // so the unresolvable case (null app, undefined isPackaged) defaults to
   // disabled — safer for tests + paranoid prod fallback.
   return a?.isPackaged === false;
-}
-
-/** Reads persisted log level from sqlite app_state. Imported lazily to avoid
- *  a circular dep (db.ts imports nothing from log.ts but the boot order has
- *  this module loaded before db init). Falls back to `info`. */
-function loadPersistedLevel(): LogLevel | null {
-  try {
-    // Lazy require — db init happens later in app.whenReady; before that
-    // call this returns null and the boot uses the env override or 'info'.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const db = require('../db') as typeof import('../db');
-    const raw = db.loadState(LOG_LEVEL_KEY);
-    if (raw && ['debug', 'info', 'warn', 'error'].includes(raw)) {
-      return raw as LogLevel;
-    }
-  } catch {
-    // db not initialized yet — fall through.
-  }
-  return null;
-}
-
-function persistLevel(level: LogLevel): void {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const db = require('../db') as typeof import('../db');
-    db.saveState(LOG_LEVEL_KEY, level);
-  } catch {
-    // db not ready — runtime change still applies in-memory; next boot
-    // re-derives from env / default.
-  }
-}
-
-/** Per-file header written as the FIRST line of every new (or rotated) log
- *  file. Makes attached logs self-describing — no need to ask the user
- *  "what version were you on". */
-function buildHeader(): string {
-  let appVersion = 'unknown';
-  try {
-    appVersion = getApp()?.getVersion?.() ?? 'unknown';
-  } catch {
-    /* app not ready in tests */
-  }
-  return (
-    JSON.stringify({
-      schemaV: LOG_SCHEMA_VERSION,
-      app: 'ccsm',
-      version: appVersion,
-      electron: process.versions.electron ?? 'unknown',
-      node: process.versions.node ?? 'unknown',
-      os: process.platform,
-      arch: process.arch,
-      level: _currentLevel,
-      sessionStart: new Date().toISOString(),
-    }) + os.EOL
-  );
-}
-
-/** Write the header to the live file if it's empty (fresh boot or
- *  immediately post-rotation). electron-log's `archiveLog` hook fires AFTER
- *  the rotation; this function is idempotent so calling it on every record
- *  costs at most one stat call (handled by the size check). */
-function ensureHeader(filePath: string): void {
-  try {
-    const st = fs.statSync(filePath);
-    if (st.size === 0) {
-      fs.writeFileSync(filePath, buildHeader(), { flag: 'a' });
-    }
-  } catch {
-    // file does not yet exist — electron-log will create it on first write
-    // and we'll header it on the next call. No-op here.
-  }
-}
-
-/** electron-log message formatter → JSONL. electron-log's transform chain
- *  treats `format` as `(params: FormatParams) => any[]`; we return a
- *  1-element array containing the JSONL string and the downstream `toString`
- *  transform serializes it as-is. We accept already-structured payloads from
- *  our `log.api.emit()` in `data[0]` and augment with timestamp/level;
- *  ad-hoc string args are wrapped. */
-function jsonlFormat(params: {
-  data: unknown[];
-  level: string;
-  message: { date: Date };
-}): unknown[] {
-  const first = params.data[0];
-  let payload: Record<string, unknown>;
-  // Convention: every `emit()` / `log.event` call site stringifies a single
-  // JSON object and passes it as `data[0]` (see `emit()` below — it always
-  // calls `elog[level](JSON.stringify(record))` with no trailing newline and
-  // no second arg). The `{…}` shape check is a fast structural filter that
-  // distinguishes our structured records from ad-hoc string args (e.g.
-  // direct `elog.warn('plain text')` from third-party paths). Any payload
-  // that matches `{…}` is parse-and-merged; everything else is wrapped as
-  // `{msg: ...}`. The `JSON.parse` is inside a try/catch so a stray `{json-
-  // shaped} string` doesn't crash the transport.
-  if (typeof first === 'string' && first.startsWith('{') && first.endsWith('}')) {
-    try {
-      payload = JSON.parse(first) as Record<string, unknown>;
-    } catch {
-      payload = { msg: first };
-    }
-  } else {
-    payload = { msg: params.data.map((d) => String(d)).join(' ') };
-  }
-  const record = {
-    t: params.message.date.toISOString(),
-    level: params.level,
-    pid: process.pid,
-    ...payload,
-  };
-  return [JSON.stringify(record)];
 }
 
 /** Configure electron-log transports. Idempotent — re-calling is a no-op.
@@ -364,32 +162,7 @@ export function initLog(): void {
     // Default behavior renames `main.log` → `main.old.log`; electron-log v5
     // only keeps ONE rotated archive by default. For 10-file rotation we
     // override to cycle through `main.1.log` … `main.10.log`.
-    elog.transports.file.archiveLogFn = (oldLog) => {
-      const file = String(oldLog);
-      const dir = path.dirname(file);
-      const base = path.basename(file, '.log');
-      // Shift main.9.log → main.10.log, main.8.log → main.9.log, …
-      try {
-        for (let i = 9; i >= 1; i--) {
-          const from = path.join(dir, `${base}.${i}.log`);
-          const to = path.join(dir, `${base}.${i + 1}.log`);
-          if (fs.existsSync(from)) {
-            if (i + 1 > 10) {
-              fs.unlinkSync(from);
-            } else {
-              fs.renameSync(from, to);
-            }
-          }
-        }
-        const renamed = path.join(dir, `${base}.1.log`);
-        fs.renameSync(file, renamed);
-      } catch (e) {
-        // Best-effort: if rotation fails (locked file on Windows etc.) we
-        // emit a console.error but keep logging — the live file is the
-        // bigger concern than the archive chain.
-        console.error('[log] rotation failed:', e);
-      }
-    };
+    elog.transports.file.archiveLogFn = archiveMainLog;
 
     // Header-on-new-file. electron-log resolves the file path lazily via
     // `transports.file.resolvePathFn`; capture it on first write.
@@ -397,7 +170,7 @@ export function initLog(): void {
     if (resolvePath) {
       elog.transports.file.resolvePathFn = (vars: unknown, message?: unknown) => {
         const p = resolvePath(vars, message);
-        ensureHeader(p);
+        ensureHeader(p, _currentLevel);
         return p;
       };
     }
@@ -431,18 +204,7 @@ export function initLog(): void {
     rendererLogger.transports.file.format = jsonlFormat;
     rendererLogger.transports.console.level = false;
     // 2-file ring (1MB × 2 = 2MB cap per design v2).
-    rendererLogger.transports.file.archiveLogFn = (oldLog) => {
-      const file = String(oldLog);
-      const dir = path.dirname(file);
-      const base = path.basename(file, '.log');
-      try {
-        const archive = path.join(dir, `${base}.1.log`);
-        if (fs.existsSync(archive)) fs.unlinkSync(archive);
-        fs.renameSync(file, archive);
-      } catch {
-        /* best-effort */
-      }
-    };
+    rendererLogger.transports.file.archiveLogFn = archiveRendererLog;
   } catch {
     // userData unavailable (tests) — renderer-mirror disabled, IPC still
     // routes renderer records into main's primary transports.
