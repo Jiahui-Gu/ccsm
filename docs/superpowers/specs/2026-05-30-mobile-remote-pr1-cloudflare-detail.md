@@ -14,24 +14,32 @@
 > **外部资源决策**(锁定,见 memory `mobile-remote-cloudflare-decisions` /
 > `mobile-remote-github-oauth`):
 > - 用户本地 `wrangler login` + `wrangler deploy`;agent 只写代码 + 可本地 `wrangler dev` 验证。
-> - secret(GitHub client secret、HMAC `SERVER_SECRET`、TURN key)一律
->   `wrangler secret put`,**绝不进 repo、绝不下发客户端**。
-> - GitHub client id `Ov23liICal7F5NDZO1r1` 是公开值,入 repo 配置。
-> - 子域 `cc-sm.workers.dev`。
+> - secret 一律 `wrangler secret put`,**绝不进 repo、绝不下发客户端**。
+> - **复用已存在的 `ccsm-worker`**(2026-05-30 决策):该 Worker 上已 put 好
+>   `GITHUB_OAUTH_CLIENT_SECRET`(= OAuth App `ccsm-oAuth` 的 client secret)、
+>   `JWT_SIGNING_KEY`(HMAC userHash + JWT 签名,代替原设计的 `SERVER_SECRET`)、
+>   `GITHUB_OAUTH_CLIENT_ID`。PR-1 代码直接读这些名字,**用户无需重新 put 任何 secret**。
+>   旧的 `JWT_REFRESH_SIGNING_KEY` 是遗留,PR-1 不读。
+> - GitHub client id `Ov23liICal7F5NDZO1r1` 是公开值(也已作为 secret `GITHUB_OAUTH_CLIENT_ID` 存在)。
+> - 子域 `ccsm-worker.jiahuigu.workers.dev`。
 
 ---
 
 ## 0. PR-1 边界
 
 **做**:整套 Cloudflare 侧 —— OAuth 终止、按 GitHub 用户撮合、SDP/ICE 转发、TURN
-凭据签发。纯 Cloudflare,可用 `vitest` + `@cloudflare/vitest-pool-workers`(miniflare)
-本地单测,`wrangler dev` 手动验证。
+凭据签发端点(代码预留,PR-1 不绑卡不配 key,见下)。纯 Cloudflare,可用
+`vitest` + `@cloudflare/vitest-pool-workers`(miniflare)本地单测,`wrangler dev` 手动验证。
+
+**TURN 降级(2026-05-30 决策)**:Cloudflare Realtime/TURN 需先绑付款方式,PR-1
+**不绑卡、不配 TURN key**,只走 GitHub 鉴权 + 信令 + WebRTC 直连(STUN 免费打洞)。
+`/turn/credentials` 端点保留但未配 key 时返回 501(§5);真机打洞失败再补(原 PR-5)。
 
 **不做**:
 - 桌面 `signalingClient` / `desktopPeer` / `mobileRemoteController`(PR-2)。
 - 手机 `phonePeer` / `phoneSignaling` / 登录页 UI(PR-3)。
 - 真实 werift / 浏览器 RTCPeerConnection 联调(PR-4)。
-- TURN 真机回退验证(PR-5)。
+- TURN 启用 + 真机回退验证(PR-5)。
 
 **交付物**(全部落在 repo 的 `cloudflare/` 子目录):
 ```
@@ -69,7 +77,7 @@ cloudflare/
 ### 1.1 `wrangler.toml` 结构
 
 ```toml
-name = "cc-sm"                      # → cc-sm.workers.dev
+name = "ccsm-worker"                # → ccsm-worker.jiahuigu.workers.dev
 main = "src/worker.ts"
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]   # crypto.subtle 已是全局,不强依赖;保留以备 lib 用
@@ -84,19 +92,20 @@ new_classes = ["PairingDurableObject"]
 
 # 公开配置(可入 repo)
 [vars]
-GITHUB_CLIENT_ID = "Ov23liICal7F5NDZO1r1"
-OAUTH_REDIRECT_URI = "https://cc-sm.workers.dev/auth/github/callback"
+OAUTH_REDIRECT_URI = "https://ccsm-worker.jiahuigu.workers.dev/auth/github/callback"
 SESSION_TTL_SECONDS = "900"        # 15 min
 TURN_TTL_SECONDS = "600"           # 10 min
 ROOM_TTL_SECONDS = "60"            # DO 双方断开后存活
 TURN_URLS = "turn:turn.cloudflare.com:3478?transport=udp,turns:turn.cloudflare.com:5349?transport=tcp"
 STUN_URLS = "stun:stun.cloudflare.com:3478"
 
-# secret(NEVER in repo;用户 `wrangler secret put <NAME>` 注入):
-#   GITHUB_CLIENT_SECRET   GitHub OAuth app 的 client secret
-#   SERVER_SECRET          HMAC userHash + JWT 签名的服务器密钥(随机 32+ 字节)
-#   TURN_KEY_ID            Cloudflare TURN 的 key id
-#   TURN_KEY_API_TOKEN     Cloudflare TURN 的 API token(签发短期 cred 用)
+# secret(NEVER in repo;已在 ccsm-worker 上 put 好,用户无需重做):
+#   GITHUB_OAUTH_CLIENT_ID      GitHub OAuth app client id(公开值,但已作 secret 存在)
+#   GITHUB_OAUTH_CLIENT_SECRET  GitHub OAuth app client secret(= ccsm-oAuth 的 secret)
+#   JWT_SIGNING_KEY             HMAC userHash + JWT 签名的服务器密钥(原设计的 SERVER_SECRET)
+#   TURN_KEY_ID                 Cloudflare TURN key id(可选 — PR-1 不绑卡、不配 TURN)
+#   TURN_KEY_API_TOKEN          Cloudflare TURN API token(可选 — 同上,真机打洞失败再补)
+#   (遗留 JWT_REFRESH_SIGNING_KEY 不读)
 ```
 
 ### 1.2 `Env` 类型(`src/lib/config.ts`)
@@ -105,32 +114,32 @@ STUN_URLS = "stun:stun.cloudflare.com:3478"
 export interface Env {
   PAIRING: DurableObjectNamespace;
   // vars
-  GITHUB_CLIENT_ID: string;
   OAUTH_REDIRECT_URI: string;
   SESSION_TTL_SECONDS: string;
   TURN_TTL_SECONDS: string;
   ROOM_TTL_SECONDS: string;
   TURN_URLS: string;
   STUN_URLS: string;
-  // secrets
-  GITHUB_CLIENT_SECRET: string;
-  SERVER_SECRET: string;
-  TURN_KEY_ID: string;
-  TURN_KEY_API_TOKEN: string;
+  // secrets(已在 ccsm-worker 上 put 好)
+  GITHUB_OAUTH_CLIENT_ID: string;
+  GITHUB_OAUTH_CLIENT_SECRET: string;
+  JWT_SIGNING_KEY: string;         // HMAC userHash + JWT 签名(原 SERVER_SECRET)
+  TURN_KEY_ID?: string;            // 可选:PR-1 不绑卡、不配 TURN(见 §5)
+  TURN_KEY_API_TOKEN?: string;     // 可选:同上
 }
 
 export interface Config {
   githubClientId: string;
   githubClientSecret: string;
   oauthRedirectUri: string;
-  serverSecret: Uint8Array;     // SERVER_SECRET utf8 → bytes
+  serverSecret: Uint8Array;     // JWT_SIGNING_KEY utf8 → bytes
   sessionTtlMs: number;
   turnTtlSeconds: number;
   roomTtlMs: number;
   turnUrls: string[];
   stunUrls: string[];
-  turnKeyId: string;
-  turnKeyApiToken: string;
+  turnKeyId?: string;           // 可选:未配 TURN 时为 undefined
+  turnKeyApiToken?: string;     // 可选:同上
 }
 
 export function loadConfig(env: Env): Config {
@@ -141,19 +150,23 @@ export function loadConfig(env: Env): Config {
     }
     return v;
   };
+  const opt = (k: keyof Env): string | undefined => {
+    const v = env[k];
+    return typeof v === "string" && v.length > 0 ? v : undefined;
+  };
   const enc = new TextEncoder();
   return {
-    githubClientId: need("GITHUB_CLIENT_ID"),
-    githubClientSecret: need("GITHUB_CLIENT_SECRET"),
+    githubClientId: need("GITHUB_OAUTH_CLIENT_ID"),
+    githubClientSecret: need("GITHUB_OAUTH_CLIENT_SECRET"),
     oauthRedirectUri: need("OAUTH_REDIRECT_URI"),
-    serverSecret: enc.encode(need("SERVER_SECRET")),
+    serverSecret: enc.encode(need("JWT_SIGNING_KEY")),
     sessionTtlMs: Number(need("SESSION_TTL_SECONDS")) * 1000,
     turnTtlSeconds: Number(need("TURN_TTL_SECONDS")),
     roomTtlMs: Number(need("ROOM_TTL_SECONDS")) * 1000,
     turnUrls: need("TURN_URLS").split(",").map((s) => s.trim()).filter(Boolean),
     stunUrls: need("STUN_URLS").split(",").map((s) => s.trim()).filter(Boolean),
-    turnKeyId: need("TURN_KEY_ID"),
-    turnKeyApiToken: need("TURN_KEY_API_TOKEN"),
+    turnKeyId: opt("TURN_KEY_ID"),
+    turnKeyApiToken: opt("TURN_KEY_API_TOKEN"),
   };
 }
 ```
@@ -324,7 +337,7 @@ Body: `{ "authCode": "<one-time jwt>" }`。
    {
      "token": "<session jwt>",
      "userHash": "<hex>",
-     "doUrl": "wss://cc-sm.workers.dev/do/<userHash>",
+     "doUrl": "wss://ccsm-worker.jiahuigu.workers.dev/do/<userHash>",
      "iceServers": [
        { "urls": ["stun:stun.cloudflare.com:3478"] }
      ],
@@ -347,7 +360,7 @@ export async function handleSession(req: Request, cfg: Config): Promise<Response
   return json({
     token,
     userHash: claims.userHash,
-    doUrl: `wss://cc-sm.workers.dev/do/${claims.userHash}`,
+    doUrl: `wss://ccsm-worker.jiahuigu.workers.dev/do/${claims.userHash}`,
     iceServers: [{ urls: cfg.stunUrls }],
     expiresInSeconds: cfg.sessionTtlMs / 1000,
   });
@@ -442,6 +455,12 @@ export async function verifyJwt(secret: Uint8Array, token: string): Promise<Clai
 
 ## 5. TURN 短期凭据签发 `POST /turn/credentials`
 
+> **PR-1 不部署 TURN。** 2026-05-30 决策:Cloudflare Realtime/TURN 需先绑付款方式,
+> PR-1 不绑卡、不配 TURN key,只走直连(STUN 免费打洞)。本端点代码预留,但未配
+> `TURN_KEY_ID`/`TURN_KEY_API_TOKEN` 时返回 **501**,客户端据此知道只有 STUN 可用。
+> 真机打洞失败时(原 PR-5)用户再绑卡、`wrangler secret put` 两个 TURN secret 即可启用,
+> 无需改代码。
+
 鉴权:`Authorization: Bearer <session jwt>`。
 
 Cloudflare Calls TURN 的标准做法:用 `TURN_KEY_ID` + `TURN_KEY_API_TOKEN` 调
@@ -451,6 +470,11 @@ Cloudflare API 换一组短期 `username`/`credential`。
 export async function handleTurnCred(req: Request, cfg: Config): Promise<Response> {
   const claims = await authSession(req, cfg);          // 解 Bearer JWT,typ==="session"
   if (!claims) return json({ error: "unauthorized" }, 401);
+
+  // PR-1:未配 TURN → 501,客户端回退到纯 STUN
+  if (!cfg.turnKeyId || !cfg.turnKeyApiToken) {
+    return json({ error: "turn not configured" }, 501);
+  }
 
   const res = await fetch(
     `https://rtc.live.cloudflare.com/v1/turn/keys/${cfg.turnKeyId}/credentials/generate`,
@@ -687,11 +711,11 @@ export async function handleDoProxy(
 
 ## 8. CORS / 安全响应头(`lib/cors.ts`)
 
-手机 PWA 与 Worker 同源(都在 `cc-sm.workers.dev`)时本无需 CORS;但 PWA 若另托管
+手机 PWA 与 Worker 同源(都在 `ccsm-worker.jiahuigu.workers.dev`)时本无需 CORS;但 PWA 若另托管
 (如 Pages 子域)需放行。统一处理:
 
 ```ts
-const ALLOWED_ORIGINS = ["https://cc-sm.workers.dev"];  // PWA 若独立托管再加
+const ALLOWED_ORIGINS = ["https://ccsm-worker.jiahuigu.workers.dev"];  // PWA 若独立托管再加
 
 export function corsPreflight(req: Request): Response {
   const origin = req.headers.get("Origin") ?? "";
@@ -744,14 +768,13 @@ export function withSecurityHeaders(res: Response, req: Request): Response {
 1. **agent 可跑**(无 secret):`cd cloudflare && npm install && npm test` —— miniflare 单测全绿。
 2. **用户跑**(需 Cloudflare 账号):
    - `! npx wrangler login`
-   - `! npx wrangler secret put GITHUB_CLIENT_SECRET`(粘 GitHub OAuth app 的 secret)
-   - `! npx wrangler secret put SERVER_SECRET`(粘随机 32+ 字节,如 `openssl rand -hex 32`)
-   - `! npx wrangler secret put TURN_KEY_ID`
-   - `! npx wrangler secret put TURN_KEY_API_TOKEN`
+   - secret **无需 put** —— `ccsm-worker` 上已有 `GITHUB_OAUTH_CLIENT_SECRET`、
+     `JWT_SIGNING_KEY`、`GITHUB_OAUTH_CLIENT_ID`(2026-05-30 核实)。
+   - ~~`wrangler secret put TURN_KEY_ID` / `TURN_KEY_API_TOKEN`~~ —— **PR-1 跳过**(不绑卡、不配 TURN;真机打洞失败再补)
    - `! npx wrangler dev`(本地起 Worker + DO,浏览器走一遍 OAuth)
-   - `! npx wrangler deploy`(部署到 `cc-sm.workers.dev`)
+   - `! npx wrangler deploy`(部署到 `ccsm-worker.jiahuigu.workers.dev`)
 3. GitHub OAuth app 的 **Authorization callback URL** 必须填
-   `https://cc-sm.workers.dev/auth/github/callback`(用户在 GitHub app 设置里配)。
+   `https://ccsm-worker.jiahuigu.workers.dev/auth/github/callback`(用户在 GitHub app 设置里配)。
 
 ---
 
