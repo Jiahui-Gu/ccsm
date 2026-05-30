@@ -16,7 +16,7 @@ describe('resolveModelPath', () => {
     // dev: process.resourcesPath points into electron's own dir, so we
     // fall back to the app path's resources/models.
     const p = resolveModelPath();
-    expect(p.replace(/\\/g, '/')).toContain('resources/models/ggml-small.bin');
+    expect(p.replace(/\\/g, '/')).toContain('resources/models/ggml-base.bin');
   });
 });
 
