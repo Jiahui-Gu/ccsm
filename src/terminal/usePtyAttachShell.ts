@@ -184,13 +184,14 @@ async function runColdStartSuffix(
     warn('attach-shell', 'post-attach fit failed', e);
   }
 
-  // Reveal synchronously. The native `.xterm-viewport` scrollbar no longer
-  // exists (hidden in global.css) — the scrollbar is self-drawn by
-  // <TerminalScrollbar/> as a pure projection of xterm's buffer state. So
-  // there is no DOM `scrollTop` write to race the post-fit viewport reflow
-  // (the bug #82 / rAF-defer rationale is gone): xterm updates
-  // `viewportY/baseY` synchronously and the thumb follows on the next
-  // React render. No rAF defer, no belt-and-suspenders second frame.
+  // Reveal synchronously. The terminal scrollbar is xterm's own native
+  // `.xterm-viewport` bar again (re-skinned via CSS in global.css). xterm
+  // owns the DOM `scrollTop`; we call `scrollToBottom()` right after the
+  // post-attach fit so the viewport is pinned to the live tail, which is
+  // where a fresh cold-start attach should land. xterm re-syncs the
+  // viewport's `scrollTop` from `viewportY/baseY` on its own schedule, so
+  // the visible thumb follows. (See the bug #82 dogfood probe for the
+  // resize / fit / reparent re-sync verification.)
   try {
     shell.term.scrollToBottom();
   } catch {
