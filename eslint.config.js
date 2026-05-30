@@ -84,6 +84,9 @@ export default [
         requestAnimationFrame: 'readonly',
         cancelAnimationFrame: 'readonly',
         ResizeObserver: 'readonly',
+        MediaStream: 'readonly',
+        AudioContext: 'readonly',
+        ScriptProcessorNode: 'readonly',
         // `NodeJS` namespace is also referenced from renderer-side .d.ts
         // files (e.g. cliBridge.d.ts) that mirror preload types — keep it
         // available alongside browser globals.

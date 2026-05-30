@@ -236,6 +236,14 @@ const zh: EnCatalog = {
     exitedRetry: '重试',
     scrollToBottom: '滚动到底部'
   },
+  voice: {
+    start: '开始语音输入',
+    stop: '停止语音输入',
+    transcribing: '识别中…',
+    errorMic: '麦克风访问被拒绝',
+    errorNoModel: '语音模型未安装',
+    errorFailed: '识别失败',
+  },
   chat: {
     cwdChipNoneLabel: '（无）',
   },

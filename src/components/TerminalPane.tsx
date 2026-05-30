@@ -6,6 +6,7 @@ import { useAtBottom } from '../terminal/useAtBottom';
 import { getTopShell } from '../terminal/shellRegistry';
 import { terminalCopy, terminalPaste } from '../terminal/paste';
 import { ScrollToBottomButton } from './ScrollToBottomButton';
+import { MicButton } from './voice/MicButton';
 import { useStore } from '../stores/store';
 import {
   TERMINAL_FONT_SIZE_MAX,
@@ -141,6 +142,7 @@ export function TerminalPane({ sessionId, cwd }: Props) {
     >
       <div ref={hostRef} className="absolute inset-0" />
       <Overlay state={state} onRetry={onRetry} t={t} />
+      {state.kind === 'ready' ? <MicButton sessionId={sessionId} /> : null}
       {state.kind === 'ready' ? (
         <ScrollToBottomButton onClick={scrollToBottom} />
       ) : null}
