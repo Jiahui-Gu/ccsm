@@ -135,21 +135,27 @@ vi.mock('../../branding/icon', () => ({
 }));
 
 import {
-  installContextMenu,
-  installContextMenuSuppressIpc,
-  isAllowedNavigation,
-  isContextMenuSuppressed,
-  recordContextMenuSuppression,
-  decideCloseAction,
   createWindow,
-  CLOSE_ASK_TIMEOUT_MS,
-  buildCsp,
-  sentryIngestOrigin,
-  __resetContextMenuSuppressionForTests,
-  __resetSuppressIpcForTests,
-  __resetCspForTests,
   type CreateWindowDeps,
 } from '../createWindow';
+import {
+  installContextMenu,
+  installContextMenuSuppressIpc,
+  isContextMenuSuppressed,
+  recordContextMenuSuppression,
+  __resetContextMenuSuppressionForTests,
+  __resetSuppressIpcForTests,
+} from '../contextMenu';
+import {
+  isAllowedNavigation,
+  buildCsp,
+  sentryIngestOrigin,
+  __resetCspForTests,
+} from '../csp';
+import {
+  decideCloseAction,
+  CLOSE_ASK_TIMEOUT_MS,
+} from '../closeDialog';
 
 interface ContextMenuParams {
   selectionText: string;
