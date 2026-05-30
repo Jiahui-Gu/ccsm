@@ -17,7 +17,7 @@ export function encodeWav(pcm: Float32Array, sampleRate = 16000): Buffer {
   buf.writeUInt32LE(dataLength, 40);
 
   for (let i = 0; i < pcm.length; i++) {
-    const s = Math.max(-1, Math.min(1, pcm[i]));
+    const s = Math.max(-1, Math.min(1, pcm[i] ?? 0));
     buf.writeInt16LE(s < 0 ? s * 0x8000 : s * 0x7fff, 44 + i * 2);
   }
   return buf;
