@@ -98,6 +98,10 @@ export default [
         // (src/mobile/): WebRTC offerer + Durable Object signaling.
         WebSocket: 'readonly',
         RTCPeerConnection: 'readonly',
+        RTCDataChannel: 'readonly',
+        RTCIceServer: 'readonly',
+        RTCConfiguration: 'readonly',
+        RTCPeerConnectionIceEvent: 'readonly',
         MessageEvent: 'readonly',
         URLSearchParams: 'readonly',
         // `NodeJS` namespace is also referenced from renderer-side .d.ts
