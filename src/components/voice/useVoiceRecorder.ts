@@ -1,5 +1,6 @@
 import { useCallback, useReducer, useRef } from 'react';
 import { voiceReducer, type VoiceState } from '../../voice/recorderMachine';
+import type { VoiceOutcome } from '../../voice/voiceFeedback';
 import { resampleTo16k } from '../../voice/resample';
 import { getTopShell } from '../../terminal/shellRegistry';
 import { pasteIntoActivePty } from '../../terminal/paste';
@@ -9,7 +10,13 @@ const MIN_SAMPLES_16K = 16000 * 0.3; // ~300ms; shorter clips are treated as sil
 // Owns Web Audio capture + the transcription/injection flow. The button
 // targets the active session (sid passed in by the hosting TerminalPane),
 // matching how paste resolves its target via getTopShell().
-export function useVoiceRecorder(sid: string): {
+//
+// `onFeedback` surfaces user-visible outcomes (no speech / errors) without
+// coupling this hook to the toast runtime — the host wires it to useToast().
+export function useVoiceRecorder(
+  sid: string,
+  onFeedback?: (outcome: VoiceOutcome) => void
+): {
   state: VoiceState;
   toggle: () => void;
 } {
@@ -18,6 +25,10 @@ export function useVoiceRecorder(sid: string): {
   const ctxRef = useRef<AudioContext | null>(null);
   const chunksRef = useRef<Float32Array[]>([]);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
+  // Keep the latest callback in a ref so the memoized stop()/start() don't
+  // need to re-create when the host passes a fresh closure each render.
+  const feedbackRef = useRef(onFeedback);
+  feedbackRef.current = onFeedback;
 
   const cleanup = useCallback(() => {
     processorRef.current?.disconnect();
@@ -45,7 +56,8 @@ export function useVoiceRecorder(sid: string): {
 
     const pcm = resampleTo16k(merged, inputRate);
     if (pcm.length < MIN_SAMPLES_16K) {
-      dispatch({ type: 'DONE' }); // silent / too short — back to idle quietly
+      dispatch({ type: 'DONE' }); // silent / too short — back to idle…
+      feedbackRef.current?.({ kind: 'no-speech' }); // …but tell the user why
       return;
     }
     try {
@@ -53,15 +65,19 @@ export function useVoiceRecorder(sid: string): {
       if (!res || !res.ok) {
         if (res && res.error === 'empty') {
           dispatch({ type: 'DONE' });
+          feedbackRef.current?.({ kind: 'no-speech' });
           return;
         }
-        dispatch({ type: 'FAIL', message: res ? res.error : 'transcribe-failed' });
+        const message = res ? res.error : 'transcribe-failed';
+        dispatch({ type: 'FAIL', message });
+        feedbackRef.current?.({ kind: 'error', message });
         return;
       }
       await pasteIntoActivePty(() => getTopShell()?.term, sid, res.text);
       dispatch({ type: 'DONE' });
     } catch {
       dispatch({ type: 'FAIL', message: 'transcribe-failed' });
+      feedbackRef.current?.({ kind: 'error', message: 'transcribe-failed' });
     }
   }, [cleanup, sid]);
 
@@ -85,6 +101,7 @@ export function useVoiceRecorder(sid: string): {
     } catch {
       cleanup();
       dispatch({ type: 'FAIL', message: 'mic' });
+      feedbackRef.current?.({ kind: 'error', message: 'mic' });
     }
   }, [cleanup]);
 

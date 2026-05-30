@@ -250,10 +250,21 @@ const en = {
   voice: {
     start: 'Start dictation',
     stop: 'Stop dictation',
+    recording: 'Recording',
     transcribing: 'Transcribing…',
+    // a11y: spoken by screen readers, must describe the current action.
+    ariaStart: 'Start dictation',
+    ariaStop: 'Stop dictation, {{time}} elapsed',
+    ariaTranscribing: 'Transcribing your speech, please wait',
+    // No usable audio captured — clip too short or no speech detected.
+    noSpeechTitle: "Didn't catch that",
+    noSpeechBody: 'Please try speaking again, a little longer.',
     errorMic: 'Microphone access denied',
+    errorMicBody: 'Allow microphone access for this app in your system settings, then try again.',
     errorNoModel: 'Voice model not installed',
+    errorNoModelBody: 'The speech-to-text model is missing. Install the voice model to use dictation.',
     errorFailed: 'Transcription failed',
+    errorFailedBody: 'Something went wrong while transcribing. Click the mic to try again.',
   },
   chat: {
     cwdChipNoneLabel: '(none)',

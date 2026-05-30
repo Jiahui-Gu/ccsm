@@ -239,10 +239,21 @@ const zh: EnCatalog = {
   voice: {
     start: '开始语音输入',
     stop: '停止语音输入',
+    recording: '录音中',
     transcribing: '识别中…',
+    // a11y: 屏幕阅读器朗读,需描述当前动作。
+    ariaStart: '开始语音输入',
+    ariaStop: '停止语音输入,已录制 {{time}}',
+    ariaTranscribing: '正在识别你的语音,请稍候',
+    // 没采到可用音频——太短或没检测到说话。
+    noSpeechTitle: '没听清',
+    noSpeechBody: '请再说一次,稍微说长一点。',
     errorMic: '麦克风访问被拒绝',
+    errorMicBody: '请在系统设置里允许本应用访问麦克风,然后重试。',
     errorNoModel: '语音模型未安装',
+    errorNoModelBody: '缺少语音转文字模型。请先安装语音模型再使用语音输入。',
     errorFailed: '识别失败',
+    errorFailedBody: '识别时出错了。点麦克风图标重试。',
   },
   chat: {
     cwdChipNoneLabel: '（无）',
