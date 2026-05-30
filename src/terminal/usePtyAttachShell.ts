@@ -184,48 +184,17 @@ async function runColdStartSuffix(
     warn('attach-shell', 'post-attach fit failed', e);
   }
 
-  // Task #82 — defer scrollToBottom + focus + setMask(false) past one
-  // animation frame. Issuing them synchronously after `fit.fit()` races
-  // xterm's CanvasAddon / RenderService dimension cache: `.xterm-viewport`
-  // hasn't yet reflowed to its post-fit size, so a `scrollTop` write
-  // either no-ops or clamps to 0 — content paints at the bottom (correct)
-  // but the native `::-webkit-scrollbar-thumb` sits at the top
-  // (desynced). One rAF gives xterm a paint to settle dimensions before
-  // we issue the scroll write and reveal the term.
-  //
-  // Belt-and-suspenders: a second rAF after setMask repeats the scroll
-  // write in case the dimension settle straddled the first frame (e.g.
-  // on a heavy cold start where the first rAF callback fires before the
-  // viewport reflow lands).
-  const w = typeof window !== 'undefined' ? window : null;
-  const raf = w?.requestAnimationFrame?.bind(w);
-  const runReveal = (): void => {
-    try {
-      shell.term.scrollToBottom();
-    } catch {
-      /* best-effort */
-    }
-    try {
-      shell.term.focus();
-    } catch {
-      /* best-effort */
-    }
-    setMask(sessionId, false);
-    if (raf) {
-      raf(() => {
-        try {
-          shell.term.scrollToBottom();
-        } catch {
-          /* best-effort */
-        }
-      });
-    }
-  };
-  if (raf) {
-    raf(runReveal);
-  } else {
-    runReveal();
+  try {
+    shell.term.scrollToBottom();
+  } catch {
+    /* best-effort */
   }
+  try {
+    shell.term.focus();
+  } catch {
+    /* best-effort */
+  }
+  setMask(sessionId, false);
 
   try {
     log.event('attach.cold.complete', {

@@ -1,33 +1,22 @@
 // scripts/dogfood-bug-82-scrollbar.mjs
 //
-// Task #82 dogfood probe — cold-start `.xterm-viewport` scrollbar thumb
-// must be at the bottom (matching the rendered content position), not
-// at the top.
+// Cold-start scrollbar dogfood probe — after a cold start, the
+// `.xterm-viewport` scrollbar thumb must sit at the bottom (matching the
+// rendered content position), not at the top.
 //
-// Background: on cold-start the renderer writes claude's snapshot, runs
-// `fit.fit()`, then calls `term.scrollToBottom()`. Without the rAF
-// defer (PR for #82), the `.xterm-viewport.scrollTop` write fires
-// before xterm's CanvasAddon / RenderService has reflowed the viewport
-// element to its post-fit dimensions, so the write either no-ops or
-// clamps to 0 — content paints at the bottom (correct, xterm tracks
-// `viewportY` internally) but the native `::-webkit-scrollbar-thumb`
-// sits at the top (desynced from the buffer).
+// On cold-start the renderer writes claude's snapshot, runs `fit.fit()`,
+// then calls `term.scrollToBottom()` to park both the content and the
+// scrollbar at the bottom.
 //
 // Assertion: after a cold start completes, `.xterm-viewport.scrollTop`
 // must equal `scrollHeight - clientHeight` (±2px tolerance — Chromium
 // rounds scroll geometry to integer device-pixel units, so the exact
 // equality can be off by 1 on fractional-DPI configs).
 //
-// Honesty box: the underlying race (xterm dimension settle vs.
-// scrollTop write) is sub-frame (<16ms). Playwright + headless paint
-// timing differs from prod, and the post-attach `sleep(800)` here lets
-// any pending paint settle long before we measure — so this probe
-// reliably passes WITH the fix, but doesn't reliably FAIL without it.
-// It is a non-regression sentinel + a vehicle for the before/after
-// screenshot, NOT a direct race-condition reproducer. The real-time
-// race-condition assertion lives in `tests/terminal/
-// usePtyAttachShell.scrollDefer.test.tsx` which asserts the rAF
-// call-order contract that the fix introduces.
+// Honesty box: Playwright + headless paint timing differs from prod, and
+// the post-attach `sleep(800)` here lets any pending paint settle long
+// before we measure. This probe is a non-regression sentinel + a vehicle
+// for the before/after screenshot, NOT a direct race-condition reproducer.
 //
 // Exit code 0 = PASS, 1 = FAIL.
 
@@ -88,11 +77,10 @@ async function main() {
 
     // Shrink the window BEFORE creating the session so the very first
     // cold-start has to populate an overflowing snapshot into a small
-    // viewport. That's the exact race the user hit (small / standard-
+    // viewport. That's the exact scenario the user hit (small / standard-
     // sized window, claude banner overflows): cold-start writes the
-    // snapshot, fits, calls scrollToBottom — without the rAF defer the
-    // `.xterm-viewport.scrollTop` write fires before the viewport
-    // reflow lands and gets clamped to 0.
+    // snapshot, fits, then calls scrollToBottom — both content and the
+    // `.xterm-viewport` scrollbar must land at the bottom.
     await win.setViewportSize({ width: 600, height: 220 }).catch(() => {});
     await sleep(200);
 
@@ -106,8 +94,7 @@ async function main() {
     await waitForXtermBuffer(win, /claude|welcome|│|╭|\?\sfor\sshortcuts/i, { timeout: 30000 });
     await dismissWelcomeSplash(win).catch(() => {});
 
-    // Give the cold-start suffix (including the rAF defer + belt-and-
-    // suspenders second rAF) plenty of time to complete.
+    // Give the cold-start suffix plenty of time to complete.
     await sleep(800);
 
     const state = await readScrollState(win);
@@ -148,7 +135,7 @@ async function main() {
         `xterm viewportY=${state.viewportY}/baseY=${state.baseY} ` +
         `(${state.bufferType} buffer). ` +
         `Expected scrollTop at the bottom after cold start — see ` +
-        `src/terminal/usePtyAttachShell.ts runColdStartSuffix's rAF defer.`,
+        `src/terminal/usePtyAttachShell.ts runColdStartSuffix's scrollToBottom.`,
     );
     process.exitCode = 1;
   } finally {

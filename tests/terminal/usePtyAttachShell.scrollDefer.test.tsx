@@ -1,20 +1,10 @@
-// Task #82: on cold-start, xterm.js's `.xterm-viewport` element needs at
-// least one paint after `fit.fit()` before its `scrollTop` write will
-// land at the bottom — the CanvasAddon / RenderService dimension cache
-// hasn't settled yet, so a synchronous `scrollToBottom()` writes a
-// clamped value (often 0) and the native `::-webkit-scrollbar-thumb`
-// sits at the top while the content correctly paints at the bottom.
+// Cold-start reveal contract: after `fit.fit()`, the hook scrolls the
+// terminal to the bottom and focuses it synchronously (content + scrollbar
+// both park at the bottom). No rAF deferral — the earlier Task #82 double
+// rAF machinery was removed in favour of issuing the scroll write directly.
 //
-// Fix: defer `scrollToBottom() + focus() + setMask(false)` to a
-// `requestAnimationFrame` callback so xterm has one paint to settle
-// dimensions before we issue the scroll write and reveal the term.
-//
-// This test asserts the call-order contract: those three calls MUST run
-// inside an rAF callback fired after `fit.fit()`, not synchronously.
-// The real visual symptom (scrollbar thumb position in the DOM) is
-// exercised by `scripts/dogfood-bug-82-scrollbar.mjs` — jsdom does not
-// compute `.xterm-viewport` scroll geometry, so a call-order assertion
-// is the faithful unit-level signal.
+// This test asserts `scrollToBottom()` and `focus()` run as part of the
+// cold-start sequence (no extra frame needed to reveal the term).
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
@@ -136,22 +126,13 @@ function installManualRaf(): void {
       /* tests don't cancel */
     };
 }
-async function flushRaf(): Promise<void> {
-  await act(async () => {
-    const drain = rafQueue;
-    rafQueue = [];
-    for (const cb of drain) cb(performance.now());
-    await new Promise((r) => setTimeout(r, 0));
-  });
-}
-
 async function settleMicrotasks(): Promise<void> {
   await act(async () => {
     for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 0));
   });
 }
 
-describe('usePtyAttachShell — cold-start scroll defer (#82)', () => {
+describe('usePtyAttachShell — cold-start reveal (scroll to bottom)', () => {
   let host: HTMLDivElement;
   let hostRef: { current: HTMLDivElement | null };
 
@@ -177,25 +158,11 @@ describe('usePtyAttachShell — cold-start scroll defer (#82)', () => {
     uninstallFakePty();
   });
 
-  it('defers scrollToBottom + focus past at least one rAF after fit (cold path)', async () => {
+  it('scrolls to bottom + focuses synchronously after fit (cold path)', async () => {
     renderHook(() => usePtyAttachShell('sid-A', 'C:/x', hostRef));
-    // Drain microtasks — runColdStartSuffix resolves up to (and including)
-    // its fit.fit(), but the scroll/focus/unmask should now sit behind an
-    // rAF that has NOT yet fired.
     await settleMicrotasks();
 
     expect(fitSpy).toHaveBeenCalledTimes(1);
-    // Pre-rAF: deferred ops must NOT have run yet.
-    expect(scrollToBottomSpy).not.toHaveBeenCalled();
-    expect(focusSpy).not.toHaveBeenCalled();
-
-    // Fire the rAF — now the deferred ops run.
-    await flushRaf();
-    await settleMicrotasks();
-    // A belt-and-suspenders second rAF is allowed; flush again to be safe.
-    await flushRaf();
-    await settleMicrotasks();
-
     expect(scrollToBottomSpy).toHaveBeenCalled();
     expect(focusSpy).toHaveBeenCalled();
   });
