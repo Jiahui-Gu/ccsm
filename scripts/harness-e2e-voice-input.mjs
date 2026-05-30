@@ -284,6 +284,29 @@ async function installMicStub(win) {
   });
 }
 
+// ----------------------------------------------------------------------------
+// Seam #4: neutralize clipboard-image pickup in the main process.
+//
+// pasteIntoActivePty calls ccsmPty.saveClipboardImage() FIRST and, if an image
+// is present, injects the image path and returns — silently dropping the voice
+// transcript (text branch). On shared desktop runners (mac/win) a PRIOR harness
+// (terminal-paste-image) can leave a PNG on the SYSTEM clipboard that survives
+// into this process, so saveClipboardImage returns that stale path and the
+// voice path never reaches stdin. We can't stub the frozen renderer namespace
+// (contextBridge deep-freezes window.ccsmPty), so we replace the main-process
+// `pty:saveClipboardImage` handler to always report "no image", forcing the
+// deterministic text branch this happy-path is meant to exercise.
+// ----------------------------------------------------------------------------
+async function installNoClipboardImageStub(electronApp) {
+  await electronApp.evaluate(({ ipcMain }) => {
+    const CHANNEL = 'pty:saveClipboardImage';
+    const handlers = ipcMain._invokeHandlers;
+    if (!handlers) throw new Error('ipcMain._invokeHandlers unavailable');
+    ipcMain.removeHandler(CHANNEL);
+    ipcMain.handle(CHANNEL, () => null);
+  });
+}
+
 // ============================================================================
 // Case: voice-happy-path
 // ============================================================================
@@ -305,10 +328,11 @@ async function caseVoiceHappyPath({ electronApp, win, tempDir }) {
 
   const CANNED_TEXT = 'hello from voice';
 
-  // Install all three seams before driving the mic button.
+  // Install all four seams before driving the mic button.
   await installPtyInputProbe(electronApp);
   await installVoiceTranscribeStub(electronApp, CANNED_TEXT);
   await installMicStub(win);
+  await installNoClipboardImageStub(electronApp);
   await clearPtyInputLog(electronApp);
 
   // The MicButton renders only when TerminalPane state is 'ready'. Locate it
