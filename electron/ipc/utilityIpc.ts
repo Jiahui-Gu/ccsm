@@ -40,6 +40,27 @@ export interface UtilityIpcDeps {
 let importableCache: ScannableSession[] = [];
 let importablePending: Promise<ScannableSession[]> | null = null;
 
+// Defensive ceilings (DEBT #12). These handlers returned/consumed unbounded
+// arrays and could ship an arbitrarily large payload over IPC.
+//
+// The two caps bound different things:
+//   • MAX_IMPORT_SESSIONS caps the IPC *payload* only. The upstream scan
+//     (scanImportableSessions) still walks the whole `~/.claude/projects`
+//     tree — this cap does not bound that work, it just refuses to serialize
+//     a pathological result set across the bridge.
+//   • MAX_PROBE_PATHS caps the *work*: paths:exist slices before the
+//     fs.existsSync loop, so the cap genuinely bounds the syscalls, not just
+//     the returned map.
+//
+// Both ceilings sit far above any realistic user (2000 importable sessions,
+// 5000 cwd probes) so a real workload never truncates; they exist only to
+// bound a pathological or hostile input. Truncation is silent-with-a-warn —
+// every consumer treats a shorter list as "fewer items", never as an error
+// (an absent cwd in the paths:exist map is read as undefined, i.e. left
+// un-flagged, not "missing").
+const MAX_IMPORT_SESSIONS = 2000;
+const MAX_PROBE_PATHS = 5000;
+
 function refreshImportableCache(): Promise<ScannableSession[]> {
   if (importablePending) return importablePending;
   importablePending = scanImportableSessions()
@@ -63,7 +84,16 @@ async function getImportableSessions(): Promise<ScannableSession[]> {
   // scans. Cold-open latency is mitigated by `primeImportableCache()`
   // running at app `ready`: by the time the user opens the dialog the
   // priming scan has typically already resolved.
-  return refreshImportableCache();
+  const rows = await refreshImportableCache();
+  // Payload cap only — the scan above already walked the full tree; this just
+  // bounds what we serialize across the IPC bridge. See MAX_IMPORT_SESSIONS.
+  if (rows.length > MAX_IMPORT_SESSIONS) {
+    console.warn(
+      `[main] import:scan truncated ${rows.length} → ${MAX_IMPORT_SESSIONS} sessions`,
+    );
+    return rows.slice(0, MAX_IMPORT_SESSIONS);
+  }
+  return rows;
 }
 
 /** Pure helper for `paths:exist`: takes the renderer-supplied list and
@@ -71,9 +101,16 @@ async function getImportableSessions(): Promise<ScannableSession[]> {
  *  → false to avoid the SMB/NTLM-leak class of bug). Exported for unit
  *  tests so we can exercise the safety filter without touching IPC. */
 export function probePaths(inputPaths: unknown): Record<string, boolean> {
-  const list = Array.isArray(inputPaths)
+  const all = Array.isArray(inputPaths)
     ? inputPaths.filter((p): p is string => typeof p === 'string')
     : [];
+  let list = all;
+  if (all.length > MAX_PROBE_PATHS) {
+    console.warn(
+      `[main] paths:exist truncated ${all.length} → ${MAX_PROBE_PATHS} probes`,
+    );
+    list = all.slice(0, MAX_PROBE_PATHS);
+  }
   const out: Record<string, boolean> = {};
   for (const p of list) {
     // Reject UNC + non-absolute paths BEFORE touching fs. On Windows,

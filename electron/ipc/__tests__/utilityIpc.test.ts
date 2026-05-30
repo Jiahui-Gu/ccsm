@@ -78,6 +78,34 @@ describe('probePaths', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
     expect(probePaths([tmpDir])[tmpDir]).toBe(false);
   });
+
+  it('caps the probe list at MAX_PROBE_PATHS (5000), silently truncating the tail (DEBT #12)', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // 5001 ghost paths — one over the cap. None exist, so each kept entry
+    // maps to false; dropped entries are simply absent from the map.
+    const inputs = Array.from({ length: 5001 }, (_, i) =>
+      path.join(tmpDir, `ghost-${i}`),
+    );
+    const result = probePaths(inputs);
+    expect(Object.keys(result)).toHaveLength(5000);
+    expect(result[inputs[0]]).toBe(false);
+    expect(result[inputs[4999]]).toBe(false);
+    // The 5001st input was dropped — absent, not present-and-false.
+    expect(inputs[5000] in result).toBe(false);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    warnSpy.mockRestore();
+  });
+
+  it('does NOT warn or truncate at exactly MAX_PROBE_PATHS', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const inputs = Array.from({ length: 5000 }, (_, i) =>
+      path.join(tmpDir, `ghost-${i}`),
+    );
+    const result = probePaths(inputs);
+    expect(Object.keys(result)).toHaveLength(5000);
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
 });
 
 describe('isAllowedExternalUrl (scheme whitelist for ccsm:openExternal)', () => {
@@ -282,5 +310,17 @@ describe('import:scan IPC handler — fresh scan, no stale cache (regression)', 
     expect(r2).toEqual(rows);
     expect(r3).toEqual(rows);
     expect(scanImportableSessionsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('caps the returned list at MAX_IMPORT_SESSIONS (2000), silently truncating (DEBT #12)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const many = Array.from({ length: 2001 }, (_, i) => makeSession(`s${i}`, i));
+    scanImportableSessionsMock.mockResolvedValueOnce(many);
+    const r = (await handler({})) as Array<{ sessionId: string }>;
+    expect(r).toHaveLength(2000);
+    expect(r[0].sessionId).toBe('s0');
+    expect(r[1999].sessionId).toBe('s1999');
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    warnSpy.mockRestore();
   });
 });
