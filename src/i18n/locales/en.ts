@@ -247,6 +247,14 @@ const en = {
     exitedRetry: 'Retry',
     scrollToBottom: 'Scroll to bottom'
   },
+  voice: {
+    start: 'Start dictation',
+    stop: 'Stop dictation',
+    transcribing: 'Transcribing…',
+    errorMic: 'Microphone access denied',
+    errorNoModel: 'Voice model not installed',
+    errorFailed: 'Transcription failed',
+  },
   chat: {
     cwdChipNoneLabel: '(none)',
   },
