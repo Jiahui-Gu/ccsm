@@ -88,6 +88,7 @@ import { registerDbIpc } from './ipc/dbIpc';
 import { registerSystemIpc } from './ipc/systemIpc';
 import { registerSessionIpc } from './ipc/sessionIpc';
 import { registerWindowIpc } from './ipc/windowIpc';
+import { registerVoiceIpc } from './ipc/voiceIpc';
 import { startMobileRemoteServer } from './remote/mobileRemoteServer';
 import {
   registerUtilityIpc,
@@ -267,6 +268,7 @@ app.whenReady().then(() => {
   });
   registerWindowIpc({ ipcMain });
   registerUtilityIpc({ ipcMain });
+  registerVoiceIpc({ ipcMain });
 
   // Process-wide IPC for the terminal pane's `onContextMenu` handler to
   // ask main to skip the native context menu for one upcoming click.
