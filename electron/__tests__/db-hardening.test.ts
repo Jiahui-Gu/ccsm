@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
+import { spawn } from 'child_process';
 
 // Mirror db.test.ts: redirect electron's userData to a per-test tmp dir so
 // (a) we never touch the real app data and (b) each test gets a clean slate.
@@ -172,6 +173,113 @@ describe('db hardening: schema versioning', () => {
   it.todo(
     'migrates an older on-disk schema (stored < current) — add when SCHEMA_VERSION ≥ 2'
   );
+});
+
+describe('db hardening: WAL durability across a non-graceful shutdown', () => {
+  // Regression for the OS-restart data-loss bug. CCSM persists its whole
+  // renderer snapshot as ONE tiny ~1 KB `app_state` row. In WAL mode that row
+  // never approaches the default `wal_autocheckpoint` threshold (~4 MB), so
+  // without an explicit checkpoint every write lives ONLY in the `-wal`
+  // sidecar. A graceful quit (`before-quit` → `closeDb`) folds the WAL into the
+  // main DB, but an OS restart / power loss / force-kill skips that path — the
+  // unflushed WAL is discarded and the main DB serves a stale/empty snapshot.
+  // All sessions/groups since the last graceful quit vanish.
+  //
+  // This can ONLY be reproduced across a process boundary: while any process
+  // holds the connection open the WAL is still readable, so an in-process test
+  // is a false green. We spawn `fixtures/wal-writer.cjs` (which mirrors db.ts's
+  // initDb+saveState pragma sequence), SIGKILL it after the write commits,
+  // delete the `-wal`/`-shm` sidecars (the OS dropping the unflushed journal),
+  // then read the main DB from a fresh connection. The `CHECKPOINT` env arm is
+  // the only difference between data loss and survival — pinning that the
+  // `wal_checkpoint(PASSIVE)` added to `saveState` is load-bearing.
+  const writer = path.join(__dirname, 'fixtures', 'wal-writer.cjs');
+
+  async function runForcedShutdown(env: Record<string, string>): Promise<string | null> {
+    const dir = fs.mkdtempSync(path.join(tmpRoot, 'wal-'));
+    const file = path.join(dir, 'ccsm.db');
+    const ready = file + '.ready';
+    const child = spawn(process.execPath, [writer], {
+      env: { ...process.env, DBFILE: file, STATE_VALUE: 'survive-the-restart', ...env },
+      stdio: 'inherit',
+    });
+    try {
+      const start = Date.now();
+      while (!fs.existsSync(ready)) {
+        if (Date.now() - start > 10000) throw new Error('writer never signalled ready');
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      // Forced shutdown: no graceful close, no checkpoint-on-exit.
+      child.kill('SIGKILL');
+      await new Promise((r) => setTimeout(r, 100));
+    } finally {
+      if (!child.killed) child.kill('SIGKILL');
+    }
+    // The OS discards the unflushed WAL on restart.
+    for (const ext of ['-wal', '-shm']) {
+      try {
+        fs.unlinkSync(file + ext);
+      } catch {
+        /* may have been folded in already / never existed */
+      }
+    }
+    // A fresh launch opens the main DB from scratch.
+    const Database = (await import('better-sqlite3')).default;
+    const reader = new Database(file, { readonly: true });
+    try {
+      const row = reader
+        .prepare('SELECT value FROM app_state WHERE key = ?')
+        .get('main') as { value: string } | undefined;
+      return row?.value ?? null;
+    } catch {
+      // Table absent because the main DB was never written — the bug.
+      return null;
+    } finally {
+      reader.close();
+    }
+  }
+
+  it('LOSES data on the current (no-checkpoint) path — documents the bug', async () => {
+    // Neither SYNC_FULL nor CHECKPOINT: byte-for-byte the buggy db.ts path.
+    const value = await runForcedShutdown({});
+    expect(value).not.toBe('survive-the-restart');
+  });
+
+  it('synchronous=FULL alone is NOT enough — data still lost', async () => {
+    // Proves FULL is necessary-but-insufficient: durability of WAL frames
+    // doesn't help when the WAL itself is discarded un-checkpointed.
+    const value = await runForcedShutdown({ SYNC_FULL: '1' });
+    expect(value).not.toBe('survive-the-restart');
+  });
+
+  it('survives when saveState checkpoints the WAL into the main DB', async () => {
+    // The actual fix: fold the WAL into the main file on every write.
+    const value = await runForcedShutdown({ SYNC_FULL: '1', CHECKPOINT: '1' });
+    expect(value).toBe('survive-the-restart');
+  });
+});
+
+describe('db hardening: saveState/initDb wire up WAL durability', () => {
+  // The forced-shutdown suite above proves the MECHANISM (no checkpoint → loss;
+  // checkpoint → survival) across a real process kill, using a fixture that
+  // mirrors db.ts. These two tests pin that db.ts ITSELF actually issues those
+  // pragmas, so the fixture and production can't silently drift apart.
+  it('initDb sets synchronous = FULL', async () => {
+    const { initDb } = await freshDb();
+    const handle = initDb();
+    // synchronous: 0=OFF 1=NORMAL 2=FULL 3=EXTRA
+    expect(handle.pragma('synchronous', { simple: true })).toBe(2);
+  });
+
+  it('saveState issues a passive WAL checkpoint', async () => {
+    const mod = await freshDb();
+    const { getDb, saveState } = mod;
+    const spy = vi.spyOn(getDb(), 'pragma');
+    saveState('main', 'x');
+    const checkpointed = spy.mock.calls.some((c) => String(c[0]).includes('wal_checkpoint'));
+    expect(checkpointed).toBe(true);
+    spy.mockRestore();
+  });
 });
 
 describe('db hardening: prepared statement cache', () => {
