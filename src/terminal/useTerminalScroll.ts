@@ -12,10 +12,20 @@ import { getTopShell } from './shellRegistry';
 //
 // This hook reads xterm's buffer geometry directly and projects a thumb
 // position. There is no reverse sync — the thumb is a *pure function* of
-// the buffer state, so it can never desync. We re-read on the same event
-// set `useAtBottom` uses (`onScroll` + `onLineFeed`) plus `onResize`
-// (track-height / rows change on fit). Drag / track-click translate back
-// to `term.scrollToLine` / `term.scrollLines` against the same buffer.
+// the buffer state, so it can never desync. We re-read on `onScroll` +
+// `onLineFeed` + `onResize` (track-height / rows change on fit) AND on
+// `onRender`. The `onRender` subscription is load-bearing: xterm's
+// `onScroll` emitter does NOT fire for mouse-wheel scrolling (the wheel
+// handler scrolls the `.xterm-viewport` DOM element and repaints, but
+// never emits `onScroll`). Since the wheel is the primary way users
+// scroll, subscribing only to `onScroll` leaves the thumb frozen at its
+// last programmatic position — observed as "the thumb is always pinned to
+// the bottom" (dogfood-scrollbar-pinned-bottom.mjs: onScroll fires 0×,
+// onRender fires per wheel tick). `onRender` fires on every viewport
+// repaint, so it catches wheel scroll; `setGeom` skips no-op updates so
+// the extra firings during live output don't churn React. Drag /
+// track-click translate back to `term.scrollToLine` / `term.scrollLines`
+// against the same buffer.
 //
 // All geometry is in the pure functions below, exported for unit tests.
 
@@ -121,11 +131,19 @@ export function useTerminalScroll(
   useEffect(() => {
     const recompute = (): void => {
       const buf = readBuffer();
-      if (!buf) {
-        setGeom({ visible: false, thumbTop: 0, thumbHeight: 0 });
-        return;
-      }
-      setGeom(computeThumb(buf, trackHeight));
+      const next = buf
+        ? computeThumb(buf, trackHeight)
+        : { visible: false, thumbTop: 0, thumbHeight: 0 };
+      // Skip no-op updates: `onRender` fires on every viewport repaint
+      // (including each frame of live output), but the thumb geometry only
+      // changes when the buffer scroll position or size actually moves.
+      setGeom((prev) =>
+        prev.visible === next.visible &&
+        prev.thumbTop === next.thumbTop &&
+        prev.thumbHeight === next.thumbHeight
+          ? prev
+          : next,
+      );
     };
 
     const term = getTopShell()?.term;
@@ -137,10 +155,13 @@ export function useTerminalScroll(
     const scrollDisposable = term.onScroll(recompute);
     const lineFeedDisposable = term.onLineFeed(recompute);
     const resizeDisposable = term.onResize(recompute);
+    // `onScroll` misses wheel scrolling; `onRender` covers it (see header).
+    const renderDisposable = term.onRender(recompute);
     return () => {
       scrollDisposable.dispose();
       lineFeedDisposable.dispose();
       resizeDisposable.dispose();
+      renderDisposable.dispose();
     };
   }, [sessionId, trackHeight]);
 
