@@ -13,7 +13,7 @@
 
 import { sessionWatcher } from '../sessionWatcher';
 import { killProcessSubtree } from './processKiller';
-import { DEFAULT_COLS, DEFAULT_ROWS, makeEntry } from './entryFactory';
+import { DEFAULT_COLS, DEFAULT_ROWS, MAX_PTY_DIM, MIN_PTY_DIM, makeEntry } from './entryFactory';
 import type { Entry } from './entryFactory';
 import { loadScrollbackLines } from '../prefs/scrollback';
 
@@ -140,6 +140,29 @@ export function input(sessions: Map<string, Entry>, sid: string, data: string): 
   }
 }
 
+// Single resize-dimension policy for EVERY transport. The desktop IPC and
+// remote WS paths both funnel through `resize` below, so this is the one place
+// that decides floor/ceiling/NaN handling — the transports stay dumb
+// forwarders. Floor is clamped up to MIN_PTY_DIM; ceiling and non-finite/non-
+// integer inputs are rejected (null = no-op, keep old size). The asymmetry is
+// intentional: a too-small value is a benign transient (mid-layout viewport)
+// worth keeping the terminal live for, while a too-large value is never benign
+// at that magnitude and must be refused, not silently substituted.
+export function normalizeResizeDims(
+  cols: number,
+  rows: number,
+): { cols: number; rows: number } | null {
+  const norm = (n: number): number | null => {
+    if (!Number.isFinite(n)) return null;
+    if (n > MAX_PTY_DIM) return null;
+    return Math.max(MIN_PTY_DIM, Math.floor(n));
+  };
+  const c = norm(cols);
+  const r = norm(rows);
+  if (c === null || r === null) return null;
+  return { cols: c, rows: r };
+}
+
 export function resize(
   sessions: Map<string, Entry>,
   sid: string,
@@ -148,12 +171,13 @@ export function resize(
 ): void {
   const entry = sessions.get(sid);
   if (!entry) return;
-  if (cols < 2 || rows < 2) return;
+  const dims = normalizeResizeDims(cols, rows);
+  if (!dims) return;
   try {
-    entry.pty.resize(cols, rows);
-    entry.headless.resize(cols, rows);
-    entry.cols = cols;
-    entry.rows = rows;
+    entry.pty.resize(dims.cols, dims.rows);
+    entry.headless.resize(dims.cols, dims.rows);
+    entry.cols = dims.cols;
+    entry.rows = dims.rows;
   } catch (e) {
     console.warn(
       `[ptyHost] resize ${sid} failed: ${e instanceof Error ? e.message : String(e)}`,

@@ -196,9 +196,9 @@ describe('pty:input / resize / kill / get pass-through', () => {
   });
 
   // Defense-in-depth — TS signatures are advisory across the IPC boundary.
-  // These guards drop malformed renderer payloads instead of forwarding them
-  // to node-pty / xterm where the failure mode is uglier (truncate, throw
-  // inside the addon, or accept a runaway size).
+  // The input guard drops malformed renderer payloads instead of forwarding
+  // them to node-pty, where the failure mode is uglier (truncate or throw
+  // inside the addon).
   it('input drops non-string data without calling deps', () => {
     const ipc = makeFakeIpc();
     const deps = makeDeps();
@@ -209,38 +209,30 @@ describe('pty:input / resize / kill / get pass-through', () => {
     expect(deps.inputPtySession).not.toHaveBeenCalled();
   });
 
-  it('resize drops non-finite or out-of-range cols/rows without calling deps', () => {
+  // Track C: the resize handler is a dumb forwarder. Dimension policy
+  // (floor-clamp / ceiling-reject / NaN-reject) lives in `lifecycle.resize`
+  // via `normalizeResizeDims` — the single convergence point both the desktop
+  // IPC and the remote WS transports funnel through — so an identical resize
+  // behaves identically regardless of transport. The handler forwards raw
+  // cols/rows unconditionally; malformed values are dropped downstream, not
+  // here. (See lifecycle.test.ts for the normalizeResizeDims policy coverage.)
+  it('resize forwards malformed cols/rows raw — policy is downstream', () => {
     const ipc = makeFakeIpc();
     const deps = makeDeps();
     registerPtyIpc(ipc as any, deps);
     const cases: Array<[unknown, unknown]> = [
       [Number.NaN, 30],
-      [100, Number.NaN],
       [Number.POSITIVE_INFINITY, 30],
-      [100, Number.NEGATIVE_INFINITY],
       [0, 30],
-      [100, 0],
       [-1, 30],
-      [100, -1],
       [1001, 30],
-      [100, 1001],
-      ['80' as unknown, 30],
     ];
     for (const [c, r] of cases) {
       ipc.handlers.get(PTY_CHANNELS.resize)!({}, 'sid', c as any, r as any);
     }
-    expect(deps.resizePtySession).not.toHaveBeenCalled();
-  });
-
-  it('resize accepts boundary values 1 and 1000', () => {
-    const ipc = makeFakeIpc();
-    const deps = makeDeps();
-    registerPtyIpc(ipc as any, deps);
-    ipc.handlers.get(PTY_CHANNELS.resize)!({}, 'sid', 1, 1);
-    ipc.handlers.get(PTY_CHANNELS.resize)!({}, 'sid', 1000, 1000);
-    expect(deps.resizePtySession).toHaveBeenCalledTimes(2);
-    expect(deps.resizePtySession).toHaveBeenNthCalledWith(1, 'sid', 1, 1);
-    expect(deps.resizePtySession).toHaveBeenNthCalledWith(2, 'sid', 1000, 1000);
+    expect(deps.resizePtySession).toHaveBeenCalledTimes(cases.length);
+    expect(deps.resizePtySession).toHaveBeenNthCalledWith(1, 'sid', Number.NaN, 30);
+    expect(deps.resizePtySession).toHaveBeenNthCalledWith(5, 'sid', 1001, 30);
   });
 
   it('kill returns the deps result', async () => {
