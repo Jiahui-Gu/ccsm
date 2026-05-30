@@ -2,7 +2,7 @@ import * as crypto from 'crypto';
 import * as http from 'http';
 import { onPtyData } from '../ptyHost';
 import { renderMobilePage } from './mobilePage';
-import { HOST, parseRequestUrl, resolvePort, sendHtml, sendText, tokenMatches } from './remoteHttp';
+import { HOST, parseRequestUrl, resolvePort, sendHtml, sendJson, sendText, tokenMatches } from './remoteHttp';
 import { handleClientMessage, listEntries, listSignature } from './remoteMessages';
 import {
   buildUpgradeResponse,
@@ -21,9 +21,15 @@ type MobileRemoteServer = {
   url: string;
 };
 
-export function startMobileRemoteServer(): MobileRemoteServer | null {
+export function startMobileRemoteServer(options?: {
+  /** Heartbeat sweep interval in ms. Test-only seam — production always uses
+   *  the 30 s default. Lets unit tests drive the half-open reap in ~50 ms
+   *  instead of waiting two real 30 s intervals. */
+  heartbeatMs?: number;
+}): MobileRemoteServer | null {
   if (process.env.CCSM_MOBILE_REMOTE !== '1') return null;
 
+  const heartbeatMs = options?.heartbeatMs ?? 30_000;
   const token = crypto.randomBytes(32).toString('base64url');
   const port = resolvePort(process.env.CCSM_MOBILE_REMOTE_PORT);
   const clients = new Set<WsClient>();
@@ -41,6 +47,26 @@ export function startMobileRemoteServer(): MobileRemoteServer | null {
         return;
       }
       sendHtml(res, renderMobilePage());
+      return;
+    }
+
+    if (url.pathname === '/manifest.webmanifest') {
+      if (!tokenMatches(url.searchParams.get('token'), token)) {
+        sendText(res, 401, 'Unauthorized');
+        return;
+      }
+      // start_url carries the same session token so a home-screen icon
+      // reconnects authenticated. No new secret — it's the token already in
+      // the URL the user loaded.
+      sendJson(res, {
+        name: 'CCSM Remote',
+        short_name: 'CCSM',
+        display: 'standalone',
+        background_color: '#0b1020',
+        theme_color: '#0b1020',
+        start_url: `/?token=${token}`,
+        scope: '/',
+      });
       return;
     }
 
@@ -70,6 +96,7 @@ export function startMobileRemoteServer(): MobileRemoteServer | null {
       pending: Buffer.alloc(0),
       fragment: Buffer.alloc(0),
       subscribedSid: null,
+      isAlive: true,
       send: (payload) => {
         if (socket.destroyed) return;
         socket.write(encodeFrame(JSON.stringify(payload)));
@@ -86,6 +113,12 @@ export function startMobileRemoteServer(): MobileRemoteServer | null {
         closeSocket(socket, decoded.code);
         clients.delete(client);
         return;
+      }
+      // Any inbound pong or message proves the socket is still alive — keep the
+      // heartbeat sweep from reaping it. Browsers auto-Pong our Pings at the WS
+      // layer, so a live phone always trips this within one interval.
+      if (decoded.pongReceived || decoded.messages.length > 0) {
+        client.isAlive = true;
       }
       for (const message of decoded.messages) {
         void handleClientMessage(client, message);
@@ -136,6 +169,30 @@ export function startMobileRemoteServer(): MobileRemoteServer | null {
   }, 2000);
   listPollTimer.unref();
 
+  // Half-open detection: a phone that drops off the network (airplane mode,
+  // tunnel, Wi-Fi→cellular handoff) gives no TCP FIN for minutes, so
+  // socket.on('close')/'error' never fire and the dead WsClient lingers in the
+  // set — still targeted by the pty.data fan-out and list-poll broadcasts.
+  // Each sweep reaps any client that produced no inbound Pong/message since the
+  // previous sweep, then Pings the survivors. Browsers auto-Pong at the WS
+  // layer, so a live phone always re-arms isAlive within one interval. Worst
+  // case a dead client is reaped within ~2× heartbeatMs (one sweep to clear the
+  // flag, one to detect it stayed clear).
+  const heartbeatTimer = setInterval(() => {
+    for (const client of clients) {
+      if (!client.isAlive) {
+        closeSocket(client.socket, 1001);
+        clients.delete(client);
+        continue;
+      }
+      client.isAlive = false;
+      if (!client.socket.destroyed) {
+        client.socket.write(encodeControlFrame(0x9, Buffer.alloc(0)));
+      }
+    }
+  }, heartbeatMs);
+  heartbeatTimer.unref();
+
   server.listen(port, HOST, () => {
     // Redact the bearer token in the persistent log line: stdout/stderr get
     // captured into bug reports and shared, and a full token there is a
@@ -159,6 +216,7 @@ export function startMobileRemoteServer(): MobileRemoteServer | null {
     close: () => {
       offPtyData();
       clearInterval(listPollTimer);
+      clearInterval(heartbeatTimer);
       // Send a 1001 (going-away) close frame per client and let the FIN
       // follow naturally via socket.end() inside closeSocket(). A bare
       // destroy() would emit a raw TCP RST and peers would never see the

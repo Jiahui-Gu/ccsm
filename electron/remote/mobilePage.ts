@@ -3,13 +3,20 @@ export function renderMobilePage(): string {
 <html>
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b1020" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>CCSM Mobile Remote</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css" />
   <style>
     * { box-sizing: border-box; }
     html, body { margin: 0; height: 100%; background: #0b1020; color: #e5e7eb; font: 14px system-ui, sans-serif; }
-    body { display: flex; flex-direction: column; overflow: hidden; }
+    /* --app-height tracks window.visualViewport.height so the soft keyboard
+       (which overlays rather than shrinks the layout viewport on iOS Safari)
+       cannot hide the terminal/keybar behind it. Falls back to 100% when
+       visualViewport is unavailable (desktop / old browsers). */
+    body { display: flex; flex-direction: column; overflow: hidden; height: var(--app-height, 100%); }
     header { padding: 10px 12px; background: #111827; border-bottom: 1px solid #263042; flex: 0 0 auto; }
     #sessions { display: flex; gap: 8px; overflow-x: auto; padding: 8px 12px; background: #0f172a; border-bottom: 1px solid #1f2937; flex: 0 0 auto; }
     #sessions button { flex: 0 0 auto; border: 1px solid #374151; border-radius: 10px; background: #1f2937; color: #e5e7eb; padding: 8px 12px; font: inherit; white-space: nowrap; }
@@ -35,6 +42,16 @@ export function renderMobilePage(): string {
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
   <script>
     const token = new URLSearchParams(location.search).get('token') || '';
+
+    // Inject the manifest link carrying the current token so an installed
+    // (add-to-home-screen) icon reconnects authenticated. Done from script
+    // because the token is per-session and not known at static-HTML time.
+    if (token) {
+      const manifestLink = document.createElement('link');
+      manifestLink.rel = 'manifest';
+      manifestLink.href = '/manifest.webmanifest?token=' + encodeURIComponent(token);
+      document.head.appendChild(manifestLink);
+    }
     const statusEl = document.getElementById('status');
     const sessionsEl = document.getElementById('sessions');
     const terminalEl = document.getElementById('terminal');
@@ -104,6 +121,36 @@ export function renderMobilePage(): string {
       send({ type: 'session.resize', sid: activeSid, cols: dims.cols, rows: dims.rows });
     }
     window.addEventListener('resize', scheduleFit);
+
+    // Keep the layout column exactly as tall as the *visible* viewport. On iOS
+    // Safari the soft keyboard overlays the layout viewport (window.innerHeight
+    // stays full), so without this the keybar and terminal bottom slide under
+    // the keyboard. visualViewport.height excludes the keyboard, so binding the
+    // column height to it pins the keybar just above the keyboard.
+    const vv = window.visualViewport;
+    function syncViewportHeight() {
+      if (!vv) return;
+      document.body.style.setProperty('--app-height', vv.height + 'px');
+      scheduleFit();
+    }
+    if (vv) {
+      vv.addEventListener('resize', syncViewportHeight);
+      vv.addEventListener('scroll', syncViewportHeight);
+      syncViewportHeight();
+    }
+
+    // orientationchange can fire before the new geometry settles, so refit
+    // again on a longer delay to read settled dimensions. Idempotent — the
+    // cols/rows dedupe in doFit() drops it if nothing actually changed.
+    window.addEventListener('orientationchange', () => {
+      scheduleFit();
+      setTimeout(scheduleFit, 250);
+    });
+
+    // Tapping the terminal focuses xterm's hidden textarea, which is what
+    // raises the soft keyboard on touch devices.
+    terminalEl.addEventListener('touchend', () => term.focus());
+    terminalEl.addEventListener('click', () => term.focus());
 
     function send(msg) {
       if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));

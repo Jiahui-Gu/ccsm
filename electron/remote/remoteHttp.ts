@@ -47,6 +47,14 @@ export function sendText(res: http.ServerResponse, status: number, body: string)
   res.end(body);
 }
 
+export function sendJson(res: http.ServerResponse, body: unknown): void {
+  res.writeHead(200, {
+    'content-type': 'application/manifest+json; charset=utf-8',
+    'cache-control': 'no-store',
+  });
+  res.end(JSON.stringify(body));
+}
+
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
