@@ -2,7 +2,7 @@ import * as crypto from 'crypto';
 import * as http from 'http';
 import { onPtyData } from '../ptyHost';
 import { renderMobilePage } from './mobilePage';
-import { HOST, parseRequestUrl, resolvePort, sendHtml, sendJson, sendText, tokenMatches } from './remoteHttp';
+import { displayHost, parseRequestUrl, resolveHost, resolvePort, sendHtml, sendJson, sendText, tokenMatches } from './remoteHttp';
 import { handleClientMessage, listEntries, listSignature } from './remoteMessages';
 import {
   buildUpgradeResponse,
@@ -32,6 +32,7 @@ export function startMobileRemoteServer(options?: {
   const heartbeatMs = options?.heartbeatMs ?? 30_000;
   const token = crypto.randomBytes(32).toString('base64url');
   const port = resolvePort(process.env.CCSM_MOBILE_REMOTE_PORT);
+  const boundHost = resolveHost(process.env.CCSM_MOBILE_REMOTE_HOST);
   const clients = new Set<WsClient>();
 
   const server = http.createServer((req, res) => {
@@ -152,7 +153,8 @@ export function startMobileRemoteServer(options?: {
     }
   });
 
-  const url = `http://${HOST}:${port}/?token=${token}`;
+  const shownHost = displayHost(boundHost);
+  const url = `http://${shownHost}:${port}/?token=${token}`;
 
   // The mobile client has no way to learn that a desktop session opened or
   // closed unless we tell it. Poll the live list and re-broadcast only when the
@@ -193,7 +195,7 @@ export function startMobileRemoteServer(options?: {
   }, heartbeatMs);
   heartbeatTimer.unref();
 
-  server.listen(port, HOST, () => {
+  server.listen(port, boundHost, () => {
     // Redact the bearer token in the persistent log line: stdout/stderr get
     // captured into bug reports and shared, and a full token there is a
     // credential leak. The host:port/path stay discoverable; the full URL
@@ -201,10 +203,17 @@ export function startMobileRemoteServer(options?: {
     // desktop UI/user to retrieve without it ever hitting the console.
     const tokenHint = token.slice(0, 6);
     console.log(
-      `[mobile-remote] listening at http://${HOST}:${port}/?token=${tokenHint}… ` +
+      `[mobile-remote] listening on ${boundHost}:${port}/?token=${tokenHint}… ` +
         `(full URL on the desktop session handle)`,
     );
-    console.log(`[mobile-remote] tailscale: tailscale serve --bg http://${HOST}:${port}`);
+    if (boundHost !== '127.0.0.1') {
+      // The server is reachable beyond loopback — make that explicit in the log
+      // so a user scanning output understands network exposure is active. The
+      // token is still required; this is not an open port.
+      console.log(
+        `[mobile-remote] reachable on the LAN at http://${shownHost}:${port} (token required)`,
+      );
+    }
   });
 
   server.on('error', (err) => {

@@ -268,6 +268,7 @@ afterEach(async () => {
   }
   delete process.env.CCSM_MOBILE_REMOTE;
   delete process.env.CCSM_MOBILE_REMOTE_PORT;
+  delete process.env.CCSM_MOBILE_REMOTE_HOST;
   // Let the OS reclaim the listening socket between tests.
   await new Promise((r) => setTimeout(r, 10));
 });
@@ -278,6 +279,42 @@ describe('mobileRemoteServer: env gate', () => {
     vi.resetModules();
     const { startMobileRemoteServer } = await import('../remote/mobileRemoteServer');
     expect(startMobileRemoteServer()).toBeNull();
+  });
+});
+
+describe('mobileRemoteServer: host binding', () => {
+  // When CCSM_MOBILE_REMOTE_HOST exposes the server beyond loopback (0.0.0.0),
+  // the bind must widen to all interfaces while a loopback client still
+  // connects — 0.0.0.0 accepts 127.0.0.1 connections too, so this proves the
+  // exposure switch works without breaking local access. (A real cross-device
+  // hop is the user's real-device step; headless cannot model another machine.)
+  it('binds 0.0.0.0 and still serves a 127.0.0.1 client; display URL is non-loopback', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    process.env.CCSM_MOBILE_REMOTE = '1';
+    process.env.CCSM_MOBILE_REMOTE_HOST = '0.0.0.0';
+    const probe = http.createServer();
+    await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', () => resolve()));
+    const port = (probe.address() as AddressInfo).port;
+    await new Promise<void>((resolve) => probe.close(() => resolve()));
+    process.env.CCSM_MOBILE_REMOTE_PORT = String(port);
+
+    vi.resetModules();
+    const { startMobileRemoteServer } = await import('../remote/mobileRemoteServer');
+    const handle = startMobileRemoteServer();
+    logSpy.mockRestore();
+    if (!handle) throw new Error('server did not start');
+
+    const token = handle.url.match(/token=([A-Za-z0-9_-]+)/)?.[1];
+    expect(token).toBeTruthy();
+    // The display URL must not advertise 0.0.0.0 — a phone can't open that.
+    expect(handle.url).not.toMatch(/0\.0\.0\.0/);
+
+    active = { port, token: token!, close: () => handle.close() };
+
+    // A loopback client still connects against the 0.0.0.0 bind.
+    const res = await httpGet(port, `/?token=${token}`);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatch(/CCSM Mobile Remote/);
   });
 });
 
