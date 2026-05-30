@@ -9,7 +9,7 @@ class_name = "PairingDurableObject"
 
 [[migrations]]
 tag = "v1"
-new_classes = ["PairingDurableObject"]
+new_sqlite_classes = ["PairingDurableObject"]
 
 # Public config (safe to commit)
 [vars]

@@ -112,10 +112,10 @@ jobs:
 
   # The Cloudflare Worker (mobile-remote signaling relay) lives in its own
   # package under `cloudflare/` with a separate dependency tree. Its miniflare
-  # test harness exercises a Durable Object backed by workerd SQLite. On
-  # Windows the isolated-storage teardown cannot `unlink` the DO SQLite file
-  # while workerd still holds the handle (EBUSY) — a host limitation, not a
-  # product bug — so this job runs on Linux only, where the harness is clean.
+  # test harness exercises a Durable Object backed by workerd SQLite. The suite
+  # is green on every OS (verified locally on Windows too); it runs on Linux
+  # only here to keep the matrix lean — it is a self-contained package, so one
+  # OS is enough to prove the harness and typecheck.
   cloudflare-worker:
     name: cloudflare worker (typecheck + test)
     runs-on: ubuntu-latest
