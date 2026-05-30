@@ -157,12 +157,14 @@ const sidGenerations = new Map<string, number>();
 const MAX_SDK_THREW_ATTEMPTS = 2;
 
 // Defensive ceiling (DEBT #12). `listProjectSummaries` returns one row per
-// session file in a project and ships the whole array over IPC. A project
-// directory with thousands of transcripts would walk and serialize the lot.
-// The cap is far above any realistic project so a real workload never
-// truncates; it only bounds a pathological tree. Truncation is silent-with-a-
-// warn — the sole consumer (title backfill) treats a shorter list as "fewer
-// sessions to backfill", never as an error.
+// session file in a project and ships the whole array over IPC. This is a
+// payload cap only: the upstream SDK listSessions() has already enumerated
+// the whole project directory by the time we slice, so the cap bounds what we
+// serialize across the bridge, not the enumeration work. It sits far above
+// any realistic project so a real workload never truncates; it only bounds a
+// pathological tree. Truncation is silent-with-a-warn — the sole consumer
+// (title backfill) treats a shorter list as "fewer sessions to backfill",
+// never as an error.
 const MAX_PROJECT_SUMMARIES = 2000;
 
 // ─────────────────────────── Helpers ─────────────────────────────────────

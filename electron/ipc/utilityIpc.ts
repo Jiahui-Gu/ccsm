@@ -41,14 +41,23 @@ let importableCache: ScannableSession[] = [];
 let importablePending: Promise<ScannableSession[]> | null = null;
 
 // Defensive ceilings (DEBT #12). These handlers returned/consumed unbounded
-// arrays: a `~/.claude/projects` tree with thousands of transcripts, or a
-// renderer hydration probing thousands of session cwds, would walk the whole
-// list synchronously and ship the full payload over IPC. The caps are far
-// above any realistic user (2000 importable sessions, 5000 cwd probes) so a
-// real workload never truncates; they exist only to bound a pathological or
-// hostile input. Truncation is silent-with-a-warn — every consumer treats a
-// shorter list as "fewer items", never as an error (an absent cwd in the
-// paths:exist map is read as undefined, i.e. left un-flagged, not "missing").
+// arrays and could ship an arbitrarily large payload over IPC.
+//
+// The two caps bound different things:
+//   • MAX_IMPORT_SESSIONS caps the IPC *payload* only. The upstream scan
+//     (scanImportableSessions) still walks the whole `~/.claude/projects`
+//     tree — this cap does not bound that work, it just refuses to serialize
+//     a pathological result set across the bridge.
+//   • MAX_PROBE_PATHS caps the *work*: paths:exist slices before the
+//     fs.existsSync loop, so the cap genuinely bounds the syscalls, not just
+//     the returned map.
+//
+// Both ceilings sit far above any realistic user (2000 importable sessions,
+// 5000 cwd probes) so a real workload never truncates; they exist only to
+// bound a pathological or hostile input. Truncation is silent-with-a-warn —
+// every consumer treats a shorter list as "fewer items", never as an error
+// (an absent cwd in the paths:exist map is read as undefined, i.e. left
+// un-flagged, not "missing").
 const MAX_IMPORT_SESSIONS = 2000;
 const MAX_PROBE_PATHS = 5000;
 
@@ -76,6 +85,8 @@ async function getImportableSessions(): Promise<ScannableSession[]> {
   // running at app `ready`: by the time the user opens the dialog the
   // priming scan has typically already resolved.
   const rows = await refreshImportableCache();
+  // Payload cap only — the scan above already walked the full tree; this just
+  // bounds what we serialize across the IPC bridge. See MAX_IMPORT_SESSIONS.
   if (rows.length > MAX_IMPORT_SESSIONS) {
     console.warn(
       `[main] import:scan truncated ${rows.length} → ${MAX_IMPORT_SESSIONS} sessions`,
