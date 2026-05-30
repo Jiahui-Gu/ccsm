@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, type MouseEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react';
 import '@xterm/xterm/css/xterm.css';
 import { useTranslation } from '../i18n/useTranslation';
 import { usePtyAttachShell, type PtyAttachState } from '../terminal/usePtyAttachShell';
@@ -6,6 +6,7 @@ import { useAtBottom } from '../terminal/useAtBottom';
 import { getTopShell } from '../terminal/shellRegistry';
 import { terminalCopy, terminalPaste } from '../terminal/paste';
 import { ScrollToBottomButton } from './ScrollToBottomButton';
+import { TerminalScrollbar } from './TerminalScrollbar';
 import { MicButton } from './voice/MicButton';
 import { useStore } from '../stores/store';
 import {
@@ -32,6 +33,23 @@ export function TerminalPane({ sessionId, cwd }: Props) {
 
   const { state, onRetry } = usePtyAttachShell(sessionId, cwd, hostRef);
   const { scrollToBottom } = useAtBottom(sessionId);
+
+  // Host pixel height drives the self-drawn scrollbar's track geometry.
+  // Measured here (not inside the scrollbar) so the thumb stays a pure
+  // function of (buffer, trackHeight) — re-measured on splitter drag /
+  // window resize via ResizeObserver.
+  const [hostHeight, setHostHeight] = useState(0);
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    const ro = new ResizeObserver((entries) => {
+      const r = entries[0]?.contentRect;
+      if (r) setHostHeight(Math.round(r.height));
+    });
+    ro.observe(host);
+    setHostHeight(Math.round(host.getBoundingClientRect().height));
+    return () => ro.disconnect();
+  }, []);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -143,6 +161,9 @@ export function TerminalPane({ sessionId, cwd }: Props) {
       <div ref={hostRef} className="absolute inset-0" />
       <Overlay state={state} onRetry={onRetry} t={t} />
       {state.kind === 'ready' ? <MicButton sessionId={sessionId} /> : null}
+      {state.kind === 'ready' ? (
+        <TerminalScrollbar sessionId={sessionId} trackHeight={hostHeight} />
+      ) : null}
       {state.kind === 'ready' ? (
         <ScrollToBottomButton onClick={scrollToBottom} />
       ) : null}

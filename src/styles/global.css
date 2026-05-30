@@ -741,6 +741,19 @@ html.theme-light ::-webkit-scrollbar-thumb:hover {
   border: 2px solid transparent;
 }
 
+/* Terminal viewport: hide the native scrollbar. The terminal's scrollbar is
+   self-drawn by <TerminalScrollbar/> from xterm's buffer state (single
+   source of truth — see the scrollbar architecture spec); the native
+   `.xterm-viewport` scrollbar is a lagging shadow of that state and
+   desyncs on cold-start / fit / reflow. Scoped to `.xterm-viewport` ONLY
+   so the app-global scrollbar above (sidebar, dialogs, etc.) is untouched. */
+.xterm-viewport {
+  scrollbar-width: none;
+}
+.xterm-viewport::-webkit-scrollbar {
+  display: none;
+}
+
 /*
   Pane resize handle for react-resizable-panels' <Separator>.
 

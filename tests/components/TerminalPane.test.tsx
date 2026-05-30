@@ -29,6 +29,15 @@ vi.mock('../../src/terminal/usePtyAttachShell', () => ({
 vi.mock('../../src/terminal/useAtBottom', () => ({
   useAtBottom: () => ({ atBottom: true, scrollToBottom: vi.fn() }),
 }));
+vi.mock('../../src/terminal/useTerminalScroll', () => ({
+  useTerminalScroll: () => ({
+    visible: false,
+    thumbTop: 0,
+    thumbHeight: 0,
+    dragTo: vi.fn(),
+    pageBy: vi.fn(),
+  }),
+}));
 vi.mock('../../src/terminal/shellRegistry', () => ({
   getTopShell: getTopShellSpy,
   // store.ts registers an appearance provider at module-eval via this
