@@ -161,5 +161,28 @@ export default [
         URLSearchParams: 'readonly'
       }
     }
+  },
+  {
+    // CommonJS test fixtures (spawned as standalone Node child processes, e.g.
+    // electron/__tests__/fixtures/wal-writer.cjs). Plain Node scripts — give
+    // them Node globals and CJS module semantics.
+    files: ['**/*.cjs'],
+    languageOptions: {
+      sourceType: 'commonjs',
+      globals: {
+        process: 'readonly',
+        Buffer: 'readonly',
+        __dirname: 'readonly',
+        __filename: 'readonly',
+        require: 'readonly',
+        module: 'readonly',
+        exports: 'readonly',
+        console: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        setInterval: 'readonly',
+        clearInterval: 'readonly'
+      }
+    }
   }
 ];

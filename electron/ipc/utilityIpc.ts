@@ -136,13 +136,21 @@ export function registerUtilityIpc(deps: UtilityIpcDeps): void {
     // persist a UNC trap path that statSync's later — see resolveSpawnCwd.
     // Drop unsafe entries (UNC / relative / non-absolute) at the boundary
     // so they never reach disk.
-    if (!isSafePath(p)) {
+    //
+    // Mirror `probePaths`: expand `~`/`~/foo` to an absolute home path with
+    // resolveCwd BEFORE isSafePath, then persist the RESOLVED path. Without
+    // this a tilde cwd is silently rejected by isSafePath (a bare `~` is not
+    // an absolute path) and the user's recent-cwd never gets recorded. The
+    // resolveCwd→isSafePath ordering is load-bearing: isSafePath MUST run on
+    // the resolved path before any fs access (UNC/NTLM-leak defense).
+    const resolved = resolveCwd(p);
+    if (!isSafePath(resolved)) {
       console.warn(
         `[main] app:userCwds:push rejected unsafe path ${JSON.stringify(p)}`,
       );
       return getUserCwds();
     }
-    return pushUserCwd(p);
+    return pushUserCwd(resolved);
   });
   ipcMain.handle('app:userHome', () => os.homedir());
 

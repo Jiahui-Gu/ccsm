@@ -89,6 +89,27 @@ function schedulePersist(): void {
   }, WRITE_DEBOUNCE_MS);
 }
 
+/**
+ * Synchronously dispatch any pending debounced draft write. Call from
+ * `beforeunload` (renderer) so a quick quit doesn't lose the last 250 ms of
+ * composer typing. Mirrors `persist.ts`'s `flushNow`: the saveState IPC is
+ * fire-and-forget — Electron lets the in-flight IPC complete during teardown,
+ * but we don't await it here because beforeunload handlers can't reliably hold
+ * the page open across async work.
+ */
+export function flushDraftsNow(): void {
+  if (!window.ccsm) return;
+  if (writeTimer) {
+    clearTimeout(writeTimer);
+    writeTimer = null;
+  }
+  const drafts: Record<string, string> = {};
+  for (const [k, v] of cache.entries()) drafts[k] = v;
+  void window.ccsm.saveState(STATE_KEY, JSON.stringify({ version: 1, drafts })).catch(() => {
+    /* persist failures are non-fatal; we'll retry on the next edit */
+  });
+}
+
 // Test-only — not exported through any barrel; reach in via the module path.
 export function _resetForTests(): void {
   cache.clear();

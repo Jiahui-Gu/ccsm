@@ -7,24 +7,43 @@ import type { Socket } from 'net';
 
 // Mock the ptyHost surface the server consumes. We don't want a real PTY,
 // and pulling in ../ptyHost would drag node-pty + electron transitively.
+//
+// The mock exposes an extra `__emitPtyData(sid, chunk, seq)` that fans out to
+// every listener the server registered via onPtyData, letting a test drive the
+// real broadcast path. `seq` is ptyHost's authoritative per-session chunk
+// counter — the test supplies it explicitly so we can prove the server forwards
+// it verbatim rather than re-deriving its own. (vi.mock factories are hoisted,
+// so the listener array lives inside the factory; we read __emitPtyData back
+// off the mocked module.)
 vi.mock('../ptyHost', () => {
-  const listeners: Array<(sid: string, chunk: string) => void> = [];
+  const listeners: Array<(sid: string, chunk: string, seq: number) => void> = [];
   return {
-    listPtySessions: vi.fn(() => [{ sid: 'mock-sid', cols: 80, rows: 24 }]),
+    listPtySessions: vi.fn(() => [{ sid: 'mock-sid', cwd: '/tmp/mock', cols: 80, rows: 24 }]),
     getPtySession: vi.fn((sid: string) =>
-      sid === 'mock-sid' ? { sid, cols: 80, rows: 24 } : null
+      sid === 'mock-sid' ? { sid, cwd: '/tmp/mock', cols: 80, rows: 24 } : null
     ),
     inputPtySession: vi.fn(),
-    getBufferSnapshot: vi.fn(async (_sid: string) => ({ snapshot: 'hello\r\n' })),
-    onPtyData: vi.fn((cb: (sid: string, chunk: string) => void) => {
+    resizePtySession: vi.fn(),
+    getBufferSnapshot: vi.fn(async (_sid: string) => ({ snapshot: 'hello\r\n', seq: 0 })),
+    onPtyData: vi.fn((cb: (sid: string, chunk: string, seq: number) => void) => {
       listeners.push(cb);
       return () => {
         const i = listeners.indexOf(cb);
         if (i >= 0) listeners.splice(i, 1);
       };
     }),
+    __emitPtyData: (sid: string, chunk: string, seq: number) => {
+      for (const cb of listeners.slice()) cb(sid, chunk, seq);
+    },
   };
 });
+
+async function emitPtyData(sid: string, chunk: string, seq: number): Promise<void> {
+  const mod = (await import('../ptyHost')) as unknown as {
+    __emitPtyData: (sid: string, chunk: string, seq: number) => void;
+  };
+  mod.__emitPtyData(sid, chunk, seq);
+}
 
 type Started = {
   port: number;
@@ -33,7 +52,8 @@ type Started = {
 };
 
 async function startServer(): Promise<Started> {
-  // Capture the random token from the server's startup console.log line.
+  // Token is no longer logged in full (redacted for log hygiene); read it from
+  // the server handle's `url` field instead. Still silence the startup logs.
   const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
   process.env.CCSM_MOBILE_REMOTE = '1';
@@ -50,22 +70,11 @@ async function startServer(): Promise<Started> {
   const { startMobileRemoteServer } = await import('../remote/mobileRemoteServer');
   const handle = startMobileRemoteServer();
   if (!handle) throw new Error('server did not start');
-
-  // Wait for the "listening at" log line that contains the token.
-  let token: string | null = null;
-  for (let i = 0; i < 50 && !token; i += 1) {
-    for (const call of logSpy.mock.calls) {
-      const line = String(call[0] ?? '');
-      const m = line.match(/token=([A-Za-z0-9_-]+)/);
-      if (m) {
-        token = m[1]!;
-        break;
-      }
-    }
-    if (!token) await new Promise((r) => setTimeout(r, 10));
-  }
   logSpy.mockRestore();
-  if (!token) throw new Error('could not capture token from startup log');
+
+  const m = handle.url.match(/token=([A-Za-z0-9_-]+)/);
+  if (!m) throw new Error('could not parse token from handle.url');
+  const token = m[1]!;
 
   return {
     port,
@@ -501,5 +510,102 @@ describe('mobileRemoteServer: server shutdown', () => {
     // 1001 = going-away. A bare destroy() would have surfaced as null
     // (no close frame parsed).
     expect(code).toBe(1001);
+  });
+});
+
+describe('mobileRemoteServer: per-client pty.data isolation', () => {
+  // Helper: connect, drain the initial auth.ok + sessions.list, subscribe to
+  // `sid` via session.snapshot, then drain the snapshot reply so the next
+  // message a test reads is genuinely the first post-subscribe frame.
+  async function connectAndSubscribe(port: number, token: string, sid: string) {
+    const ws = await wsConnect(port, `/ws?token=${token}`);
+    await ws.recvText; // auth.ok + sessions.list
+    ws.socket.write(encodeClientText(JSON.stringify({ type: 'session.snapshot', sid })));
+    const snap = JSON.parse(await ws.nextMessage());
+    expect(snap.type).toBe('session.snapshot');
+    expect(snap.sid).toBe(sid);
+    return ws;
+  }
+
+  it('forwards pty.data only to the client subscribed to that sid', async () => {
+    active = await startServer();
+    const a = await connectAndSubscribe(active.port, active.token, 'A');
+    const b = await connectAndSubscribe(active.port, active.token, 'B');
+
+    // Emit data for session 'A' only.
+    await emitPtyData('A', 'alpha-bytes', 1);
+
+    // Client A (subscribed to 'A') must receive the pty.data frame.
+    const aMsg = JSON.parse(await a.nextMessage());
+    expect(aMsg).toMatchObject({ type: 'pty.data', sid: 'A', chunk: 'alpha-bytes' });
+
+    // Client B (subscribed to 'B') must NOT receive anything for 'A'.
+    await expect(b.nextMessage(200)).rejects.toThrow(/timed out/);
+
+    a.socket.destroy();
+    b.socket.destroy();
+  });
+
+  it('does not forward pty.data to a client that has not subscribed to any sid', async () => {
+    active = await startServer();
+    // Connect but never send session.snapshot — subscribedSid stays null.
+    const ws = await wsConnect(active.port, `/ws?token=${active.token}`);
+    await ws.recvText; // auth.ok + sessions.list
+
+    await emitPtyData('A', 'leak?', 1);
+
+    // No pty.data should arrive for an unsubscribed client.
+    await expect(ws.nextMessage(200)).rejects.toThrow(/timed out/);
+    ws.socket.destroy();
+  });
+
+  it('forwards ptyHost seq verbatim instead of re-counting', async () => {
+    active = await startServer();
+    const a = await connectAndSubscribe(active.port, active.token, 'A');
+
+    // ptyHost owns the authoritative per-session chunk seq (the same counter
+    // getBufferSnapshot returns). The server must forward whatever seq ptyHost
+    // emits — NOT maintain its own counter starting at 0. A re-counting server
+    // would relabel these as 1, 2; here we hand it 501 then 502 and require
+    // those exact values to pass through. Regression guard: the old seqBySid
+    // counter diverged from ptyHost and froze the mobile terminal (every live
+    // chunk was dropped as seq <= snapSeq after a non-empty snapshot).
+    await emitPtyData('A', 'first', 501);
+    const m1 = JSON.parse(await a.nextMessage());
+    await emitPtyData('A', 'second', 502);
+    const m2 = JSON.parse(await a.nextMessage());
+
+    expect(m1).toMatchObject({ type: 'pty.data', sid: 'A', chunk: 'first', seq: 501 });
+    expect(m2).toMatchObject({ type: 'pty.data', sid: 'A', chunk: 'second', seq: 502 });
+
+    a.socket.destroy();
+  });
+});
+
+describe('mobileRemoteServer: constant-time token compare', () => {
+  // tokenMatches is exercised end-to-end through the HTTP auth gate: it must
+  // reject a wrong-length token, reject an equal-length-but-different token,
+  // and accept the exact token.
+  it('rejects a token of a different length (401)', async () => {
+    active = await startServer();
+    const res = await httpGet(active.port, '/?token=short');
+    expect(res.status).toBe(401);
+  });
+
+  it('rejects an equal-length but mismatched token (401)', async () => {
+    active = await startServer();
+    // Same length as the real token, every char flipped to a constant so it
+    // cannot accidentally collide.
+    const wrong = 'A'.repeat(active.token.length);
+    expect(wrong.length).toBe(active.token.length);
+    expect(wrong).not.toBe(active.token);
+    const res = await httpGet(active.port, `/?token=${wrong}`);
+    expect(res.status).toBe(401);
+  });
+
+  it('accepts the exact token (200)', async () => {
+    active = await startServer();
+    const res = await httpGet(active.port, `/?token=${active.token}`);
+    expect(res.status).toBe(200);
   });
 });

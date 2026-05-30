@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { flushNow } from '../stores/persist';
+import { flushDraftsNow } from '../stores/drafts';
 
 /**
  * Installs a `'beforeunload'` listener that flushes the debounced persist
@@ -22,6 +23,7 @@ export function useFlushOnBeforeUnload(): void {
   useEffect(() => {
     const onBeforeUnload = () => {
       flushNow();
+      flushDraftsNow();
     };
     window.addEventListener('beforeunload', onBeforeUnload);
     return () => {

@@ -216,7 +216,7 @@ export function dispatchPtyChunk(sid: string, entry: Entry, chunk: string): void
   // don't propagate back to ptyHost so a misbehaving sink can't wedge
   // the PTY. Kept inside dispatchPtyChunk (not a separate hook) so the
   // single fan-out point is the only place chunk-handling lives.
-  emitPtyData(sid, chunk);
+  emitPtyData(sid, chunk, seq);
 }
 
 export function makeEntry(
@@ -340,10 +340,13 @@ export function makeEntry(
     } catch {
       /* already disposed */
     }
+    // NOTE: stopping the JSONL tail-watcher is deliberately done INSIDE the
+    // identity-guarded `deps.onExit` body (lifecycle.ts), NOT here. A stale
+    // pty's late onExit (Windows wedged-kill reload race) must not tear down
+    // the FRESH session's watcher that a respawn registered under the same
+    // sid — otherwise the renderer stops getting session:state/title updates
+    // and the notify badge is wrongly drained.
     deps.onExit(sid);
-    // Stop the JSONL tail-watcher so we don't keep an fs.watch handle
-    // pinned for a dead session.
-    try { sessionWatcher.stopWatching(sid); } catch { /* never throws */ }
   });
 
   // Start a JSONL tail-watcher for this session. The watcher emits

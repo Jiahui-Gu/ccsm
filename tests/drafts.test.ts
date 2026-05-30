@@ -5,6 +5,7 @@ import {
   setDraft,
   clearDraft,
   deleteDrafts,
+  flushDraftsNow,
   _resetForTests,
 } from '../src/stores/drafts';
 
@@ -125,5 +126,28 @@ describe('drafts persistence', () => {
     await flushPersist();
     const blob = JSON.parse(saveState.mock.calls.at(-1)?.[1] as string);
     expect(blob.drafts['s-1']).toBe(tricky);
+  });
+
+  it('flushDraftsNow writes synchronously, bypassing the debounce, and clears the pending timer', async () => {
+    const { saveState } = installCCSM();
+    await hydrateDrafts();
+    setDraft('s-1', 'last-second edit'); // 250ms timer now pending, not yet fired
+    expect(saveState).not.toHaveBeenCalled();
+
+    flushDraftsNow();
+
+    // Written immediately, without advancing any timers.
+    expect(saveState).toHaveBeenCalledTimes(1);
+    const [key, blob] = saveState.mock.calls[0];
+    expect(key).toBe('drafts');
+    expect(JSON.parse(blob as string)).toEqual({
+      version: 1,
+      drafts: { 's-1': 'last-second edit' },
+    });
+
+    // The pending debounce timer was cleared: draining timers must NOT
+    // produce a second redundant write.
+    await flushPersist();
+    expect(saveState).toHaveBeenCalledTimes(1);
   });
 });

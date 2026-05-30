@@ -101,7 +101,7 @@ vi.mock('../cwdResolver', () => ({
 }));
 
 vi.mock('../dataFanout', () => ({
-  emitPtyData: (sid: string, chunk: string) => bus().emitData(sid, chunk),
+  emitPtyData: (sid: string, chunk: string, seq: number) => bus().emitData(sid, chunk, seq),
 }));
 
 // The user-configured scrollback cap is now read at headless construction
@@ -183,7 +183,7 @@ describe('entryFactory.makeEntry', () => {
     expect(bus().watcherStart).toHaveBeenCalledWith('sid-E', '/tmp/live.jsonl', '/work');
   });
 
-  it('on pty exit: disposes headless, fires deps.onExit(sid), and stops the watcher', () => {
+  it('on pty exit: disposes headless and fires deps.onExit(sid) — does NOT stop the watcher itself', () => {
     const onExit = vi.fn();
     makeEntry('sid-F', '/work', '/bin/claude', 80, 24, { onExit });
     const b = bus();
@@ -191,7 +191,13 @@ describe('entryFactory.makeEntry', () => {
     b.onExit!({ exitCode: 0, signal: null });
     expect(b.headlessDispose).toHaveBeenCalledTimes(1);
     expect(onExit).toHaveBeenCalledWith('sid-F');
-    expect(b.watcherStop).toHaveBeenCalledWith('sid-F');
+    // Watcher teardown is now the caller's concern: it lives INSIDE the
+    // identity-guarded `deps.onExit` body (lifecycle.ts) so a stale pty's
+    // late exit can't tear down a fresh respawned session's watcher under
+    // the same sid. entryFactory's exit pump must therefore NOT call
+    // stopWatching directly. (The `onExit` dep here is a bare spy, so the
+    // real watcher is never touched.)
+    expect(b.watcherStop).not.toHaveBeenCalled();
   });
 
   it('forwards pty data into headless write AND emitPtyData fanout', () => {
@@ -201,7 +207,7 @@ describe('entryFactory.makeEntry', () => {
     b.onData!('hello');
     // PR-C (#863): headless.write is now invoked with a backpressure callback.
     expect(b.headlessWrite).toHaveBeenCalledWith('hello', expect.any(Function));
-    expect(b.emitData).toHaveBeenCalledWith('sid-G', 'hello');
+    expect(b.emitData).toHaveBeenCalledWith('sid-G', 'hello', 1);
   });
 
   it('returns an Entry exposing the pid/cols/rows/cwd captured at spawn', () => {

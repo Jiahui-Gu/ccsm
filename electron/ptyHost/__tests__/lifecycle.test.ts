@@ -229,6 +229,59 @@ describe('lifecycle.spawn', () => {
     expect(sessions.get('sid-X')).toBe(entryB);
   });
 
+  // Regression for the JSONL-watcher half of the same race. Before this fix
+  // `sessionWatcher.stopWatching(sid)` ran UNCONDITIONALLY in entryFactory's
+  // onExit pump (outside the identity guard), so a stale pty's late onExit
+  // killed the FRESH session's JSONL tail-watcher — the renderer then stopped
+  // getting session:state / session:title updates and the notify badge was
+  // wrongly drained. The fix moves stopWatching INSIDE the guarded body so it
+  // only fires when this entry is still the live one for the sid.
+  it('onExit identity-guard also gates stopWatching — stale onExit must NOT stop the fresh session watcher', () => {
+    const sessions = new Map<string, FakeEntry>();
+    const entryA = makeFakeEntry({ pty: makeFakePty({ pid: 100 }) });
+    bus().makeEntry.mockReturnValueOnce(entryA);
+    L.spawn(sessions as any, 'sid-X', '/work', '/bin/claude');
+    const depsA = bus().makeEntry.mock.calls[0][5] as { onExit: (s: string) => void };
+
+    // Reload: entryA evicted, fresh entryB spawned under the same sid.
+    sessions.delete('sid-X');
+    const entryB = makeFakeEntry({ pty: makeFakePty({ pid: 200 }) });
+    bus().makeEntry.mockReturnValueOnce(entryB);
+    L.spawn(sessions as any, 'sid-X', '/work', '/bin/claude');
+    expect(sessions.get('sid-X')).toBe(entryB);
+
+    // OLD pty's late onExit — fresh watcher must survive.
+    depsA.onExit('sid-X');
+    expect(sessions.get('sid-X')).toBe(entryB);
+    expect(bus().watcherStopCalls).toEqual([]);
+  });
+
+  // Normal case: when the LIVE entry's onExit fires, the watcher IS stopped.
+  it('onExit stops the watcher when this entry is still the live one for the sid', () => {
+    const sessions = new Map<string, FakeEntry>();
+    const entry = makeFakeEntry();
+    bus().makeEntry.mockReturnValue(entry);
+    L.spawn(sessions as any, 'sid-W', '/work', '/bin/claude');
+    const deps = bus().makeEntry.mock.calls[0][5] as { onExit: (s: string) => void };
+
+    deps.onExit('sid-W');
+    expect(sessions.has('sid-W')).toBe(false);
+    expect(bus().watcherStopCalls).toEqual(['sid-W']);
+  });
+
+  // The guarded stopWatching must never propagate a throw out of onExit.
+  it('onExit swallows stopWatching throws (live-entry path)', () => {
+    const sessions = new Map<string, FakeEntry>();
+    const entry = makeFakeEntry();
+    bus().makeEntry.mockReturnValue(entry);
+    L.spawn(sessions as any, 'sid-T', '/work', '/bin/claude');
+    const deps = bus().makeEntry.mock.calls[0][5] as { onExit: (s: string) => void };
+    bus().watcherStopShouldThrow = true;
+    expect(() => deps.onExit('sid-T')).not.toThrow();
+    expect(sessions.has('sid-T')).toBe(false);
+    expect(bus().watcherStopCalls).toEqual(['sid-T']);
+  });
+
   // Sanity: the OLD entry's onExit still self-cleans when no fresh entry
   // has replaced it (the common case — pty exits normally, no reload).
   it('onExit still removes the entry when no replacement has been registered', () => {
