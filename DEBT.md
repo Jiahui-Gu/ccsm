@@ -22,10 +22,10 @@ shows what got paid down).
 
 | ID | Item | Status | Effort | Impact | Location |
 |---|---|---|---|---|---|
-| 1 | Electron 41 → 42 (Chromium CVE patches stop arriving on 41) | OPEN | M | HIGH | `package.json:96` |
-| 2 | `@anthropic-ai/claude-agent-sdk` 0.2 → 0.3 | OPEN | M | HIGH | `package.json:41` |
+| 1 | Electron 41 → 42 (Chromium CVE patches stop arriving on 41) — **BLOCKED upstream**: held at `^41.3.0` until the `node-pty`/`better-sqlite3` native ABI rebuild (`scripts/postinstall.mjs`) is verified against Electron 42's ABI. Tracking; not yet actionable. | OPEN | M | HIGH | `package.json` |
+| 2 | `@anthropic-ai/claude-agent-sdk` 0.2 → 0.3. **DONE** ([#1421](https://github.com/Jiahui-Gu/ccsm/pull/1421), `db9584a`): bumped to `^0.3.156`. | DONE | M | HIGH | `package.json` |
 | 3 | Renderer bundle 1.24 MB single chunk — lazy-load `ImportDialog`/`CommandPalette`/`SettingsDialog`. **DONE** ([#1417](https://github.com/Jiahui-Gu/ccsm/pull/1417), `39138a8`): 3 dialogs converted to `React.lazy` + `Suspense`, code-split out of the initial parse (3 async chunks confirmed in dist). The originally-listed `splitChunks` vendor grouping is **WONTFIX**: this is an Electron renderer loaded from `file://` (local disk, no network, no HTTP cache, no return-visit), so splitting `bundle.js` into a vendor chunk reorganizes bytes on disk without reducing startup parse or total load. The positive-ROI portion (deferring parse via lazy-load) is the part that landed. | DONE | M | HIGH | `src/App.tsx` |
-| 4 | God-files >500 LOC: `createWindow.ts` (717), `shellRegistry.ts` (686), `log.ts` (637), `sessionCrudSlice.ts` (622), `mobileRemoteServer.ts` (535) | OPEN | L | HIGH | various |
+| 4 | God-files >500 LOC — all 5 split into siblings behind a facade (verbatim moves, no behaviour change). **DONE**: `createWindow.ts` 717→434 ([#1428](https://github.com/Jiahui-Gu/ccsm/pull/1428), `ab60c0c`) → `csp.ts`/`contextMenu.ts`/`closeDialog.ts`; `shellRegistry.ts` 686→473 ([#1429](https://github.com/Jiahui-Gu/ccsm/pull/1429), `c395351`) → `shellAppearance.ts`/`shellInput.ts`/`shellTypes.ts`; `log.ts` 637→399 ([#1430](https://github.com/Jiahui-Gu/ccsm/pull/1430), `bc62cdc`) → `logRuntime.ts`/`logState.ts`/`logFormat.ts`/`logRotation.ts`; `mobileRemoteServer.ts` 580→155 ([#1432](https://github.com/Jiahui-Gu/ccsm/pull/1432), `b189692`) → `wsProtocol.ts`/`remoteHttp.ts`/`remoteMessages.ts`/`mobilePage.ts`; `sessionCrudSlice.ts` 622→63 ([#1431](https://github.com/Jiahui-Gu/ccsm/pull/1431), `b20c9da`) → `lib/sessionCrudHelpers.ts`/`sessionCreateSlice.ts`/`sessionMutationSlice.ts`/`sessionArchiveSlice.ts`. `madge --circular` clean after each. | DONE | L | HIGH | various |
 | 5 | Session field "shotgun surgery" — adding one field touches slice + types + preload + IPC + db + components + `i18n/locales/{en,zh}.ts` (duplicated locales are the amplifier) | OPEN | M | HIGH | `src/i18n/locales/*` + chain |
 | 17 | No Content-Security-Policy — renderer ships no CSP. **DONE** ([#1413](https://github.com/Jiahui-Gu/ccsm/pull/1413), `78bd564`): CSP set via `onHeadersReceived` response header, dev/prod aware | DONE | M | HIGH | `electron/window/createWindow.ts` |
 | 18 | `npm audit` (2026-05-29, official registry): 8 prod vulns (1 HIGH, 7 mod). **DONE** ([#1412](https://github.com/Jiahui-Gu/ccsm/pull/1412), `5c8589a`): `npm audit fix` cleared all 8 prod vulns | DONE | S | HIGH | `package-lock.json` |
@@ -51,6 +51,7 @@ shows what got paid down).
 | 15 | `electron/__tests__/db-hardening.test.ts:172` has `it.todo` placeholder for SCHEMA_VERSION ≥2 migration test — un-block when v2 lands | OPEN | S | LOW | (file) |
 | 16 | `vitest.config.ts` lacks `retry: 1` — no flake guard. Currently no observed flakes, so leave as nil-debt; revisit if any case starts to flake | OPEN | S | LOW | `vitest.config.ts` |
 | 19 | `npm audit` (2026-05-29, official registry): 3 moderate vulns, all **dev-only** — `uuid` <11.1.1 (buffer bounds) via `sockjs` → `webpack-dev-server`. Not in the production dependency tree (does not ship in the packaged app). Fix requires `npm audit fix --force` (breaking `webpack-dev-server` downgrade), so deferred until a webpack-dev-server major bump clears it cleanly | OPEN | S | LOW | `package-lock.json` (devDeps) |
+| 20 | `ci.yml` `paths-ignore: ['**.md', ...]` skips required status checks for doc-only PRs, but branch protection requires those same checks → doc-only PRs hit a permanent merge deadlock (must `--admin` merge or fold into a code PR). Fix: add a tiny always-passing `docs` job that branch protection accepts, or drop `**.md` from `paths-ignore` and let the cheap jobs run | OPEN | S | LOW | `.github/workflows/ci.yml` |
 
 ---
 
@@ -81,7 +82,22 @@ shows what got paid down).
 
 ---
 
+## Done (paid down in audit batch 2026-05-30)
+
+| ID | Item | PR | Merge SHA |
+|---|---|---|---|
+| 2 | `@anthropic-ai/claude-agent-sdk` 0.2 → 0.3.156 | [#1421](https://github.com/Jiahui-Gu/ccsm/pull/1421) | `db9584a` |
+| 4 | God-file split: `createWindow.ts` 717→434 | [#1428](https://github.com/Jiahui-Gu/ccsm/pull/1428) | `ab60c0c` |
+| 4 | God-file split: `shellRegistry.ts` 686→473 | [#1429](https://github.com/Jiahui-Gu/ccsm/pull/1429) | `c395351` |
+| 4 | God-file split: `log.ts` 637→399 | [#1430](https://github.com/Jiahui-Gu/ccsm/pull/1430) | `bc62cdc` |
+| 4 | God-file split: `mobileRemoteServer.ts` 580→155 | [#1432](https://github.com/Jiahui-Gu/ccsm/pull/1432) | `b189692` |
+| 4 | God-file split: `sessionCrudSlice.ts` 622→63 | [#1431](https://github.com/Jiahui-Gu/ccsm/pull/1431) | `b20c9da` |
+
+---
+
 ## Audit history
+
+- **2026-05-30 (paydown)** — DEBT #4 god-files fully paid down: all 5 files split into siblings behind a facade via verbatim moves — `createWindow.ts` ([#1428](https://github.com/Jiahui-Gu/ccsm/pull/1428), `ab60c0c`), `shellRegistry.ts` ([#1429](https://github.com/Jiahui-Gu/ccsm/pull/1429), `c395351`), `log.ts` ([#1430](https://github.com/Jiahui-Gu/ccsm/pull/1430), `bc62cdc`), `sessionCrudSlice.ts` ([#1431](https://github.com/Jiahui-Gu/ccsm/pull/1431), `b20c9da`), `mobileRemoteServer.ts` ([#1432](https://github.com/Jiahui-Gu/ccsm/pull/1432), `b189692`). One file per PR; each independently reviewed by a fresh cold reviewer + CI-green before the parent merged. `madge --circular` confirmed clean after each. DEBT #2 (SDK 0.2→0.3.156) also DONE ([#1421](https://github.com/Jiahui-Gu/ccsm/pull/1421), `db9584a`). DEBT #1 (Electron 41→42) re-classified **upstream-blocked**: held until the `node-pty`/`better-sqlite3` native ABI rebuild is verified against Electron 42's ABI — not yet actionable. **Process note (new debt → see PR-E / row below):** `ci.yml` uses `paths-ignore: ['**.md', ...]`, so a doc-only PR (e.g. a DEBT.md-only update) skips the required status checks and can never satisfy branch protection — a permanent merge deadlock. Workarounds: merge with `--admin`, or fold the doc change into a code-bearing PR. The repeated branch-protection "head not up to date with base" churn during the god-file batch (each merge forced the trailing PRs to re-run full CI) is the same up-to-date gate; serializing merges newest-ready-first kept it bounded.
 
 - **2026-05-29 (refresh)** — verification pass via `technical-debt` skill. Confirmed still-OPEN: #1 (Electron installed 41.x, latest 42.3.0), #2 (SDK installed 0.2.119, latest 0.3.156), #12 (IPC unbounded arrays, input boundary still validated via `isSafePath`/`fromMainFrame`). `madge --circular` clean (re-confirmed #6 fix holds). Source still 0 TODO/FIXME/HACK; no hardcoded secrets. Corrections to ledger: #4 god-file LOC refreshed (`createWindow.ts` 596→717, `shellRegistry.ts` 650→686, added `log.ts` 637) — files grew since last count. New #19: `npm audit` now shows 3 **dev-only** moderate vulns (uuid→sockjs→webpack-dev-server), distinct from the 8 prod vulns closed in #18; LOW because not in the shipped tree.
 
