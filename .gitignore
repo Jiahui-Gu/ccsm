@@ -25,3 +25,5 @@ docs/screenshots/dogfood-happy-path/
 *.blockmap
 .pool-synced-at-*
 DOC_AUDIT.md
+
+resources/models/*.bin

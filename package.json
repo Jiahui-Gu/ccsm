@@ -127,6 +127,13 @@
       "**/node_modules/node-pty/**",
       "**/node_modules/smart-whisper/**"
     ],
+    "extraResources": [
+      {
+        "from": "resources/models",
+        "to": "models",
+        "filter": ["*.bin"]
+      }
+    ],
     "afterPack": "scripts/after-pack.cjs",
     "files": [
       "dist/**/*",
