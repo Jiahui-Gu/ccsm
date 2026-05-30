@@ -1,4 +1,4 @@
-// Pins the preload entry point. The 5 `install*` calls are independent
+// Pins the preload entry point. The `install*` calls are independent
 // (order is preserved for diff clarity, not correctness) — but if a
 // future refactor drops one of them, the corresponding `window.ccsm*`
 // surface goes silently missing in the renderer with no compiler signal.
@@ -14,6 +14,7 @@ const {
   installNotify,
   installSessionTitles,
   installShell,
+  installVoice,
   sentryLoaded,
 } = vi.hoisted(() => ({
   installCore: vi.fn(),
@@ -22,6 +23,7 @@ const {
   installNotify: vi.fn(),
   installSessionTitles: vi.fn(),
   installShell: vi.fn(),
+  installVoice: vi.fn(),
   sentryLoaded: vi.fn(),
 }));
 
@@ -43,6 +45,9 @@ vi.mock('../ccsmSessionTitles', () => ({
 vi.mock('../ccsmShell', () => ({
   installCcsmShellBridge: installShell,
 }));
+vi.mock('../ccsmVoice', () => ({
+  installCcsmVoiceBridge: installVoice,
+}));
 
 describe('preload/index entry point', () => {
   it('loads sentry/preload and invokes every install function exactly once', async () => {
@@ -55,5 +60,6 @@ describe('preload/index entry point', () => {
     expect(installNotify).toHaveBeenCalledTimes(1);
     expect(installSessionTitles).toHaveBeenCalledTimes(1);
     expect(installShell).toHaveBeenCalledTimes(1);
+    expect(installVoice).toHaveBeenCalledTimes(1);
   });
 });
