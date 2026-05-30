@@ -1,8 +1,9 @@
 name: e2e
 
 on:
+  # No `branches:` filter: e2e runs on PRs targeting any base branch, so
+  # feature/integration branches get the same coverage as main.
   pull_request:
-    branches: [main]
   workflow_dispatch:
 
 concurrency:
