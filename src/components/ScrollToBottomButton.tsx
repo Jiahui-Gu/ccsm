@@ -32,7 +32,7 @@ export function ScrollToBottomButton({
       title={t('terminal.scrollToBottom')}
       data-scroll-to-bottom
       className={[
-        'absolute bottom-4 right-4 z-10',
+        'absolute bottom-4 left-1/2 -translate-x-1/2 z-10',
         'inline-grid place-items-center',
         'h-8 w-8 rounded-full',
         'text-fg-secondary',

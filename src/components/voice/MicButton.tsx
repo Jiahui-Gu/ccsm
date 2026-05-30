@@ -37,7 +37,7 @@ export function MicButton({ sessionId }: { sessionId: string }) {
       disabled={state.kind === 'transcribing'}
       aria-label={label}
       title={label}
-      className={`absolute top-2 right-2 z-10 rounded p-1.5 bg-black/40 hover:bg-black/70 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-neutral-400 disabled:opacity-60 ${color}`}
+      className={`absolute bottom-2 right-2 z-10 rounded p-1.5 bg-black/40 hover:bg-black/70 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-neutral-400 disabled:opacity-60 ${color}`}
     >
       {state.kind === 'transcribing' ? (
         <Loader2 className="w-4 h-4 animate-spin" />
