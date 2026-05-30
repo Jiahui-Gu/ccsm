@@ -1,9 +1,9 @@
 import * as crypto from 'crypto';
 import * as http from 'http';
-import { listPtySessions, onPtyData } from '../ptyHost';
+import { onPtyData } from '../ptyHost';
 import { renderMobilePage } from './mobilePage';
 import { HOST, parseRequestUrl, resolvePort, sendHtml, sendText, tokenMatches } from './remoteHttp';
-import { handleClientMessage } from './remoteMessages';
+import { handleClientMessage, listEntries, listSignature } from './remoteMessages';
 import {
   buildUpgradeResponse,
   closeSocket,
@@ -27,7 +27,6 @@ export function startMobileRemoteServer(): MobileRemoteServer | null {
   const token = crypto.randomBytes(32).toString('base64url');
   const port = resolvePort(process.env.CCSM_MOBILE_REMOTE_PORT);
   const clients = new Set<WsClient>();
-  const seqBySid = new Map<string, number>();
 
   const server = http.createServer((req, res) => {
     const url = parseRequestUrl(req.url);
@@ -78,7 +77,7 @@ export function startMobileRemoteServer(): MobileRemoteServer | null {
     };
     clients.add(client);
     client.send({ type: 'auth.ok' });
-    client.send({ type: 'sessions.list', sessions: listPtySessions() });
+    client.send({ type: 'sessions.list', sessions: listEntries() });
 
     socket.on('data', (chunk) => {
       client.pending = Buffer.concat([client.pending, chunk]);
@@ -103,11 +102,13 @@ export function startMobileRemoteServer(): MobileRemoteServer | null {
     socket.on('error', () => clients.delete(client));
   });
 
-  const offPtyData = onPtyData((sid, chunk) => {
-    // seq is a per-session global ordering — computed once per chunk, OUTSIDE
-    // the client loop, regardless of how many clients (if any) are watching.
-    const seq = (seqBySid.get(sid) ?? 0) + 1;
-    seqBySid.set(sid, seq);
+  const offPtyData = onPtyData((sid, chunk, seq) => {
+    // seq is ptyHost's authoritative per-session chunk counter — the SAME one
+    // getBufferSnapshot captures. Forward it verbatim so the client can dedupe
+    // live chunks already baked into a snapshot (drop seq <= snapSeq). Earlier
+    // this server kept its own seqBySid counter starting at 0, which diverged
+    // from ptyHost's and made the client drop every live chunk after a
+    // non-empty snapshot — a frozen mobile terminal.
     for (const client of clients) {
       // Only forward this session's bytes to clients viewing it. Without this
       // gate every client receives every session's raw terminal output over
@@ -119,6 +120,21 @@ export function startMobileRemoteServer(): MobileRemoteServer | null {
   });
 
   const url = `http://${HOST}:${port}/?token=${token}`;
+
+  // The mobile client has no way to learn that a desktop session opened or
+  // closed unless we tell it. Poll the live list and re-broadcast only when the
+  // set of sessions changes (by sid+cwd), so a phone that was on the page when
+  // a new session started picks it up without a manual refresh.
+  let lastListSig = listSignature(listEntries());
+  const listPollTimer = setInterval(() => {
+    if (clients.size === 0) return;
+    const entries = listEntries();
+    const sig = listSignature(entries);
+    if (sig === lastListSig) return;
+    lastListSig = sig;
+    for (const client of clients) client.send({ type: 'sessions.list', sessions: entries });
+  }, 2000);
+  listPollTimer.unref();
 
   server.listen(port, HOST, () => {
     // Redact the bearer token in the persistent log line: stdout/stderr get
@@ -142,6 +158,7 @@ export function startMobileRemoteServer(): MobileRemoteServer | null {
     url,
     close: () => {
       offPtyData();
+      clearInterval(listPollTimer);
       // Send a 1001 (going-away) close frame per client and let the FIN
       // follow naturally via socket.end() inside closeSocket(). A bare
       // destroy() would emit a raw TCP RST and peers would never see the

@@ -216,7 +216,7 @@ export function dispatchPtyChunk(sid: string, entry: Entry, chunk: string): void
   // don't propagate back to ptyHost so a misbehaving sink can't wedge
   // the PTY. Kept inside dispatchPtyChunk (not a separate hook) so the
   // single fan-out point is the only place chunk-handling lives.
-  emitPtyData(sid, chunk);
+  emitPtyData(sid, chunk, seq);
 }
 
 export function makeEntry(
