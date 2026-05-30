@@ -19,6 +19,12 @@ export default [
       'tests/**',
       'docs/**',
       '.claude/**',
+      // The cloudflare/ worker is a separate package with its own tsconfig and
+      // Workers-runtime globals (Response, Request, DurableObjectNamespace…).
+      // It is type-checked by its own `tsc --noEmit` in the cloudflare-worker
+      // CI job; the root eslint globals don't model the Workers runtime, so
+      // linting it here only produces false no-undef errors.
+      'cloudflare/**',
       'webpack.config.js',
       'postcss.config.js',
       'eslint.config.js'
