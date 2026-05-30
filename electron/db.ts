@@ -129,6 +129,13 @@ export function initDb(): Database.Database {
   handle = ensureHealthyDb(file, handle);
   handle.pragma('journal_mode = WAL');
   handle.pragma('foreign_keys = ON');
+  // WAL's default `synchronous = NORMAL` skips the fsync on each commit, so a
+  // commit that's only reached the WAL can be lost on power loss / OS restart.
+  // FULL fsyncs every commit. Write volume here is tiny (one debounced ~1 KB
+  // app_state row per 250 ms at most), so the cost is negligible. This is the
+  // durability half of the OS-restart fix; `wal_checkpoint` in saveState() is
+  // the other half (see there).
+  handle.pragma('synchronous = FULL');
   handle.exec(SCHEMA_SQL);
 
   // Schema versioning. `user_version` defaults to 0 on a brand-new file.
@@ -203,6 +210,15 @@ export function saveState(key: string, value: string): void {
     );
   }
   stmts.upsertState.run(key, value, Date.now());
+  // Fold the WAL back into the main DB on every write. Our persisted snapshot
+  // is a single tiny row, so it never reaches the default wal_autocheckpoint
+  // threshold (~4 MB) on its own — without this, every session/group change
+  // lives ONLY in the -wal sidecar and is discarded on a non-graceful shutdown
+  // (OS restart, power loss, force-kill), rolling the user back to the last
+  // graceful-quit snapshot. PASSIVE never blocks on readers and is a no-op
+  // under contention, so it's safe on this debounced hot path. See the
+  // `db hardening: WAL durability` suite for the forced-shutdown regression.
+  d.pragma('wal_checkpoint(PASSIVE)');
 }
 
 export function closeDb(): void {
