@@ -76,6 +76,7 @@
     "react-i18next": "^17.0.4",
     "smart-whisper": "^0.8.1",
     "tailwind-merge": "^2.5.5",
+    "werift": "^0.23.0",
     "zustand": "^5.0.12"
   },
   "devDependencies": {
@@ -131,7 +132,9 @@
       {
         "from": "resources/models",
         "to": "models",
-        "filter": ["*.bin"]
+        "filter": [
+          "*.bin"
+        ]
       }
     ],
     "afterPack": "scripts/after-pack.cjs",
