@@ -156,6 +156,15 @@ const sidGenerations = new Map<string, number>();
 // clear.
 const MAX_SDK_THREW_ATTEMPTS = 2;
 
+// Defensive ceiling (DEBT #12). `listProjectSummaries` returns one row per
+// session file in a project and ships the whole array over IPC. A project
+// directory with thousands of transcripts would walk and serialize the lot.
+// The cap is far above any realistic project so a real workload never
+// truncates; it only bounds a pathological tree. Truncation is silent-with-a-
+// warn — the sole consumer (title backfill) treats a shorter list as "fewer
+// sessions to backfill", never as an error.
+const MAX_PROJECT_SUMMARIES = 2000;
+
 // ─────────────────────────── Helpers ─────────────────────────────────────
 // Pure deciders (classifyError, decideRetry, decideRequeue) live in
 // `./deciders.ts`. This file owns the side effects (caches, op chains,
@@ -280,11 +289,18 @@ export async function listProjectSummaries(
   try {
     const { listSessions } = await loadSdk();
     const sessions = await listSessions({ dir: projectKey });
-    return sessions.map((s) => ({
+    const rows = sessions.map((s) => ({
       sid: s.sessionId,
       summary: s.summary ?? null,
       mtime: typeof s.lastModified === 'number' ? s.lastModified : 0,
     }));
+    if (rows.length > MAX_PROJECT_SUMMARIES) {
+      console.warn(
+        `[sessionTitles] listProjectSummaries(${projectKey}) truncated ${rows.length} → ${MAX_PROJECT_SUMMARIES}`,
+      );
+      return rows.slice(0, MAX_PROJECT_SUMMARIES);
+    }
+    return rows;
   } catch (err) {
     console.warn(
       `[sessionTitles] listSessions(${projectKey}) threw:`,
