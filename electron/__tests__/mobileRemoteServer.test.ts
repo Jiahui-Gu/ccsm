@@ -51,7 +51,7 @@ type Started = {
   close: () => void;
 };
 
-async function startServer(): Promise<Started> {
+async function startServer(heartbeatMs?: number): Promise<Started> {
   // Token is no longer logged in full (redacted for log hygiene); read it from
   // the server handle's `url` field instead. Still silence the startup logs.
   const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -68,7 +68,7 @@ async function startServer(): Promise<Started> {
   // Fresh module so the token is regenerated per test.
   vi.resetModules();
   const { startMobileRemoteServer } = await import('../remote/mobileRemoteServer');
-  const handle = startMobileRemoteServer();
+  const handle = startMobileRemoteServer(heartbeatMs !== undefined ? { heartbeatMs } : undefined);
   if (!handle) throw new Error('server did not start');
   logSpy.mockRestore();
 
@@ -598,6 +598,127 @@ describe('mobileRemoteServer: per-client pty.data isolation', () => {
     expect(m2).toMatchObject({ type: 'pty.data', sid: 'A', chunk: 'second', seq: 502 });
 
     a.socket.destroy();
+  });
+});
+
+// Raw WS handle for heartbeat tests. Unlike wsConnect(), it counts inbound
+// Ping (opcode 0x9) frames and can optionally auto-Pong them, so a test can
+// model both a live phone (browsers auto-Pong) and a half-open one (silent).
+type HeartbeatHandle = {
+  socket: Socket;
+  pingCount: () => number;
+  closeCode: Promise<number | null>;
+};
+
+function wsConnectHeartbeat(
+  port: number,
+  path: string,
+  opts: { autoPong: boolean }
+): Promise<HeartbeatHandle> {
+  return new Promise((resolve, reject) => {
+    const key = crypto.randomBytes(16).toString('base64');
+    const req = http.request({
+      host: '127.0.0.1',
+      port,
+      path,
+      method: 'GET',
+      headers: {
+        Connection: 'Upgrade',
+        Upgrade: 'websocket',
+        'Sec-WebSocket-Key': key,
+        'Sec-WebSocket-Version': '13',
+      },
+    });
+    req.on('error', reject);
+    req.on('response', (res) => reject(new Error(`upgrade rejected: ${res.statusCode}`)));
+    req.on('upgrade', (_res, socket, head) => {
+      let buffer = Buffer.from(head);
+      let pings = 0;
+      let closeCode: number | null = null;
+      let resolveClose: ((c: number | null) => void) | null = null;
+      const closePromise = new Promise<number | null>((r) => {
+        resolveClose = r;
+      });
+
+      const drain = () => {
+        let offset = 0;
+        while (offset + 2 <= buffer.length) {
+          const first = buffer[offset]!;
+          const opcode = first & 0x0f;
+          let length = buffer[offset + 1]! & 0x7f;
+          let headerLen = 2;
+          if (length === 126) {
+            if (offset + 4 > buffer.length) break;
+            length = buffer.readUInt16BE(offset + 2);
+            headerLen = 4;
+          } else if (length === 127) {
+            if (offset + 10 > buffer.length) break;
+            length = Number(buffer.readBigUInt64BE(offset + 2));
+            headerLen = 10;
+          }
+          if (offset + headerLen + length > buffer.length) break;
+          const payload = buffer.subarray(offset + headerLen, offset + headerLen + length);
+          if (opcode === 0x9) {
+            pings += 1;
+            // Echo the ping payload back as a (masked) Pong to prove liveness.
+            if (opts.autoPong && !socket.destroyed) {
+              socket.write(encodeClientFrame(Buffer.from(payload), { opcode: 0xa }));
+            }
+          } else if (opcode === 0x8) {
+            closeCode = payload.length >= 2 ? payload.readUInt16BE(0) : null;
+          }
+          offset += headerLen + length;
+        }
+        buffer = buffer.subarray(offset);
+      };
+
+      socket.on('data', (chunk) => {
+        buffer = Buffer.concat([buffer, chunk]);
+        drain();
+      });
+      socket.on('close', () => resolveClose?.(closeCode));
+      socket.on('error', () => resolveClose?.(closeCode));
+
+      drain();
+      resolve({ socket: socket as Socket, pingCount: () => pings, closeCode: closePromise });
+    });
+    req.end();
+  });
+}
+
+describe('mobileRemoteServer: heartbeat', () => {
+  it('reaps a client that never Pongs with a 1001 close frame', async () => {
+    // Short heartbeat so the two-sweep reap (clear flag, then detect) lands fast.
+    active = await startServer(40);
+    const ws = await wsConnectHeartbeat(active.port, `/ws?token=${active.token}`, {
+      autoPong: false,
+    });
+
+    const code = await Promise.race([
+      ws.closeCode,
+      new Promise<number>((_, rej) => setTimeout(() => rej(new Error('not reaped')), 2000)),
+    ]);
+    // Server pinged (isAlive set false), saw no pong, and reaped on the next
+    // sweep with a graceful going-away frame rather than a bare RST.
+    expect(code).toBe(1001);
+    expect(ws.pingCount()).toBeGreaterThanOrEqual(1);
+  });
+
+  it('keeps a client that answers Pings alive across multiple sweeps', async () => {
+    active = await startServer(40);
+    const ws = await wsConnectHeartbeat(active.port, `/ws?token=${active.token}`, {
+      autoPong: true,
+    });
+
+    // Wait well past several sweep intervals; an auto-Ponging client must stay
+    // connected (no close frame) and observe repeated server Pings.
+    const raced = await Promise.race([
+      ws.closeCode.then((c) => ({ kind: 'closed' as const, code: c })),
+      new Promise<{ kind: 'alive' }>((r) => setTimeout(() => r({ kind: 'alive' }), 300)),
+    ]);
+    expect(raced.kind).toBe('alive');
+    expect(ws.pingCount()).toBeGreaterThanOrEqual(2);
+    ws.socket.destroy();
   });
 });
 

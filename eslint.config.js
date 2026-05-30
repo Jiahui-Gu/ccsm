@@ -15,6 +15,7 @@ export default [
       'release/**',
       'scripts/**',
       'scratch/**',
+      '.mrharness/**',
       'tests/**',
       'docs/**',
       '.claude/**',

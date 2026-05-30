@@ -13,6 +13,12 @@ export type WsClient = {
    *  emitting sid — otherwise every client would receive every session's raw
    *  terminal bytes (cross-session data leak). `null` = not subscribed yet. */
   subscribedSid: string | null;
+  /** Liveness flag for the heartbeat sweep. Set true on any inbound Pong or
+   *  message; the sweep clears it before each Ping and reaps the client on the
+   *  next sweep if it's still false — i.e. a full interval passed with no
+   *  inbound traffic, meaning the socket is half-open (phone vanished without a
+   *  TCP FIN). `socket.on('close')`/'error' can't catch that case. */
+  isAlive: boolean;
   send: (payload: unknown) => void;
 };
 
@@ -88,7 +94,12 @@ export type DecodeResult =
   | {
       kind: 'ok';
       messages: string[];
+      /** Inbound Ping payloads the caller must echo back as Pong. */
       pongs: Buffer[];
+      /** True if the client sent at least one Pong (opcode 0xa) this batch —
+       *  the heartbeat's liveness signal, distinct from `pongs` which is the
+       *  inbound *Pings* we owe a reply to. */
+      pongReceived: boolean;
       close: boolean;
     }
   | { kind: 'fatal'; code: number };
@@ -105,6 +116,7 @@ export type DecodeResult =
 export function decodeFrames(client: WsClient): DecodeResult {
   const messages: string[] = [];
   const pongs: Buffer[] = [];
+  let pongReceived = false;
   let close = false;
   let buffer = client.pending;
   let offset = 0;
@@ -125,14 +137,14 @@ export function decodeFrames(client: WsClient): DecodeResult {
     if (length === 126) {
       if (offset + 2 > buffer.length) {
         client.pending = buffer.subarray(frameStart);
-        return { kind: 'ok', messages, pongs, close };
+        return { kind: 'ok', messages, pongs, pongReceived, close };
       }
       length = buffer.readUInt16BE(offset);
       offset += 2;
     } else if (length === 127) {
       if (offset + 8 > buffer.length) {
         client.pending = buffer.subarray(frameStart);
-        return { kind: 'ok', messages, pongs, close };
+        return { kind: 'ok', messages, pongs, pongReceived, close };
       }
       const big = buffer.readBigUInt64BE(offset);
       if (big > BigInt(MAX_MESSAGE_BYTES)) return { kind: 'fatal', code: 1009 };
@@ -148,7 +160,7 @@ export function decodeFrames(client: WsClient): DecodeResult {
 
     if (offset + 4 + length > buffer.length) {
       client.pending = buffer.subarray(frameStart);
-      return { kind: 'ok', messages, pongs, close };
+      return { kind: 'ok', messages, pongs, pongReceived, close };
     }
     const mask = buffer.subarray(offset, offset + 4);
     offset += 4;
@@ -164,7 +176,9 @@ export function decodeFrames(client: WsClient): DecodeResult {
       continue;
     }
     if (opcode === 0xa) {
-      // Pong reply to our (currently nonexistent) Pings — ignore.
+      // The client's Pong answering our heartbeat Ping. We don't echo it, but
+      // it proves the socket is live — surface it so the sweep re-arms isAlive.
+      pongReceived = true;
       continue;
     }
 
@@ -195,7 +209,7 @@ export function decodeFrames(client: WsClient): DecodeResult {
   }
 
   client.pending = buffer.subarray(offset);
-  return { kind: 'ok', messages, pongs, close };
+  return { kind: 'ok', messages, pongs, pongReceived, close };
 }
 
 function unmask(payload: Buffer, mask: Buffer): Buffer {
