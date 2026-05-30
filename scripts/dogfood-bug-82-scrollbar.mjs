@@ -1,26 +1,31 @@
 // scripts/dogfood-bug-82-scrollbar.mjs
 //
-// Terminal scrollbar geometry probe (Approach A — self-drawn thumb).
+// Terminal scrollbar re-sync probe (native xterm `.xterm-viewport` bar).
 //
-// The terminal's scrollbar is no longer the native `.xterm-viewport` bar;
-// it's drawn by <TerminalScrollbar/> as a PURE projection of xterm's
-// buffer state (`buffer.active.viewportY` / `baseY` / `term.rows`) onto a
-// thumb rect. Because there is no reverse DOM `scrollTop` sync, the thumb
-// can't desync from the content — and crucially this lets us assert a
-// DETERMINISTIC relation instead of the old bug-82 probe's flaky "thumb
-// ended up at the bottom" check (which couldn't reliably FAIL — the race
-// was sub-frame).
+// We dropped the self-drawn <TerminalScrollbar/> and went back to xterm's
+// own native `.xterm-viewport` scrollbar (re-skinned via CSS in
+// global.css), following ttyd's approach. The historical reason we ever
+// self-drew was bug #82 (#1407): webkit zeroes `.xterm-viewport.scrollTop`
+// on reflow / fit / reparent (panel switch), so the native thumb can
+// desync from xterm's real buffer state. ttyd never hits this because it
+// runs in a plain web page with no Electron multi-pane reparent.
 //
-// Assertion: read the live buffer geometry AND the self-drawn thumb's
-// `style.top` / `style.height`, then verify they satisfy the same pure
-// geometry the unit tests pin:
+// So this probe STRESSES exactly the #82-prone transitions and asserts the
+// native scrollbar stays synced to the buffer after each:
+//   - window resize + fit
+//   - switch session A -> B -> A (reparent of the xterm host)
+//   - cold start -> scroll to the middle -> fit
 //
-//   total       = baseY + rows
-//   thumbHeight = max(MIN_THUMB, H * rows / total)   (H = track height px)
-//   thumbTop    = (H - thumbHeight) * viewportY / baseY
+// "Synced" = the native viewport's normalized scroll position
+//   scrollFrac = scrollTop / (scrollHeight - clientHeight)
+// matches the buffer's normalized position
+//   bufFrac    = viewportY / baseY
+// within tolerance. xterm drives `scrollTop` from `viewportY/baseY`, so if
+// #82 recurs (scrollTop zeroed but viewportY non-zero) the two fractions
+// diverge and the probe FAILs with the measured numbers.
 //
 // If `baseY === 0` (no scrollback, e.g. claude is in the alt-buffer) the
-// scrollbar is correctly absent and the probe passes vacuously.
+// scrollbar is correctly absent and the relevant checks pass vacuously.
 //
 // Exit code 0 = PASS, 1 = FAIL.
 
@@ -38,60 +43,101 @@ import {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// Keep in sync with `MIN_THUMB` in src/terminal/useTerminalScroll.ts.
-const MIN_THUMB = 24;
+// Allowed divergence between the native scroll fraction and the buffer
+// fraction. xterm's scrollTop is integer-pixel quantized against a
+// cell-height grid, so a one-cell rounding error is expected; 0.06 (~6% of
+// the track) comfortably covers that without masking a real #82 zeroing
+// (which collapses scrollFrac to ~0 while bufFrac stays high).
+const FRAC_TOLERANCE = 0.06;
 
-async function readGeometry(win) {
+async function readState(win) {
   return await win.evaluate(() => {
     const t = window.__ccsmTerm;
-    const track = document.querySelector('[data-terminal-scrollbar]');
-    const thumb = document.querySelector('[data-terminal-scrollbar-thumb]');
-    const trackRect =
-      track instanceof HTMLElement ? track.getBoundingClientRect() : null;
+    const vp = document.querySelector('.xterm-viewport');
+    const vpEl = vp instanceof HTMLElement ? vp : null;
+    const baseY = t?.buffer?.active?.baseY ?? null;
+    const viewportY = t?.buffer?.active?.viewportY ?? null;
     return {
-      viewportY: t?.buffer?.active?.viewportY ?? null,
-      baseY: t?.buffer?.active?.baseY ?? null,
+      baseY,
+      viewportY,
       rows: t?.rows ?? null,
       bufferType: t?.buffer?.active?.type ?? null,
-      trackHeight: trackRect ? trackRect.height : null,
-      thumbPresent: thumb instanceof HTMLElement,
-      thumbTop:
-        thumb instanceof HTMLElement ? parseFloat(thumb.style.top) : null,
-      thumbHeight:
-        thumb instanceof HTMLElement ? parseFloat(thumb.style.height) : null,
+      viewportPresent: !!vpEl,
+      scrollTop: vpEl ? vpEl.scrollTop : null,
+      scrollHeight: vpEl ? vpEl.scrollHeight : null,
+      clientHeight: vpEl ? vpEl.clientHeight : null,
+      // Sanity: a broken revert (overflow:hidden / pointer-events:none)
+      // would null out native scrolling; surface the computed style so the
+      // probe can FAIL loudly instead of silently "passing" a dead bar.
+      overflowY: vpEl ? getComputedStyle(vpEl).overflowY : null,
+      pointerEvents: vpEl ? getComputedStyle(vpEl).pointerEvents : null,
     };
   });
 }
 
-function expectedThumb(g) {
-  const total = g.baseY + g.rows;
-  const rawHeight = (g.trackHeight * g.rows) / total;
-  const thumbHeight = Math.min(
-    g.trackHeight,
-    Math.max(MIN_THUMB, rawHeight),
-  );
-  const travel = g.trackHeight - thumbHeight;
-  const clampedViewportY = Math.max(0, Math.min(g.baseY, g.viewportY));
-  const thumbTop = travel > 0 ? (travel * clampedViewportY) / g.baseY : 0;
-  return { thumbTop, thumbHeight };
+function fractions(s) {
+  const denom = s.scrollHeight - s.clientHeight;
+  const scrollFrac = denom > 0 ? s.scrollTop / denom : 0;
+  const bufFrac = s.baseY > 0 ? s.viewportY / s.baseY : 0;
+  return { scrollFrac, bufFrac, denom };
 }
 
-async function captureScreenshot(win, label, outDir) {
+let failed = false;
+function check(label, s) {
+  // No scrollback -> bar correctly absent / inert.
+  if (s.baseY == null || s.baseY <= 0) {
+    console.log(`  [${label}] vacuous: baseY=${s.baseY} (${s.bufferType} buffer) — no scrollback`);
+    return;
+  }
+  if (!s.viewportPresent) {
+    console.error(`  [${label}] FAIL: scrollback exists (baseY=${s.baseY}) but no .xterm-viewport`);
+    failed = true;
+    return;
+  }
+  // Guard against a broken CSS revert that kills native scrolling.
+  if (s.overflowY === 'hidden' || s.pointerEvents === 'none') {
+    console.error(
+      `  [${label}] FAIL: .xterm-viewport overflowY=${s.overflowY} pointerEvents=${s.pointerEvents} ` +
+        `— native wheel/scroll would be dead (do NOT override these)`,
+    );
+    failed = true;
+    return;
+  }
+  const { scrollFrac, bufFrac, denom } = fractions(s);
+  const delta = Math.abs(scrollFrac - bufFrac);
+  console.log(
+    `  [${label}] baseY=${s.baseY} viewportY=${s.viewportY} ` +
+      `scrollTop=${s.scrollTop}/${denom} -> scrollFrac=${scrollFrac.toFixed(3)} ` +
+      `bufFrac=${bufFrac.toFixed(3)} Δ=${delta.toFixed(3)}`,
+  );
+  if (delta > FRAC_TOLERANCE) {
+    console.error(
+      `  [${label}] FAIL: native scrollbar desynced from buffer (#82 recurrence?) ` +
+        `Δ=${delta.toFixed(3)} > ${FRAC_TOLERANCE}`,
+    );
+    failed = true;
+  }
+}
+
+async function screenshot(win, label, outDir) {
   try {
     const file = path.join(outDir, `scrollbar-${label}.png`);
     await win.screenshot({ path: file, fullPage: false });
     console.log(`  screenshot: ${file}`);
-    return file;
   } catch (e) {
     console.log(`  screenshot ${label} failed: ${e.message}`);
-    return null;
   }
+}
+
+async function selectSession(win, sid) {
+  await win.evaluate((id) => window.__ccsmStore.getState().selectSession(id), sid);
+  await sleep(400);
 }
 
 async function main() {
   const { tempDir } = await createIsolatedClaudeDir();
-  const screenshotDir = mkdtempSync(path.join(tmpdir(), 'ccsm-scrollbar-shots-'));
-  console.log(`screenshot dir: ${screenshotDir}`);
+  const shotDir = mkdtempSync(path.join(tmpdir(), 'ccsm-scrollbar-shots-'));
+  console.log(`screenshot dir: ${shotDir}`);
 
   const { electronApp, win } = await launchCcsmIsolated({ tempDir });
 
@@ -103,75 +149,80 @@ async function main() {
     );
 
     // Small window so the cold-start snapshot overflows the viewport and
-    // creates scrollback (baseY > 0) — the case where a scrollbar renders.
-    await win.setViewportSize({ width: 600, height: 220 }).catch(() => {});
+    // creates scrollback (baseY > 0).
+    await win.setViewportSize({ width: 700, height: 240 }).catch(() => {});
     await sleep(200);
 
-    const { sid } = await seedSession(win, { name: 'scrollbar', cwd: tempDir });
-    await win.evaluate((id) => window.__ccsmStore.getState().selectSession(id), sid);
-    await waitForTerminalReady(win, sid, { timeout: 45000 });
-
-    await waitForXtermBuffer(win, /claude|welcome|│|╭|\?\sfor\sshortcuts/i, {
-      timeout: 30000,
-    });
+    const a = await seedSession(win, { name: 'scroll-A', cwd: tempDir });
+    await selectSession(win, a.sid);
+    await waitForTerminalReady(win, a.sid, { timeout: 45000 });
+    await waitForXtermBuffer(win, /claude|welcome|│|╭|\?\sfor\sshortcuts/i, { timeout: 30000 });
     await dismissWelcomeSplash(win).catch(() => {});
     await sleep(500);
 
-    const g = await readGeometry(win);
-    console.log(`geometry: ${JSON.stringify(g)}`);
-    await captureScreenshot(win, 'cold-start', screenshotDir);
+    // Scroll to the middle of the scrollback so a desync (scrollTop->0)
+    // would be detectable (bufFrac stays ~0.5 while scrollFrac collapses).
+    await win.evaluate(() => {
+      const t = window.__ccsmTerm;
+      const b = t?.buffer?.active;
+      if (b && b.baseY > 0) t.scrollToLine(Math.floor(b.baseY / 2));
+    });
+    await sleep(300);
 
-    if (g.baseY == null || g.rows == null) {
-      console.error('FAIL: __ccsmTerm buffer geometry unavailable');
+    console.log('phase 1: cold start, scrolled to middle');
+    check('cold-mid', await readState(win));
+    await screenshot(win, 'cold-mid', shotDir);
+
+    // Phase 2: window resize + fit (reflow). #82's classic trigger.
+    await win.setViewportSize({ width: 1000, height: 520 }).catch(() => {});
+    await sleep(500);
+    await win.evaluate(() => {
+      const t = window.__ccsmTerm;
+      const b = t?.buffer?.active;
+      if (b && b.baseY > 0) t.scrollToLine(Math.floor(b.baseY / 2));
+    });
+    await sleep(400);
+    console.log('phase 2: after resize + scroll-to-middle');
+    check('post-resize', await readState(win));
+    await screenshot(win, 'post-resize', shotDir);
+
+    // Phase 3: reparent — switch to a second session then back. The xterm
+    // host is detached/reattached, which is the Electron-specific case ttyd
+    // never exercises.
+    const bSess = await seedSession(win, { name: 'scroll-B', cwd: tempDir });
+    await selectSession(win, bSess.sid);
+    await waitForTerminalReady(win, bSess.sid, { timeout: 45000 });
+    await sleep(500);
+    await selectSession(win, a.sid);
+    await sleep(600);
+    // Re-scroll A to the middle and confirm the native bar tracks it after
+    // the reparent round-trip.
+    await win.evaluate(() => {
+      const t = window.__ccsmTerm;
+      const b = t?.buffer?.active;
+      if (b && b.baseY > 0) t.scrollToLine(Math.floor(b.baseY / 2));
+    });
+    await sleep(400);
+    console.log('phase 3: after reparent A->B->A + scroll-to-middle');
+    check('post-reparent', await readState(win));
+    await screenshot(win, 'post-reparent', shotDir);
+
+    // Phase 4: scroll to the very top, then fit again — the position webkit
+    // is most likely to zero is a non-bottom one held across a reflow.
+    await win.evaluate(() => window.__ccsmTerm?.scrollToTop?.());
+    await sleep(200);
+    await win.setViewportSize({ width: 760, height: 300 }).catch(() => {});
+    await sleep(500);
+    console.log('phase 4: scrolled to top, then resized');
+    check('top-after-resize', await readState(win));
+    await screenshot(win, 'top-after-resize', shotDir);
+
+    if (failed) {
+      console.error('\nRESULT: FAIL — native scrollbar desynced on at least one transition');
       process.exitCode = 1;
-      return;
+    } else {
+      console.log('\nRESULT: PASS — native scrollbar stayed synced across resize/fit/reparent');
     }
-
-    if (g.baseY <= 0) {
-      console.log(
-        `PASS (vacuous): no scrollback (baseY=${g.baseY}, ${g.bufferType} buffer) — ` +
-          `scrollbar correctly ${g.thumbPresent ? 'STILL PRESENT (BUG!)' : 'absent'}`,
-      );
-      if (g.thumbPresent) {
-        console.error('FAIL: scrollbar rendered with no scrollback');
-        process.exitCode = 1;
-      }
-      return;
-    }
-
-    if (!g.thumbPresent || g.trackHeight == null) {
-      console.error(
-        `FAIL: scrollback exists (baseY=${g.baseY}) but no self-drawn thumb rendered`,
-      );
-      process.exitCode = 1;
-      return;
-    }
-
-    const exp = expectedThumb(g);
-    // 1px tolerance for sub-pixel rounding between the React style write
-    // and getBoundingClientRect's track height.
-    const dTop = Math.abs(g.thumbTop - exp.thumbTop);
-    const dHeight = Math.abs(g.thumbHeight - exp.thumbHeight);
-    console.log(
-      `expected thumbTop=${exp.thumbTop.toFixed(2)} height=${exp.thumbHeight.toFixed(2)}; ` +
-        `actual thumbTop=${g.thumbTop} height=${g.thumbHeight}; ` +
-        `Δtop=${dTop.toFixed(2)} Δheight=${dHeight.toFixed(2)}`,
-    );
-
-    if (dTop <= 1 && dHeight <= 1) {
-      console.log(
-        `PASS: self-drawn thumb geometry matches f(viewportY=${g.viewportY}, ` +
-          `baseY=${g.baseY}, rows=${g.rows}, H=${g.trackHeight})`,
-      );
-      return;
-    }
-
-    console.error(
-      `FAIL: thumb geometry desynced from buffer. ` +
-        `viewportY=${g.viewportY}/baseY=${g.baseY} rows=${g.rows} H=${g.trackHeight} ` +
-        `(${g.bufferType} buffer). See src/terminal/useTerminalScroll.ts computeThumb.`,
-    );
-    process.exitCode = 1;
   } finally {
     await electronApp.close();
   }
