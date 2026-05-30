@@ -153,6 +153,22 @@ export default function App() {
   // on Linux Chromium / xvfb. See useRendererCrashNet.ts for details.
   useRendererCrashNet();
 
+  // DIAGNOSTIC: live scroll-sync monitor. Catches the #82-class desync
+  // where the native scrollbar thumb (scrollTop) and the CLI content xterm
+  // renders (viewportY) disagree. Auto-on in dev (`npm run dev`); never in
+  // production. Set `window.__ccsmScrollMonitor = false` to opt out.
+  useEffect(() => {
+    const flag = (window as unknown as { __ccsmScrollMonitor?: boolean }).__ccsmScrollMonitor;
+    const on = flag ?? process.env.NODE_ENV !== 'production';
+    if (!on) return;
+    let stop: (() => void) | undefined;
+    void import('./terminal/scrollSyncMonitor').then((m) => {
+      m.startScrollSyncMonitor();
+      stop = m.stopScrollSyncMonitor;
+    });
+    return () => stop?.();
+  }, []);
+
   // Flush debounced persist queue on `beforeunload` — keeps the last ~250 ms
   // of user actions from being lost on quit. Same deferred-registration
   // rationale as useRendererCrashNet.
