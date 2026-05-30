@@ -6,12 +6,11 @@ on:
   # filter that skips the workflow leaves those required contexts pending
   # forever, deadlocking doc-only PRs (DEBT.md #20). Jobs run against a warm
   # node_modules cache, so doc-only PRs pay only the cheap lint/type/test pass.
+  #
+  # No `branches:` filter: CI runs on PRs targeting any base branch, so
+  # feature/integration branches (e.g. the mobile-remote work, which collects
+  # its sub-PRs before squashing to main) get the same coverage as main.
   pull_request:
-    # `main` is the protected default; the mobile-remote feature branch
-    # collects its sub-PRs (e.g. the cloudflare/ worker) before squashing to
-    # main, so it needs the same CI — including the cloudflare-worker job that
-    # proves the miniflare/Durable Object harness green on Linux.
-    branches: [main, feat/mobile-remote-web-exposure]
   workflow_dispatch:
 
 concurrency:
