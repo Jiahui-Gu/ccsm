@@ -11,6 +11,13 @@ export type UpdateStatus =
   | { kind: 'downloaded'; version: string }
   | { kind: 'error'; message: string };
 
+// Mirrors electron/voice/voiceTypes.ts — duplicated structurally because
+// the renderer can't import from electron/ (same convention as
+// UpdateStatus). Keep these two in sync.
+export type VoiceResult =
+  | { ok: true; text: string }
+  | { ok: false; error: 'no-model' | 'transcribe-failed' | 'empty' };
+
 declare global {
   interface Window {
     ccsm?: {
@@ -124,6 +131,9 @@ declare global {
         }) => void;
         platform: 'aix' | 'android' | 'darwin' | 'freebsd' | 'haiku' | 'linux' | 'openbsd' | 'sunos' | 'win32' | 'cygwin' | 'netbsd';
       };
+    };
+    ccsmVoice?: {
+      transcribe: (pcm: Float32Array) => Promise<VoiceResult>;
     };
   }
 }
