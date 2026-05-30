@@ -34,13 +34,16 @@ export async function transcribe(pcm: Float32Array): Promise<VoiceResult> {
   try {
     fs.writeFileSync(wavPath, encodeWav(pcm, 16000));
     const threads = Math.max(1, os.cpus().length - 2);
-    const { code, stdout } = await runWhisperCli({
+    const { code, stdout, stderr } = await runWhisperCli({
       binPath,
       modelPath,
       wavPath,
       threads,
     });
-    if (code !== 0) return { ok: false, error: 'transcribe-failed' };
+    if (code !== 0) {
+      console.error('[voice] whisper-cli failed:', stderr);
+      return { ok: false, error: 'transcribe-failed' };
+    }
     const text = stdout.trim();
     if (!text) return { ok: false, error: 'empty' };
     return { ok: true, text };

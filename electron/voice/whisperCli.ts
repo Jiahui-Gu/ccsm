@@ -22,6 +22,7 @@ export function runWhisperCli(args: WhisperCliArgs): Promise<WhisperCliResult> {
         '-m', modelPath,
         '-f', wavPath,
         '-t', String(threads),
+        '-l', 'auto',
         '-bo', '1',
         '-bs', '1',
         '-np',

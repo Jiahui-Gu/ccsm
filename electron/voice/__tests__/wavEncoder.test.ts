@@ -26,6 +26,8 @@ describe('encodeWav', () => {
 
     // sample scaling: 0 -> 0, 1 -> 32767, -1 -> -32768
     expect(buf.readInt16LE(44)).toBe(0);
+    expect(buf.readInt16LE(44 + 2)).toBe(16383); // 2nd sample = 0.5 -> trunc(0.5 * 0x7fff)
+    expect(buf.readInt16LE(44 + 4)).toBe(-16384); // 3rd sample = -0.5 -> trunc(-0.5 * 0x8000)
     expect(buf.readInt16LE(44 + 6)).toBe(32767); // 4th sample = 1.0
     expect(buf.readInt16LE(44 + 8)).toBe(-32768); // 5th sample = -1.0
   });
