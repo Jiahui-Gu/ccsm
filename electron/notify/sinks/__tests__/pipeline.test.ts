@@ -74,18 +74,21 @@ describe('installNotifyPipeline (Task #743 orchestrator)', () => {
       pipeline.feedChunk('s1', osc(RUNNING_TITLE));
       pipeline.feedChunk('s1', osc(IDLE_TITLE));
 
-      // Flash sink fired immediately (sidebar halo is instant).
-      const flashSends = sends.filter((s) => s.channel === 'notify:flash');
-      expect(flashSends.length).toBe(1);
-      expect(flashSends[0]!.payload).toEqual({ sid: 's1', on: true });
-
-      // Toast is DEBOUNCED — nothing yet.
+      // Nothing fires synchronously — the idle-confirmation window is open.
+      // A real stop is only confirmed once the window elapses with no running.
+      expect(sends.filter((s) => s.channel === 'notify:flash')).toEqual([]);
       const log0 = (globalThis as { __ccsmNotifyLog?: Array<{ sid: string }> }).__ccsmNotifyLog;
       expect(log0 ?? []).toEqual([]);
       expect(onNotified).not.toHaveBeenCalled();
 
-      // Advance past the ring-debounce window — toast fires.
-      vi.advanceTimersByTime(10_000);
+      // Advance past the idle-confirmation window (1500ms) but under the
+      // flash duration (4000ms) so the flash hasn't auto-cleared yet.
+      vi.advanceTimersByTime(1_600);
+
+      const flashSends = sends.filter((s) => s.channel === 'notify:flash');
+      expect(flashSends.length).toBe(1);
+      expect(flashSends[0]!.payload).toEqual({ sid: 's1', on: true });
+
       const log = (globalThis as { __ccsmNotifyLog?: Array<{ sid: string }> }).__ccsmNotifyLog;
       expect(log).toBeDefined();
       expect(log!.length).toBe(1);
@@ -119,38 +122,54 @@ describe('installNotifyPipeline (Task #743 orchestrator)', () => {
   });
 
   it('markUserInput sticky-mutes the sid (no toast on subsequent run)', () => {
-    const { win, sends } = makeStubWin();
-    const onNotified = vi.fn();
-    const pipeline = installNotifyPipeline({
-      getMainWindow: () => win as never,
-      isGlobalMutedFn: () => false,
-      onNotified,
-    });
-    pipeline.setFocused(false);
-    pipeline.markUserInput('s1');
+    vi.useFakeTimers();
+    try {
+      const { win, sends } = makeStubWin();
+      const onNotified = vi.fn();
+      const pipeline = installNotifyPipeline({
+        getMainWindow: () => win as never,
+        isGlobalMutedFn: () => false,
+        onNotified,
+      });
+      pipeline.setFocused(false);
+      pipeline.markUserInput('s1');
 
-    pipeline.feedChunk('s1', osc(RUNNING_TITLE));
-    pipeline.feedChunk('s1', osc(IDLE_TITLE));
+      pipeline.feedChunk('s1', osc(RUNNING_TITLE));
+      pipeline.feedChunk('s1', osc(IDLE_TITLE));
 
-    expect(onNotified).not.toHaveBeenCalled();
-    // Mute (Rule 7) suppresses toast but still fires flash.
-    expect(sends.some((s) => s.channel === 'notify:flash')).toBe(true);
-    pipeline.dispose();
+      // Confirm the idle window so the decision lands.
+      vi.advanceTimersByTime(10_000);
+
+      expect(onNotified).not.toHaveBeenCalled();
+      // Mute (Rule 7) suppresses toast but still fires flash.
+      expect(sends.some((s) => s.channel === 'notify:flash')).toBe(true);
+      pipeline.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('forgetSid clears sniffer + tracker + flash state', () => {
-    const { win } = makeStubWin();
-    const pipeline = installNotifyPipeline({
-      getMainWindow: () => win as never,
-      isGlobalMutedFn: () => false,
-    });
-    pipeline.setFocused(false);
-    pipeline.feedChunk('s1', osc(RUNNING_TITLE));
-    pipeline.feedChunk('s1', osc(IDLE_TITLE)); // creates flash state
-    expect(pipeline._internals().flash._peek()['s1']).toBe(true);
-    pipeline.forgetSid('s1');
-    expect(pipeline._internals().flash._peek()['s1']).toBeUndefined();
-    pipeline.dispose();
+    vi.useFakeTimers();
+    try {
+      const { win } = makeStubWin();
+      const pipeline = installNotifyPipeline({
+        getMainWindow: () => win as never,
+        isGlobalMutedFn: () => false,
+      });
+      pipeline.setFocused(false);
+      pipeline.feedChunk('s1', osc(RUNNING_TITLE));
+      pipeline.feedChunk('s1', osc(IDLE_TITLE));
+      // Confirm idle (1500ms) but stay under FLASH_DURATION_MS (4000ms) so the
+      // flash auto-off hasn't cleared the peek map yet.
+      vi.advanceTimersByTime(1_600); // confirm idle → creates flash state
+      expect(pipeline._internals().flash._peek()['s1']).toBe(true);
+      pipeline.forgetSid('s1');
+      expect(pipeline._internals().flash._peek()['s1']).toBeUndefined();
+      pipeline.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('setMuted suppresses toast for the sid (Rule 7) but a different sid still fires', () => {
@@ -198,24 +217,30 @@ describe('installNotifyPipeline (Task #743 orchestrator)', () => {
   });
 
   it('diag counters populate only when globalThis.__ccsmDebug is truthy', () => {
-    const { win } = makeStubWin();
-    (globalThis as { __ccsmDebug?: boolean }).__ccsmDebug = true;
-    const pipeline = installNotifyPipeline({
-      getMainWindow: () => win as never,
-      isGlobalMutedFn: () => false,
-    });
-    pipeline.setFocused(false);
-    pipeline.feedChunk('s1', osc(RUNNING_TITLE));
-    pipeline.feedChunk('s1', osc(IDLE_TITLE));
-    const diag = pipeline._internals().diag;
-    expect(diag).not.toBeNull();
-    expect(diag!.chunksFed).toBe(2);
-    expect(diag!.bytesFed).toBeGreaterThan(0);
-    expect(diag!.snifferEvents).toBe(2);
-    expect(diag!.classifications.idle).toBe(1);
-    expect(diag!.classifications.running).toBe(1);
-    expect(diag!.decisions).toBe(1);
-    pipeline.dispose();
+    vi.useFakeTimers();
+    try {
+      const { win } = makeStubWin();
+      (globalThis as { __ccsmDebug?: boolean }).__ccsmDebug = true;
+      const pipeline = installNotifyPipeline({
+        getMainWindow: () => win as never,
+        isGlobalMutedFn: () => false,
+      });
+      pipeline.setFocused(false);
+      pipeline.feedChunk('s1', osc(RUNNING_TITLE));
+      pipeline.feedChunk('s1', osc(IDLE_TITLE));
+      vi.advanceTimersByTime(10_000); // confirm idle → decision counted
+      const diag = pipeline._internals().diag;
+      expect(diag).not.toBeNull();
+      expect(diag!.chunksFed).toBe(2);
+      expect(diag!.bytesFed).toBeGreaterThan(0);
+      expect(diag!.snifferEvents).toBe(2);
+      expect(diag!.classifications.idle).toBe(1);
+      expect(diag!.classifications.running).toBe(1);
+      expect(diag!.decisions).toBe(1);
+      pipeline.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('dispose detaches sniffer listeners (subsequent feeds produce no decisions)', () => {
@@ -251,6 +276,9 @@ describe('installNotifyPipeline (Task #743 orchestrator)', () => {
       pipeline.feedChunk('s1', osc(IDLE_TITLE));
       pipeline.feedChunk('s2', osc(RUNNING_TITLE));
       pipeline.feedChunk('s2', osc(IDLE_TITLE));
+      // Confirm both idle windows (1500ms) but stay under FLASH_DURATION_MS
+      // (4000ms) so the flash sink hasn't auto-cleared yet.
+      vi.advanceTimersByTime(1_600);
       const flash = pipeline._internals().flash;
       expect(Object.keys(flash._peek()).sort()).toEqual(['s1', 's2']);
 
