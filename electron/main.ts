@@ -90,7 +90,7 @@ import { registerSystemIpc } from './ipc/systemIpc';
 import { registerSessionIpc } from './ipc/sessionIpc';
 import { registerWindowIpc } from './ipc/windowIpc';
 import { registerVoiceIpc } from './ipc/voiceIpc';
-import { startMobileRemoteServer } from './remote/mobileRemoteServer';
+import { startMobileRemote } from './remote/mobileRemoteController';
 import {
   registerUtilityIpc,
   primeImportableCache,
@@ -157,7 +157,7 @@ let isQuitting = false;
 let badgeManager: BadgeManager | null = null;
 let notifyPipeline: NotifyPipeline | null = null;
 let notifyPipelineDispose: (() => void) | null = null;
-let mobileRemoteServer: { close: () => void } | null = null;
+let mobileRemote: { close: () => void } | null = null;
 const badgeController = new BadgeController(() => badgeManager);
 
 function getTrayBaseImage() {
@@ -299,7 +299,7 @@ app.whenReady().then(() => {
     () => BrowserWindow.getAllWindows()[0] ?? null,
   );
 
-  mobileRemoteServer = startMobileRemoteServer();
+  mobileRemote = startMobileRemote();
 
   // ─────────────────────── notify pipeline (Phase C, #689) ───────────────
   // BadgeManager is bumped via `onNotified` to update the tray/dock badge.
@@ -377,22 +377,22 @@ registerLifecycleHandlers({
   getWindowCount: () => BrowserWindow.getAllWindows().length,
   disposeNotifyPipeline: () => {
     // Each disposer is wrapped in its own try/catch so a throw from one
-    // (e.g. mobileRemoteServer.close() on an already-closed server) does
+    // (e.g. mobileRemote.close() on an already-closed peer) does
     // NOT skip the rest. The original audit #876 cluster 1.14 fix
     // (notifyPipelineDispose) depends on running unconditionally — without
-    // isolation a node fs error in the http close path would silently
+    // isolation a throw in the WebRTC close path would silently
     // resurrect the focus/blur + sessionWatcher 'unwatched' leak past
-    // quit. Order is preserved: server close before clearing the handle
+    // quit. Order is preserved: peer close before clearing the handle
     // before pipeline disposal.
     try {
-      mobileRemoteServer?.close();
+      mobileRemote?.close();
     } catch (err) {
-      console.warn('[main] disposer mobileRemoteServer.close threw', err);
+      console.warn('[main] disposer mobileRemote.close threw', err);
     }
     try {
-      mobileRemoteServer = null;
+      mobileRemote = null;
     } catch (err) {
-      console.warn('[main] disposer clear mobileRemoteServer threw', err);
+      console.warn('[main] disposer clear mobileRemote threw', err);
     }
     try {
       notifyPipelineDispose?.();
