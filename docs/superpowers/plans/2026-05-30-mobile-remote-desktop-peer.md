@@ -534,7 +534,7 @@ export function createDesktopPeer(opts: {
           if (channel.readyState === 'open') channel.send(JSON.stringify(payload));
         },
       };
-      channel.message.subscribe((msg) => {
+      channel.onMessage.subscribe((msg) => {
         const raw = typeof msg === 'string' ? msg : msg.toString();
         void handleClientMessage(client, raw);
       });
@@ -578,7 +578,7 @@ export function createDesktopPeer(opts: {
 }
 ```
 
-> **werift API note for the implementer:** werift's `RTCPeerConnection` uses observable-style callbacks (`onIceCandidate.subscribe`, `onDataChannel.subscribe`, `channel.message.subscribe`, `channel.stateChanged.subscribe`) rather than browser `on*=` setters. If a method name differs in the installed werift version, check `node_modules/werift/lib/.../peerConnection.d.ts` and adjust — keep the wiring identical, only the event-subscription syntax may shift. The browser-style `dc.onopen`/`dc.onmessage` used in the TEST file is the phone side standing in for a browser; werift also supports those on its channels, but prefer the `.subscribe` form on the desktop side for reliability.
+> **werift API note for the implementer:** werift's `RTCPeerConnection` uses observable-style callbacks (`onIceCandidate.subscribe`, `onDataChannel.subscribe`, `channel.onMessage.subscribe`, `channel.stateChanged.subscribe`) rather than browser `on*=` setters. These names were verified against werift source (`dataChannel.ts`) and the official `examples/datachannel/local.ts`. If a method name still differs in the installed werift version, check `node_modules/werift/lib/.../peerConnection.d.ts` and adjust — keep the wiring identical, only the event-subscription syntax may shift. The browser-style `dc.onopen`/`dc.onmessage` used in the TEST file is the phone side standing in for a browser; werift also supports those on its channels, but prefer the `.subscribe` form on the desktop side for reliability.
 
 - [ ] **Step 4: Run the loopback test to verify it passes**
 
