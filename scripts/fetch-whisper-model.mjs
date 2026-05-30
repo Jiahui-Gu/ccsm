@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Downloads ggml-small.bin into resources/models/ so dev runs and CI
+// Downloads ggml-base.bin into resources/models/ so dev runs and CI
 // packaging have the Whisper model without committing a 466 MB binary to
 // git. Idempotent: skips the download when the file already exists.
 import { existsSync, mkdirSync, createWriteStream } from 'node:fs';
@@ -8,10 +8,10 @@ import { fileURLToPath } from 'node:url';
 import { pipeline } from 'node:stream/promises';
 
 const MODEL_URL =
-  'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin';
+  'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const dest = join(__dirname, '..', 'resources', 'models', 'ggml-small.bin');
+const dest = join(__dirname, '..', 'resources', 'models', 'ggml-base.bin');
 
 if (existsSync(dest)) {
   console.log(`[fetch-whisper-model] already present: ${dest}`);
