@@ -26,7 +26,7 @@ describe('protocol wire shapes', () => {
       sessions: [{ sid: 's1', cwd: '/repo', cols: 80, rows: 24 } satisfies SessionListEntry],
     };
     const data: DesktopToPhone = { type: 'pty.data', sid: 's1', chunk: 'x', seq: 7 };
-    expect(list.sessions[0].sid).toBe('s1');
+    expect(list.sessions[0]!.sid).toBe('s1');
     expect(data.seq).toBe(7);
   });
 

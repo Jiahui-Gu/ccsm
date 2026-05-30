@@ -94,6 +94,12 @@ export default [
         MediaStream: 'readonly',
         AudioContext: 'readonly',
         ScriptProcessorNode: 'readonly',
+        // Browser networking globals used by the phone PWA modules
+        // (src/mobile/): WebRTC offerer + Durable Object signaling.
+        WebSocket: 'readonly',
+        RTCPeerConnection: 'readonly',
+        MessageEvent: 'readonly',
+        URLSearchParams: 'readonly',
         // `NodeJS` namespace is also referenced from renderer-side .d.ts
         // files (e.g. cliBridge.d.ts) that mirror preload types — keep it
         // available alongside browser globals.
