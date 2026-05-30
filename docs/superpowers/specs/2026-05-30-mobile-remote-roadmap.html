@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CCSM Mobile Remote — High-Level Design &amp; Roadmap</title>
+<style>
+  :root {
+    --bg: #0b1020; --panel: #111827; --panel2: #0f172a; --border: #263042;
+    --text: #e5e7eb; --muted: #9ca3af; --blue: #60a5fa; --blue-bg: #1e3a8a;
+    --green: #34d399; --amber: #f59e0b; --red: #f87171; --purple: #a78bfa;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 32px 24px 80px; }
+  h1 { font-size: 28px; margin: 0 0 4px; }
+  h2 { font-size: 21px; margin: 40px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 16px; margin: 22px 0 8px; color: var(--blue); }
+  .sub { color: var(--muted); margin: 0 0 8px; }
+  code { background: #1f2937; padding: 1px 6px; border-radius: 5px; font: 13px ui-monospace, Consolas, monospace; }
+  .pill { display: inline-block; font-size: 12px; padding: 2px 9px; border-radius: 999px; font-weight: 600; }
+  .done { background: #064e3b; color: var(--green); border: 1px solid #065f46; }
+  .now  { background: #78350f; color: var(--amber); border: 1px solid #92400e; }
+  .next { background: #1e3a8a; color: var(--blue); border: 1px solid #1d4ed8; }
+  .later{ background: #312e54; color: var(--purple); border: 1px solid #4c1d95; }
+  .grid { display: grid; gap: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; }
+  .card h3 { margin-top: 0; }
+  .muted { color: var(--muted); }
+  .flow { background: var(--panel2); border: 1px solid var(--border); border-radius: 12px; padding: 20px; overflow-x: auto; }
+  .flow pre { margin: 0; font: 13px ui-monospace, Consolas, monospace; color: #cbd5e1; white-space: pre; }
+  table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; }
+  .tag { font-size: 11px; padding: 1px 7px; border-radius: 6px; background: #1f2937; color: var(--muted); margin-right: 4px; }
+  .risk-hi { color: var(--red); font-weight: 600; }
+  .risk-md { color: var(--amber); font-weight: 600; }
+  .risk-lo { color: var(--green); font-weight: 600; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; margin: 10px 0 0; font-size: 13px; }
+  .legend span { display: flex; align-items: center; gap: 6px; }
+  ul { margin: 6px 0; padding-left: 22px; }
+  li { margin: 3px 0; }
+  .callout { border-left: 3px solid var(--blue); background: rgba(96,165,250,.08); padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 12px 0; }
+  .callout.warn { border-color: var(--amber); background: rgba(245,158,11,.08); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>CCSM Mobile Remote — High-Level Design &amp; 工作分解</h1>
+  <p class="sub">2026-05-30 · 手机端 phase-1 已合并 (PR #1422, <code>1d13058</code>)。这份文档摊开"接下来有哪些工作"。</p>
+  <div class="legend">
+    <span><span class="pill done">DONE</span> 已合并</span>
+    <span><span class="pill now">NOW</span> 当前可推</span>
+    <span><span class="pill next">NEXT</span> 紧接的</span>
+    <span><span class="pill later">LATER</span> 更远 / 设计跟进</span>
+  </div>
+
+  <h2>1 · 现在的架构(merged 之后的真实形态)</h2>
+  <p class="sub">关键事实:mobile remote 直接和 <code>ptyHost</code> 对话,<strong>完全绕过</strong>桌面用的 <code>window.ccsm</code> bridge 层。这是理解后续所有工作的前提。</p>
+  <div class="flow"><pre>
+  ┌─────────────────────────────┐         ┌──────────────────────────────────────┐
+  │   桌面 Renderer (src/)       │         │        手机浏览器 (mobilePage.ts)       │
+  │   React + xterm.js          │         │        内联 HTML + xterm.js (CDN)       │
+  └──────────────┬──────────────┘         └───────────────────┬────────────────────┘
+                 │ window.ccsm                                 │ WebSocket  /ws?token=…
+                 │ (6 preload bridges, IPC)                    │ (token-gated, 127.0.0.1)
+                 ▼                                             ▼
+  ┌─────────────────────────────┐         ┌──────────────────────────────────────┐
+  │  preload/bridges/*  ──IPC──▶ │         │  electron/remote/                     │
+  │  ipc/*Ipc.ts handlers        │         │  mobileRemoteServer · remoteMessages   │
+  └──────────────┬──────────────┘         │  wsProtocol · remoteHttp · mobilePage  │
+                 │                         └───────────────────┬────────────────────┘
+                 │                                             │ 直接 import
+                 ▼                                             ▼
+        ┌──────────────────────────────────────────────────────────────┐
+        │                    electron/ptyHost/  (node-pty)               │
+        │  listPtySessions · inputPtySession · resizePtySession          │
+        │  getBufferSnapshot · onPtyData(seq)  ←── 单一真相源 (seq 权威)   │
+        └──────────────────────────────────────────────────────────────┘
+
+  两条路径平行、各自直连 ptyHost。WS 这条是新加的,没有复用 IPC 的契约。
+  </pre></div>
+  <div class="callout">
+    <strong>设计张力:</strong>桌面和手机各写了一份"会话协议"。桌面用 IPC channel 常量 + 类型;手机用 JSON over WS。两边其实在表达<em>同一组操作</em>(list / snapshot / input / resize / data 流)。这就是 <span class="pill later">LATER</span> transport 抽象想统一的东西。
+  </div>
+
+  <h2>2 · phase-1 已经做掉的(DONE)</h2>
+  <div class="grid">
+    <div class="card">
+      <h3><span class="pill done">DONE</span> 手机可用性 (PR #1422)</h3>
+      <ul>
+        <li><code>session.resize</code> — FitAddon 按屏算 cols/rows,同步 PTY</li>
+        <li>触控键盘条 — Esc/Tab/Ctrl(粘滞)/方向/^C/Enter</li>
+        <li>断线指数退避重连 + 重连后重拉 snapshot</li>
+        <li><strong>seq 去重 bug 修复</strong> — 透传 ptyHost 权威 seq,修好"冻屏"</li>
+        <li>2s 会话列表轮询 — 桌面开/关 session 自动出现在 chip</li>
+      </ul>
+      <p class="muted">证据:CI 三平台全绿 · cold reviewer LGTM · headless Playwright 4/4 真浏览器证明。</p>
+    </div>
+    <div class="card">
+      <h3><span class="pill done">DONE</span> 安全基线 (已在代码里)</h3>
+      <ul>
+        <li>token <code>crypto.timingSafeEqual</code> 常量时间比较</li>
+        <li>per-session 隔离 — <code>subscribedSid</code> gate,不串数据</li>
+        <li>WS 帧:拒绝非掩码客户端帧 · 1 MiB 上限</li>
+        <li>无 XSS — cwd 走 <code>textContent</code></li>
+        <li>只绑 <code>127.0.0.1</code> — 远程经 tailscale serve</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>3 · 工作分解(候选,按风险/价值排)</h2>
+
+  <h3>A · <span class="pill now">NOW</span> 真机打磨 — 风险 <span class="risk-lo">低</span> · 价值 <span class="risk-hi">最直接</span></h3>
+  <p class="sub">headless 测不到的 OS 级交互,只有真手机能暴露。这是"真正手机能用"的最后一公里。</p>
+  <table>
+    <tr><th>工作项</th><th>说明</th><th>风险</th></tr>
+    <tr><td>软键盘遮挡</td><td>iOS/Android 弹出软键盘时,终端可视区被压缩 — 用 <code>visualViewport</code> API 调 <code>#terminal</code> 高度</td><td class="risk-lo">低</td></tr>
+    <tr><td>横竖屏切换</td><td>旋转后 FitAddon 重算 + resize 防抖,验证不丢行</td><td class="risk-lo">低</td></tr>
+    <tr><td>触控手感</td><td>滚动 vs 选择冲突;长按粘贴;keybar 按钮命中区 ≥44px(已 set,需真机确认)</td><td class="risk-md">中</td></tr>
+    <tr><td>tailscale 实连时延</td><td>真机经 tailscale 连,测输入回显延迟 + 重连行为</td><td class="risk-lo">低</td></tr>
+    <tr><td>PWA / 添加到主屏</td><td>(可选)加 manifest,让手机像 app 一样全屏打开</td><td class="risk-lo">低</td></tr>
+  </table>
+  <div class="callout warn"><strong>需要你配合:</strong>这一档大部分要你拿真手机连一次、点一点、录个屏 —— headless 给不了"手感"证据。我可以先把 <code>visualViewport</code>/旋转这些<em>能在浏览器 devtools 模拟</em>的做掉,留触感类给你真机验收。</div>
+
+  <h3>B · <span class="pill next">NEXT</span> 多客户端 / 状态健壮性 — 风险 <span class="risk-md">中</span> · 价值 中</h3>
+  <table>
+    <tr><td>WS 心跳 ping/pong</td><td>现在 server 不发 ping(代码注释已标),手机锁屏/切后台后死连接不会被清。加心跳 + 超时回收</td><td class="risk-md">中</td></tr>
+    <tr><td>多手机同看一个 session</td><td>当前架构支持,但没测过两个 client 订阅同一 sid 的 snapshot/seq 一致性</td><td class="risk-md">中</td></tr>
+    <tr><td>断线缓冲</td><td>手机断网期间的 pty 输出靠重连后 snapshot 补 —— 验证大输出场景不丢/不卡</td><td class="risk-md">中</td></tr>
+  </table>
+
+  <h3>C · <span class="pill later">LATER</span> Transport 抽象 — 风险 <span class="risk-hi">高</span> · 价值 高(长期)</h3>
+  <p class="sub">原 brainstorm 的"正确"方向:让桌面和手机共用一套会话协议契约。<strong>动 6 个 preload bridge,桌面回归风险高,不该无人值守落。</strong></p>
+  <div class="flow"><pre>
+  目标形态:抽出一个 "SessionTransport" 契约(list/snapshot/input/resize/data 流),
+            桌面用 IPC adapter 实现,手机用 WS adapter 实现,两边共享类型 + 校验。
+
+  2-phase 设计(原始 brainstorm):
+    phase-1  协议契约重构 — 把会话操作抽成与传输无关的 interface + 共享类型/校验
+    phase-2  WS adapter — mobile remote 改成实现该 interface,删掉重复的 JSON 协议手写代码
+
+  风险点:phase-1 要碰 ccsmPty / ccsmSession 两个 bridge 和对应 IPC handler,
+          桌面终端是核心路径,任何回归都是 user-visible。必须真机 + dogfood 双证据。
+  </pre></div>
+
+  <h3>D · 顺带的技术债(与 mobile 无关,可独立推)</h3>
+  <table>
+    <tr><th>ID</th><th>项</th><th>Impact</th><th>风险</th></tr>
+    <tr><td>#5</td><td>Session 字段 shotgun surgery(加一字段改 7 处 + en/zh 双 i18n)</td><td>HIGH</td><td class="risk-md">中</td></tr>
+    <tr><td>#12</td><td><code>import:scan</code>/<code>paths:exist</code>/<code>sessionTitles</code> IPC 返回无界数组,缺分页</td><td>MED</td><td class="risk-lo">低</td></tr>
+    <tr><td>#13</td><td><code>sandbox:false</code> on BrowserWindow(Sentry preload require 路径)</td><td>MED</td><td class="risk-md">中</td></tr>
+  </table>
+
+  <h2>4 · 我的推荐顺序</h2>
+  <div class="callout">
+    <strong>建议:A(真机打磨可模拟的部分) → B(心跳/多端) → 再决定 C。</strong>
+    <ul>
+      <li><strong>A</strong> 价值最直接、风险最低,且是"真正手机能用"的字面意义。我能无人值守做掉 <code>visualViewport</code> 软键盘、横竖屏、PWA manifest 这些 devtools 可验证的;触感类标记为"待你真机验收"。</li>
+      <li><strong>B</strong> 心跳是真实健壮性缺口(死连接不回收),风险可控,值得紧接着做。</li>
+      <li><strong>C</strong> transport 抽象价值高但碰桌面核心路径,等你醒来一起定方向再动 —— 符合"高风险不无人值守落"的约束。</li>
+      <li><strong>D</strong> 是平行的技术债,任何时候可以塞进空档,和 mobile 不冲突。</li>
+    </ul>
+  </div>
+
+  <p class="muted" style="margin-top:40px">这份文档保存在 <code>docs/superpowers/specs/2026-05-30-mobile-remote-roadmap.html</code>。看完告诉我推哪条,我再展开成正式 spec + 实现 plan。</p>
+
+</div>
+</body>
+</html>
