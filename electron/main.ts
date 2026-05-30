@@ -90,6 +90,7 @@ import { registerSystemIpc } from './ipc/systemIpc';
 import { registerSessionIpc } from './ipc/sessionIpc';
 import { registerWindowIpc } from './ipc/windowIpc';
 import { registerVoiceIpc } from './ipc/voiceIpc';
+import { warmUpTranscriber } from './voice/warmup';
 import { startMobileRemoteServer } from './remote/mobileRemoteServer';
 import {
   registerUtilityIpc,
@@ -270,6 +271,14 @@ app.whenReady().then(() => {
   registerWindowIpc({ ipcMain });
   registerUtilityIpc({ ipcMain });
   registerVoiceIpc({ ipcMain });
+
+  // Best-effort: warm the whisper exe/DLLs/model into the OS page cache a few
+  // seconds after launch so the user's first voice transcription isn't slowed
+  // by a cold disk read. Delayed so it doesn't compete with window paint / DB /
+  // IPC setup for I/O during the startup-critical window. Fire-and-forget.
+  setTimeout(() => {
+    void warmUpTranscriber();
+  }, 3000);
 
   // Process-wide IPC for the terminal pane's `onContextMenu` handler to
   // ask main to skip the native context menu for one upcoming click.
