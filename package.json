@@ -74,7 +74,6 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-i18next": "^17.0.4",
-    "smart-whisper": "^0.8.1",
     "tailwind-merge": "^2.5.5",
     "zustand": "^5.0.12"
   },
@@ -124,14 +123,19 @@
     "asar": true,
     "asarUnpack": [
       "**/node_modules/better-sqlite3/**",
-      "**/node_modules/node-pty/**",
-      "**/node_modules/smart-whisper/**"
+      "**/node_modules/node-pty/**"
     ],
     "extraResources": [
       {
         "from": "resources/models",
         "to": "models",
-        "filter": ["*.bin"]
+        "filter": [
+          "*.bin"
+        ]
+      },
+      {
+        "from": "resources/whisper-bin",
+        "to": "whisper-bin"
       }
     ],
     "afterPack": "scripts/after-pack.cjs",
