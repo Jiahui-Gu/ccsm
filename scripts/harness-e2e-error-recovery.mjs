@@ -31,7 +31,7 @@
 // Run: `node scripts/harness-e2e-error-recovery.mjs`
 // Run one: `node scripts/harness-e2e-error-recovery.mjs --only=pty-exit-overlay-retry`
 
-import { existsSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import {
   createIsolatedClaudeDir,
@@ -42,8 +42,50 @@ import {
   waitForTerminalReady,
   waitForXtermBuffer,
 } from './probe-utils-real-cli.mjs';
+import { startFakeAnthropicApi } from './fixtures/fake-anthropic-api.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Seed claude's onboarding state into the isolated tempDir so the spawned
+// CLI talks to the fake Anthropic API (wired via ANTHROPIC_BASE_URL below)
+// and never the real one. The empty `{}` settings.json/settings.local.json
+// overwrite the copies createIsolatedClaudeDir() lifts from the real
+// ~/.claude — dropping any ANTHROPIC_AUTH_TOKEN / proxy config that would
+// otherwise route to a live endpoint. Pre-approving the 'fake-ci-key' avoids
+// the first-launch custom-API-key modal. Shape mirrors
+// harness-e2e-session-lifecycle.mjs#seedOnboarding.
+function seedOnboarding(tempDir) {
+  const trustedEntry = {
+    allowedTools: [],
+    mcpContextUris: [],
+    mcpServers: {},
+    enabledMcpjsonServers: [],
+    disabledMcpjsonServers: [],
+    hasClaudeMdExternalIncludesApproved: false,
+    hasClaudeMdExternalIncludesWarningShown: false,
+    hasTrustDialogAccepted: true,
+    projectOnboardingSeenCount: 1,
+  };
+  const projects = {};
+  projects[tempDir] = trustedEntry;
+  const tempDirFwd = tempDir.replace(/\\/g, '/');
+  if (tempDirFwd !== tempDir) projects[tempDirFwd] = trustedEntry;
+  writeFileSync(
+    path.join(tempDir, '.claude.json'),
+    JSON.stringify(
+      {
+        hasCompletedOnboarding: true,
+        bypassPermissionsModeAccepted: true,
+        customApiKeyResponses: { approved: ['fake-ci-key'] },
+        projects,
+      },
+      null,
+      2,
+    ),
+  );
+  writeFileSync(path.join(tempDir, 'settings.json'), '{}');
+  writeFileSync(path.join(tempDir, 'settings.local.json'), '{}');
+}
 
 // ============================================================================
 // CLI args
@@ -475,11 +517,21 @@ async function main() {
   const results = [];
   const harnessStart = Date.now();
 
+  const fakeApi = await startFakeAnthropicApi({ port: 0, verbose: false });
+  console.log(`[HARNESS=error-recovery] fake Anthropic API at ${fakeApi.url}`);
+
   let isolated = null;
   let launched = null;
   try {
     isolated = await createIsolatedClaudeDir();
-    launched = await launchCcsmIsolated({ tempDir: isolated.tempDir });
+    seedOnboarding(isolated.tempDir);
+    launched = await launchCcsmIsolated({
+      tempDir: isolated.tempDir,
+      env: {
+        ANTHROPIC_BASE_URL: fakeApi.url,
+        ANTHROPIC_API_KEY: 'fake-ci-key',
+      },
+    });
     const ctx = { electronApp: launched.electronApp, win: launched.win, tempDir: isolated.tempDir };
     console.log(`\n[HARNESS=error-recovery] shared launch ready (tempDir=${isolated.tempDir})`);
     for (const c of selected) {
@@ -500,6 +552,7 @@ async function main() {
     if (launched?.electronApp) try { await launched.electronApp.close(); } catch (_) { /* ignore */ }
     launched?.cleanup?.();
     isolated?.cleanup?.();
+    try { await fakeApi.stop(); } catch (_) { /* ignore */ }
   }
 
   const totalMs = Date.now() - harnessStart;
