@@ -3,8 +3,6 @@ import {
   decide,
   assertNotifyContext,
   USER_INIT_MUTE_MS,
-  SHORT_TASK_MS,
-  DEDUPE_MS,
   type Ctx,
   type Event,
 } from '../notifyDecider';
@@ -49,7 +47,7 @@ describe('notifyDecider — 7 rules', () => {
     });
   });
 
-  it('rule 2: foreground + active sid + short task → flash only, no toast', () => {
+  it('foreground + active sid → flash only, no toast (regardless of duration)', () => {
     const ctx = makeCtx({
       focused: true,
       activeSid: 's1',
@@ -62,15 +60,15 @@ describe('notifyDecider — 7 rules', () => {
     });
   });
 
-  it('rule 3: foreground + active sid + long task (>= 60s) → toast + flash', () => {
+  it('foreground + active sid + long-running task → still flash only', () => {
     const ctx = makeCtx({
       focused: true,
       activeSid: 's1',
-      runStartTs: new Map([['s1', NOW - (SHORT_TASK_MS + 1_000)]]),
+      runStartTs: new Map([['s1', NOW - 300_000]]),
     });
     expect(decide(waiting('s1'), ctx)).toEqual({
       sid: 's1',
-      toast: true,
+      toast: false,
       flash: true,
     });
   });
@@ -137,41 +135,6 @@ describe('notifyDecider — 7 rules', () => {
   });
 });
 
-describe('notifyDecider — dedupe', () => {
-  it('suppresses fire when last fired within 5s', () => {
-    const ctx = makeCtx({
-      focused: false,
-      lastFiredTs: new Map([['s1', NOW - 3_000]]),
-    });
-    expect(decide(waiting('s1'), ctx)).toBeNull();
-  });
-
-  it('boundary: last fired > 5s ago — fires normally', () => {
-    const ctx = makeCtx({
-      focused: false,
-      lastFiredTs: new Map([['s1', NOW - (DEDUPE_MS + 1_000)]]),
-    });
-    expect(decide(waiting('s1'), ctx)).toEqual({
-      sid: 's1',
-      toast: true,
-      flash: true,
-    });
-  });
-
-  it('dedupe is per-sid — fire on sid-B not blocked by recent sid-A', () => {
-    const ctx = makeCtx({
-      focused: false,
-      lastFiredTs: new Map([['sid-A', NOW - 1_000]]),
-    });
-    expect(decide(waiting('sid-A'), ctx)).toBeNull();
-    expect(decide(waiting('sid-B'), ctx)).toEqual({
-      sid: 'sid-B',
-      toast: true,
-      flash: true,
-    });
-  });
-});
-
 describe('notifyDecider — context-update-only events return null', () => {
   it('window-focus-change returns null', () => {
     const ctx = makeCtx();
@@ -200,14 +163,14 @@ describe('notifyDecider — context-update-only events return null', () => {
     ).toBeNull();
   });
 
-  it('non-waiting OSC title returns null', () => {
-    const ctx = makeCtx();
+  it('an osc-title event is always decided on (no title-content gate)', () => {
+    const ctx = makeCtx({ focused: false });
     expect(
       decide(
-        { type: 'osc-title', sid: 's1', title: '⠂ Claude Code', ts: NOW },
+        { type: 'osc-title', sid: 's1', title: 'anything', ts: NOW },
         ctx,
       ),
-    ).toBeNull();
+    ).toEqual({ sid: 's1', toast: true, flash: true });
   });
 });
 
