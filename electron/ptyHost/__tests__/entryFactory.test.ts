@@ -101,7 +101,7 @@ vi.mock('../cwdResolver', () => ({
 }));
 
 vi.mock('../dataFanout', () => ({
-  emitPtyData: (sid: string, chunk: string) => bus().emitData(sid, chunk),
+  emitPtyData: (sid: string, chunk: string, seq: number) => bus().emitData(sid, chunk, seq),
 }));
 
 // The user-configured scrollback cap is now read at headless construction
@@ -207,7 +207,7 @@ describe('entryFactory.makeEntry', () => {
     b.onData!('hello');
     // PR-C (#863): headless.write is now invoked with a backpressure callback.
     expect(b.headlessWrite).toHaveBeenCalledWith('hello', expect.any(Function));
-    expect(b.emitData).toHaveBeenCalledWith('sid-G', 'hello');
+    expect(b.emitData).toHaveBeenCalledWith('sid-G', 'hello', 1);
   });
 
   it('returns an Entry exposing the pid/cols/rows/cwd captured at spawn', () => {

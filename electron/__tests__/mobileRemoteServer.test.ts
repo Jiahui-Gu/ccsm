@@ -8,37 +8,41 @@ import type { Socket } from 'net';
 // Mock the ptyHost surface the server consumes. We don't want a real PTY,
 // and pulling in ../ptyHost would drag node-pty + electron transitively.
 //
-// The mock exposes an extra `__emitPtyData(sid, chunk)` that fans out to every
-// listener the server registered via onPtyData, letting a test drive the real
-// broadcast path. (vi.mock factories are hoisted, so the listener array lives
-// inside the factory; we read __emitPtyData back off the mocked module.)
+// The mock exposes an extra `__emitPtyData(sid, chunk, seq)` that fans out to
+// every listener the server registered via onPtyData, letting a test drive the
+// real broadcast path. `seq` is ptyHost's authoritative per-session chunk
+// counter — the test supplies it explicitly so we can prove the server forwards
+// it verbatim rather than re-deriving its own. (vi.mock factories are hoisted,
+// so the listener array lives inside the factory; we read __emitPtyData back
+// off the mocked module.)
 vi.mock('../ptyHost', () => {
-  const listeners: Array<(sid: string, chunk: string) => void> = [];
+  const listeners: Array<(sid: string, chunk: string, seq: number) => void> = [];
   return {
-    listPtySessions: vi.fn(() => [{ sid: 'mock-sid', cols: 80, rows: 24 }]),
+    listPtySessions: vi.fn(() => [{ sid: 'mock-sid', cwd: '/tmp/mock', cols: 80, rows: 24 }]),
     getPtySession: vi.fn((sid: string) =>
-      sid === 'mock-sid' ? { sid, cols: 80, rows: 24 } : null
+      sid === 'mock-sid' ? { sid, cwd: '/tmp/mock', cols: 80, rows: 24 } : null
     ),
     inputPtySession: vi.fn(),
-    getBufferSnapshot: vi.fn(async (_sid: string) => ({ snapshot: 'hello\r\n' })),
-    onPtyData: vi.fn((cb: (sid: string, chunk: string) => void) => {
+    resizePtySession: vi.fn(),
+    getBufferSnapshot: vi.fn(async (_sid: string) => ({ snapshot: 'hello\r\n', seq: 0 })),
+    onPtyData: vi.fn((cb: (sid: string, chunk: string, seq: number) => void) => {
       listeners.push(cb);
       return () => {
         const i = listeners.indexOf(cb);
         if (i >= 0) listeners.splice(i, 1);
       };
     }),
-    __emitPtyData: (sid: string, chunk: string) => {
-      for (const cb of listeners.slice()) cb(sid, chunk);
+    __emitPtyData: (sid: string, chunk: string, seq: number) => {
+      for (const cb of listeners.slice()) cb(sid, chunk, seq);
     },
   };
 });
 
-async function emitPtyData(sid: string, chunk: string): Promise<void> {
+async function emitPtyData(sid: string, chunk: string, seq: number): Promise<void> {
   const mod = (await import('../ptyHost')) as unknown as {
-    __emitPtyData: (sid: string, chunk: string) => void;
+    __emitPtyData: (sid: string, chunk: string, seq: number) => void;
   };
-  mod.__emitPtyData(sid, chunk);
+  mod.__emitPtyData(sid, chunk, seq);
 }
 
 type Started = {
@@ -529,7 +533,7 @@ describe('mobileRemoteServer: per-client pty.data isolation', () => {
     const b = await connectAndSubscribe(active.port, active.token, 'B');
 
     // Emit data for session 'A' only.
-    await emitPtyData('A', 'alpha-bytes');
+    await emitPtyData('A', 'alpha-bytes', 1);
 
     // Client A (subscribed to 'A') must receive the pty.data frame.
     const aMsg = JSON.parse(await a.nextMessage());
@@ -548,26 +552,31 @@ describe('mobileRemoteServer: per-client pty.data isolation', () => {
     const ws = await wsConnect(active.port, `/ws?token=${active.token}`);
     await ws.recvText; // auth.ok + sessions.list
 
-    await emitPtyData('A', 'leak?');
+    await emitPtyData('A', 'leak?', 1);
 
     // No pty.data should arrive for an unsubscribed client.
     await expect(ws.nextMessage(200)).rejects.toThrow(/timed out/);
     ws.socket.destroy();
   });
 
-  it('keeps seq as a per-session global counter, independent of subscribers', async () => {
+  it('forwards ptyHost seq verbatim instead of re-counting', async () => {
     active = await startServer();
     const a = await connectAndSubscribe(active.port, active.token, 'A');
 
-    // Two chunks for 'A' → seq should be 1 then 2 (incremented once per chunk,
-    // outside the client loop), proving seq is per-session ordering.
-    await emitPtyData('A', 'first');
+    // ptyHost owns the authoritative per-session chunk seq (the same counter
+    // getBufferSnapshot returns). The server must forward whatever seq ptyHost
+    // emits — NOT maintain its own counter starting at 0. A re-counting server
+    // would relabel these as 1, 2; here we hand it 501 then 502 and require
+    // those exact values to pass through. Regression guard: the old seqBySid
+    // counter diverged from ptyHost and froze the mobile terminal (every live
+    // chunk was dropped as seq <= snapSeq after a non-empty snapshot).
+    await emitPtyData('A', 'first', 501);
     const m1 = JSON.parse(await a.nextMessage());
-    await emitPtyData('A', 'second');
+    await emitPtyData('A', 'second', 502);
     const m2 = JSON.parse(await a.nextMessage());
 
-    expect(m1).toMatchObject({ type: 'pty.data', sid: 'A', seq: 1 });
-    expect(m2).toMatchObject({ type: 'pty.data', sid: 'A', seq: 2 });
+    expect(m1).toMatchObject({ type: 'pty.data', sid: 'A', chunk: 'first', seq: 501 });
+    expect(m2).toMatchObject({ type: 'pty.data', sid: 'A', chunk: 'second', seq: 502 });
 
     a.socket.destroy();
   });

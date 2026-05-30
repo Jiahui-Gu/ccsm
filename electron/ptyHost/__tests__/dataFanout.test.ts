@@ -33,25 +33,25 @@ afterEach(() => {
 });
 
 describe('onPtyData / emitPtyData', () => {
-  it('delivers chunk + sid to a single subscriber', () => {
+  it('delivers chunk + sid + seq to a single subscriber', () => {
     const cb = vi.fn();
     track(cb);
-    emitPtyData('sid-A', 'hello');
+    emitPtyData('sid-A', 'hello', 7);
     expect(cb).toHaveBeenCalledTimes(1);
-    expect(cb).toHaveBeenCalledWith('sid-A', 'hello');
+    expect(cb).toHaveBeenCalledWith('sid-A', 'hello', 7);
   });
 
-  it('fans out the same chunk to every subscriber', () => {
+  it('fans out the same chunk + seq to every subscriber', () => {
     const a = vi.fn();
     const b = vi.fn();
     const c = vi.fn();
     track(a);
     track(b);
     track(c);
-    emitPtyData('sid-X', 'chunk');
-    expect(a).toHaveBeenCalledWith('sid-X', 'chunk');
-    expect(b).toHaveBeenCalledWith('sid-X', 'chunk');
-    expect(c).toHaveBeenCalledWith('sid-X', 'chunk');
+    emitPtyData('sid-X', 'chunk', 3);
+    expect(a).toHaveBeenCalledWith('sid-X', 'chunk', 3);
+    expect(b).toHaveBeenCalledWith('sid-X', 'chunk', 3);
+    expect(c).toHaveBeenCalledWith('sid-X', 'chunk', 3);
   });
 
   it('dedupes the same callback reference (Set semantics)', () => {
@@ -59,7 +59,7 @@ describe('onPtyData / emitPtyData', () => {
     const d1 = onPtyData(cb);
     const d2 = onPtyData(cb);
     disposers.push(d1, d2);
-    emitPtyData('sid', 'x');
+    emitPtyData('sid', 'x', 1);
     expect(cb).toHaveBeenCalledTimes(1);
   });
 
@@ -68,11 +68,11 @@ describe('onPtyData / emitPtyData', () => {
     const b = vi.fn();
     const disposeA = track(a);
     track(b);
-    emitPtyData('s', '1');
+    emitPtyData('s', '1', 1);
     disposeA();
-    emitPtyData('s', '2');
+    emitPtyData('s', '2', 2);
     expect(a).toHaveBeenCalledTimes(1);
-    expect(a).toHaveBeenCalledWith('s', '1');
+    expect(a).toHaveBeenCalledWith('s', '1', 1);
     expect(b).toHaveBeenCalledTimes(2);
   });
 
@@ -81,7 +81,7 @@ describe('onPtyData / emitPtyData', () => {
     const dispose = onPtyData(cb);
     dispose();
     expect(() => dispose()).not.toThrow();
-    emitPtyData('s', 'x');
+    emitPtyData('s', 'x', 1);
     expect(cb).not.toHaveBeenCalled();
   });
 
@@ -90,7 +90,7 @@ describe('onPtyData / emitPtyData', () => {
     const good = vi.fn();
     track(bad);
     track(good);
-    expect(() => emitPtyData('sid', 'data')).not.toThrow();
+    expect(() => emitPtyData('sid', 'data', 1)).not.toThrow();
     expect(bad).toHaveBeenCalledTimes(1);
     expect(good).toHaveBeenCalledTimes(1);
     expect(console.warn).toHaveBeenCalledWith(
@@ -100,13 +100,13 @@ describe('onPtyData / emitPtyData', () => {
   });
 
   it('emit with no subscribers is a no-op', () => {
-    expect(() => emitPtyData('sid', 'no listeners')).not.toThrow();
+    expect(() => emitPtyData('sid', 'no listeners', 1)).not.toThrow();
   });
 
   it('zero-length chunks are still fanned out (transparency)', () => {
     const cb = vi.fn();
     track(cb);
-    emitPtyData('sid', '');
-    expect(cb).toHaveBeenCalledWith('sid', '');
+    emitPtyData('sid', '', 1);
+    expect(cb).toHaveBeenCalledWith('sid', '', 1);
   });
 });
