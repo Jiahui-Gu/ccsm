@@ -1,5 +1,21 @@
 // electron/remote/__tests__/mobileRemoteController.test.ts
 import { describe, it, expect, vi } from 'vitest';
+
+// `mobileRemoteController` statically imports `createDesktopPeer` → `desktopPeer`
+// → `../ptyHost` → `electron/ptyHost/index.ts`, which pulls in the real
+// `electron` runtime. Under plain-Node vitest (CI) that throws at import time.
+// This test injects its own `createPeer`, so it never runs the real peer — it
+// only needs `ptyHost` to be importable. Stub it exactly like the sibling
+// loopback test does.
+vi.mock('../../ptyHost', () => ({
+  listPtySessions: () => [],
+  getBufferSnapshot: async () => ({ snapshot: '', seq: 0 }),
+  getPtySession: () => ({ cols: 80, rows: 24 }),
+  inputPtySession: () => {},
+  resizePtySession: () => {},
+  onPtyData: () => () => {},
+}));
+
 import { startMobileRemote } from '../mobileRemoteController';
 import type { SignalingClient } from '../signaling';
 
