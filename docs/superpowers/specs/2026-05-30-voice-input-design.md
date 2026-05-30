@@ -18,7 +18,7 @@ pressing Win+H awkward. A first-class in-app button removes that friction.
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Engine | Local Whisper (`nodejs-whisper`, whisper.cpp N-API binding) | MIT, free, offline, strong Chinese. Reuses the existing native-module pipeline (`node-pty`/`better-sqlite3`). |
+| Engine | Local Whisper via **`smart-whisper`** (whisper.cpp N-API binding) | MIT, free, offline, strong Chinese. True in-process N-API addon that accepts an in-memory `Float32Array @ 16 kHz` — no temp wav files. Reuses the existing native-module pipeline (`node-pty`/`better-sqlite3`). NOTE: `nodejs-whisper` was rejected — it only accepts a file path and shells out, forcing a temp-wav round trip. |
 | Model | `ggml-small.bin` (~466 MB) | Best accuracy/speed tradeoff for dictation; CPU real-time-ish. |
 | Model distribution | **Bundled in the installer** | Works offline immediately; installer grows ~466 MB (accepted). |
 | Recording | **Toggle** (click to start, click to stop) | User choice. |
@@ -42,7 +42,7 @@ live there). Audio crosses one IPC hop; text comes back over another.
       |                     |  (IPC: voice:transcribe)
       |                     v
       |              [transcriber]  main process
-      |                     |  nodejs-whisper + ggml-small.bin
+      |                     |  smart-whisper + ggml-small.bin
       |                     v
       |              text: string  (IPC reply)
       |                     |
@@ -81,7 +81,7 @@ Type added to `src/global.d.ts` alongside the existing `window.ccsm` surface.
 | `useVoiceRecorder` (`src/components/voice/useVoiceRecorder.ts`) | renderer | Own the state machine + Web Audio capture; produce 16 kHz mono `Float32Array`; call `transcribe`; hand text to injector. | Web Audio, `window.ccsm.voice`, `pasteIntoActivePty` |
 | `ccsmVoice` bridge (`electron/preload/bridges/ccsmVoice.ts`) | preload | Expose `voice.transcribe` over `ipcRenderer.invoke('voice:transcribe', pcm)`. | ipcRenderer |
 | `voiceIpc` (`electron/ipc/voiceIpc.ts`) | main | Handle `voice:transcribe`; validate payload; call transcriber; return `VoiceResult`. | transcriber |
-| `transcriber` (`electron/voice/transcriber.ts`) | main | Lazy-load `nodejs-whisper` + resolve model path; run transcription; map failures to `VoiceResult` errors. | nodejs-whisper, model file, `app.getAppPath` |
+| `transcriber` (`electron/voice/transcriber.ts`) | main | Lazy-load `smart-whisper` + resolve model path; run transcription; map failures to `VoiceResult` errors. | smart-whisper, model file, `app.getAppPath` |
 
 ## State machine (recorder)
 
@@ -123,7 +123,7 @@ invoking Whisper.
   `resources/models/` (run once locally before `npm run dev`, and in CI before
   `make`). `.gitignore` excludes `resources/models/*.bin`. So: bundled in the
   shipped app = yes; tracked in the repo = no.
-- `nodejs-whisper` itself is a native module → add to the `postinstall` rebuild
+- `smart-whisper` itself is a native module → add to the `postinstall` rebuild
   list and `asarUnpack`, exactly like `node-pty`/`better-sqlite3`.
 
 ## Error handling
@@ -176,4 +176,4 @@ New keys under a `voice` namespace in both `src/i18n/locales/en.ts` and
 
 Per `CLAUDE.md`: `npm run typecheck`, `npm run lint`, `npm test` must pass, plus
 the manual dev-run check above. Native rebuild (`npm install`) must succeed with
-`nodejs-whisper` added.
+`smart-whisper` added.
