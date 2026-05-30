@@ -14,7 +14,9 @@ export function resampleTo16k(input: Float32Array, inputRate: number): Float32Ar
     const i0 = Math.floor(srcPos);
     const i1 = Math.min(i0 + 1, input.length - 1);
     const frac = srcPos - i0;
-    out[i] = input[i0] * (1 - frac) + input[i1] * frac;
+    const s0 = input[i0] ?? 0;
+    const s1 = input[i1] ?? 0;
+    out[i] = s0 * (1 - frac) + s1 * frac;
   }
   return out;
 }
