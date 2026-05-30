@@ -51,7 +51,7 @@ shows what got paid down).
 | 15 | `electron/__tests__/db-hardening.test.ts:172` has `it.todo` placeholder for SCHEMA_VERSION ≥2 migration test — un-block when v2 lands | OPEN | S | LOW | (file) |
 | 16 | `vitest.config.ts` lacks `retry: 1` — no flake guard. Currently no observed flakes, so leave as nil-debt; revisit if any case starts to flake | OPEN | S | LOW | `vitest.config.ts` |
 | 19 | `npm audit` (2026-05-29, official registry): 3 moderate vulns, all **dev-only** — `uuid` <11.1.1 (buffer bounds) via `sockjs` → `webpack-dev-server`. Not in the production dependency tree (does not ship in the packaged app). Fix requires `npm audit fix --force` (breaking `webpack-dev-server` downgrade), so deferred until a webpack-dev-server major bump clears it cleanly | OPEN | S | LOW | `package-lock.json` (devDeps) |
-| 20 | `ci.yml` `paths-ignore: ['**.md', ...]` skips required status checks for doc-only PRs, but branch protection requires those same checks → doc-only PRs hit a permanent merge deadlock (must `--admin` merge or fold into a code PR). Fix: add a tiny always-passing `docs` job that branch protection accepts, or drop `**.md` from `paths-ignore` and let the cheap jobs run | OPEN | S | LOW | `.github/workflows/ci.yml` |
+| 20 | `ci.yml` `paths-ignore: ['**.md', ...]` skipped required status checks for doc-only PRs, but branch protection requires those same checks → doc-only PRs hit a permanent merge deadlock. **DONE** (this PR): removed `paths-ignore` from `ci.yml` so the three required `lint + typecheck + test (*)` contexts always report; doc-only PRs run against the warm `node_modules` cache so the cost is just the cheap lint/type/test pass. | DONE | S | LOW | `.github/workflows/ci.yml` |
 
 ---
 
@@ -92,6 +92,7 @@ shows what got paid down).
 | 4 | God-file split: `log.ts` 637→399 | [#1430](https://github.com/Jiahui-Gu/ccsm/pull/1430) | `bc62cdc` |
 | 4 | God-file split: `mobileRemoteServer.ts` 580→155 | [#1432](https://github.com/Jiahui-Gu/ccsm/pull/1432) | `b189692` |
 | 4 | God-file split: `sessionCrudSlice.ts` 622→63 | [#1431](https://github.com/Jiahui-Gu/ccsm/pull/1431) | `b20c9da` |
+| 20 | `ci.yml` `paths-ignore` deadlocked doc-only PRs against required checks — removed the filter | (this PR) | — |
 
 ---
 
