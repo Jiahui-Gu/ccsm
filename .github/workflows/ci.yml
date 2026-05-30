@@ -1,13 +1,13 @@
 name: CI
 
 on:
+  # No paths-ignore: branch protection requires the three
+  # `lint + typecheck + test (*)` contexts this workflow produces. A path
+  # filter that skips the workflow leaves those required contexts pending
+  # forever, deadlocking doc-only PRs (DEBT.md #20). Jobs run against a warm
+  # node_modules cache, so doc-only PRs pay only the cheap lint/type/test pass.
   pull_request:
     branches: [main]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'LICENSE'
-      - '.gitignore'
   workflow_dispatch:
 
 concurrency:
