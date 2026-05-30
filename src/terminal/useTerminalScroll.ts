@@ -12,10 +12,24 @@ import { getTopShell } from './shellRegistry';
 //
 // This hook reads xterm's buffer geometry directly and projects a thumb
 // position. There is no reverse sync — the thumb is a *pure function* of
-// the buffer state, so it can never desync. We re-read on the same event
-// set `useAtBottom` uses (`onScroll` + `onLineFeed`) plus `onResize`
-// (track-height / rows change on fit). Drag / track-click translate back
-// to `term.scrollToLine` / `term.scrollLines` against the same buffer.
+// the buffer state, so it can never desync.
+//
+// We sample `buffer.active.{viewportY, baseY}` + `term.rows` on a
+// requestAnimationFrame loop instead of subscribing to discrete xterm
+// events (`onScroll` / `onLineFeed` / `onResize` / `onRender`). The thumb
+// is then bound to `viewportY` — xterm's single source of truth — so it
+// follows EVERY input that moves the viewport, not just the ones that
+// happen to emit an event. This matters because mouse-wheel and
+// middle-mouse-button scrolling change `viewportY` but do NOT emit
+// `onScroll` (the wheel path goes through DOM scroll + repaint); chasing
+// those with extra event subscriptions is whack-a-mole. One rAF sampling
+// binding covers wheel, middle-mouse, drag, keyboard, PgUp/PgDn, and CLI
+// output uniformly. Drag / track-click translate back to
+// `term.scrollToLine` / `term.scrollLines` against the same buffer.
+//
+// The loop is cheap when idle: it reads 3 numbers, compares them against
+// the last-pushed geometry, and bails without `setState` when nothing
+// moved — so it does not re-render every frame.
 //
 // All geometry is in the pure functions below, exported for unit tests.
 
@@ -119,29 +133,38 @@ export function useTerminalScroll(
   });
 
   useEffect(() => {
-    const recompute = (): void => {
+    let rafId = 0;
+    // Last geometry we pushed to React state. Seeded to `null` so the very
+    // first sample always commits (even if it's the hidden/empty state),
+    // then used as the no-op guard so idle frames don't call setState.
+    let lastGeom: ScrollGeometry | null = null;
+
+    const sameGeom = (a: ScrollGeometry, b: ScrollGeometry): boolean =>
+      a.visible === b.visible &&
+      a.thumbTop === b.thumbTop &&
+      a.thumbHeight === b.thumbHeight;
+
+    const tick = (): void => {
       const buf = readBuffer();
-      if (!buf) {
-        setGeom({ visible: false, thumbTop: 0, thumbHeight: 0 });
-        return;
+      // `buf` is null until the top shell's xterm Terminal exists (cold
+      // start). Project the hidden state and keep sampling — once the term
+      // mounts, the next frame picks up real geometry. This folds the old
+      // "terminal not ready yet" rAF-retry into the same loop.
+      const next = buf
+        ? computeThumb(buf, trackHeight)
+        : { visible: false, thumbTop: 0, thumbHeight: 0 };
+      // No-op guard: read 3 numbers, compare against the last pushed geom,
+      // and only setState when something actually moved. Idle frames cost
+      // a buffer read + 3 comparisons, no re-render.
+      if (lastGeom === null || !sameGeom(lastGeom, next)) {
+        lastGeom = next;
+        setGeom(next);
       }
-      setGeom(computeThumb(buf, trackHeight));
+      rafId = requestAnimationFrame(tick);
     };
 
-    const term = getTopShell()?.term;
-    if (!term) {
-      const id = requestAnimationFrame(recompute);
-      return () => cancelAnimationFrame(id);
-    }
-    recompute();
-    const scrollDisposable = term.onScroll(recompute);
-    const lineFeedDisposable = term.onLineFeed(recompute);
-    const resizeDisposable = term.onResize(recompute);
-    return () => {
-      scrollDisposable.dispose();
-      lineFeedDisposable.dispose();
-      resizeDisposable.dispose();
-    };
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
   }, [sessionId, trackHeight]);
 
   return {
