@@ -18,3 +18,25 @@ export function resolveModelPath(): string {
   if (process.resourcesPath && fs.existsSync(packaged)) return packaged;
   return path.join(app.getAppPath(), 'resources', 'models', MODEL_FILENAME);
 }
+
+export async function transcribe(pcm: Float32Array): Promise<VoiceResult> {
+  const modelPath = resolveModelPath();
+  if (!fs.existsSync(modelPath)) return { ok: false, error: 'no-model' };
+  const { Whisper } = await import('smart-whisper');
+  const whisper = new Whisper(modelPath, { gpu: false });
+  try {
+    const task = await whisper.transcribe(pcm, { language: 'auto' });
+    const segments = await task.result;
+    const text = segments.map((s) => s.text).join('').trim();
+    if (!text) return { ok: false, error: 'empty' };
+    return { ok: true, text };
+  } catch {
+    return { ok: false, error: 'transcribe-failed' };
+  } finally {
+    try {
+      await whisper.free();
+    } catch {
+      /* best-effort cleanup */
+    }
+  }
+}
