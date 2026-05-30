@@ -18,6 +18,7 @@ release/
 docs/screenshots/dogfood-current-ui/
 docs/screenshots/dogfood-happy-path/
 *.exe
+!resources/whisper-bin/whisper-cli.exe
 *.dmg
 *.AppImage
 *.deb
