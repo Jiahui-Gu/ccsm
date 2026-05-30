@@ -33,6 +33,49 @@ import {
   waitForTerminalReady,
   dismissFirstRunModals,
 } from './probe-utils-real-cli.mjs';
+import { startFakeAnthropicApi } from './fixtures/fake-anthropic-api.mjs';
+import { writeFileSync } from 'node:fs';
+import * as path from 'node:path';
+
+// Seed claude's onboarding state into the isolated tempDir so the spawned
+// CLI talks to the fake Anthropic API (wired via ANTHROPIC_BASE_URL below)
+// and never the real one. The empty `{}` settings.json/settings.local.json
+// overwrite the copies createIsolatedClaudeDir() lifts from the real
+// ~/.claude — dropping any ANTHROPIC_AUTH_TOKEN / proxy config that would
+// otherwise route to a live endpoint. Shape mirrors
+// harness-e2e-session-lifecycle.mjs#seedOnboarding.
+function seedOnboarding(tempDir) {
+  const trustedEntry = {
+    allowedTools: [],
+    mcpContextUris: [],
+    mcpServers: {},
+    enabledMcpjsonServers: [],
+    disabledMcpjsonServers: [],
+    hasClaudeMdExternalIncludesApproved: false,
+    hasClaudeMdExternalIncludesWarningShown: false,
+    hasTrustDialogAccepted: true,
+    projectOnboardingSeenCount: 1,
+  };
+  const projects = {};
+  projects[tempDir] = trustedEntry;
+  const tempDirFwd = tempDir.replace(/\\/g, '/');
+  if (tempDirFwd !== tempDir) projects[tempDirFwd] = trustedEntry;
+  writeFileSync(
+    path.join(tempDir, '.claude.json'),
+    JSON.stringify(
+      {
+        hasCompletedOnboarding: true,
+        bypassPermissionsModeAccepted: true,
+        customApiKeyResponses: { approved: ['fake-ci-key'] },
+        projects,
+      },
+      null,
+      2,
+    ),
+  );
+  writeFileSync(path.join(tempDir, 'settings.json'), '{}');
+  writeFileSync(path.join(tempDir, 'settings.local.json'), '{}');
+}
 
 const STEPS = [1, 10, 50, 200, 800];
 
@@ -43,7 +86,16 @@ function fail(msg) {
 
 async function main() {
   const { tempDir } = await createIsolatedClaudeDir();
-  const { electronApp, win } = await launchCcsmIsolated({ tempDir });
+  seedOnboarding(tempDir);
+  const fakeApi = await startFakeAnthropicApi({ port: 0, verbose: false });
+  console.log(`[harness-ime-overflow] fake Anthropic API at ${fakeApi.url}`);
+  const { electronApp, win } = await launchCcsmIsolated({
+    tempDir,
+    env: {
+      ANTHROPIC_BASE_URL: fakeApi.url,
+      ANTHROPIC_API_KEY: 'fake-ci-key',
+    },
+  });
 
   try {
     await win.waitForFunction(
@@ -190,6 +242,7 @@ async function main() {
     }
   } finally {
     try { await electronApp.close(); } catch (_) { /* ignore */ }
+    try { await fakeApi.stop(); } catch (_) { /* ignore */ }
   }
 }
 
