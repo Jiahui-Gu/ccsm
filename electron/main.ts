@@ -30,7 +30,8 @@ import { initDb, closeDb } from './db';
 import { buildTrayIcon } from './branding/icon';
 import { initSentry } from './sentry/init';
 import { initLog, log, normalizeError, syncPersistedLevelFromDb } from './shared/log';
-import { createWindow as createMainWindowFactory, installContextMenuSuppressIpc } from './window/createWindow';
+import { createWindow as createMainWindowFactory } from './window/createWindow';
+import { installContextMenuSuppressIpc } from './window/contextMenu';
 import { createTray, type TrayController } from './tray/createTray';
 
 // Initialize structured logger before anything else. Idempotent; safe to
