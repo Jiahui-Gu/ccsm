@@ -112,6 +112,7 @@ function runRebuild(moduleName, { allowFailure } = { allowFailure: false }) {
 
 runRebuild('better-sqlite3', { allowFailure: false });
 runRebuild('node-pty', { allowFailure: true });
+runRebuild('smart-whisper', { allowFailure: false });
 
 function printHint() {
   console.error('');
