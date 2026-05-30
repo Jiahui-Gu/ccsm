@@ -237,3 +237,11 @@ export function useToast() {
   if (!ctx) throw new Error('useToast must be used inside <ToastProvider>');
   return ctx;
 }
+
+// Non-throwing variant: returns null when no <ToastProvider> is mounted.
+// Used by chrome that can be rendered bare in e2e probes / harnesses (e.g.
+// <TerminalPane> in component tests) where toasts are a nice-to-have, not a
+// hard dependency — the component degrades to no feedback instead of crashing.
+export function useToastOptional() {
+  return useContext(Ctx);
+}
