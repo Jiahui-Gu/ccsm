@@ -88,10 +88,13 @@ export async function handleClientMessage(client: WsClient, raw: string): Promis
       client.send({ type: 'error', message: 'invalid_resize' });
       return;
     }
-    // Clamp to a sane floor; a 0/1-column PTY breaks line wrapping in the CLI.
-    const cols = Math.max(2, message.cols as number);
-    const rows = Math.max(2, message.rows as number);
-    resizePtySession(message.sid, cols, rows);
+    // Dimension policy (floor/ceiling) lives in `lifecycle.resize` via
+    // `normalizeResizeDims` — shared with the desktop path so an identical
+    // resize behaves identically regardless of transport. The Number.isInteger
+    // check above stays: it is wire-shape validation (the client contract
+    // depends on the `invalid_resize` reply for malformed input), distinct
+    // from dimension policy. Forward the raw integers.
+    resizePtySession(message.sid, message.cols as number, message.rows as number);
     return;
   }
 
