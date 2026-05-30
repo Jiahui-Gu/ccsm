@@ -309,6 +309,25 @@ describe('mobileRemoteServer: HTTP token auth', () => {
   });
 });
 
+describe('mobileRemoteServer: PWA manifest', () => {
+  it('rejects the manifest without a token (401)', async () => {
+    active = await startServer();
+    const res = await httpGet(active.port, '/manifest.webmanifest');
+    expect(res.status).toBe(401);
+  });
+
+  it('serves a standalone manifest with the correct token', async () => {
+    active = await startServer();
+    const res = await httpGet(active.port, `/manifest.webmanifest?token=${active.token}`);
+    expect(res.status).toBe(200);
+    const manifest = JSON.parse(res.body);
+    expect(manifest.display).toBe('standalone');
+    // start_url must carry the session token so an installed icon reconnects
+    // authenticated.
+    expect(manifest.start_url).toBe(`/?token=${active.token}`);
+  });
+});
+
 describe('mobileRemoteServer: WebSocket token auth', () => {
   it('rejects upgrade without a token', async () => {
     active = await startServer();

@@ -2,7 +2,7 @@ import * as crypto from 'crypto';
 import * as http from 'http';
 import { onPtyData } from '../ptyHost';
 import { renderMobilePage } from './mobilePage';
-import { HOST, parseRequestUrl, resolvePort, sendHtml, sendText, tokenMatches } from './remoteHttp';
+import { HOST, parseRequestUrl, resolvePort, sendHtml, sendJson, sendText, tokenMatches } from './remoteHttp';
 import { handleClientMessage, listEntries, listSignature } from './remoteMessages';
 import {
   buildUpgradeResponse,
@@ -41,6 +41,26 @@ export function startMobileRemoteServer(): MobileRemoteServer | null {
         return;
       }
       sendHtml(res, renderMobilePage());
+      return;
+    }
+
+    if (url.pathname === '/manifest.webmanifest') {
+      if (!tokenMatches(url.searchParams.get('token'), token)) {
+        sendText(res, 401, 'Unauthorized');
+        return;
+      }
+      // start_url carries the same session token so a home-screen icon
+      // reconnects authenticated. No new secret — it's the token already in
+      // the URL the user loaded.
+      sendJson(res, {
+        name: 'CCSM Remote',
+        short_name: 'CCSM',
+        display: 'standalone',
+        background_color: '#0b1020',
+        theme_color: '#0b1020',
+        start_url: `/?token=${token}`,
+        scope: '/',
+      });
       return;
     }
 
