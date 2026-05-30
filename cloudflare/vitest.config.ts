@@ -6,6 +6,19 @@ export default defineWorkersConfig({
       workers: {
         wrangler: { configPath: "./wrangler.toml" },
         miniflare: {
+          // Pin the *test* runtime to a compatibility date before workerd made
+          // the SQLite storage backend the default for Durable Objects
+          // (2024-09-23). The SQLite backend opens its DB in WAL mode, leaving
+          // ".sqlite-wal"/".sqlite-shm" sidecars in the DO persist dir; the
+          // pool's isolated-storage push/pop asserts every file there ends in
+          // ".sqlite" and throws "Expected .sqlite, got …-shm". The classic
+          // (blob/KV) backend used at this date writes a single ".sqlite"
+          // metadata file with no sidecars, so isolated storage works. This
+          // only affects the miniflare test harness — production deploy keeps
+          // wrangler.toml's compatibility_date. The worker relies only on
+          // crypto.subtle, WebSocketPair, and fetch/Response, all available at
+          // this date with nodejs_compat.
+          compatibilityDate: "2024-01-01",
           compatibilityFlags: ["nodejs_compat"],
           bindings: {
             OAUTH_REDIRECT_URI:
