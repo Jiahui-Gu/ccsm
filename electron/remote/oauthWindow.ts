@@ -13,7 +13,10 @@ export function runOauthPopup(opts: {
 }): Promise<{ authCode: string }> {
   // Lazy electron import so this module is testable in plain Node.
   const electron =
-    opts.createWindow && opts.ipcMain ? null : (require('electron') as typeof import('electron'));
+    opts.createWindow && opts.ipcMain
+      ? null
+      : // eslint-disable-next-line @typescript-eslint/no-require-imports
+        (require('electron') as typeof import('electron'));
   const make = opts.createWindow ?? ((o) => new electron!.BrowserWindow(o));
   const ipc = opts.ipcMain ?? electron!.ipcMain;
   const timeoutMs = opts.timeoutMs ?? 120_000;

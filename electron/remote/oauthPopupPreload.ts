@@ -12,7 +12,7 @@ Object.defineProperty(window, 'opener', {
   value: {
     postMessage: (msg: unknown) => {
       // Only forward from the trusted Worker origin.
-      if (!location.origin.startsWith(WORKER_ORIGIN_PREFIX)) return;
+      if (!window.location.origin.startsWith(WORKER_ORIGIN_PREFIX)) return;
       ipcRenderer.send('mobileRemote:oauthMessage', msg);
     },
   },
