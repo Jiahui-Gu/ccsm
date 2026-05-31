@@ -11,6 +11,10 @@ compatibility_flags = ["nodejs_compat"]
 name = "PAIRING"                    # env.PAIRING -> DurableObjectNamespace
 class_name = "PairingDurableObject"
 
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["PairingDurableObject"]
