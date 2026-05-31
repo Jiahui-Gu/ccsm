@@ -11,6 +11,13 @@ class_name = "PairingDurableObject"
 tag = "v1"
 new_sqlite_classes = ["PairingDurableObject"]
 
+# v3 drops the leftover TunnelDO + UserDO from the old cf-worker/Tauri tunnel arch
+# (removed from this repo; replaced by PairingDurableObject WebRTC signaling).
+# Tag is deliberately past the live ledger's "v2" so wrangler applies only this step.
+[[migrations]]
+tag = "v3-drop-tunneldo"
+deleted_classes = ["TunnelDO", "UserDO"]
+
 # Public config (safe to commit)
 [vars]
 OAUTH_REDIRECT_URI = "https://ccsm-worker.jiahuigu.workers.dev/auth/github/callback"
