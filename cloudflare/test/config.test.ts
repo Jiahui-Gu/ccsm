@@ -47,4 +47,21 @@ describe("loadConfig", () => {
     expect(cfg.turnKeyId).toBe("kid");
     expect(cfg.turnKeyApiToken).toBe("ktok");
   });
+
+  it("falls back to the default allowed origin when PUBLIC_ORIGIN is unset", () => {
+    const cfg = loadConfig(baseEnv());
+    expect(cfg.allowedOrigins).toEqual([
+      "https://ccsm-worker.jiahuigu.workers.dev",
+    ]);
+  });
+
+  it("reads allowed origins from PUBLIC_ORIGIN (comma-separated) when set", () => {
+    const env = baseEnv();
+    env.PUBLIC_ORIGIN = "https://ccsm.example.com, https://pwa.example.com";
+    const cfg = loadConfig(env);
+    expect(cfg.allowedOrigins).toEqual([
+      "https://ccsm.example.com",
+      "https://pwa.example.com",
+    ]);
+  });
 });

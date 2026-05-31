@@ -10,8 +10,8 @@ const cfg = {
   stunUrls: ["stun:stun.cloudflare.com:3478"],
 } as Config;
 
-function post(body: unknown): Request {
-  return new Request("https://x/auth/session", {
+function post(body: unknown, host = "ccsm-worker.jiahuigu.workers.dev"): Request {
+  return new Request(`https://${host}/auth/session`, {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -50,5 +50,17 @@ describe("session", () => {
     expect(body.iceServers[0].urls).toEqual(["stun:stun.cloudflare.com:3478"]);
     const claims = await verifyJwt(secret, body.token);
     expect(claims).toMatchObject({ typ: "session", userHash: "deadbeef" });
+  });
+
+  it("derives doUrl from the inbound request host (self-configuring)", async () => {
+    const authCode = await signJwt(secret, {
+      typ: "auth_code",
+      userHash: "deadbeef",
+      exp: nowSec() + 60,
+    });
+    const res = await handleSession(post({ authCode }, "ccsm.example.com"), cfg);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { doUrl: string };
+    expect(body.doUrl).toBe("wss://ccsm.example.com/do/deadbeef");
   });
 });

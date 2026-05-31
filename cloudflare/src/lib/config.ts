@@ -7,6 +7,9 @@ export interface Env {
   ROOM_TTL_SECONDS: string;
   TURN_URLS: string;
   STUN_URLS: string;
+  // optional: comma-separated CORS allowlist; absence falls back to the
+  // current deploy's public origin (back-compat with the existing deploy).
+  PUBLIC_ORIGIN?: string;
   // secrets (already put on ccsm-worker)
   GITHUB_OAUTH_CLIENT_ID: string;
   GITHUB_OAUTH_CLIENT_SECRET: string;
@@ -28,6 +31,19 @@ export interface Config {
   stunUrls: string[];
   turnKeyId?: string;
   turnKeyApiToken?: string;
+  allowedOrigins: string[];
+}
+
+// Back-compat fallback for the existing ccsm-worker deploy when PUBLIC_ORIGIN
+// is not set. Keep in sync with the live worker's public origin.
+export const DEFAULT_ALLOWED_ORIGIN = "https://ccsm-worker.jiahuigu.workers.dev";
+
+// Resolve the CORS allowlist from env without requiring secrets to be present
+// (used by the OPTIONS preflight path, which runs before loadConfig).
+export function resolveAllowedOrigins(env: Env): string[] {
+  const raw = typeof env.PUBLIC_ORIGIN === "string" ? env.PUBLIC_ORIGIN : "";
+  const list = raw.split(",").map((s) => s.trim()).filter(Boolean);
+  return list.length > 0 ? list : [DEFAULT_ALLOWED_ORIGIN];
 }
 
 export function loadConfig(env: Env): Config {
@@ -43,6 +59,7 @@ export function loadConfig(env: Env): Config {
     return typeof v === "string" && v.length > 0 ? v : undefined;
   };
   const enc = new TextEncoder();
+  const allowedOrigins = resolveAllowedOrigins(env);
   return {
     githubClientId: need("GITHUB_OAUTH_CLIENT_ID"),
     githubClientSecret: need("GITHUB_OAUTH_CLIENT_SECRET"),
@@ -55,5 +72,6 @@ export function loadConfig(env: Env): Config {
     stunUrls: need("STUN_URLS").split(",").map((s) => s.trim()).filter(Boolean),
     turnKeyId: opt("TURN_KEY_ID"),
     turnKeyApiToken: opt("TURN_KEY_API_TOKEN"),
+    allowedOrigins,
   };
 }
