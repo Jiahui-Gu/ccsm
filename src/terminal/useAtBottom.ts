@@ -16,12 +16,15 @@ import { getTopShell } from './shellRegistry';
 // every burst of output even though the user is effectively at bottom).
 //
 // We re-read on `onScroll` (xterm fires this for both user scroll and
-// programmatic scroll caused by new output) and on `onLineFeed` (covers
+// programmatic scroll caused by new output), on `onLineFeed` (covers
 // the case where output advances `baseY` without changing `viewportY` —
 // e.g. user scrolled up, new lines keep streaming; xterm bumps baseY but
-// no scroll event fires). The hook reads the registry's top shell
-// (z-stack path — see `shellRegistry.ts` / `usePtyAttachShell.ts`) so
-// the listeners attach to whichever Terminal is currently in the foreground.
+// no scroll event fires), and on `onRender` (covers wheel scroll, which
+// moves `viewportY` but fires no `onScroll` — xterm passes
+// `suppressScrollEvent=true` on its wheel path). The hook reads the
+// registry's top shell (z-stack path — see `shellRegistry.ts` /
+// `usePtyAttachShell.ts`) so the listeners attach to whichever Terminal
+// is currently in the foreground.
 //
 // Returns a stable `atBottom` boolean and a `scrollToBottom` function
 // that delegates to xterm's public API.
@@ -50,9 +53,14 @@ export function useAtBottom(sessionId: string | null): AtBottomState {
     recompute();
     const scrollDisposable = term.onScroll(recompute);
     const lineFeedDisposable = term.onLineFeed(recompute);
+    // Wheel scroll moves viewportY without firing onScroll (xterm passes
+    // suppressScrollEvent=true on the wheel path), so the button would miss
+    // a wheel-up off the bottom. onRender fires on that repaint (#82).
+    const renderDisposable = term.onRender(recompute);
     return () => {
       scrollDisposable.dispose();
       lineFeedDisposable.dispose();
+      renderDisposable.dispose();
     };
   }, [sessionId]);
 

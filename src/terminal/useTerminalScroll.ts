@@ -12,10 +12,11 @@ import { getTopShell } from './shellRegistry';
 //
 // This hook reads xterm's buffer geometry directly and projects a thumb
 // position. There is no reverse sync — the thumb is a *pure function* of
-// the buffer state, so it can never desync. We re-read on the same event
-// set `useAtBottom` uses (`onScroll` + `onLineFeed`) plus `onResize`
-// (track-height / rows change on fit). Drag / track-click translate back
-// to `term.scrollToLine` / `term.scrollLines` against the same buffer.
+// the buffer state, so it can never desync. We re-read on `onScroll` +
+// `onLineFeed` + `onResize` (fit) and `onRender` — the last catches wheel
+// scroll, which moves `viewportY` but fires no `onScroll` (xterm passes
+// `suppressScrollEvent=true` on its wheel path). Drag / track-click
+// translate back to `term.scrollToLine` / `term.scrollLines`.
 //
 // All geometry is in the pure functions below, exported for unit tests.
 
@@ -137,10 +138,16 @@ export function useTerminalScroll(
     const scrollDisposable = term.onScroll(recompute);
     const lineFeedDisposable = term.onLineFeed(recompute);
     const resizeDisposable = term.onResize(recompute);
+    // Wheel scroll moves viewportY but xterm suppresses onScroll for it
+    // (Viewport.handleWheel → scrollLines(amount, suppressScrollEvent=true)),
+    // so onScroll/onLineFeed/onResize all miss it and the thumb freezes (#82).
+    // onRender fires on the wheel-driven repaint, re-syncing the thumb.
+    const renderDisposable = term.onRender(recompute);
     return () => {
       scrollDisposable.dispose();
       lineFeedDisposable.dispose();
       resizeDisposable.dispose();
+      renderDisposable.dispose();
     };
   }, [sessionId, trackHeight]);
 
