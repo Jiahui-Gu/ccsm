@@ -96,7 +96,7 @@ import { createSessionStore } from './remote/sessionStore';
 import { createOauthTokenProvider } from './remote/oauthTokenProvider';
 import { registerMobileRemoteIpc } from './ipc/mobileRemoteIpc';
 import { loginWithGithub, fetchSession } from './remote/oauthLogin';
-import { runOauthPopup } from './remote/oauthWindow';
+import { runOauthLoopback } from './remote/oauthLoopback';
 import { MOBILE_REMOTE_CHANNELS } from './shared/ipcChannels';
 import nodePath from 'node:path';
 import {
@@ -366,9 +366,8 @@ app.whenReady().then(async () => {
       loginWithGithub({
         workerOrigin: WORKER_ORIGIN,
         runPopup: () =>
-          runOauthPopup({
+          runOauthLoopback({
             workerOrigin: WORKER_ORIGIN,
-            parent: BrowserWindow.getAllWindows()[0] ?? undefined,
           }),
         fetchSession,
         store: mobileRemoteSessionStore,
