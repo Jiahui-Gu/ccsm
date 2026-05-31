@@ -4,6 +4,7 @@ import { loadConfig, type Env } from "../src/lib/config";
 function baseEnv(): Env {
   return {
     PAIRING: {} as Env["PAIRING"],
+    ASSETS: {} as Env["ASSETS"],
     OAUTH_REDIRECT_URI: "https://x/cb",
     SESSION_TTL_SECONDS: "900",
     TURN_TTL_SECONDS: "600",
