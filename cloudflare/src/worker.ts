@@ -1,5 +1,6 @@
 import { loadConfig, type Env } from "./lib/config";
 import { handleOauthStart } from "./routes/oauthStart";
+import { handleOauthLogin } from "./routes/oauthLogin";
 import { handleOauthCallback } from "./routes/oauthCallback";
 import { handleSession } from "./routes/session";
 import { handleTurnCred } from "./routes/turnCred";
@@ -21,6 +22,8 @@ export default {
     try {
       if (req.method === "GET" && pathname === "/auth/github/start") {
         res = await handleOauthStart(req, cfg);
+      } else if (req.method === "GET" && pathname === "/auth/github/login") {
+        res = await handleOauthLogin(req, cfg);
       } else if (req.method === "GET" && pathname === "/auth/github/callback") {
         res = await handleOauthCallback(req, cfg);
       } else if (req.method === "POST" && pathname === "/auth/session") {
@@ -29,6 +32,8 @@ export default {
         res = await handleTurnCred(req, cfg);
       } else if (req.method === "GET" && pathname.startsWith("/do/")) {
         res = await handleDoProxy(req, env, cfg, pathname.slice("/do/".length));
+      } else if (req.method === "GET") {
+        res = await env.ASSETS.fetch(req);
       } else {
         res = new Response("not found", { status: 404 });
       }

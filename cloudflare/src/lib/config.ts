@@ -13,6 +13,7 @@ export interface Env {
   JWT_SIGNING_KEY: string; // HMAC userHash + JWT signing (was SERVER_SECRET)
   TURN_KEY_ID?: string; // optional: PR-1 does not configure TURN (see turnCred)
   TURN_KEY_API_TOKEN?: string; // optional: same
+  ASSETS: Fetcher; // static-asset binding for the phone PWA (wrangler [assets])
 }
 
 export interface Config {
