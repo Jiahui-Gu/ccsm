@@ -173,15 +173,29 @@ const WORKER_ORIGIN =
   process.env.CCSM_MOBILE_REMOTE_WORKER ?? 'https://ccsm-worker.jiahuigu.workers.dev';
 let mobileRemoteTokenProvider: ReturnType<typeof createOauthTokenProvider> | null = null;
 
-function restartMobileRemote() {
+// Bumped on every restart so a slow ICE fetch from a superseded login/logout
+// can't overwrite the disposer of a newer one (fast login→logout toggle).
+let mobileRemoteGen = 0;
+
+async function restartMobileRemote() {
+  const gen = ++mobileRemoteGen;
   try {
     mobileRemote?.close();
   } catch (err) {
     console.warn('[main] restart close threw', err);
   }
-  mobileRemote = mobileRemoteTokenProvider
-    ? startMobileRemote({ tokenProvider: mobileRemoteTokenProvider })
-    : null;
+  mobileRemote = null;
+  if (!mobileRemoteTokenProvider) return;
+  const handle = await startMobileRemote({
+    tokenProvider: mobileRemoteTokenProvider,
+    workerOrigin: WORKER_ORIGIN,
+  });
+  if (gen !== mobileRemoteGen) {
+    // A newer restart superseded us while ICE was being fetched; discard.
+    handle?.close();
+    return;
+  }
+  mobileRemote = handle;
 }
 const badgeController = new BadgeController(() => badgeManager);
 
@@ -228,7 +242,7 @@ function getTray(): Tray | null {
   return trayController?.tray ?? null;
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // On Windows, set a stable AppUserModelID so the OS attributes the app to
   // its taskbar / Start Menu entry instead of generic "electron.exe".
   if (process.platform === 'win32') {
@@ -360,7 +374,10 @@ app.whenReady().then(() => {
         store: mobileRemoteSessionStore,
       }),
   });
-  mobileRemote = startMobileRemote({ tokenProvider: mobileRemoteTokenProvider });
+  mobileRemote = await startMobileRemote({
+    tokenProvider: mobileRemoteTokenProvider,
+    workerOrigin: WORKER_ORIGIN,
+  });
 
   // ─────────────────────── notify pipeline (Phase C, #689) ───────────────
   // BadgeManager is bumped via `onNotified` to update the tray/dock badge.

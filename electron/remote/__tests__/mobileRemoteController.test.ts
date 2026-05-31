@@ -23,9 +23,11 @@ const fakeSignaling: SignalingClient = {
   onOffer: () => {}, onRemoteIce: () => {}, sendAnswer: () => {}, sendIce: () => {}, close: () => {},
 };
 
+const GOOGLE_STUN = [{ urls: 'stun:stun.l.google.com:19302' }];
+
 describe('startMobileRemote', () => {
-  it('returns null when not logged in (token provider yields null)', () => {
-    const handle = startMobileRemote({
+  it('returns null when not logged in (token provider yields null)', async () => {
+    const handle = await startMobileRemote({
       tokenProvider: () => null,
       createSignaling: () => fakeSignaling,
       createPeer: () => ({ close: () => {} }),
@@ -33,11 +35,24 @@ describe('startMobileRemote', () => {
     expect(handle).toBeNull();
   });
 
-  it('builds the DO url with the token query and wires signaling into the peer', () => {
+  it('does not fetch ICE when logged out', async () => {
+    const fetchIce = vi.fn(async () => [{ urls: 'turn:x' }]);
+    const handle = await startMobileRemote({
+      tokenProvider: () => null,
+      fetchIce,
+      createSignaling: () => fakeSignaling,
+      createPeer: () => ({ close: () => {} }),
+    });
+    expect(handle).toBeNull();
+    expect(fetchIce).not.toHaveBeenCalled();
+  });
+
+  it('builds the DO url with the token query and wires signaling into the peer', async () => {
     const createSignaling = vi.fn(() => fakeSignaling);
     const createPeer = vi.fn(() => ({ close: () => {} }));
-    const handle = startMobileRemote({
+    const handle = await startMobileRemote({
       tokenProvider: () => ({ token: 'JWT', doUrl: 'wss://w.example.dev/do/HASH' }),
+      fetchIce: async () => null,
       createSignaling,
       createPeer,
     });
@@ -50,14 +65,73 @@ describe('startMobileRemote', () => {
     );
   });
 
-  it('close() disposes the peer', () => {
+  it('close() disposes the peer', async () => {
     const close = vi.fn();
-    const handle = startMobileRemote({
+    const handle = await startMobileRemote({
       tokenProvider: () => ({ token: 'JWT', doUrl: 'wss://w.example.dev/do/HASH' }),
+      fetchIce: async () => null,
       createSignaling: () => fakeSignaling,
       createPeer: () => ({ close }),
     });
     handle!.close();
     expect(close).toHaveBeenCalled();
+  });
+
+  it('uses Worker-fetched ICE servers when fetchIce resolves a non-empty array', async () => {
+    const fetched = [
+      { urls: 'stun:stun.cloudflare.com:3478' },
+      { urls: 'turn:turn.example:3478', username: 'u', credential: 'c' },
+    ];
+    const createPeer = vi.fn(() => ({ close: () => {} }));
+    await startMobileRemote({
+      tokenProvider: () => ({ token: 'JWT', doUrl: 'wss://w.example.dev/do/HASH' }),
+      workerOrigin: 'https://w.example.dev',
+      fetchIce: async () => fetched,
+      createSignaling: () => fakeSignaling,
+      createPeer,
+    });
+    expect(createPeer).toHaveBeenCalledWith(expect.objectContaining({ iceServers: fetched }));
+  });
+
+  it('passes the session token + workerOrigin to fetchIce', async () => {
+    const fetchIce = vi.fn(async () => null);
+    await startMobileRemote({
+      tokenProvider: () => ({ token: 'JWT', doUrl: 'wss://w.example.dev/do/HASH' }),
+      workerOrigin: 'https://w.example.dev',
+      fetchIce,
+      createSignaling: () => fakeSignaling,
+      createPeer: () => ({ close: () => {} }),
+    });
+    expect(fetchIce).toHaveBeenCalledWith(
+      expect.objectContaining({ workerOrigin: 'https://w.example.dev', token: 'JWT' }),
+    );
+  });
+
+  it('falls back to Google STUN when fetchIce resolves null', async () => {
+    const createPeer = vi.fn(() => ({ close: () => {} }));
+    await startMobileRemote({
+      tokenProvider: () => ({ token: 'JWT', doUrl: 'wss://w.example.dev/do/HASH' }),
+      workerOrigin: 'https://w.example.dev',
+      fetchIce: async () => null,
+      createSignaling: () => fakeSignaling,
+      createPeer,
+    });
+    expect(createPeer).toHaveBeenCalledWith(expect.objectContaining({ iceServers: GOOGLE_STUN }));
+  });
+
+  it('injected opts.iceServers wins over fetchIce', async () => {
+    const fetchIce = vi.fn(async () => [{ urls: 'turn:should-not-be-used' }]);
+    const injected = [{ urls: 'stun:injected:3478' }];
+    const createPeer = vi.fn(() => ({ close: () => {} }));
+    await startMobileRemote({
+      tokenProvider: () => ({ token: 'JWT', doUrl: 'wss://w.example.dev/do/HASH' }),
+      workerOrigin: 'https://w.example.dev',
+      iceServers: injected,
+      fetchIce,
+      createSignaling: () => fakeSignaling,
+      createPeer,
+    });
+    expect(fetchIce).not.toHaveBeenCalled();
+    expect(createPeer).toHaveBeenCalledWith(expect.objectContaining({ iceServers: injected }));
   });
 });
