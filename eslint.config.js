@@ -97,6 +97,9 @@ export default [
         // Browser networking globals used by the phone PWA modules
         // (src/mobile/): WebRTC offerer + Durable Object signaling.
         WebSocket: 'readonly',
+        fetch: 'readonly',
+        Response: 'readonly',
+        location: 'readonly',
         RTCPeerConnection: 'readonly',
         RTCDataChannel: 'readonly',
         RTCIceServer: 'readonly',
