@@ -25,7 +25,7 @@
 //     (db init, register*Ipc calls, notify pipeline construction, ptyHost,
 //     sessionWatcher, eager scans).
 
-import { app, BrowserWindow, ipcMain, type Tray } from 'electron';
+import { app, BrowserWindow, ipcMain, safeStorage, type Tray } from 'electron';
 import { initDb, closeDb } from './db';
 import { buildTrayIcon } from './branding/icon';
 import { initSentry } from './sentry/init';
@@ -91,6 +91,13 @@ import { registerSessionIpc } from './ipc/sessionIpc';
 import { registerWindowIpc } from './ipc/windowIpc';
 import { registerVoiceIpc } from './ipc/voiceIpc';
 import { startMobileRemote } from './remote/mobileRemoteController';
+import { createSessionStore } from './remote/sessionStore';
+import { createOauthTokenProvider } from './remote/oauthTokenProvider';
+import { registerMobileRemoteIpc } from './ipc/mobileRemoteIpc';
+import { loginWithGithub, fetchSession } from './remote/oauthLogin';
+import { runOauthPopup } from './remote/oauthWindow';
+import { MOBILE_REMOTE_CHANNELS } from './shared/ipcChannels';
+import nodePath from 'node:path';
 import {
   registerUtilityIpc,
   primeImportableCache,
@@ -158,6 +165,23 @@ let badgeManager: BadgeManager | null = null;
 let notifyPipeline: NotifyPipeline | null = null;
 let notifyPipelineDispose: (() => void) | null = null;
 let mobileRemote: { close: () => void } | null = null;
+// Desktop GitHub OAuth (PR-4b): the session store + OAuth-backed token provider
+// replace PR-4's env reader. Built lazily inside the whenReady bootstrap because
+// `app.getPath('userData')` is only valid after the app is ready.
+const WORKER_ORIGIN =
+  process.env.CCSM_MOBILE_REMOTE_WORKER ?? 'https://ccsm-worker.jiahuigu.workers.dev';
+let mobileRemoteTokenProvider: ReturnType<typeof createOauthTokenProvider> | null = null;
+
+function restartMobileRemote() {
+  try {
+    mobileRemote?.close();
+  } catch (err) {
+    console.warn('[main] restart close threw', err);
+  }
+  mobileRemote = mobileRemoteTokenProvider
+    ? startMobileRemote({ tokenProvider: mobileRemoteTokenProvider })
+    : null;
+}
 const badgeController = new BadgeController(() => badgeManager);
 
 function getTrayBaseImage() {
@@ -299,7 +323,35 @@ app.whenReady().then(() => {
     () => BrowserWindow.getAllWindows()[0] ?? null,
   );
 
-  mobileRemote = startMobileRemote();
+  // Desktop GitHub OAuth (PR-4b): build the safeStorage-backed session store +
+  // OAuth token provider, register the login/logout/authState IPC, and start
+  // the mobile-remote peer from the persisted session (live peer when a valid
+  // JWT is on disk, otherwise null exactly like PR-4's env reader returning
+  // null). The popup login is driven on demand from the Settings pane.
+  const mobileRemoteSessionStore = createSessionStore({
+    filePath: nodePath.join(app.getPath('userData'), 'mobile-remote-session.bin'),
+    safeStorage,
+  });
+  mobileRemoteTokenProvider = createOauthTokenProvider(mobileRemoteSessionStore);
+  registerMobileRemoteIpc({
+    ipcMain,
+    store: mobileRemoteSessionStore,
+    restartMobileRemote,
+    broadcast: (state) =>
+      BrowserWindow.getAllWindows()[0]?.webContents.send(MOBILE_REMOTE_CHANNELS.onState, state),
+    doLogin: () =>
+      loginWithGithub({
+        workerOrigin: WORKER_ORIGIN,
+        runPopup: () =>
+          runOauthPopup({
+            workerOrigin: WORKER_ORIGIN,
+            parent: BrowserWindow.getAllWindows()[0] ?? undefined,
+          }),
+        fetchSession,
+        store: mobileRemoteSessionStore,
+      }),
+  });
+  mobileRemote = startMobileRemote({ tokenProvider: mobileRemoteTokenProvider });
 
   // ─────────────────────── notify pipeline (Phase C, #689) ───────────────
   // BadgeManager is bumped via `onNotified` to update the tray/dock badge.
