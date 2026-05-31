@@ -2,21 +2,30 @@ import { describe, it, expect } from "vitest";
 import { corsPreflight, withSecurityHeaders, json, readCookie } from "../src/lib/cors";
 
 const ALLOWED = "https://ccsm-worker.jiahuigu.workers.dev";
+const allowlist = [ALLOWED];
 
 describe("cors", () => {
   it("preflight echoes an allowed origin", () => {
-    const res = corsPreflight(new Request("https://x", { headers: { Origin: ALLOWED } }));
+    const res = corsPreflight(new Request("https://x", { headers: { Origin: ALLOWED } }), allowlist);
     expect(res.status).toBe(204);
     expect(res.headers.get("Access-Control-Allow-Origin")).toBe(ALLOWED);
   });
 
   it("preflight blanks a disallowed origin", () => {
-    const res = corsPreflight(new Request("https://x", { headers: { Origin: "https://evil" } }));
+    const res = corsPreflight(new Request("https://x", { headers: { Origin: "https://evil" } }), allowlist);
     expect(res.headers.get("Access-Control-Allow-Origin")).toBe("");
   });
 
+  it("preflight allows a configured custom origin", () => {
+    const res = corsPreflight(
+      new Request("https://x", { headers: { Origin: "https://ccsm.example.com" } }),
+      ["https://ccsm.example.com"],
+    );
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("https://ccsm.example.com");
+  });
+
   it("withSecurityHeaders sets nosniff + referrer-policy", () => {
-    const res = withSecurityHeaders(new Response("hi"), new Request("https://x"));
+    const res = withSecurityHeaders(new Response("hi"), new Request("https://x"), allowlist);
     expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
     expect(res.headers.get("Referrer-Policy")).toBe("no-referrer");
   });

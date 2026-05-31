@@ -30,6 +30,13 @@ TURN_TTL_SECONDS = "600"           # 10 min
 ROOM_TTL_SECONDS = "60"            # DO survives this long after both sides drop
 TURN_URLS = "turn:turn.cloudflare.com:3478?transport=udp,turns:turn.cloudflare.com:5349?transport=tcp"
 STUN_URLS = "stun:stun.cloudflare.com:3478"
+# PUBLIC_ORIGIN: optional comma-separated CORS allowlist. When unset, the worker
+# falls back to its current public origin (DEFAULT_ALLOWED_ORIGIN in config.ts),
+# so the existing deploy keeps working. Set this when serving the PWA from a
+# different subdomain/zone, e.g.:
+# PUBLIC_ORIGIN = "https://ccsm-worker.jiahuigu.workers.dev,https://pwa.example.com"
+# (The DO WebSocket doUrl is always derived from the inbound request host, so it
+#  needs no config.)
 
 # Secrets (NEVER in repo; already put on ccsm-worker, user re-puts nothing):
 #   GITHUB_OAUTH_CLIENT_ID      GitHub OAuth app client id (public value, stored as secret)

@@ -1,8 +1,6 @@
-const ALLOWED_ORIGINS = ["https://ccsm-worker.jiahuigu.workers.dev"]; // add PWA origin if hosted separately
-
-export function corsPreflight(req: Request): Response {
+export function corsPreflight(req: Request, allowedOrigins: string[]): Response {
   const origin = req.headers.get("Origin") ?? "";
-  const allow = ALLOWED_ORIGINS.includes(origin) ? origin : "";
+  const allow = allowedOrigins.includes(origin) ? origin : "";
   return new Response(null, {
     status: 204,
     headers: {
@@ -14,10 +12,10 @@ export function corsPreflight(req: Request): Response {
   });
 }
 
-export function withSecurityHeaders(res: Response, req: Request): Response {
+export function withSecurityHeaders(res: Response, req: Request, allowedOrigins: string[]): Response {
   const h = new Headers(res.headers);
   const origin = req.headers.get("Origin") ?? "";
-  if (ALLOWED_ORIGINS.includes(origin)) h.set("Access-Control-Allow-Origin", origin);
+  if (allowedOrigins.includes(origin)) h.set("Access-Control-Allow-Origin", origin);
   h.set("X-Content-Type-Options", "nosniff");
   h.set("Referrer-Policy", "no-referrer");
   return new Response(res.body, { status: res.status, headers: h });

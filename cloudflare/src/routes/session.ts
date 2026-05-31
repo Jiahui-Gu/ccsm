@@ -15,10 +15,14 @@ export async function handleSession(req: Request, cfg: Config): Promise<Response
     userHash: claims.userHash,
     exp: nowSec() + ttlSec,
   });
+  // Derive the DO WebSocket host from the inbound request: the DO lives on the
+  // same Worker the client just reached, so this is self-configuring across
+  // any subdomain/zone the Worker is deployed to.
+  const host = new URL(req.url).host;
   return json({
     token,
     userHash: claims.userHash,
-    doUrl: `wss://ccsm-worker.jiahuigu.workers.dev/do/${claims.userHash}`,
+    doUrl: `wss://${host}/do/${claims.userHash}`,
     iceServers: [{ urls: cfg.stunUrls }],
     expiresInSeconds: ttlSec,
   });

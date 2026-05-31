@@ -1,4 +1,4 @@
-import { loadConfig, type Env } from "./lib/config";
+import { loadConfig, resolveAllowedOrigins, type Env } from "./lib/config";
 import { handleOauthStart } from "./routes/oauthStart";
 import { handleOauthLogin } from "./routes/oauthLogin";
 import { handleOauthCallback } from "./routes/oauthCallback";
@@ -14,7 +14,8 @@ export default {
     const url = new URL(req.url);
     const { pathname } = url;
 
-    if (req.method === "OPTIONS") return corsPreflight(req);
+    const allowedOrigins = resolveAllowedOrigins(env);
+    if (req.method === "OPTIONS") return corsPreflight(req, allowedOrigins);
     if (pathname === "/healthz") return new Response("ok");
 
     const cfg = loadConfig(env);
@@ -40,6 +41,6 @@ export default {
     } catch (err) {
       res = new Response(`internal error: ${(err as Error).message}`, { status: 500 });
     }
-    return withSecurityHeaders(res, req);
+    return withSecurityHeaders(res, req, allowedOrigins);
   },
 };
