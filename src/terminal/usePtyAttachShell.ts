@@ -38,6 +38,7 @@ import { warn, log } from '../shared/log';
 import {
   createShell,
   getShell,
+  reconcileShellView,
   resetShellForReload,
   setMask,
   showShell,
@@ -397,6 +398,11 @@ export function usePtyAttachShell(
         const cols = shell.term.cols;
         const rows = shell.term.rows;
         window.ccsmPty?.resize(sessionId, cols, rows).catch(() => {});
+        // A resize usually self-heals the viewport via xterm's buffer-length
+        // guard, but a width-only resize at bottom leaves the buffer length
+        // unchanged and can strand a stale scrollTop. Reconcile to cover it
+        // (#82-class). Idempotent when the fit already re-synced.
+        reconcileShellView(sessionId);
       } catch (e) {
         warn('attach-shell', 'resize apply failed', e);
       }

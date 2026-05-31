@@ -29,6 +29,10 @@ const { terminalCtor, fitCtor } = vi.hoisted(() => {
       unicode: { activeVersion: '6' },
       buffer: { active: { viewportY: 0, baseY: 0 } },
       options: { scrollback: 1000, fontSize: 13 },
+      // Private xterm surface that reconcileView reaches into to force a
+      // viewport re-sync after a reveal (#82). Mocked so the registry tests
+      // can assert syncScrollArea(true) fires on every reveal path.
+      _core: { viewport: { syncScrollArea: vi.fn() } },
     };
     return inst;
   });
@@ -79,6 +83,7 @@ import {
   shellCount,
   showShell,
   setMask,
+  reconcileShellView,
   subscribeShellData,
   resetShellForReload,
   applyTerminalFontSize,
@@ -192,6 +197,56 @@ describe('shellRegistry', () => {
     expect((a.term.options as { fontSize?: number }).fontSize).toBe(18);
     expect(a.fit.fit).toHaveBeenCalled();
     expect(resizeSpy).toHaveBeenCalledWith('sid-a', 80, 24);
+  });
+
+  // #82 regression lock: every reveal path must force a viewport re-sync so
+  // the native scrollbar realigns with xterm's viewportY after the
+  // display:none → '' flip (webkit zeroes scrollTop silently; only
+  // syncScrollArea(true) rewrites it back).
+  const syncSpy = (shell: { term: unknown }): ReturnType<typeof vi.fn> =>
+    (
+      shell.term as unknown as {
+        _core: { viewport: { syncScrollArea: ReturnType<typeof vi.fn> } };
+      }
+    )._core.viewport.syncScrollArea;
+
+  it('showShell reconciles the revealed shell via syncScrollArea(true) [#82]', () => {
+    const a = createShell('sid-a', host);
+    const b = createShell('sid-b', host);
+    // sid-b is currently top; seed the visited-switch reveal of A.
+    syncSpy(a).mockClear();
+    syncSpy(b).mockClear();
+    showShell('sid-a');
+    expect(syncSpy(a)).toHaveBeenCalledWith(true);
+  });
+
+  it('showShell passes force=true (not false, which would short-circuit) [#82]', () => {
+    const a = createShell('sid-a', host);
+    createShell('sid-b', host);
+    syncSpy(a).mockClear();
+    showShell('sid-a');
+    // A syncScrollArea(false) would hit xterm's no-op guard and never
+    // rewrite scrollTop — assert the exact argument is the force flag.
+    expect(syncSpy(a)).toHaveBeenCalledTimes(1);
+    expect(syncSpy(a)).toHaveBeenCalledWith(true);
+    expect(syncSpy(a)).not.toHaveBeenCalledWith(false);
+  });
+
+  it('cold reveal (createShell) reconciles the viewport once [#82]', () => {
+    const a = createShell('sid-a', host);
+    // createShell promotes synchronously via showShell, so the cold path
+    // reconciles exactly once on reveal.
+    expect(syncSpy(a)).toHaveBeenCalledTimes(1);
+    expect(syncSpy(a)).toHaveBeenCalledWith(true);
+  });
+
+  it('reconcileShellView forces syncScrollArea(true) for a known sid, no-op otherwise [#82]', () => {
+    const a = createShell('sid-a', host);
+    syncSpy(a).mockClear();
+    reconcileShellView('sid-a');
+    expect(syncSpy(a)).toHaveBeenCalledWith(true);
+    // Unknown sid is a safe no-op.
+    expect(() => reconcileShellView('nope')).not.toThrow();
   });
 
   it('setMask toggles the mask div display', () => {

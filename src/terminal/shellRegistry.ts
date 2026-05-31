@@ -58,6 +58,50 @@ function installUnloadCleanupOnce(): void {
   window.addEventListener('beforeunload', beforeUnloadHandler);
 }
 
+// Force xterm to rewrite `.xterm-viewport.scrollTop` back into agreement
+// with its internal `viewportY` after a visibility/layout change that webkit
+// silently zeroed (#82, real-device confirmed).
+//
+// WHY this is needed: `showShell` reveals a resident terminal by flipping
+// `wrapper.style.display: 'none' → ''`. On that reveal webkit zeroes
+// `.xterm-viewport.scrollTop` to 0 and fires NO scroll event. xterm's
+// `Viewport.syncScrollArea(force=false)` guard then short-circuits (buffer
+// length, canvas height, cell height all unchanged and `_lastScrollTop`
+// still equals the old `ydisp*rowHeight`), so xterm never rewrites scrollTop.
+// The native scrollbar thumb sits at top while CLI content stays at bottom.
+// `syncScrollArea(true)` is the ONLY path that reaches `Viewport._refresh(true)`
+// → `_innerRefresh()` → `scrollTop = ydisp*rowHeight`; the public
+// `scrollToBottom()`/`scrollLines(0)` all short-circuit at bottom (the desync
+// fires precisely when content is already at bottom), so they are not usable
+// here.
+//
+// Reaches into the private `term._core.viewport`. If a future xterm bump
+// renames it, the try/catch degrades to a no-op and the unit test goes red —
+// caught before ship, not in the wild.
+function reconcileView(shell: Shell): void {
+  try {
+    const core = (
+      shell.term as unknown as {
+        _core?: { viewport?: { syncScrollArea?: (force: boolean) => void } };
+      }
+    )._core;
+    core?.viewport?.syncScrollArea?.(true);
+  } catch {
+    /* private-API best-effort */
+  }
+}
+
+/**
+ * Thin public wrapper so callers outside this module (the attach hook's
+ * ResizeObserver path) can trigger the viewport reconcile by sid without
+ * exposing the private `reconcileView` helper or the `Shell` internals.
+ */
+export function reconcileShellView(sid: string): void {
+  const shell = shells.get(sid);
+  if (!shell) return;
+  reconcileView(shell);
+}
+
 export function getShell(sid: string): Shell | undefined {
   return shells.get(sid);
 }
@@ -251,6 +295,13 @@ export function showShell(sid: string): Shell | undefined {
   } catch {
     /* probe handle is best-effort */
   }
+
+  // 收口 (reconcile): every reveal path funnels through showShell, so a
+  // single re-sync here after the display flip + lazy font-size/fit block
+  // re-aligns the native scrollbar with xterm's viewportY (#82). The webkit
+  // zeroing happens synchronously on the `display=''` write above, so a
+  // synchronous reconcile right after is the correct ordering.
+  reconcileView(shell);
 
   return shell;
 }
