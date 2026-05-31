@@ -1,3 +1,7 @@
+# Test-only wrangler config. The vitest/Miniflare runtime starts from an EMPTY
+# Durable Object ledger, so it must NOT apply the live-only "v3-drop-tunneldo"
+# delete-class migration (workerd rejects deleting classes that never existed).
+# Keep this file in sync with wrangler.toml in every other respect.
 name = "ccsm-worker"                # -> ccsm-worker.jiahuigu.workers.dev
 main = "src/worker.ts"
 compatibility_date = "2025-02-14"
@@ -10,13 +14,6 @@ class_name = "PairingDurableObject"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["PairingDurableObject"]
-
-# v3 drops the leftover TunnelDO + UserDO from the old cf-worker/Tauri tunnel arch
-# (removed from this repo; replaced by PairingDurableObject WebRTC signaling).
-# Tag is deliberately past the live ledger's "v2" so wrangler applies only this step.
-[[migrations]]
-tag = "v3-drop-tunneldo"
-deleted_classes = ["TunnelDO", "UserDO"]
 
 # Public config (safe to commit)
 [vars]
