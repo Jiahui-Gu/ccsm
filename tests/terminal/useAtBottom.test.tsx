@@ -4,6 +4,7 @@ import { renderHook, act } from '@testing-library/react';
 // Capture the listener xterm registered so the test can fire it synthetically.
 let scrollListener: (() => void) | null = null;
 let lineFeedListener: (() => void) | null = null;
+let renderListener: (() => void) | null = null;
 
 const fakeBuffer = { active: { viewportY: 0, baseY: 0 } };
 const scrollToBottomSpy = vi.fn(() => {
@@ -22,6 +23,10 @@ const fakeTerm = {
     lineFeedListener = cb;
     return { dispose: vi.fn(() => { lineFeedListener = null; }) };
   }),
+  onRender: vi.fn((cb: () => void) => {
+    renderListener = cb;
+    return { dispose: vi.fn(() => { renderListener = null; }) };
+  }),
   scrollToBottom: scrollToBottomSpy,
 };
 
@@ -37,9 +42,11 @@ describe('useAtBottom (warm registry)', () => {
     fakeBuffer.active.baseY = 0;
     scrollListener = null;
     lineFeedListener = null;
+    renderListener = null;
     scrollToBottomSpy.mockClear();
     fakeTerm.onScroll.mockClear();
     fakeTerm.onLineFeed.mockClear();
+    fakeTerm.onRender.mockClear();
   });
 
   afterEach(() => {
@@ -94,6 +101,22 @@ describe('useAtBottom (warm registry)', () => {
     expect(result.current.atBottom).toBe(false);
   });
 
+  it('flips atBottom on wheel scroll (onRender only — xterm suppresses onScroll)', () => {
+    fakeBuffer.active.baseY = 100;
+    fakeBuffer.active.viewportY = 100;
+    const { result } = renderHook(() => useAtBottom('sid-A'));
+    expect(result.current.atBottom).toBe(true);
+
+    // Wheel-up moves viewportY but fires NO onScroll/onLineFeed — only a
+    // repaint (onRender). The button must still reveal. Red if the onRender
+    // subscription is dropped.
+    act(() => {
+      fakeBuffer.active.viewportY = 20;
+      renderListener!();
+    });
+    expect(result.current.atBottom).toBe(false);
+  });
+
   it('scrollToBottom delegates to term.scrollToBottom and restores atBottom', () => {
     fakeBuffer.active.baseY = 100;
     fakeBuffer.active.viewportY = 20;
@@ -107,13 +130,15 @@ describe('useAtBottom (warm registry)', () => {
     expect(result.current.atBottom).toBe(true);
   });
 
-  it('disposes the scroll + lineFeed listeners on unmount', () => {
+  it('disposes the scroll + lineFeed + render listeners on unmount', () => {
     const { unmount } = renderHook(() => useAtBottom('sid-A'));
     const scrollDispose = fakeTerm.onScroll.mock.results[0]!.value.dispose as ReturnType<typeof vi.fn>;
     const lineFeedDispose = fakeTerm.onLineFeed.mock.results[0]!.value.dispose as ReturnType<typeof vi.fn>;
+    const renderDispose = fakeTerm.onRender.mock.results[0]!.value.dispose as ReturnType<typeof vi.fn>;
     unmount();
     expect(scrollDispose).toHaveBeenCalled();
     expect(lineFeedDispose).toHaveBeenCalled();
+    expect(renderDispose).toHaveBeenCalled();
   });
 
   it('recomputes on session change (effect re-runs on sessionId change)', () => {
