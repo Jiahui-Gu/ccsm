@@ -18,6 +18,8 @@ function renderCallbackHtml(authCode: string): string {
 <body>Signing in...</body>`;
 }
 
+const PHONE_ORIGIN = "https://ccsm-worker.jiahuigu.workers.dev";
+
 export async function handleOauthCallback(req: Request, cfg: Config): Promise<Response> {
   const url = new URL(req.url);
   const code = url.searchParams.get("code");
@@ -29,6 +31,29 @@ export async function handleOauthCallback(req: Request, cfg: Config): Promise<Re
   const token = await exchangeCode(cfg, code);
   const githubUserId = await fetchGithubUserId(token);
   const userHash = await hmacUserHash(cfg.serverSecret, githubUserId);
+
+  if (readCookie(req, "oauth_flow") === "phone") {
+    const ttlSec = cfg.sessionTtlMs / 1000;
+    const session = await signJwt(cfg.serverSecret, {
+      typ: "session",
+      userHash,
+      exp: nowSec() + ttlSec,
+    });
+    const frag = new URLSearchParams({
+      token: session,
+      doUrl: `${PHONE_ORIGIN.replace("https://", "wss://")}/do/${userHash}`,
+      stun: cfg.stunUrls.join(","),
+      expiresInSeconds: String(ttlSec),
+    });
+    return new Response(null, {
+      status: 302,
+      headers: {
+        Location: `${PHONE_ORIGIN}/phone#${frag.toString()}`,
+        "Set-Cookie": "oauth_state=; Path=/; Max-Age=0, oauth_flow=; Path=/; Max-Age=0",
+      },
+    });
+  }
+
   const authCode = await signJwt(cfg.serverSecret, {
     typ: "auth_code",
     userHash,

@@ -53,4 +53,31 @@ describe("oauthCallback", () => {
     expect(claims?.typ).toBe("auth_code");
     expect(claims?.userHash).toBe(await hmacUserHash(secret, 777));
   });
+
+  it("phone flow: 302s to /phone with token+doUrl in the fragment, not the query", async () => {
+    mockGithub(777);
+    const phoneCfg = {
+      ...cfg,
+      sessionTtlMs: 900_000,
+      stunUrls: ["stun:stun.cloudflare.com:3478"],
+    } as Config;
+    const req = new Request("https://ccsm-worker.jiahuigu.workers.dev/auth/github/callback?code=c&state=S", {
+      headers: { Cookie: "oauth_state=S; oauth_flow=phone" },
+    });
+    const res = await handleOauthCallback(req, phoneCfg);
+    expect(res.status).toBe(302);
+    const loc = res.headers.get("Location")!;
+    expect(loc.startsWith("https://ccsm-worker.jiahuigu.workers.dev/phone#")).toBe(true);
+    // token MUST be in the fragment, never the query string
+    const [base, frag] = loc.split("#");
+    expect(base).not.toContain("token=");
+    const f = new URLSearchParams(frag);
+    const token = f.get("token")!;
+    expect(token.length).toBeGreaterThan(0);
+    expect(f.get("doUrl")).toContain("/do/");
+    expect(f.get("stun")).toContain("stun:");
+    const claims = await verifyJwt(secret, token);
+    expect(claims?.typ).toBe("session");
+    expect(claims?.userHash).toBe(await hmacUserHash(secret, 777));
+  });
 });
