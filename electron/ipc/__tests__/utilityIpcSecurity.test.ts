@@ -12,9 +12,12 @@ import * as os from 'os';
 const pushUserCwdMock = vi.fn((p: string) => [p, os.homedir()]);
 const getUserCwdsMock = vi.fn(() => [os.homedir()]);
 
+const openExternalMock = vi.fn(async (_url: string) => {});
+
 vi.mock('electron', () => ({
   BrowserWindow: { fromWebContents: () => null },
   dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }) },
+  shell: { openExternal: (url: string) => openExternalMock(url) },
 }));
 vi.mock('../../import-scanner', () => ({
   scanImportableSessions: async () => [],
@@ -122,5 +125,37 @@ describe('app:userCwds:push security gate (#804 risk #4)', () => {
     push(mainFrameEvent(), '~');
     expect(pushUserCwdMock).toHaveBeenCalledTimes(1);
     expect(pushUserCwdMock).toHaveBeenCalledWith(os.homedir());
+  });
+});
+
+// `ccsm:openExternal` opens an arbitrary URL in the OS browser — a privileged
+// action. Beyond the http(s) scheme whitelist it must also confirm the IPC
+// came from our top-level renderer frame (defense-in-depth).
+describe('ccsm:openExternal security gate', () => {
+  let openExternal: Handler;
+
+  beforeEach(() => {
+    openExternalMock.mockClear();
+    const { ipcMain, handlers } = fakeIpcMain();
+    registerUtilityIpc({ ipcMain });
+    openExternal = handlers.get('ccsm:openExternal')!;
+    expect(openExternal).toBeDefined();
+  });
+
+  it('opens an https URL when the sender is the main frame', async () => {
+    const result = await openExternal(mainFrameEvent(), 'https://example.com');
+    expect(openExternalMock).toHaveBeenCalledWith('https://example.com');
+    expect(result).toBe(true);
+  });
+
+  it('does not open when the sender is a sub-frame (fromMainFrame guard)', async () => {
+    const subFrame = { id: 2 };
+    const e = {
+      sender: { mainFrame: { id: 1 } },
+      senderFrame: subFrame,
+    } as unknown as Electron.IpcMainInvokeEvent;
+    const result = await openExternal(e, 'https://example.com');
+    expect(openExternalMock).not.toHaveBeenCalled();
+    expect(result).toBeFalsy();
   });
 });

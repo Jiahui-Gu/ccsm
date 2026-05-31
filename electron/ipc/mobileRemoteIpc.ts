@@ -3,6 +3,7 @@ import type { IpcMain } from 'electron';
 import { MOBILE_REMOTE_CHANNELS } from '../shared/ipcChannels';
 import type { SessionStore } from '../remote/sessionStore';
 import { loggedOut, type MobileRemoteAuthState } from '../remote/oauthLogin';
+import { fromMainFrame } from '../security/ipcGuards';
 
 function stateFromStore(store: SessionStore): MobileRemoteAuthState {
   const s = store.load();
@@ -24,14 +25,16 @@ export function registerMobileRemoteIpc(deps: {
 }): void {
   const { ipcMain, store, restartMobileRemote, broadcast, doLogin } = deps;
 
-  ipcMain.handle(MOBILE_REMOTE_CHANNELS.login, async () => {
+  ipcMain.handle(MOBILE_REMOTE_CHANNELS.login, async (e) => {
+    if (!fromMainFrame(e)) return stateFromStore(store);
     const state = await doLogin();
     restartMobileRemote();
     broadcast(state);
     return state;
   });
 
-  ipcMain.handle(MOBILE_REMOTE_CHANNELS.logout, async () => {
+  ipcMain.handle(MOBILE_REMOTE_CHANNELS.logout, async (e) => {
+    if (!fromMainFrame(e)) return stateFromStore(store);
     store.clear();
     restartMobileRemote();
     const state = stateFromStore(store);

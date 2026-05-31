@@ -241,7 +241,8 @@ export function registerUtilityIpc(deps: UtilityIpcDeps): void {
   // untrusted by definition. Anything outside http(s) (file://, javascript:,
   // data:, vbscript:, custom protocol handlers, ...) is rejected before
   // touching `shell.openExternal`.
-  ipcMain.handle('ccsm:openExternal', async (_e, url: unknown) => {
+  ipcMain.handle('ccsm:openExternal', async (e, url: unknown) => {
+    if (!fromMainFrame(e)) return false;
     if (!isAllowedExternalUrl(url)) return false;
     try {
       await shell.openExternal(url);
