@@ -11,7 +11,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   plugins: [
     cloudflareTest({
-      wrangler: { configPath: "./wrangler.toml" },
+      wrangler: { configPath: "./wrangler.test.toml" },
       miniflare: {
         bindings: {
           OAUTH_REDIRECT_URI:
