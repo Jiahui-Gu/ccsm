@@ -8,6 +8,11 @@ import {
 import { isRecord } from './remoteHttp';
 import type { PeerClient } from './peerClient';
 
+/** Upper bound on a single session.input payload. An authenticated same-user
+ *  peer could otherwise flood the pty with an unbounded write (DoS / pty
+ *  flood); 64 KiB comfortably covers real keystrokes and pastes. */
+const MAX_INPUT_BYTES = 64 * 1024;
+
 /** The session-chip payload the mobile client renders: just the identity and
  *  size it needs. We deliberately omit `pid` — it is noise on the wire and the
  *  client never uses it. */
@@ -73,6 +78,10 @@ export async function handleClientMessage(client: PeerClient, raw: string): Prom
   if (message.type === 'session.input') {
     if (typeof message.sid !== 'string' || typeof message.data !== 'string') {
       client.send({ type: 'error', message: 'invalid_input' });
+      return;
+    }
+    if (Buffer.byteLength(message.data, 'utf8') > MAX_INPUT_BYTES) {
+      client.send({ type: 'error', message: 'input_too_large' });
       return;
     }
     inputPtySession(message.sid, message.data);
