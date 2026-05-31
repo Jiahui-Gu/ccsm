@@ -22,5 +22,11 @@ export async function handleDoProxy(
   }
   const id = env.PAIRING.idFromName(claims.userHash);
   const stub = env.PAIRING.get(id);
-  return stub.fetch(req);
+  // Inject the JWT-verified userHash as a trusted identity anchor. A DO
+  // internal stub.fetch CAN carry custom headers (unlike a browser WebSocket),
+  // so we clone the request preserving method/URL/Upgrade and add the header.
+  const headers = new Headers(req.headers);
+  headers.set("X-CCSM-User-Hash", claims.userHash);
+  const forwarded = new Request(req, { headers });
+  return stub.fetch(forwarded);
 }

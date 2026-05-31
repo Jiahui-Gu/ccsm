@@ -110,6 +110,37 @@ describe("PairingDurableObject", () => {
     expect(await err).toMatchObject({ type: "error", code: "room-full" });
   });
 
+  it("rejects a second register with an already-taken peerId without evicting the victim", async () => {
+    const victim = await connect("squat");
+    victim.send(JSON.stringify({ type: "register", role: "desktop", peerId: "A" }));
+    await next(victim);
+
+    // Attacker (same userHash room) tries to squat peerId "A".
+    const attacker = await connect("squat");
+    const attackerErr = next(attacker);
+    attacker.send(JSON.stringify({ type: "register", role: "phone", peerId: "A" }));
+    expect(await attackerErr).toMatchObject({
+      type: "error",
+      code: "bad-message",
+      message: "peer-id-taken",
+    });
+
+    // The original victim is still in the routing table: a third distinct peer
+    // can still reach "A" by its peerId.
+    const third = await connect("squat");
+    third.send(JSON.stringify({ type: "register", role: "phone", peerId: "C" }));
+    await next(third);
+    await next(victim); // consume peer-present for C
+
+    const victimGetsOffer = next(victim);
+    third.send(JSON.stringify({ type: "offer", to: "A", sdp: "SDP" }));
+    expect(await victimGetsOffer).toMatchObject({
+      type: "offer",
+      from: "C",
+      sdp: "SDP",
+    });
+  });
+
   it("different userHash lands on a different DO instance (isolation)", async () => {
     const a = await connect("iso-A");
     const b = await connect("iso-B");
