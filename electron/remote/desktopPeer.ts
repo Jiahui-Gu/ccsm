@@ -18,7 +18,7 @@ export function createDesktopPeer(opts: {
   clients: Set<PeerClient>;
 }): { close: () => void } {
   const { signaling, clients } = opts;
-  const pcs = new Set<RTCPeerConnection>();
+  const pcs = new Map<string, RTCPeerConnection>();
 
   const offPtyData = onPtyData((sid, chunk, seq) => {
     fanoutPtyData(clients, sid, chunk, seq);
@@ -26,7 +26,7 @@ export function createDesktopPeer(opts: {
 
   signaling.onOffer(async (offer, peerId) => {
     const pc = new RTCPeerConnection({ iceServers: opts.iceServers });
-    pcs.add(pc);
+    pcs.set(peerId, pc);
 
     pc.onIceCandidate.subscribe((cand) => {
       // werift hands us its own RTCIceCandidate; forward only the plain wire
@@ -72,17 +72,21 @@ export function createDesktopPeer(opts: {
     signaling.sendAnswer({ type: 'answer', sdp: answer.sdp }, peerId);
   });
 
-  signaling.onRemoteIce(async (cand) => {
-    for (const pc of pcs) {
-      try {
-        await pc.addIceCandidate({
-          candidate: cand.candidate,
-          sdpMid: cand.sdpMid ?? undefined,
-          sdpMLineIndex: cand.sdpMLineIndex ?? undefined,
-        });
-      } catch {
-        /* candidate may target a different pc; ignore mismatches */
-      }
+  signaling.onRemoteIce(async (cand, peerId) => {
+    // Route each candidate to ONLY the pc that owns its peerId. Fanning every
+    // candidate to all pcs leaks one phone's candidates into another's
+    // connection (cross-peer isolation bug) once more than one phone connects.
+    // A candidate for an unknown peer is silently dropped.
+    const pc = pcs.get(peerId);
+    if (!pc) return;
+    try {
+      await pc.addIceCandidate({
+        candidate: cand.candidate,
+        sdpMid: cand.sdpMid ?? undefined,
+        sdpMLineIndex: cand.sdpMLineIndex ?? undefined,
+      });
+    } catch {
+      /* candidate may still be invalid; ignore */
     }
   });
 
@@ -90,7 +94,7 @@ export function createDesktopPeer(opts: {
     close: () => {
       offPtyData();
       signaling.close();
-      for (const pc of pcs) void pc.close();
+      for (const pc of pcs.values()) void pc.close();
       pcs.clear();
       clients.clear();
     },
