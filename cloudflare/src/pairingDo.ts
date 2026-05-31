@@ -7,6 +7,9 @@ interface Member {
   ws: WebSocket;
   role: "desktop" | "phone";
   peerId: string;
+  // The doProxy-verified userHash this socket authenticated as, when known.
+  // Null only when the DO is driven directly (tests) without the header.
+  userHash: string | null;
 }
 
 type ErrCode = "bad-message" | "not-registered" | "peer-not-found" | "room-full";
@@ -15,6 +18,10 @@ export class PairingDurableObject {
   private members = new Map<string, Member>();
   private state: DurableObjectState;
   private cfg: Config;
+  // Trusted identity anchor injected by doProxy (X-CCSM-User-Hash). Absent when
+  // the DO is driven directly in tests; belt-and-suspenders only — the
+  // load-bearing defense is the duplicate-peerId rejection below.
+  private userHash: string | null = null;
 
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
@@ -25,6 +32,7 @@ export class PairingDurableObject {
     if (req.headers.get("Upgrade") !== "websocket") {
       return new Response("expected websocket", { status: 426 });
     }
+    this.userHash = req.headers.get("X-CCSM-User-Hash") ?? null;
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
@@ -66,7 +74,13 @@ export class PairingDurableObject {
         if (this.members.size >= MAX_MEMBERS) {
           return this.sendErr(ws, "room-full", "too many peers");
         }
-        self = { ws, role: msg.role, peerId: msg.peerId };
+        // Reject peerId squatting: a second device/tab of the same user (the
+        // room is already userHash-scoped by doProxy) must not overwrite an
+        // existing member's routing entry. Reuse "bad-message" — no new code.
+        if (this.members.has(msg.peerId)) {
+          return this.sendErr(ws, "bad-message", "peer-id-taken");
+        }
+        self = { ws, role: msg.role, peerId: msg.peerId, userHash: this.userHash };
         this.members.set(self.peerId, self);
         ws.send(
           JSON.stringify({
