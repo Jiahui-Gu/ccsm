@@ -1,6 +1,7 @@
 import { loadConfig, type Env } from "./lib/config";
 import { handleOauthStart } from "./routes/oauthStart";
 import { handleOauthLogin } from "./routes/oauthLogin";
+import { handleOauthDesktopStart } from "./routes/oauthDesktopStart";
 import { handleOauthCallback } from "./routes/oauthCallback";
 import { handleSession } from "./routes/session";
 import { handleTurnCred } from "./routes/turnCred";
@@ -24,6 +25,8 @@ export default {
         res = await handleOauthStart(req, cfg);
       } else if (req.method === "GET" && pathname === "/auth/github/login") {
         res = await handleOauthLogin(req, cfg);
+      } else if (req.method === "GET" && pathname === "/auth/github/desktop-start") {
+        res = await handleOauthDesktopStart(req, cfg);
       } else if (req.method === "GET" && pathname === "/auth/github/callback") {
         res = await handleOauthCallback(req, cfg);
       } else if (req.method === "POST" && pathname === "/auth/session") {
