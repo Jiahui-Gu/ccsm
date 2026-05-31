@@ -244,6 +244,68 @@ async function caseSettingsUpdatesPane({ win, log }) {
 
   log('updates pane: version + status labels render, idle status line + check button visible');
 }
+// ---------- settings-mobile-remote-pane ----------
+// Settings → Mobile remote tab renders the desktop GitHub OAuth surface
+// (PR-4b). In dev there is no stored session, so `mobileRemoteAuthState`
+// resolves to the logged-out shape and the pane should show the
+// "Not connected." status line plus an enabled "Connect with GitHub"
+// button. This guards that the new tab mounts, reads the
+// `window.ccsm.mobileRemote*` bridge, and surfaces the disconnected
+// state — without triggering the real OAuth popup (which needs a live
+// GitHub round-trip out of scope for PR-4b).
+async function caseSettingsMobileRemotePane({ win, log }) {
+  await win.evaluate(() => {
+    window.__ccsmStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [{ id: 's1', name: 's', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
+      activeId: 's1',
+      messagesBySession: { s1: [] },
+      tutorialSeen: true,
+    });
+  });
+  await win.waitForTimeout(150);
+
+  await win.locator('body').click({ position: { x: 5, y: 5 } }).catch(() => {});
+  await win.keyboard.press(`${mod}+,`);
+  const dialog = win.getByRole('dialog');
+  await dialog.waitFor({ state: 'visible', timeout: 3000 });
+
+  const mobileTab = dialog.getByRole('tab', { name: /^mobile remote$/i });
+  await mobileTab.waitFor({ state: 'visible', timeout: 1500 });
+  await mobileTab.click();
+
+  const panel = dialog.locator('#settings-panel-mobile');
+  await panel.waitFor({ state: 'visible', timeout: 1500 });
+
+  const text = (await panel.textContent()) || '';
+  if (!/Status/i.test(text)) {
+    throw new Error('mobile-remote pane missing "Status" label');
+  }
+
+  // No stored session in dev → disconnected status line.
+  const disconnectedOk = await panel
+    .getByText('Not connected.')
+    .waitFor({ state: 'visible', timeout: 2500 })
+    .then(() => true)
+    .catch(() => false);
+  if (!disconnectedOk) {
+    const dump = (await panel.textContent()) || '';
+    throw new Error(`mobile-remote pane never rendered the disconnected status line; panel text: ${dump.slice(0, 200)}`);
+  }
+
+  // Connect button must be visible + enabled (logged-out, not busy). We do
+  // NOT click it — that would open the real OAuth popup.
+  const connectBtn = panel.getByRole('button', { name: /^connect with github$/i });
+  await connectBtn.waitFor({ state: 'visible', timeout: 1500 });
+  if (await connectBtn.isDisabled()) {
+    throw new Error('Connect with GitHub button unexpectedly disabled in logged-out state');
+  }
+
+  await win.keyboard.press('Escape');
+  await dialog.waitFor({ state: 'hidden', timeout: 1500 }).catch(() => {});
+
+  log('mobile-remote pane: status label + disconnected line + enabled Connect button render');
+}
 // ---------- titlebar ----------
 // No native frame on win/linux; >=2 top drag regions of expected height;
 // window controls inside right pane (not sidebar) on win/linux.
@@ -1662,6 +1724,7 @@ await runHarness({
     // covered by tests/command-palette.test.tsx.
     { id: 'settings-open', run: caseSettingsOpen },
     { id: 'settings-updates-pane', run: caseSettingsUpdatesPane },
+    { id: 'settings-mobile-remote-pane', run: caseSettingsMobileRemotePane },
     // search-shortcut-f removed — Task #740 Batch 3.1. Already covered
     // by tests/app-effects/useShortcutHandlers.test.tsx (Ctrl+F branch).
     // tutorial removed — Task #740 Batch 3.1. Pure self-contained
