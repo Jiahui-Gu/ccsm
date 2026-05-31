@@ -19,6 +19,12 @@ export default [
       'tests/**',
       'docs/**',
       '.claude/**',
+      // The cloudflare/ worker is a separate package with its own tsconfig and
+      // Workers-runtime globals (Response, Request, DurableObjectNamespace…).
+      // It is type-checked by its own `tsc --noEmit` in the cloudflare-worker
+      // CI job; the root eslint globals don't model the Workers runtime, so
+      // linting it here only produces false no-undef errors.
+      'cloudflare/**',
       'webpack.config.js',
       'postcss.config.js',
       'eslint.config.js'
@@ -88,6 +94,19 @@ export default [
         MediaStream: 'readonly',
         AudioContext: 'readonly',
         ScriptProcessorNode: 'readonly',
+        // Browser networking globals used by the phone PWA modules
+        // (src/mobile/): WebRTC offerer + Durable Object signaling.
+        WebSocket: 'readonly',
+        fetch: 'readonly',
+        Response: 'readonly',
+        location: 'readonly',
+        RTCPeerConnection: 'readonly',
+        RTCDataChannel: 'readonly',
+        RTCIceServer: 'readonly',
+        RTCConfiguration: 'readonly',
+        RTCPeerConnectionIceEvent: 'readonly',
+        MessageEvent: 'readonly',
+        URLSearchParams: 'readonly',
         // `NodeJS` namespace is also referenced from renderer-side .d.ts
         // files (e.g. cliBridge.d.ts) that mirror preload types — keep it
         // available alongside browser globals.
@@ -159,6 +178,7 @@ export default [
         global: 'readonly',
         fetch: 'readonly',
         Response: 'readonly',
+        RequestInit: 'readonly',
         URLSearchParams: 'readonly'
       }
     }

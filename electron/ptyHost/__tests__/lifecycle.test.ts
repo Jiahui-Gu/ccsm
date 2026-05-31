@@ -62,6 +62,8 @@ vi.mock('../../sessionWatcher', () => ({
 vi.mock('../entryFactory', () => ({
   DEFAULT_COLS: 120,
   DEFAULT_ROWS: 30,
+  MIN_PTY_DIM: 2,
+  MAX_PTY_DIM: 1000,
   makeEntry: (...args: unknown[]) => bus().makeEntry(...args),
 }));
 
@@ -395,15 +397,38 @@ describe('lifecycle.resize', () => {
     expect(entry.rows).toBe(40);
   });
 
-  it('rejects degenerate sizes (cols<2 or rows<2) — neither pty nor headless touched', () => {
+  it('clamps too-small sizes up to the floor (MIN_PTY_DIM=2)', () => {
     const sessions = new Map<string, FakeEntry>();
     const entry = makeFakeEntry();
     sessions.set('s', entry);
     L.resize(sessions as any, 's', 1, 40);
-    L.resize(sessions as any, 's', 40, 1);
+    expect(entry.pty.resize).toHaveBeenCalledWith(2, 40);
+    expect(entry.headless.resize).toHaveBeenCalledWith(2, 40);
+    expect(entry.cols).toBe(2);
+    expect(entry.rows).toBe(40);
+  });
+
+  it('rejects too-large sizes (> MAX_PTY_DIM=1000) — neither pty nor headless touched', () => {
+    const sessions = new Map<string, FakeEntry>();
+    const entry = makeFakeEntry();
+    sessions.set('s', entry);
+    L.resize(sessions as any, 's', 5000, 40);
+    L.resize(sessions as any, 's', 40, 1001);
     expect(entry.pty.resize).not.toHaveBeenCalled();
     expect(entry.headless.resize).not.toHaveBeenCalled();
-    // cached size unchanged
+    // cached size unchanged — old sane size preserved
+    expect(entry.cols).toBe(80);
+    expect(entry.rows).toBe(24);
+  });
+
+  it('rejects NaN / Infinity — neither pty nor headless touched', () => {
+    const sessions = new Map<string, FakeEntry>();
+    const entry = makeFakeEntry();
+    sessions.set('s', entry);
+    L.resize(sessions as any, 's', NaN, 40);
+    L.resize(sessions as any, 's', 40, Infinity);
+    expect(entry.pty.resize).not.toHaveBeenCalled();
+    expect(entry.headless.resize).not.toHaveBeenCalled();
     expect(entry.cols).toBe(80);
     expect(entry.rows).toBe(24);
   });
@@ -421,6 +446,30 @@ describe('lifecycle.resize', () => {
 
   it('is a no-op when sid is unknown', () => {
     expect(L.resize(new Map() as any, 'ghost', 100, 40)).toBeUndefined();
+  });
+});
+
+// ─── normalizeResizeDims (pure policy) ──────────────────────────────────────
+
+describe('normalizeResizeDims', () => {
+  it('passes through in-range integers', () => {
+    expect(L.normalizeResizeDims(120, 30)).toEqual({ cols: 120, rows: 30 });
+  });
+  it('clamps the floor up to 2 (both axes)', () => {
+    expect(L.normalizeResizeDims(1, 1)).toEqual({ cols: 2, rows: 2 });
+    expect(L.normalizeResizeDims(0, 30)).toEqual({ cols: 2, rows: 30 });
+  });
+  it('rejects above the ceiling (1000)', () => {
+    expect(L.normalizeResizeDims(1001, 30)).toBeNull();
+    expect(L.normalizeResizeDims(120, 5000)).toBeNull();
+  });
+  it('rejects non-finite values', () => {
+    expect(L.normalizeResizeDims(NaN, 30)).toBeNull();
+    expect(L.normalizeResizeDims(Infinity, 30)).toBeNull();
+    expect(L.normalizeResizeDims(120, -Infinity)).toBeNull();
+  });
+  it('floors fractional values to int', () => {
+    expect(L.normalizeResizeDims(120.7, 30.2)).toEqual({ cols: 120, rows: 30 });
   });
 });
 

@@ -6,7 +6,7 @@ import {
   resizePtySession,
 } from '../ptyHost';
 import { isRecord } from './remoteHttp';
-import type { WsClient } from './wsProtocol';
+import type { PeerClient } from './peerClient';
 
 /** The session-chip payload the mobile client renders: just the identity and
  *  size it needs. We deliberately omit `pid` — it is noise on the wire and the
@@ -30,7 +30,7 @@ export function listSignature(entries: SessionListEntry[]): string {
   return entries.map((e) => `${e.sid}:${e.cwd}`).join('|');
 }
 
-export async function handleClientMessage(client: WsClient, raw: string): Promise<void> {
+export async function handleClientMessage(client: PeerClient, raw: string): Promise<void> {
   let message: unknown;
   try {
     message = JSON.parse(raw);
@@ -88,10 +88,13 @@ export async function handleClientMessage(client: WsClient, raw: string): Promis
       client.send({ type: 'error', message: 'invalid_resize' });
       return;
     }
-    // Clamp to a sane floor; a 0/1-column PTY breaks line wrapping in the CLI.
-    const cols = Math.max(2, message.cols as number);
-    const rows = Math.max(2, message.rows as number);
-    resizePtySession(message.sid, cols, rows);
+    // Dimension policy (floor/ceiling) lives in `lifecycle.resize` via
+    // `normalizeResizeDims` — shared with the desktop path so an identical
+    // resize behaves identically regardless of transport. The Number.isInteger
+    // check above stays: it is wire-shape validation (the client contract
+    // depends on the `invalid_resize` reply for malformed input), distinct
+    // from dimension policy. Forward the raw integers.
+    resizePtySession(message.sid, message.cols as number, message.rows as number);
     return;
   }
 

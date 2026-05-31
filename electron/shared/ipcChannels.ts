@@ -88,3 +88,14 @@ export const DB_CHANNELS = {
   load: 'db:load',
   save: 'db:save',
 } as const;
+
+// Desktop GitHub OAuth for the public-internet mobile-remote path (PR-4b).
+// login/authState/logout are renderer→main invokes; onState is a main→renderer
+// push so the Settings pane reflects login state changes that originate in
+// main (e.g. the OAuth popup completing).
+export const MOBILE_REMOTE_CHANNELS = {
+  login: 'mobileRemote:login',
+  authState: 'mobileRemote:authState',
+  logout: 'mobileRemote:logout',
+  onState: 'mobileRemote:onState',
+} as const;

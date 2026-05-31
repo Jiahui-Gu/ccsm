@@ -6,8 +6,11 @@ on:
   # filter that skips the workflow leaves those required contexts pending
   # forever, deadlocking doc-only PRs (DEBT.md #20). Jobs run against a warm
   # node_modules cache, so doc-only PRs pay only the cheap lint/type/test pass.
+  #
+  # No `branches:` filter: CI runs on PRs targeting any base branch, so
+  # feature/integration branches (e.g. the mobile-remote work, which collects
+  # its sub-PRs before squashing to main) get the same coverage as main.
   pull_request:
-    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -105,3 +108,34 @@ jobs:
           name: coverage-lcov
           path: coverage/lcov.info
           if-no-files-found: warn
+
+  # The Cloudflare Worker (mobile-remote signaling relay) lives in its own
+  # package under `cloudflare/` with a separate dependency tree. Its miniflare
+  # test harness exercises a Durable Object backed by workerd SQLite. The suite
+  # is green on every OS (verified locally on Windows too); it runs on Linux
+  # only here to keep the matrix lean — it is a self-contained package, so one
+  # OS is enough to prove the harness and typecheck.
+  cloudflare-worker:
+    name: cloudflare worker (typecheck + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: cloudflare/package-lock.json
+
+      - name: Install deps
+        working-directory: cloudflare
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: cloudflare
+        run: npm run typecheck
+
+      - name: Test
+        working-directory: cloudflare
+        run: npm test

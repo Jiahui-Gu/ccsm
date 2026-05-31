@@ -1,0 +1,40 @@
+name = "ccsm-worker"                # -> ccsm-worker.jiahuigu.workers.dev
+main = "src/worker.ts"
+compatibility_date = "2025-02-14"
+compatibility_flags = ["nodejs_compat"]
+
+[[durable_objects.bindings]]
+name = "PAIRING"                    # env.PAIRING -> DurableObjectNamespace
+class_name = "PairingDurableObject"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["PairingDurableObject"]
+
+# v3 drops the leftover TunnelDO + UserDO from the old cf-worker/Tauri tunnel arch
+# (removed from this repo; replaced by PairingDurableObject WebRTC signaling).
+# Tag is deliberately past the live ledger's "v2" so wrangler applies only this step.
+[[migrations]]
+tag = "v3-drop-tunneldo"
+deleted_classes = ["TunnelDO", "UserDO"]
+
+# Public config (safe to commit)
+[vars]
+OAUTH_REDIRECT_URI = "https://ccsm-worker.jiahuigu.workers.dev/auth/github/callback"
+SESSION_TTL_SECONDS = "900"        # 15 min
+TURN_TTL_SECONDS = "600"           # 10 min
+ROOM_TTL_SECONDS = "60"            # DO survives this long after both sides drop
+TURN_URLS = "turn:turn.cloudflare.com:3478?transport=udp,turns:turn.cloudflare.com:5349?transport=tcp"
+STUN_URLS = "stun:stun.cloudflare.com:3478"
+
+# Secrets (NEVER in repo; already put on ccsm-worker, user re-puts nothing):
+#   GITHUB_OAUTH_CLIENT_ID      GitHub OAuth app client id (public value, stored as secret)
+#   GITHUB_OAUTH_CLIENT_SECRET  GitHub OAuth app client secret (ccsm-oAuth secret)
+#   JWT_SIGNING_KEY             server secret for HMAC userHash + JWT signing (was SERVER_SECRET)
+#   TURN_KEY_ID                 optional - PR-1 does not bind a card / configure TURN
+#   TURN_KEY_API_TOKEN          optional - same
+#   (legacy JWT_REFRESH_SIGNING_KEY is NOT read by PR-1)
