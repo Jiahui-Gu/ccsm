@@ -6,6 +6,7 @@
 
 import type { IpcMain, App } from 'electron';
 import { readDefaultModelFromSettings } from '../agent/read-default-model';
+import { fromMainFrame } from '../security/ipcGuards';
 
 export interface SystemIpcDeps {
   ipcMain: IpcMain;
@@ -35,7 +36,8 @@ export function registerSystemIpc(deps: SystemIpcDeps): void {
       return undefined;
     }
   });
-  ipcMain.on('ccsm:set-language', (_e, lang: unknown) => {
+  ipcMain.on('ccsm:set-language', (e, lang: unknown) => {
+    if (!fromMainFrame(e)) return;
     if (lang === 'en' || lang === 'zh') {
       i18n.setMainLanguage(lang);
       // Tray menu / tooltip + app accelerator menu are built once on app

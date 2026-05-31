@@ -34,12 +34,19 @@ describe('registerVoiceIpc', () => {
   };
   beforeEach(() => vi.resetModules());
 
+  // Event shaped so the fromMainFrame guard (senderFrame === sender.mainFrame)
+  // passes — this test exercises payload validation, not the frame guard.
+  function mainFrameEvent(): unknown {
+    const mainFrame = { id: 1 };
+    return { sender: { mainFrame }, senderFrame: mainFrame };
+  }
+
   it('short-circuits invalid payloads with empty error and never calls transcribe', async () => {
     const transcribe = vi.fn();
     vi.doMock('../../voice/transcriber', () => ({ transcribe }));
     const { registerVoiceIpc } = await import('../voiceIpc');
     registerVoiceIpc({ ipcMain: ipcMain as never });
-    const res = await handler({}, new Float32Array(0));
+    const res = await handler(mainFrameEvent(), new Float32Array(0));
     expect(res).toEqual({ ok: false, error: 'empty' });
     expect(transcribe).not.toHaveBeenCalled();
   });

@@ -16,7 +16,7 @@ export type UpdateStatus =
 // UpdateStatus). Keep these two in sync.
 export type VoiceResult =
   | { ok: true; text: string }
-  | { ok: false; error: 'no-model' | 'transcribe-failed' | 'empty' };
+  | { ok: false; error: 'no-model' | 'transcribe-failed' | 'empty' | 'rejected' };
 
 // Desktop GitHub OAuth login state for the public-internet mobile-remote path
 // (PR-4b). Structurally mirrors electron/remote/oauthLogin.ts's

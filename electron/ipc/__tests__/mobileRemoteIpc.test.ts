@@ -28,6 +28,13 @@ function memStore(loggedIn: boolean): SessionStore {
   };
 }
 
+// Event shaped so the fromMainFrame guard (senderFrame === sender.mainFrame)
+// passes — login/logout are guarded; these tests exercise the flow itself.
+function mainFrameEvent(): unknown {
+  const mainFrame = { id: 1 };
+  return { sender: { mainFrame }, senderFrame: mainFrame };
+}
+
 describe('registerMobileRemoteIpc', () => {
   it('login runs the flow and restarts the peer', async () => {
     const { ipcMain, invoke } = fakeIpc();
@@ -40,7 +47,7 @@ describe('registerMobileRemoteIpc', () => {
       broadcast: () => {},
       doLogin: async () => ({ loggedIn: true, userHash: 'h', expiresAtMs: 123, persisted: true }),
     });
-    const state = await invoke(MOBILE_REMOTE_CHANNELS.login);
+    const state = await invoke(MOBILE_REMOTE_CHANNELS.login, mainFrameEvent());
     expect(state).toMatchObject({ loggedIn: true, userHash: 'h' });
     expect(restart).toHaveBeenCalled();
   });
@@ -61,7 +68,7 @@ describe('registerMobileRemoteIpc', () => {
         persisted: true,
       }),
     });
-    const state = await invoke(MOBILE_REMOTE_CHANNELS.logout);
+    const state = await invoke(MOBILE_REMOTE_CHANNELS.logout, mainFrameEvent());
     expect(store.load()).toBeNull();
     expect(state).toMatchObject({ loggedIn: false });
     expect(restart).toHaveBeenCalled();

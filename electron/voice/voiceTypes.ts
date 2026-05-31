@@ -3,4 +3,4 @@
 // can't import from electron/ — same convention as `UpdateStatus`).
 export type VoiceResult =
   | { ok: true; text: string }
-  | { ok: false; error: 'no-model' | 'transcribe-failed' | 'empty' };
+  | { ok: false; error: 'no-model' | 'transcribe-failed' | 'empty' | 'rejected' };

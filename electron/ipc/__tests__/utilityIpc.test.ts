@@ -172,6 +172,13 @@ describe('ccsm:openExternal IPC handler', () => {
   type Handler = (e: unknown, ...args: unknown[]) => unknown;
   let handler: Handler;
 
+  // Event shaped so the fromMainFrame guard (senderFrame === sender.mainFrame)
+  // passes — these tests exercise scheme validation, not the frame guard.
+  const e = (() => {
+    const mainFrame = { id: 1 };
+    return { sender: { mainFrame }, senderFrame: mainFrame } as unknown;
+  })();
+
   beforeEach(() => {
     openExternalMock.mockClear();
     const handlers = new Map<string, Handler>();
@@ -185,8 +192,8 @@ describe('ccsm:openExternal IPC handler', () => {
   });
 
   it('forwards http(s) URLs to shell.openExternal and returns true', async () => {
-    const r1 = await handler({}, 'https://example.com');
-    const r2 = await handler({}, 'http://localhost:8080/x');
+    const r1 = await handler(e, 'https://example.com');
+    const r2 = await handler(e, 'http://localhost:8080/x');
     expect(r1).toBe(true);
     expect(r2).toBe(true);
     expect(openExternalMock).toHaveBeenCalledTimes(2);
@@ -195,35 +202,35 @@ describe('ccsm:openExternal IPC handler', () => {
   });
 
   it('rejects file:// without calling shell.openExternal', async () => {
-    const r = await handler({}, 'file:///etc/passwd');
+    const r = await handler(e, 'file:///etc/passwd');
     expect(r).toBe(false);
     expect(openExternalMock).not.toHaveBeenCalled();
   });
 
   it('rejects javascript: without calling shell.openExternal', async () => {
-    const r = await handler({}, 'javascript:alert(1)');
+    const r = await handler(e, 'javascript:alert(1)');
     expect(r).toBe(false);
     expect(openExternalMock).not.toHaveBeenCalled();
   });
 
   it('rejects data: without calling shell.openExternal', async () => {
-    const r = await handler({}, 'data:text/html,x');
+    const r = await handler(e, 'data:text/html,x');
     expect(r).toBe(false);
     expect(openExternalMock).not.toHaveBeenCalled();
   });
 
   it('rejects non-string inputs without calling shell.openExternal', async () => {
-    expect(await handler({}, 42)).toBe(false);
-    expect(await handler({}, null)).toBe(false);
-    expect(await handler({}, undefined)).toBe(false);
-    expect(await handler({}, { url: 'https://x' })).toBe(false);
+    expect(await handler(e, 42)).toBe(false);
+    expect(await handler(e, null)).toBe(false);
+    expect(await handler(e, undefined)).toBe(false);
+    expect(await handler(e, { url: 'https://x' })).toBe(false);
     expect(openExternalMock).not.toHaveBeenCalled();
   });
 
   it('returns false (does not throw) when shell.openExternal rejects', async () => {
     openExternalMock.mockRejectedValueOnce(new Error('boom'));
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const r = await handler({}, 'https://example.com');
+    const r = await handler(e, 'https://example.com');
     expect(r).toBe(false);
     expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
