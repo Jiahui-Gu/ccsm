@@ -54,6 +54,35 @@ describe("oauthCallback", () => {
     expect(claims?.userHash).toBe(await hmacUserHash(secret, 777));
   });
 
+  it("desktop flow: 302s to the loopback with a one-time auth_code, clearing all 3 cookies", async () => {
+    mockGithub(777);
+    const req = new Request("https://x/auth/github/callback?code=c&state=S", {
+      headers: { Cookie: "oauth_state=S; oauth_flow=desktop; oauth_port=49231" },
+    });
+    const res = await handleOauthCallback(req, cfg);
+    expect(res.status).toBe(302);
+    const loc = new URL(res.headers.get("Location")!);
+    expect(loc.origin).toBe("http://127.0.0.1:49231");
+    const authCode = loc.searchParams.get("authCode")!;
+    expect(authCode.length).toBeGreaterThan(0);
+    const claims = await verifyJwt(secret, authCode);
+    expect(claims?.typ).toBe("auth_code");
+    expect(claims?.userHash).toBe(await hmacUserHash(secret, 777));
+    const cookie = res.headers.get("Set-Cookie")!;
+    expect(cookie).toContain("oauth_state=; Path=/; Max-Age=0");
+    expect(cookie).toContain("oauth_flow=; Path=/; Max-Age=0");
+    expect(cookie).toContain("oauth_port=; Path=/; Max-Age=0");
+  });
+
+  it("desktop flow: rejects a bad port cookie with 400", async () => {
+    mockGithub(777);
+    const req = new Request("https://x/auth/github/callback?code=c&state=S", {
+      headers: { Cookie: "oauth_state=S; oauth_flow=desktop; oauth_port=80" },
+    });
+    const res = await handleOauthCallback(req, cfg);
+    expect(res.status).toBe(400);
+  });
+
   it("phone flow: 302s to /phone with token+doUrl in the fragment, not the query", async () => {
     mockGithub(777);
     const phoneCfg = {
