@@ -175,6 +175,7 @@ export default [
         global: 'readonly',
         fetch: 'readonly',
         Response: 'readonly',
+        RequestInit: 'readonly',
         URLSearchParams: 'readonly'
       }
     }
