@@ -35,6 +35,31 @@ export { setShellAppearanceProvider } from './shellAppearance';
 const shells: Map<string, Shell> = new Map();
 let topSid: string | null = null;
 
+// Bug #82: revealing a shell flips its wrapper `display:none → ''`. Webkit
+// silently zeroes `.xterm-viewport.scrollTop` on that reveal WITHOUT firing
+// a scroll event, so xterm's own state (`viewportY`/`baseY`) and the DOM
+// scrollTop drift apart — the native scrollbar thumb jumps to the top while
+// the buffer is scrolled up. xterm's `syncScrollArea(false)` short-circuits
+// when it thinks nothing changed; only `syncScrollArea(true)` reaches
+// `Viewport._innerRefresh()` which rewrites `scrollTop = ydisp * rowHeight`.
+//
+// reconcileView forces that sync at the showShell chokepoint. The viewport
+// lives on the private core: the public Terminal class exposes `viewport`,
+// but the installed @xterm/xterm 5.5.0 core bundle stores it as `_viewport`
+// (no `get viewport()` getter on the core), so we try both.
+type ViewportLike = { syncScrollArea?: (force?: boolean) => void };
+function reconcileView(shell: Shell): void {
+  try {
+    const core = (shell.term as unknown as {
+      _core?: { viewport?: ViewportLike; _viewport?: ViewportLike };
+    })._core;
+    const vp = core?.viewport ?? core?._viewport;
+    vp?.syncScrollArea?.(true);
+  } catch {
+    /* private-API best-effort */
+  }
+}
+
 // NOTE: pty.onExit → store._applyPtyExit dispatch lives EXCLUSIVELY on
 // the app-level bridge (`src/app-effects/usePtyExitBridge.ts` wired in
 // App.tsx). That bridge is mounted unconditionally for every sid, so
@@ -246,6 +271,12 @@ export function showShell(sid: string): Shell | undefined {
     }
   }
 
+  // #82: reconcile the native viewport AFTER the `display:''` reveal above,
+  // so xterm rewrites `scrollTop` from its own `ydisp` before the browser
+  // paints. Without this the just-revealed wrapper paints with a webkit-
+  // zeroed scrollTop and the scrollbar thumb desyncs from the buffer.
+  reconcileView(shell);
+
   try {
     window.__ccsmTerm = shell.term;
   } catch {
@@ -259,6 +290,17 @@ export function setMask(sid: string, on: boolean): void {
   const shell = shells.get(sid);
   if (!shell) return;
   shell.mask.style.display = on ? '' : 'none';
+}
+
+/**
+ * Public wrapper so callers (e.g. the attach hook's ResizeObserver) can
+ * force a viewport reconcile for a sid outside the showShell flip — after a
+ * fit() that changed row geometry, the DOM scrollTop can lag xterm's ydisp
+ * the same way a reveal does. No-op if the sid isn't resident.
+ */
+export function reconcileShellView(sid: string): void {
+  const shell = shells.get(sid);
+  if (shell) reconcileView(shell);
 }
 
 /**

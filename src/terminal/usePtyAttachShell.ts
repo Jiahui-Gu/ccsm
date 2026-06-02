@@ -38,6 +38,7 @@ import { warn, log } from '../shared/log';
 import {
   createShell,
   getShell,
+  reconcileShellView,
   resetShellForReload,
   setMask,
   showShell,
@@ -184,13 +185,12 @@ async function runColdStartSuffix(
     warn('attach-shell', 'post-attach fit failed', e);
   }
 
-  // Reveal synchronously. The native `.xterm-viewport` scrollbar no longer
-  // exists (hidden in global.css) — the scrollbar is self-drawn by
-  // <TerminalScrollbar/> as a pure projection of xterm's buffer state. So
-  // there is no DOM `scrollTop` write to race the post-fit viewport reflow
-  // (the bug #82 / rAF-defer rationale is gone): xterm updates
-  // `viewportY/baseY` synchronously and the thumb follows on the next
-  // React render. No rAF defer, no belt-and-suspenders second frame.
+  // Reveal synchronously. We hand the native `.xterm-viewport` scrollbar
+  // back to xterm (the self-drawn <TerminalScrollbar/> projection is gone).
+  // scrollToBottom updates xterm's `ydisp`; setMask(false) reveals the
+  // wrapper, and showShell's `reconcileView` already forced a
+  // syncScrollArea(true) so the native thumb tracks the buffer without a
+  // rAF-deferred second frame.
   try {
     shell.term.scrollToBottom();
   } catch {
@@ -397,6 +397,10 @@ export function usePtyAttachShell(
         const cols = shell.term.cols;
         const rows = shell.term.rows;
         window.ccsmPty?.resize(sessionId, cols, rows).catch(() => {});
+        // #82: a fit() that changed row geometry can leave the DOM
+        // scrollTop lagging xterm's ydisp (same drift class as a reveal).
+        // Force a viewport reconcile so the native scrollbar tracks.
+        reconcileShellView(sessionId);
       } catch (e) {
         warn('attach-shell', 'resize apply failed', e);
       }
