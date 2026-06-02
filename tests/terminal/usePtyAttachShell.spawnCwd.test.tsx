@@ -19,8 +19,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 
-const { storeState, clearPtyExitSpy } = vi.hoisted(() => {
+const { storeState, clearPtyExitSpy, syncScrollAreaSpy } = vi.hoisted(() => {
   const clearPtyExitSpy = vi.fn();
+  const syncScrollAreaSpy = vi.fn();
   const storeState: {
     _clearPtyExit: ReturnType<typeof vi.fn>;
     pendingForkSource: Record<string, string>;
@@ -38,7 +39,7 @@ const { storeState, clearPtyExitSpy } = vi.hoisted(() => {
     scrollbackLines: 1000,
     terminalFontSizePx: 13,
   };
-  return { storeState, clearPtyExitSpy };
+  return { storeState, clearPtyExitSpy, syncScrollAreaSpy };
 });
 
 vi.mock('../../src/stores/store', () => {
@@ -76,6 +77,11 @@ vi.mock('@xterm/xterm', () => ({
       buffer: {
         active: { viewportY: 0, baseY: 0, cursorY: 0, length: 0, type: 'normal' as const },
       },
+      // reconcileView (shellRegistry) reaches into term._core to force a
+      // synchronous syncScrollArea(true) on every showShell reveal (#82).
+      // The installed @xterm/xterm 5.5.0 bundle stores the field as
+      // `_viewport` on the core; expose the spy there so the reconcile lands.
+      _core: { _viewport: { syncScrollArea: syncScrollAreaSpy } },
       dispose: vi.fn(),
     };
   }),
@@ -98,6 +104,7 @@ vi.mock('../../src/shared/log', () => ({
 
 import { usePtyAttachShell } from '../../src/terminal/usePtyAttachShell';
 import {
+  showShell,
   __resetShellRegistryForTests,
 } from '../../src/terminal/shellRegistry';
 
@@ -146,6 +153,7 @@ describe('usePtyAttachShell — spawn cwd source-of-truth (#79a)', () => {
     storeState.disconnectedSessions = {};
     storeState.sessions = [];
     clearPtyExitSpy.mockClear();
+    syncScrollAreaSpy.mockClear();
   });
 
   afterEach(() => {
@@ -206,5 +214,71 @@ describe('usePtyAttachShell — spawn cwd source-of-truth (#79a)', () => {
 
     expect(spawn).toHaveBeenCalledTimes(1);
     expect(spawn.mock.calls[0]![1]).toBe(propCwd);
+  });
+});
+
+// Task #82: revealing a visited shell (`showShell`) must force
+// xterm's `syncScrollArea(true)` so the native `.xterm-viewport`
+// scrollbar's DOM `scrollTop` is re-derived from xterm's `ydisp`. Webkit
+// silently zeroes scrollTop on the `display:none → ''` reveal with NO
+// scroll event, and `syncScrollArea(false)` short-circuits — only the
+// forced (`true`) variant rewrites scrollTop and re-syncs the thumb.
+describe('shellRegistry — viewport reconcile on reveal (#82)', () => {
+  let host: HTMLDivElement;
+  let hostRef: { current: HTMLDivElement | null };
+
+  beforeEach(() => {
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    hostRef = { current: host };
+    storeState.pendingForkSource = {};
+    storeState.reloadNonce = {};
+    storeState.disconnectedSessions = {};
+    storeState.sessions = [];
+    syncScrollAreaSpy.mockClear();
+  });
+
+  afterEach(() => {
+    __resetShellRegistryForTests();
+    document.body.removeChild(host);
+    uninstallFakePty();
+  });
+
+  // Mount two cold shells so both are resident; the second is top. Then a
+  // visited-switch back to the first must reconcile its viewport.
+  async function mountTwoShells(): Promise<void> {
+    storeState.sessions = [
+      { id: 'sid-A', cwd: 'C:/a' },
+      { id: 'sid-B', cwd: 'C:/b' },
+    ];
+    installFakePty(async (sid: string) => ({
+      ok: true, sid, pid: 1234, cols: 80, rows: 24,
+    }));
+    renderHook(() => usePtyAttachShell('sid-A', '', hostRef));
+    await settle();
+    renderHook(() => usePtyAttachShell('sid-B', '', hostRef));
+    await settle();
+  }
+
+  it('calls syncScrollArea(true) on the visited reveal (showShell)', async () => {
+    await mountTwoShells();
+    syncScrollAreaSpy.mockClear();
+    showShell('sid-A');
+    expect(syncScrollAreaSpy).toHaveBeenCalledWith(true);
+  });
+
+  it('reconciles on the cold reveal too (showShell during createShell)', async () => {
+    await mountTwoShells();
+    // Cold start promotes each shell via showShell → reconcileView runs;
+    // so syncScrollArea(true) was already called during mount.
+    expect(syncScrollAreaSpy).toHaveBeenCalledWith(true);
+  });
+
+  it('forces the sync (true), never the no-op false variant', async () => {
+    await mountTwoShells();
+    syncScrollAreaSpy.mockClear();
+    showShell('sid-A');
+    expect(syncScrollAreaSpy).toHaveBeenCalledWith(true);
+    expect(syncScrollAreaSpy).not.toHaveBeenCalledWith(false);
   });
 });
