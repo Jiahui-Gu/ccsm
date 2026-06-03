@@ -2,23 +2,33 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    environment: 'jsdom',
-    include: [
-      'tests/**/*.test.ts',
-      'tests/**/*.test.tsx',
-      'electron/**/__tests__/**/*.test.ts',
+    // Two projects, split by the runtime the code under test actually runs in.
+    // This is the whole point of the node:sqlite migration: main-process code
+    // (electron/**) runs under Node, not a browser. Running its tests under
+    // jsdom drove vitest's client bundler to try inlining the `node:sqlite`
+    // built-in and fail with "Cannot bundle Node.js built-in node:sqlite".
+    // Under the `node` environment the built-in stays a runtime require, as it
+    // is in production. Renderer tests (src/** via tests/**) keep jsdom.
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: 'electron',
+          environment: 'node',
+          include: ['electron/**/__tests__/**/*.test.ts'],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: 'renderer',
+          environment: 'jsdom',
+          setupFiles: ['tests/setup.ts'],
+          include: ['tests/**/*.test.ts', 'tests/**/*.test.tsx'],
+        },
+      },
     ],
     globals: true,
-    setupFiles: ['tests/setup.ts'],
-    // node:sqlite is a Node built-in (DatabaseSync). Some CI runners drive
-    // vitest's bundler to try inlining it and fail with "Cannot bundle
-    // Node.js built-in node:sqlite". Mark it external so it stays a runtime
-    // require instead of being bundled.
-    server: {
-      deps: {
-        external: ['node:sqlite'],
-      },
-    },
     // v8 coverage instrumentation roughly doubles test wall-clock under
     // jsdom, so the default 5s testTimeout starts to flake on slower
     // suites (e.g. shortcut-overlay-platform with multiple act/render
