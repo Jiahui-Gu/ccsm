@@ -28,3 +28,4 @@ docs/screenshots/dogfood-happy-path/
 DOC_AUDIT.md
 
 resources/models/*.bin
+.claude/worktrees/

@@ -39,13 +39,6 @@ import { warn } from '../shared/log';
 
 export const DEFAULT_COLS = 120;
 export const DEFAULT_ROWS = 30;
-// PTY resize bounds, enforced by `normalizeResizeDims` in lifecycle.ts — the
-// single convergence point every transport (desktop IPC, remote WS) funnels
-// through. Floor is clamped up (a 0/1-col PTY breaks CLI line wrapping);
-// ceiling is rejected outright (a real client never exceeds ~600, so an
-// oversize request is a bug/attack and must not be honored even clamped).
-export const MIN_PTY_DIM = 2;
-export const MAX_PTY_DIM = 1000;
 // User-facing scrollback cap defaults to 1500 lines (see
 // `electron/prefs/scrollback.ts`). The headless mirror's per-entry buffer
 // is sized at construction time from `loadScrollbackLines()`; this constant

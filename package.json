@@ -1,6 +1,6 @@
 {
   "name": "ccsm",
-  "version": "0.2.18",
+  "version": "0.2.19",
   "description": "CCSM (Claude Code Session Manager) — group-first manager for many Claude Code sessions",
   "productName": "CCSM",
   "license": "MIT",
@@ -75,7 +75,6 @@
     "react-dom": "^18.3.1",
     "react-i18next": "^17.0.4",
     "tailwind-merge": "^2.5.5",
-    "werift": "^0.23.0",
     "zustand": "^5.0.12"
   },
   "devDependencies": {
@@ -124,8 +123,7 @@
     "asar": true,
     "asarUnpack": [
       "**/node_modules/better-sqlite3/**",
-      "**/node_modules/node-pty/**",
-      "**/node_modules/@shinyoshiaki/binary-data/**"
+      "**/node_modules/node-pty/**"
     ],
     "extraResources": [
       {
