@@ -105,13 +105,23 @@ describe('<MicButton /> feedback + a11y', () => {
     expect(region?.textContent).toContain('system settings');
   });
 
-  it('no-model error outcome explains the missing model', () => {
-    mockState = { kind: 'error', message: 'no-model' };
+  it('model-missing error outcome points the user at the settings download', () => {
+    mockState = { kind: 'error', message: 'model-missing' };
     renderButton();
     act(() => {
-      lastFeedback?.({ kind: 'error', message: 'no-model' });
+      lastFeedback?.({ kind: 'error', message: 'model-missing' });
     });
     const region = document.querySelector('[role="alert"][aria-live="assertive"]');
-    expect(region?.textContent).toContain('Voice model not installed');
+    expect(region?.textContent).toContain('Voice model not downloaded');
+  });
+
+  it('bin-missing error outcome explains the broken install', () => {
+    mockState = { kind: 'error', message: 'bin-missing' };
+    renderButton();
+    act(() => {
+      lastFeedback?.({ kind: 'error', message: 'bin-missing' });
+    });
+    const region = document.querySelector('[role="alert"][aria-live="assertive"]');
+    expect(region?.textContent).toContain('Voice engine missing from this install');
   });
 });

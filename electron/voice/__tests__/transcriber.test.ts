@@ -1,20 +1,36 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('electron', () => ({
-  app: { getAppPath: () => '/repo' },
+  app: { getAppPath: () => '/repo', getPath: () => '/userData' },
+}));
+
+// transcribe() reads the current tier from prefs; pin it to 'base' so the
+// model filename is deterministic.
+vi.mock('../../prefs/voiceTier', () => ({
+  loadVoiceTier: () => 'base',
 }));
 
 describe('resolveModelPath / resolveBinPath', () => {
   beforeEach(() => vi.resetModules());
 
-  it('resolves repo-local base model path in dev', async () => {
+  it('prefers the userData models dir for the requested tier', async () => {
+    vi.doMock('fs', () => ({ existsSync: () => true }));
     const { resolveModelPath } = await import('../transcriber');
-    expect(resolveModelPath().replace(/\\/g, '/')).toContain(
+    expect(resolveModelPath('small').replace(/\\/g, '/')).toBe(
+      '/userData/models/ggml-small.bin',
+    );
+  });
+
+  it('falls back to the dev resources tree when userData/packaged are absent', async () => {
+    vi.doMock('fs', () => ({ existsSync: () => false }));
+    const { resolveModelPath } = await import('../transcriber');
+    expect(resolveModelPath('base').replace(/\\/g, '/')).toContain(
       'resources/models/ggml-base.bin',
     );
   });
 
   it('resolves repo-local whisper-cli path in dev', async () => {
+    vi.doMock('fs', () => ({ existsSync: () => false }));
     const { resolveBinPath } = await import('../transcriber');
     expect(resolveBinPath().replace(/\\/g, '/')).toContain(
       'resources/whisper-bin/whisper-cli.exe',
@@ -38,21 +54,21 @@ describe('transcribe', () => {
     }));
   }
 
-  it('returns no-model when the model file is missing', async () => {
+  it('returns model-missing when the model file is absent', async () => {
     mockFs({ modelExists: false, binExists: true });
     const { transcribe } = await import('../transcriber');
     expect(await transcribe(new Float32Array(16000))).toEqual({
       ok: false,
-      error: 'no-model',
+      error: 'model-missing',
     });
   });
 
-  it('returns no-model when the binary is missing', async () => {
+  it('returns bin-missing when the engine binary is absent', async () => {
     mockFs({ modelExists: true, binExists: false });
     const { transcribe } = await import('../transcriber');
     expect(await transcribe(new Float32Array(16000))).toEqual({
       ok: false,
-      error: 'no-model',
+      error: 'bin-missing',
     });
   });
 

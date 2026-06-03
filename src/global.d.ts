@@ -16,7 +16,17 @@ export type UpdateStatus =
 // UpdateStatus). Keep these two in sync.
 export type VoiceResult =
   | { ok: true; text: string }
-  | { ok: false; error: 'no-model' | 'transcribe-failed' | 'empty' };
+  | { ok: false; error: 'model-missing' | 'bin-missing' | 'transcribe-failed' | 'empty' };
+
+// Mirrors electron/voice/modelTiers.ts + modelDownloader.ts. Renderer can't
+// import from electron/; keep in sync with electron/preload/bridges/ccsmVoice.ts.
+export type VoiceTier = 'tiny' | 'base' | 'small' | 'medium' | 'large-v3' | 'large-v3-turbo';
+
+export type VoiceModelStatus =
+  | { kind: 'idle'; tier: VoiceTier }
+  | { kind: 'downloading'; tier: VoiceTier; transferred: number; total: number | null }
+  | { kind: 'ready'; tier: VoiceTier }
+  | { kind: 'error'; tier: VoiceTier; message: string };
 
 declare global {
   interface Window {
@@ -134,6 +144,10 @@ declare global {
     };
     ccsmVoice?: {
       transcribe: (pcm: Float32Array) => Promise<VoiceResult>;
+      isModelDownloaded: (tier: VoiceTier) => Promise<boolean>;
+      downloadModel: (tier: VoiceTier) => Promise<VoiceModelStatus | null>;
+      cancelDownload: (tier: VoiceTier) => Promise<void>;
+      onModelStatus: (handler: (status: VoiceModelStatus) => void) => () => void;
     };
   }
 }

@@ -96,6 +96,7 @@ const en = {
       general: 'General',
       appearance: 'Appearance',
       notifications: 'Notifications',
+      voice: 'Voice',
       updates: 'Updates'
     },
     theme: 'Theme',
@@ -173,6 +174,25 @@ const en = {
       downloadedToastTitle: 'Update downloaded — restart to apply',
       downloadedToastBody: 'Version {{version}} is ready.',
       downloadedToastAction: 'Restart'
+    },
+    voice: {
+      intro:
+        'Pick a speech-to-text model. Models are downloaded on demand into your user data folder — larger models are more accurate but slower on CPU and take longer to download. Each tier is kept separately, so switching back to one you already downloaded is instant.',
+      tierLabel: 'Model',
+      accuracyTiny: 'Fastest, lowest accuracy',
+      accuracyBase: 'Fast, good for short phrases',
+      accuracySmall: 'Balanced speed and accuracy',
+      accuracyMedium: 'High accuracy',
+      accuracyLargeV3: 'Highest accuracy',
+      accuracyLargeV3Turbo: 'Near-highest accuracy, faster than large-v3',
+      heavyWarning: 'Large download; transcription can be slow on CPU-only machines.',
+      installed: 'Installed',
+      selected: 'In use',
+      downloadButton: 'Download',
+      cancelButton: 'Cancel',
+      useButton: 'Use',
+      downloading: 'Downloading… {{transferred}}{{total}}',
+      downloadError: 'Download failed: {{message}}'
     }
   },
   notifications: {
@@ -261,8 +281,10 @@ const en = {
     noSpeechBody: 'Please try speaking again, a little longer.',
     errorMic: 'Microphone access denied',
     errorMicBody: 'Allow microphone access for this app in your system settings, then try again.',
-    errorNoModel: 'Voice model not installed',
-    errorNoModelBody: 'The speech-to-text model is missing. Install the voice model to use dictation.',
+    errorModelMissing: 'Voice model not downloaded',
+    errorModelMissingBody: 'Open Settings → Voice to download a speech-to-text model, then try again.',
+    errorBinMissing: 'Voice engine missing from this install',
+    errorBinMissingBody: 'The whisper engine is missing from this install. Please reinstall CCSM to repair it.',
     errorFailed: 'Transcription failed',
     errorFailedBody: 'Something went wrong while transcribing. Click the mic to try again.',
   },

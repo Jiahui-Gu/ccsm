@@ -57,9 +57,11 @@ export function MicButton({ sessionId }: { sessionId: string }) {
         : state.kind === 'error'
           ? state.message === 'mic'
             ? t('voice.errorMic')
-            : state.message === 'no-model'
-              ? t('voice.errorNoModel')
-              : t('voice.errorFailed')
+            : state.message === 'model-missing'
+              ? t('voice.errorModelMissing')
+              : state.message === 'bin-missing'
+                ? t('voice.errorBinMissing')
+                : t('voice.errorFailed')
           : t('voice.ariaStart');
 
   const color =
