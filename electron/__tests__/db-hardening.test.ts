@@ -76,7 +76,7 @@ describe('db hardening: schema versioning', () => {
   it('stamps user_version=1 on a freshly-created database', async () => {
     const { initDb } = await freshDb();
     const handle = initDb();
-    const v = handle.pragma('user_version', { simple: true }) as number;
+    const v = (handle.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
     expect(v).toBe(1);
   });
 
@@ -92,8 +92,8 @@ describe('db hardening: schema versioning', () => {
 
     const file = path.join(tmpDir, 'ccsm.db');
     // Manually create a healthy SQLite file with a far-future user_version.
-    const Database = (await import('better-sqlite3')).default;
-    const seed = new Database(file);
+    const { DatabaseSync } = await import('node:sqlite');
+    const seed = new DatabaseSync(file);
     seed.exec(`
       CREATE TABLE app_state (
         key TEXT PRIMARY KEY,
@@ -102,7 +102,7 @@ describe('db hardening: schema versioning', () => {
       );
       INSERT INTO app_state (key, value, updated_at) VALUES ('preExisting', 'keepme', 0);
     `);
-    seed.pragma('user_version = 99');
+    seed.exec('PRAGMA user_version = 99');
     seed.close();
 
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -111,7 +111,9 @@ describe('db hardening: schema versioning', () => {
 
     // The stored version must NOT be rewritten — the breadcrumb has to
     // survive across boots so a bug report can include it.
-    expect(handle.pragma('user_version', { simple: true })).toBe(99);
+    expect(
+      (handle.prepare('PRAGMA user_version').get() as { user_version: number }).user_version
+    ).toBe(99);
 
     // Existing user rows must not be wiped (no silent data loss on
     // perceived-newer files).
@@ -144,8 +146,8 @@ describe('db hardening: schema versioning', () => {
     mod.closeDb();
 
     const file = path.join(tmpDir, 'ccsm.db');
-    const Database = (await import('better-sqlite3')).default;
-    const seed = new Database(file);
+    const { DatabaseSync } = await import('node:sqlite');
+    const seed = new DatabaseSync(file);
     seed.exec(`
       CREATE TABLE app_state (
         key TEXT PRIMARY KEY,
@@ -161,7 +163,9 @@ describe('db hardening: schema versioning', () => {
     const { initDb, loadState } = mod;
     const handle = initDb();
 
-    expect(handle.pragma('user_version', { simple: true })).toBe(1);
+    expect(
+      (handle.prepare('PRAGMA user_version').get() as { user_version: number }).user_version
+    ).toBe(1);
     expect(loadState('legacy')).toBe('survives');
   });
 
@@ -215,17 +219,38 @@ describe('db hardening: WAL durability across a non-graceful shutdown', () => {
     } finally {
       if (!child.killed) child.kill('SIGKILL');
     }
-    // The OS discards the unflushed WAL on restart.
+    // The OS discards the unflushed WAL on restart. We model that by deleting
+    // the -wal/-shm sidecars. On Windows the SIGKILL'd child's file handles
+    // can linger briefly after the process is reaped (EBUSY/EPERM on unlink),
+    // so a naive try/catch would silently leave the sidecars in place — the
+    // reader would then still see the WAL contents and the durability test
+    // would FALSELY pass ("data survived") on the buggy path. Retry with
+    // backoff until each sidecar is provably gone, and fail loudly if it
+    // cannot be removed so the durability assertion stays truthful.
     for (const ext of ['-wal', '-shm']) {
-      try {
-        fs.unlinkSync(file + ext);
-      } catch {
-        /* may have been folded in already / never existed */
+      const sidecar = file + ext;
+      const deadline = Date.now() + 5000;
+      while (true) {
+        try {
+          fs.unlinkSync(sidecar);
+        } catch (err) {
+          const code = (err as NodeJS.ErrnoException).code;
+          if (code === 'ENOENT') break; // never existed / already gone
+          if (Date.now() > deadline) {
+            throw new Error(
+              `failed to remove sidecar ${sidecar} after 5s (last error: ${code}) — ` +
+                'durability test cannot run truthfully while the WAL is still present'
+            );
+          }
+          await new Promise((r) => setTimeout(r, 25));
+          continue;
+        }
+        if (!fs.existsSync(sidecar)) break;
       }
     }
     // A fresh launch opens the main DB from scratch.
-    const Database = (await import('better-sqlite3')).default;
-    const reader = new Database(file, { readonly: true });
+    const { DatabaseSync } = await import('node:sqlite');
+    const reader = new DatabaseSync(file, { readOnly: true });
     try {
       const row = reader
         .prepare('SELECT value FROM app_state WHERE key = ?')
@@ -268,13 +293,15 @@ describe('db hardening: saveState/initDb wire up WAL durability', () => {
     const { initDb } = await freshDb();
     const handle = initDb();
     // synchronous: 0=OFF 1=NORMAL 2=FULL 3=EXTRA
-    expect(handle.pragma('synchronous', { simple: true })).toBe(2);
+    expect(
+      (handle.prepare('PRAGMA synchronous').get() as { synchronous: number }).synchronous
+    ).toBe(2);
   });
 
   it('saveState issues a passive WAL checkpoint', async () => {
     const mod = await freshDb();
     const { getDb, saveState } = mod;
-    const spy = vi.spyOn(getDb(), 'pragma');
+    const spy = vi.spyOn(getDb(), 'exec');
     saveState('main', 'x');
     const checkpointed = spy.mock.calls.some((c) => String(c[0]).includes('wal_checkpoint'));
     expect(checkpointed).toBe(true);

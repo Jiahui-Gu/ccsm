@@ -16,17 +16,17 @@
 // With neither set, this is byte-for-byte the *current* (buggy) db.ts path.
 //
 // Keep this in sync with electron/db.ts if that pragma sequence ever changes.
-const Database = require('better-sqlite3');
+const { DatabaseSync } = require('node:sqlite');
 const fs = require('fs');
 
 const file = process.env.DBFILE;
 const key = process.env.STATE_KEY || 'main';
 const value = process.env.STATE_VALUE || 'written';
 
-const db = new Database(file);
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
-if (process.env.SYNC_FULL === '1') db.pragma('synchronous = FULL');
+const db = new DatabaseSync(file);
+db.exec('PRAGMA journal_mode = WAL');
+db.exec('PRAGMA foreign_keys = ON');
+if (process.env.SYNC_FULL === '1') db.exec('PRAGMA synchronous = FULL');
 db.exec(
   'CREATE TABLE IF NOT EXISTS app_state (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL)'
 );
@@ -40,10 +40,10 @@ const upsert = db.prepare(
 // they all live only in the -wal sidecar.
 for (let i = 0; i < 50; i++) {
   upsert.run(key, 'v' + i, Date.now());
-  if (process.env.CHECKPOINT === '1') db.pragma('wal_checkpoint(PASSIVE)');
+  if (process.env.CHECKPOINT === '1') db.exec('PRAGMA wal_checkpoint(PASSIVE)');
 }
 upsert.run(key, value, Date.now());
-if (process.env.CHECKPOINT === '1') db.pragma('wal_checkpoint(PASSIVE)');
+if (process.env.CHECKPOINT === '1') db.exec('PRAGMA wal_checkpoint(PASSIVE)');
 
 // Signal the parent that the write is committed, then hang. We deliberately
 // never call db.close() — the parent SIGKILLs us, which is what a forced

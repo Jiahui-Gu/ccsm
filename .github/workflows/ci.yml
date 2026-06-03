@@ -67,12 +67,6 @@ jobs:
           # first install when the Electron binary cache is cold.
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
 
-      # Rebuild better-sqlite3 against Node (tests run under node, not
-      # electron). The electron-builder `postinstall` above builds for the
-      # electron ABI; we overwrite with the node ABI for CI tests here.
-      - name: Rebuild better-sqlite3 for Node
-        run: npm rebuild better-sqlite3
-
       - name: Lint
         run: npm run lint
 

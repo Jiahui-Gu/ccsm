@@ -102,11 +102,10 @@ export async function resetBetweenCases(app, win, opts = {}) {
   await app.evaluate(async (_main, keepKeys) => {
     try {
       const path = require('node:path');
-      const Database = require('better-sqlite3');
+      const { DatabaseSync } = require('node:sqlite');
       const { app: electronApp } = require('electron');
       const dbPath = path.join(electronApp.getPath('userData'), 'ccsm.db');
-      const db = new Database(dbPath);
-      db.exec('DELETE FROM messages;');
+      const db = new DatabaseSync(dbPath);
       if (keepKeys.length === 0) {
         db.exec('DELETE FROM app_state;');
       } else {

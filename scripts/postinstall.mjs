@@ -110,16 +110,14 @@ function runRebuild(moduleName, { allowFailure } = { allowFailure: false }) {
   return true;
 }
 
-runRebuild('better-sqlite3', { allowFailure: false });
 runRebuild('node-pty', { allowFailure: true });
 
 function printHint() {
   console.error('');
-  console.error('Native modules (better-sqlite3 + node-pty) must be rebuilt');
+  console.error('Native modules (node-pty) must be rebuilt');
   console.error('for the Electron ABI before the app can start. If the');
   console.error('automatic rebuild fails, try running it manually:');
   console.error('');
-  console.error('  npx @electron/rebuild -f -o better-sqlite3 --build-from-source');
   console.error('  npx @electron/rebuild -f -o node-pty --build-from-source');
   console.error('');
   console.error('On Windows you need Visual Studio Build Tools (C++ workload)');

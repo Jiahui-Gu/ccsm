@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
-import Database from 'better-sqlite3';
+import { DatabaseSync } from 'node:sqlite';
 
 // Wrap fs so the corruption-recovery test can pin that `electron/db.ts`
 // actually calls `unlinkSync` on the `-wal` / `-shm` sidecar paths.
@@ -97,8 +97,8 @@ describe('db: schema versioning branches', () => {
     const mod = await freshDb();
     // Pre-seed the canonical db file with a future-version user_version stamp.
     const file = path.join(tmpDir, 'ccsm.db');
-    const seed = new Database(file);
-    seed.pragma('user_version = 99');
+    const seed = new DatabaseSync(file);
+    seed.exec('PRAGMA user_version = 99');
     seed.close();
 
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -114,13 +114,14 @@ describe('db: schema versioning branches', () => {
   it('keeps an existing matching user_version untouched (no migrate, no warn)', async () => {
     const mod = await freshDb();
     const file = path.join(tmpDir, 'ccsm.db');
-    const seed = new Database(file);
-    seed.pragma('user_version = 1'); // matches SCHEMA_VERSION
+    const seed = new DatabaseSync(file);
+    seed.exec('PRAGMA user_version = 1'); // matches SCHEMA_VERSION
     seed.close();
 
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const handle = mod.initDb();
-    const v = handle.pragma('user_version', { simple: true }) as number;
+    const v = (handle.prepare('PRAGMA user_version').get() as { user_version: number })
+      .user_version;
     expect(v).toBe(1);
     expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
@@ -133,7 +134,7 @@ describe('db: legacy-table cleanup', () => {
     // Pre-seed a db with the legacy tables AND content. initDb() must drop
     // them silently — they're tables the current app no longer reads.
     const file = path.join(tmpDir, 'ccsm.db');
-    const seed = new Database(file);
+    const seed = new DatabaseSync(file);
     seed.exec(`
       CREATE TABLE endpoints (id INTEGER PRIMARY KEY, name TEXT);
       CREATE TABLE endpoint_models (id INTEGER PRIMARY KEY, endpoint_id INTEGER);
@@ -238,7 +239,7 @@ afterEach(async () => {
 describe('db: __setDbForTests injection', () => {
   it('swaps in an in-memory handle and re-runs the schema bootstrap', async () => {
     const mod = await freshDb();
-    const mem = new Database(':memory:');
+    const mem = new DatabaseSync(':memory:');
     mod.__setDbForTests(mem);
 
     // app_state must be created by __setDbForTests's SCHEMA_SQL execution.
@@ -270,7 +271,7 @@ describe('db: __setDbForTests injection', () => {
     // saveState() would call .run() on a Statement bound to the now-closed
     // file handle and throw.
     mod.closeDb();
-    const mem = new Database(':memory:');
+    const mem = new DatabaseSync(':memory:');
     mod.__setDbForTests(mem);
     expect(() => mod.saveState('warm', 'b')).not.toThrow();
     expect(mod.loadState('warm')).toBe('b');
@@ -289,6 +290,10 @@ describe('db: closeDb hygiene', () => {
     const a = mod.initDb();
     mod.closeDb();
     const b = mod.initDb();
-    expect(a).not.toBe(b);
+    // Compare via a boolean rather than `expect(a).not.toBe(b)`: a failing
+    // identity matcher would make vitest serialize the now-closed handle `a`,
+    // and node:sqlite throws ERR_INVALID_STATE when a closed DatabaseSync is
+    // introspected. `Object.is` only ever serializes the boolean result.
+    expect(Object.is(a, b)).toBe(false);
   });
 });
