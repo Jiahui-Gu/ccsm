@@ -88,4 +88,30 @@ exports.default = async function afterPack(context) {
   console.log(
     `[after-pack] OK ${platformKey}: node-pty ${flavor} binding present (${sizeKB} KB) at ${which}`,
   );
+
+  // Verify the whisper-cli engine landed. Models are downloaded at runtime
+  // (NOT bundled — that empty-dir bug is what motivated the runtime
+  // downloader), but the engine binary IS shipped via extraResources
+  // whisper-bin. A missing exe means every transcribe returns bin-missing
+  // with no recovery, so turn it into a hard build failure here. win32 only:
+  // the prebuilt whisper-cli we ship is a Windows binary.
+  if (electronPlatformName === 'win32') {
+    const whisperCli = path.join(resourcesDir, 'whisper-bin', 'whisper-cli.exe');
+    if (!fs.existsSync(whisperCli)) {
+      let listing = '<missing>';
+      try {
+        listing = fs.readdirSync(path.join(resourcesDir, 'whisper-bin')).join(', ') || '<empty>';
+      } catch {
+        // whisper-bin dir may not exist at all (extraResources typo etc.)
+      }
+      throw new Error(
+        `[after-pack] whisper-cli.exe missing for ${platformKey}.\n` +
+          `  Looked for: ${whisperCli}\n` +
+          `  whisper-bin contents: ${listing}\n` +
+          `Hint: confirm build.extraResources ships resources/whisper-bin → whisper-bin.`,
+      );
+    }
+    const cliKB = (fs.statSync(whisperCli).size / 1024).toFixed(0);
+    console.log(`[after-pack] OK ${platformKey}: whisper-cli.exe present (${cliKB} KB)`);
+  }
 };

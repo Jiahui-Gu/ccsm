@@ -7,7 +7,7 @@
 
 export type VoiceOutcome =
   | { kind: 'no-speech' } // clip too short or transcriber returned empty
-  | { kind: 'error'; message: string }; // mic denied / no-model / transcribe-failed
+  | { kind: 'error'; message: string }; // mic denied / model-missing / bin-missing / transcribe-failed
 
 export type VoiceToastSpec = {
   // Maps to ToastKind in components/ui/Toast.tsx. 'info' rides the polite
@@ -25,8 +25,10 @@ function errorKeys(message: string): { titleKey: string; bodyKey: string } {
   switch (message) {
     case 'mic':
       return { titleKey: 'voice.errorMic', bodyKey: 'voice.errorMicBody' };
-    case 'no-model':
-      return { titleKey: 'voice.errorNoModel', bodyKey: 'voice.errorNoModelBody' };
+    case 'model-missing':
+      return { titleKey: 'voice.errorModelMissing', bodyKey: 'voice.errorModelMissingBody' };
+    case 'bin-missing':
+      return { titleKey: 'voice.errorBinMissing', bodyKey: 'voice.errorBinMissingBody' };
     default:
       return { titleKey: 'voice.errorFailed', bodyKey: 'voice.errorFailedBody' };
   }

@@ -4,6 +4,7 @@ import * as os from 'os';
 import { resolveModelPath, resolveBinPath } from './transcriber';
 import { runWhisperCli } from './whisperCli';
 import { encodeWav } from './wavEncoder';
+import { loadVoiceTier } from '../prefs/voiceTier';
 
 // Best-effort, fire-and-forget warmup. Runs once after app start to fault the
 // whisper exe/DLLs (~52 MB) and model (148 MB) into the OS page cache, so the
@@ -12,7 +13,7 @@ import { encodeWav } from './wavEncoder';
 // pre-reads exactly those pages. Silent: any failure here must never surface to
 // the user or block startup; the real transcribe() path handles its own errors.
 export async function warmUpTranscriber(): Promise<void> {
-  const modelPath = resolveModelPath();
+  const modelPath = resolveModelPath(loadVoiceTier());
   const binPath = resolveBinPath();
   if (!fs.existsSync(modelPath) || !fs.existsSync(binPath)) return;
 

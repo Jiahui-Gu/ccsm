@@ -5,14 +5,21 @@ import * as os from 'os';
 import type { VoiceResult } from './voiceTypes';
 import { runWhisperCli } from './whisperCli';
 import { encodeWav } from './wavEncoder';
+import { tierFilename, type VoiceTier } from './modelTiers';
+import { loadVoiceTier } from '../prefs/voiceTier';
 
-const MODEL_FILENAME = 'ggml-base.bin';
 const BIN_FILENAME = 'whisper-cli.exe';
 
-export function resolveModelPath(): string {
-  const packaged = path.join(process.resourcesPath ?? '', 'models', MODEL_FILENAME);
+// Models live in the writable userData dir (downloaded at runtime). Fall back
+// to the old packaged locations so installs that shipped a bundled model still
+// work, then to the dev resources/ tree.
+export function resolveModelPath(tier: VoiceTier): string {
+  const filename = tierFilename(tier);
+  const userData = path.join(app.getPath('userData'), 'models', filename);
+  if (fs.existsSync(userData)) return userData;
+  const packaged = path.join(process.resourcesPath ?? '', 'models', filename);
   if (process.resourcesPath && fs.existsSync(packaged)) return packaged;
-  return path.join(app.getAppPath(), 'resources', 'models', MODEL_FILENAME);
+  return path.join(app.getAppPath(), 'resources', 'models', filename);
 }
 
 export function resolveBinPath(): string {
@@ -22,10 +29,10 @@ export function resolveBinPath(): string {
 }
 
 export async function transcribe(pcm: Float32Array): Promise<VoiceResult> {
-  const modelPath = resolveModelPath();
-  if (!fs.existsSync(modelPath)) return { ok: false, error: 'no-model' };
+  const modelPath = resolveModelPath(loadVoiceTier());
+  if (!fs.existsSync(modelPath)) return { ok: false, error: 'model-missing' };
   const binPath = resolveBinPath();
-  if (!fs.existsSync(binPath)) return { ok: false, error: 'no-model' };
+  if (!fs.existsSync(binPath)) return { ok: false, error: 'bin-missing' };
 
   const wavPath = path.join(
     os.tmpdir(),
