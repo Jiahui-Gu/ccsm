@@ -91,6 +91,7 @@ const zh: EnCatalog = {
       general: '通用',
       appearance: '外观',
       notifications: '通知',
+      voice: '语音',
       updates: '更新'
     },
     theme: '主题',
@@ -162,6 +163,25 @@ const zh: EnCatalog = {
       downloadedToastTitle: '更新已下载 — 重启以应用',
       downloadedToastBody: '版本 {{version}} 已就绪。',
       downloadedToastAction: '重启'
+    },
+    voice: {
+      intro:
+        '选择语音转文字模型。模型按需下载到用户数据目录——模型越大越准,但纯 CPU 上更慢、下载也更久。各档位独立保存,切回已下载过的档位是即时的。',
+      tierLabel: '模型',
+      accuracyTiny: '最快,精度最低',
+      accuracyBase: '快,适合短句',
+      accuracySmall: '速度与精度均衡',
+      accuracyMedium: '高精度',
+      accuracyLargeV3: '最高精度',
+      accuracyLargeV3Turbo: '接近最高精度,比 large-v3 快',
+      heavyWarning: '下载体积大;纯 CPU 机器上转写可能很慢。',
+      installed: '已下载',
+      selected: '使用中',
+      downloadButton: '下载',
+      cancelButton: '取消',
+      useButton: '使用',
+      downloading: '下载中… {{transferred}}{{total}}',
+      downloadError: '下载失败:{{message}}'
     }
   },
   notifications: {
@@ -250,8 +270,10 @@ const zh: EnCatalog = {
     noSpeechBody: '请再说一次,稍微说长一点。',
     errorMic: '麦克风访问被拒绝',
     errorMicBody: '请在系统设置里允许本应用访问麦克风,然后重试。',
-    errorNoModel: '语音模型未安装',
-    errorNoModelBody: '缺少语音转文字模型。请先安装语音模型再使用语音输入。',
+    errorModelMissing: '语音模型未下载',
+    errorModelMissingBody: '打开"设置 → 语音"下载一个语音转文字模型,然后重试。',
+    errorBinMissing: '安装包缺少语音引擎',
+    errorBinMissingBody: '此安装缺少 whisper 引擎。请重新安装 CCSM 以修复。',
     errorFailed: '识别失败',
     errorFailedBody: '识别时出错了。点麦克风图标重试。',
   },

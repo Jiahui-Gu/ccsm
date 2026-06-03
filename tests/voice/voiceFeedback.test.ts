@@ -22,11 +22,19 @@ describe('voiceToastForOutcome', () => {
     });
   });
 
-  it('no-model error → error toast pointing at the missing model', () => {
-    expect(voiceToastForOutcome({ kind: 'error', message: 'no-model' })).toEqual({
+  it('model-missing error → error toast pointing at the settings download', () => {
+    expect(voiceToastForOutcome({ kind: 'error', message: 'model-missing' })).toEqual({
       kind: 'error',
-      titleKey: 'voice.errorNoModel',
-      bodyKey: 'voice.errorNoModelBody',
+      titleKey: 'voice.errorModelMissing',
+      bodyKey: 'voice.errorModelMissingBody',
+    });
+  });
+
+  it('bin-missing error → error toast pointing at a broken install', () => {
+    expect(voiceToastForOutcome({ kind: 'error', message: 'bin-missing' })).toEqual({
+      kind: 'error',
+      titleKey: 'voice.errorBinMissing',
+      bodyKey: 'voice.errorBinMissingBody',
     });
   });
 

@@ -88,3 +88,13 @@ export const DB_CHANNELS = {
   load: 'db:load',
   save: 'db:save',
 } as const;
+
+export const VOICE_CHANNELS = {
+  // renderer → main (invoke)
+  transcribe: 'voice:transcribe',
+  isDownloaded: 'voice:isModelDownloaded',
+  download: 'voice:downloadModel',
+  cancel: 'voice:cancelDownload',
+  // main → renderer (fan-out: per-tier download progress / ready / error)
+  status: 'voice:modelStatus',
+} as const;

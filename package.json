@@ -127,13 +127,6 @@
     ],
     "extraResources": [
       {
-        "from": "resources/models",
-        "to": "models",
-        "filter": [
-          "*.bin"
-        ]
-      },
-      {
         "from": "resources/whisper-bin",
         "to": "whisper-bin"
       }
