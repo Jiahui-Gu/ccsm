@@ -91,8 +91,7 @@ const zh: EnCatalog = {
       general: '通用',
       appearance: '外观',
       notifications: '通知',
-      updates: '更新',
-      mobile: '手机远程'
+      updates: '更新'
     },
     theme: '主题',
     themeHint: '"跟随系统"会随操作系统主题实时切换。',
@@ -163,19 +162,6 @@ const zh: EnCatalog = {
       downloadedToastTitle: '更新已下载 — 重启以应用',
       downloadedToastBody: '版本 {{version}} 已就绪。',
       downloadedToastAction: '重启'
-    },
-    mobileRemote: {
-      intro:
-        '通过公网把这台桌面连接到你的手机。用 GitHub 登录一次,CCSM 会保存会话令牌,让手机在任意网络下都能安全地连到这台机器。',
-      status: '状态',
-      statusConnected: '已连接 — 手机可访问。',
-      statusDisconnected: '未连接。',
-      account: 'GitHub 账户',
-      connectButton: '用 GitHub 连接',
-      connecting: '连接中…',
-      disconnectButton: '断开连接',
-      notPersisted: '会话未保存',
-      notPersistedHint: '系统安全存储不可用,此连接仅在应用退出前有效。'
     }
   },
   notifications: {

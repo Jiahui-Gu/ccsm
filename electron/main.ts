@@ -25,7 +25,7 @@
 //     (db init, register*Ipc calls, notify pipeline construction, ptyHost,
 //     sessionWatcher, eager scans).
 
-import { app, BrowserWindow, ipcMain, safeStorage, type Tray } from 'electron';
+import { app, BrowserWindow, ipcMain, type Tray } from 'electron';
 import { initDb, closeDb } from './db';
 import { buildTrayIcon } from './branding/icon';
 import { initSentry } from './sentry/init';
@@ -91,14 +91,7 @@ import { registerSessionIpc } from './ipc/sessionIpc';
 import { registerWindowIpc } from './ipc/windowIpc';
 import { registerVoiceIpc } from './ipc/voiceIpc';
 import { warmUpTranscriber } from './voice/warmup';
-import { startMobileRemote } from './remote/mobileRemoteController';
-import { createSessionStore } from './remote/sessionStore';
-import { createOauthTokenProvider } from './remote/oauthTokenProvider';
-import { registerMobileRemoteIpc } from './ipc/mobileRemoteIpc';
-import { loginWithGithub, fetchSession } from './remote/oauthLogin';
-import { runOauthPopup } from './remote/oauthWindow';
-import { MOBILE_REMOTE_CHANNELS } from './shared/ipcChannels';
-import nodePath from 'node:path';
+import { startMobileRemoteServer } from './remote/mobileRemoteServer';
 import {
   registerUtilityIpc,
   primeImportableCache,
@@ -165,38 +158,7 @@ let isQuitting = false;
 let badgeManager: BadgeManager | null = null;
 let notifyPipeline: NotifyPipeline | null = null;
 let notifyPipelineDispose: (() => void) | null = null;
-let mobileRemote: { close: () => void } | null = null;
-// Desktop GitHub OAuth (PR-4b): the session store + OAuth-backed token provider
-// replace PR-4's env reader. Built lazily inside the whenReady bootstrap because
-// `app.getPath('userData')` is only valid after the app is ready.
-const WORKER_ORIGIN =
-  process.env.CCSM_MOBILE_REMOTE_WORKER ?? 'https://ccsm-worker.jiahuigu.workers.dev';
-let mobileRemoteTokenProvider: ReturnType<typeof createOauthTokenProvider> | null = null;
-
-// Bumped on every restart so a slow ICE fetch from a superseded login/logout
-// can't overwrite the disposer of a newer one (fast login→logout toggle).
-let mobileRemoteGen = 0;
-
-async function restartMobileRemote() {
-  const gen = ++mobileRemoteGen;
-  try {
-    mobileRemote?.close();
-  } catch (err) {
-    console.warn('[main] restart close threw', err);
-  }
-  mobileRemote = null;
-  if (!mobileRemoteTokenProvider) return;
-  const handle = await startMobileRemote({
-    tokenProvider: mobileRemoteTokenProvider,
-    workerOrigin: WORKER_ORIGIN,
-  });
-  if (gen !== mobileRemoteGen) {
-    // A newer restart superseded us while ICE was being fetched; discard.
-    handle?.close();
-    return;
-  }
-  mobileRemote = handle;
-}
+let mobileRemoteServer: { close: () => void } | null = null;
 const badgeController = new BadgeController(() => badgeManager);
 
 function getTrayBaseImage() {
@@ -242,7 +204,7 @@ function getTray(): Tray | null {
   return trayController?.tray ?? null;
 }
 
-app.whenReady().then(async () => {
+app.whenReady().then(() => {
   // On Windows, set a stable AppUserModelID so the OS attributes the app to
   // its taskbar / Start Menu entry instead of generic "electron.exe".
   if (process.platform === 'win32') {
@@ -346,38 +308,7 @@ app.whenReady().then(async () => {
     () => BrowserWindow.getAllWindows()[0] ?? null,
   );
 
-  // Desktop GitHub OAuth (PR-4b): build the safeStorage-backed session store +
-  // OAuth token provider, register the login/logout/authState IPC, and start
-  // the mobile-remote peer from the persisted session (live peer when a valid
-  // JWT is on disk, otherwise null exactly like PR-4's env reader returning
-  // null). The popup login is driven on demand from the Settings pane.
-  const mobileRemoteSessionStore = createSessionStore({
-    filePath: nodePath.join(app.getPath('userData'), 'mobile-remote-session.bin'),
-    safeStorage,
-  });
-  mobileRemoteTokenProvider = createOauthTokenProvider(mobileRemoteSessionStore);
-  registerMobileRemoteIpc({
-    ipcMain,
-    store: mobileRemoteSessionStore,
-    restartMobileRemote,
-    broadcast: (state) =>
-      BrowserWindow.getAllWindows()[0]?.webContents.send(MOBILE_REMOTE_CHANNELS.onState, state),
-    doLogin: () =>
-      loginWithGithub({
-        workerOrigin: WORKER_ORIGIN,
-        runPopup: () =>
-          runOauthPopup({
-            workerOrigin: WORKER_ORIGIN,
-            parent: BrowserWindow.getAllWindows()[0] ?? undefined,
-          }),
-        fetchSession,
-        store: mobileRemoteSessionStore,
-      }),
-  });
-  mobileRemote = await startMobileRemote({
-    tokenProvider: mobileRemoteTokenProvider,
-    workerOrigin: WORKER_ORIGIN,
-  });
+  mobileRemoteServer = startMobileRemoteServer();
 
   // ─────────────────────── notify pipeline (Phase C, #689) ───────────────
   // BadgeManager is bumped via `onNotified` to update the tray/dock badge.
@@ -455,22 +386,22 @@ registerLifecycleHandlers({
   getWindowCount: () => BrowserWindow.getAllWindows().length,
   disposeNotifyPipeline: () => {
     // Each disposer is wrapped in its own try/catch so a throw from one
-    // (e.g. mobileRemote.close() on an already-closed peer) does
+    // (e.g. mobileRemoteServer.close() on an already-closed server) does
     // NOT skip the rest. The original audit #876 cluster 1.14 fix
     // (notifyPipelineDispose) depends on running unconditionally — without
-    // isolation a throw in the WebRTC close path would silently
+    // isolation a node fs error in the http close path would silently
     // resurrect the focus/blur + sessionWatcher 'unwatched' leak past
-    // quit. Order is preserved: peer close before clearing the handle
+    // quit. Order is preserved: server close before clearing the handle
     // before pipeline disposal.
     try {
-      mobileRemote?.close();
+      mobileRemoteServer?.close();
     } catch (err) {
-      console.warn('[main] disposer mobileRemote.close threw', err);
+      console.warn('[main] disposer mobileRemoteServer.close threw', err);
     }
     try {
-      mobileRemote = null;
+      mobileRemoteServer = null;
     } catch (err) {
-      console.warn('[main] disposer clear mobileRemote threw', err);
+      console.warn('[main] disposer clear mobileRemoteServer threw', err);
     }
     try {
       notifyPipelineDispose?.();

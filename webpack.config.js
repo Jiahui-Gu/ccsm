@@ -6,14 +6,11 @@ const HtmlWebpackPlugin = require('html-webpack-plugin');
 // Absolute `/` works for the dev server but resolves to the drive root under
 // `file://`, so production must use a relative path.
 module.exports = (_env, argv = {}) => ({
-  entry: {
-    bundle: './src/index.tsx',
-    phone: './src/mobile/phonePage.ts',
-  },
+  entry: './src/index.tsx',
   target: 'web',
   output: {
     path: path.resolve(__dirname, 'dist/renderer'),
-    filename: '[name].js',
+    filename: 'bundle.js',
     publicPath: argv.mode === 'production' ? '' : '/'
   },
   resolve: {
@@ -35,10 +32,7 @@ module.exports = (_env, argv = {}) => ({
       }
     ]
   },
-  plugins: [
-    new HtmlWebpackPlugin({ template: './src/index.html', filename: 'index.html', chunks: ['bundle'] }),
-    new HtmlWebpackPlugin({ template: './src/phone.html', filename: 'phone.html', chunks: ['phone'] }),
-  ],
+  plugins: [new HtmlWebpackPlugin({ template: './src/index.html' })],
   // Surface renderer bundle bloat without breaking CI. In production we warn
   // (not error) once an asset/entrypoint exceeds 1.6 MiB; the current bundle is
   // ~1.24 MB, so today's build stays quiet but future growth gets flagged. In

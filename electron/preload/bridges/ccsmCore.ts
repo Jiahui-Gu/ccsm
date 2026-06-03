@@ -7,18 +7,10 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 import {
   DB_CHANNELS,
-  MOBILE_REMOTE_CHANNELS,
   UPDATE_CHANNELS,
   UPDATES_CHANNELS,
   WINDOW_CHANNELS,
 } from '../../shared/ipcChannels';
-
-type MobileRemoteAuthState = {
-  loggedIn: boolean;
-  userHash: string | null;
-  expiresAtMs: number | null;
-  persisted: boolean;
-};
 
 type UpdateStatus =
   | { kind: 'idle' }
@@ -151,22 +143,6 @@ const api = {
     const wrap = (_e: IpcRendererEvent, payload: { version: string }) => handler(payload);
     ipcRenderer.on(UPDATE_CHANNELS.downloaded, wrap);
     return () => ipcRenderer.removeListener(UPDATE_CHANNELS.downloaded, wrap);
-  },
-
-  // Desktop GitHub OAuth for the public-internet mobile-remote path (PR-4b).
-  // login drives the popup flow on main; authState/logout are plain invokes;
-  // onMobileRemoteAuthState subscribes to main-originated login-state pushes
-  // (e.g. the popup completing) so the Settings pane stays in sync.
-  mobileRemoteLogin: (): Promise<MobileRemoteAuthState> =>
-    ipcRenderer.invoke(MOBILE_REMOTE_CHANNELS.login),
-  mobileRemoteLogout: (): Promise<MobileRemoteAuthState> =>
-    ipcRenderer.invoke(MOBILE_REMOTE_CHANNELS.logout),
-  mobileRemoteAuthState: (): Promise<MobileRemoteAuthState> =>
-    ipcRenderer.invoke(MOBILE_REMOTE_CHANNELS.authState),
-  onMobileRemoteAuthState: (handler: (s: MobileRemoteAuthState) => void): (() => void) => {
-    const wrap = (_e: IpcRendererEvent, payload: MobileRemoteAuthState) => handler(payload);
-    ipcRenderer.on(MOBILE_REMOTE_CHANNELS.onState, wrap);
-    return () => ipcRenderer.removeListener(MOBILE_REMOTE_CHANNELS.onState, wrap);
   },
 
   window: {

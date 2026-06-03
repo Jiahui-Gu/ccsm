@@ -4,13 +4,13 @@
 // Background: the `disposeNotifyPipeline` callback wired into
 // registerLifecycleHandlers from main.ts runs three steps in order on
 // `before-quit`:
-//   1) mobileRemote?.close()
-//   2) mobileRemote = null
+//   1) mobileRemoteServer?.close()
+//   2) mobileRemoteServer = null
 //   3) notifyPipelineDispose?.()
 //
 // Pre-fix, these ran as plain sequential statements — a throw from (1)
-// (e.g. closing an already-closed WebRTC peer, or an error in the
-// peer's close path) silently skipped (2) and (3). Skipping (3) leaks
+// (e.g. closing an already-closed http server, or a node fs error in the
+// server's close path) silently skipped (2) and (3). Skipping (3) leaks
 // focus/blur + sessionWatcher 'unwatched' subscriptions past quit, which
 // was the explicit invariant restored by audit #876 cluster 1.14.
 //
@@ -65,11 +65,11 @@ describe('disposeNotifyPipeline cleanup chain (source wiring)', () => {
   const live = readLiveSource();
   const block = extractDisposeBlock(live);
 
-  it('wraps mobileRemote.close() in its own try/catch', () => {
+  it('wraps mobileRemoteServer.close() in its own try/catch', () => {
     // The .close() call must appear inside a try { } block, not as a bare
     // statement. We assert presence + that a try precedes it before the
     // next disposer.
-    const closeIdx = block.indexOf('mobileRemote?.close()');
+    const closeIdx = block.indexOf('mobileRemoteServer?.close()');
     expect(closeIdx).toBeGreaterThan(-1);
     // The nearest preceding `try {` should come before the close call and
     // after the start of the block.
@@ -91,17 +91,17 @@ describe('disposeNotifyPipeline cleanup chain (source wiring)', () => {
     const tryBefore = block.lastIndexOf('try {', dispIdx);
     expect(tryBefore).toBeGreaterThan(-1);
     // Make sure that try { is dedicated to this disposer — no
-    // mobileRemote reference sits between the try and the dispose call.
+    // mobileRemoteServer reference sits between the try and the dispose call.
     const between = block.slice(tryBefore, dispIdx);
-    expect(between).not.toMatch(/mobileRemote\?\.close\(\)/);
+    expect(between).not.toMatch(/mobileRemoteServer\?\.close\(\)/);
     // A catch must follow the dispose call.
     const catchAfter = block.indexOf('catch', dispIdx);
     expect(catchAfter).toBeGreaterThan(dispIdx);
   });
 
   it('preserves disposer order: close → null → dispose', () => {
-    const closeIdx = block.indexOf('mobileRemote?.close()');
-    const nullIdx = block.indexOf('mobileRemote = null');
+    const closeIdx = block.indexOf('mobileRemoteServer?.close()');
+    const nullIdx = block.indexOf('mobileRemoteServer = null');
     const dispIdx = block.indexOf('notifyPipelineDispose?.()');
     expect(closeIdx).toBeGreaterThan(-1);
     expect(nullIdx).toBeGreaterThan(closeIdx);
@@ -129,12 +129,12 @@ describe('disposeNotifyPipeline cleanup chain (behavior contract)', () => {
       try {
         closeServer();
       } catch (err) {
-        console.warn('[main] disposer mobileRemote.close threw', err);
+        console.warn('[main] disposer mobileRemoteServer.close threw', err);
       }
       try {
         clearHandle();
       } catch (err) {
-        console.warn('[main] disposer clear mobileRemote threw', err);
+        console.warn('[main] disposer clear mobileRemoteServer threw', err);
       }
       try {
         pipelineDispose();
@@ -171,7 +171,7 @@ describe('disposeNotifyPipeline cleanup chain (behavior contract)', () => {
     expect(pipelineDispose).toHaveBeenCalledTimes(1);
     expect(clearHandle).toHaveBeenCalledTimes(1);
     expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('[main] disposer mobileRemote.close threw'),
+      expect.stringContaining('[main] disposer mobileRemoteServer.close threw'),
       expect.any(Error),
     );
 

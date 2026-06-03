@@ -96,8 +96,7 @@ const en = {
       general: 'General',
       appearance: 'Appearance',
       notifications: 'Notifications',
-      updates: 'Updates',
-      mobile: 'Mobile remote'
+      updates: 'Updates'
     },
     theme: 'Theme',
     themeHint: 'System follows your OS preference (and reacts live when it changes).',
@@ -174,20 +173,6 @@ const en = {
       downloadedToastTitle: 'Update downloaded — restart to apply',
       downloadedToastBody: 'Version {{version}} is ready.',
       downloadedToastAction: 'Restart'
-    },
-    mobileRemote: {
-      intro:
-        'Connect this desktop to your phone over the public internet. Sign in with GitHub once; CCSM stores a session token so your phone can reach this machine securely from any network.',
-      status: 'Status',
-      statusConnected: 'Connected — reachable from your phone.',
-      statusDisconnected: 'Not connected.',
-      account: 'GitHub account',
-      connectButton: 'Connect with GitHub',
-      connecting: 'Connecting…',
-      disconnectButton: 'Disconnect',
-      notPersisted: 'Session not saved',
-      notPersistedHint:
-        'OS secure storage is unavailable, so this connection is kept only until the app quits.'
     }
   },
   notifications: {

@@ -18,17 +18,6 @@ export type VoiceResult =
   | { ok: true; text: string }
   | { ok: false; error: 'no-model' | 'transcribe-failed' | 'empty' };
 
-// Desktop GitHub OAuth login state for the public-internet mobile-remote path
-// (PR-4b). Structurally mirrors electron/remote/oauthLogin.ts's
-// MobileRemoteAuthState — duplicated here because the renderer can't import
-// from electron/ (same convention as UpdateStatus). Keep in sync.
-export type MobileRemoteAuthState = {
-  loggedIn: boolean;
-  userHash: string | null;
-  expiresAtMs: number | null;
-  persisted: boolean;
-};
-
 declare global {
   interface Window {
     ccsm?: {
@@ -113,12 +102,6 @@ declare global {
       updatesSetAutoCheck: (enabled: boolean) => Promise<boolean>;
       onUpdateStatus: (handler: (s: UpdateStatus) => void) => () => void;
       onUpdateDownloaded: (handler: (info: { version: string }) => void) => () => void;
-
-      // Desktop GitHub OAuth for the public-internet mobile-remote path (PR-4b).
-      mobileRemoteLogin: () => Promise<MobileRemoteAuthState>;
-      mobileRemoteLogout: () => Promise<MobileRemoteAuthState>;
-      mobileRemoteAuthState: () => Promise<MobileRemoteAuthState>;
-      onMobileRemoteAuthState: (handler: (s: MobileRemoteAuthState) => void) => () => void;
 
       window: {
         minimize: () => Promise<void>;

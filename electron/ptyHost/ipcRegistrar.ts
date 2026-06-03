@@ -211,10 +211,13 @@ export function registerPtyIpc(ipcMain: IpcMain, deps: PtyIpcDeps): void {
   });
 
   ipcMain.handle(PTY_CHANNELS.resize, (_event, sid: string, cols: number, rows: number) => {
-    // Dimension policy (floor/ceiling/NaN) lives in `lifecycle.resize` via
-    // `normalizeResizeDims` — the single convergence point both transports
-    // funnel through. Forward raw so desktop and remote get identical
-    // handling; the lifecycle validator is the only path to node-pty.
+    // Same rationale as `pty:input` — guard the numeric channels too.
+    // `Number.isFinite` rejects NaN / Infinity / -Infinity; `>= 1` rejects
+    // zero and negatives. xterm's typical max is ~600 cols × ~600 rows on a
+    // huge monitor; cap at 1000 each to bound the damage from a hostile
+    // renderer asking for a 2^31 × 2^31 resize.
+    if (!Number.isFinite(cols) || !Number.isFinite(rows)) return;
+    if (cols < 1 || rows < 1 || cols > 1000 || rows > 1000) return;
     deps.resizePtySession(sid, cols, rows);
   });
 
