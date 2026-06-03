@@ -16,7 +16,7 @@
 import { app, BrowserWindow } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
-import { Writable } from 'stream';
+import { Transform } from 'stream';
 import { pipeline } from 'stream/promises';
 import { VOICE_CHANNELS } from '../shared/ipcChannels';
 import { buildDownloadUrls, tierFilename, type VoiceTier } from './modelTiers';
@@ -85,24 +85,30 @@ async function downloadFromUrl(
 
   let transferred = 0;
   let lastEmit = 0;
-  const sink = fs.createWriteStream(tmpPath);
-  const meter = new Writable({
-    write(chunk: Buffer, _enc, cb) {
+  // Pure pass-through: count bytes and throttle progress broadcasts, but let
+  // pipeline own the destination WriteStream. The stream is the LAST stage so
+  // pipeline destroys it (closing the fd) on abort/error/success alike —
+  // otherwise the fd leaks on cancel and Windows can EBUSY the tmp unlink.
+  const meter = new Transform({
+    transform(chunk: Buffer, _enc, cb) {
       transferred += chunk.length;
       const now = Date.now();
       if (now - lastEmit >= PROGRESS_THROTTLE_MS) {
         lastEmit = now;
         broadcastStatus({ kind: 'downloading', tier, transferred, total });
       }
-      sink.write(chunk, (err) => cb(err ?? null));
-    },
-    final(cb) {
-      sink.end(() => cb());
+      cb(null, chunk); // pass through unchanged
     },
   });
 
-  // pipeline rejects (and aborts) on signal abort, propagating cleanup.
-  await pipeline(res.body as unknown as NodeJS.ReadableStream, meter, { signal });
+  // pipeline rejects (and aborts) on signal abort, propagating cleanup and
+  // destroying every stage including the WriteStream.
+  await pipeline(
+    res.body as unknown as NodeJS.ReadableStream,
+    meter,
+    fs.createWriteStream(tmpPath),
+    { signal },
+  );
 
   // Integrity: landed size must match the response's declared length.
   const landed = fs.statSync(tmpPath).size;
@@ -162,6 +168,14 @@ async function run(tier: VoiceTier, controller: AbortController): Promise<VoiceM
 export function downloadTier(tier: VoiceTier): Promise<VoiceModelStatus> {
   const existing = inFlight.get(tier);
   if (existing) return existing.promise;
+
+  // Already on disk: short-circuit. Cheap defensive guard since this is a
+  // public IPC entry point and re-fetching a present model is wasteful.
+  if (isTierDownloaded(tier)) {
+    const ready: VoiceModelStatus = { kind: 'ready', tier };
+    broadcastStatus(ready);
+    return Promise.resolve(ready);
+  }
 
   const controller = new AbortController();
   const promise = run(tier, controller).finally(() => {

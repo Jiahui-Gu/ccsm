@@ -124,6 +124,21 @@ describe('VoicePane', () => {
     expect(current.spies.cancelDownload).toHaveBeenCalledWith('tiny');
   });
 
+  it('treats a zero Content-Length total as indeterminate (full-bar, no Infinity)', async () => {
+    const { container } = await act(async () => render(<VoicePane />));
+    await waitFor(() => expect(screen.getAllByRole('radio')).toHaveLength(6));
+
+    act(() => {
+      // Content-Length: 0 → total === 0. transferred/0 would be Infinity; the
+      // bar must fall back to the indeterminate full-bar branch instead.
+      current.push({ kind: 'downloading', tier: 'tiny', transferred: 0, total: 0 });
+    });
+
+    const bar = container.querySelector('.bg-accent') as HTMLElement | null;
+    expect(bar).not.toBeNull();
+    expect(bar?.style.width).toBe('100%');
+  });
+
   it('a ready status flips the tier to installed (Use button appears)', async () => {
     await renderPane();
     await waitFor(() => expect(screen.getAllByRole('radio')).toHaveLength(6));

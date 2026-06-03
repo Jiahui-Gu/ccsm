@@ -43,10 +43,11 @@ const fsMock = {
 };
 vi.mock('fs', () => ({ ...fsMock, default: fsMock }));
 
-// pipeline(source, meter) — drive the meter's write() with the source's chunks
-// (so the downloader's transferred-byte accounting + tmp-file size run), then
-// final(). The meter writes into our fake fs createWriteStream, so we record
-// the landed size onto the tmp path the meter is targeting.
+// pipeline(source, meter, writeStream, opts) — drive the meter's transform()
+// with the source's chunks (so the downloader's transferred-byte accounting
+// runs), then finish. The meter is a pass-through Transform; pipeline owns the
+// destination WriteStream. We record the landed size onto the tmp path the
+// downloader is writing to (captured via the createWriteStream mock).
 const pipelineImpl = vi.fn();
 vi.mock('stream/promises', () => ({
   pipeline: (...args: unknown[]) => pipelineImpl(...args),
@@ -79,23 +80,22 @@ beforeEach(() => {
   vi.unstubAllGlobals();
 });
 
-// A pipeline that feeds the response chunks into the meter and records the
-// resulting tmp-file size. We infer the tmp path from the most recent
-// downloading status broadcast is not reliable, so instead the meter's write
-// callback path is what matters: we mirror the byte count into a holder and
-// the test's fetch closure stamps the tmp path size directly.
+// A pipeline that feeds the response chunks into the meter (a pass-through
+// Transform) so the downloader's byte accounting + progress broadcasts run,
+// then records the resulting tmp-file size. The tmp path is captured by the
+// createWriteStream mock into tmpHolder.
 function installPumpingPipeline(tmpHolder: { path: string | null }, total: number) {
-  pipelineImpl.mockImplementation(async (source: { __chunks: Buffer[] }, meter: NodeJS.WritableStream) => {
-    let written = 0;
-    for (const chunk of source.__chunks) {
-      await new Promise<void>((resolve, reject) =>
-        meter.write(chunk, (err?: Error | null) => (err ? reject(err) : resolve())),
-      );
-      written += chunk.length;
-    }
-    await new Promise<void>((resolve) => meter.end(resolve));
-    if (tmpHolder.path) files.set(norm(tmpHolder.path), total > 0 ? total : written);
-  });
+  pipelineImpl.mockImplementation(
+    async (source: { __chunks: Buffer[] }, meter: NodeJS.ReadWriteStream) => {
+      let written = 0;
+      for (const chunk of source.__chunks) {
+        meter.write(chunk);
+        written += chunk.length;
+      }
+      meter.end();
+      if (tmpHolder.path) files.set(norm(tmpHolder.path), total > 0 ? total : written);
+    },
+  );
 }
 
 describe('modelDownloader.isTierDownloaded', () => {
@@ -179,9 +179,9 @@ describe('modelDownloader.downloadTier', () => {
   it('rejects a truncated download (landed size != Content-Length) and tries the mirror', async () => {
     const tmp = { path: null as string | null };
     // Primary writes only 3 bytes but declares 6 → size mismatch.
-    pipelineImpl.mockImplementationOnce(async (_s: unknown, meter: NodeJS.WritableStream) => {
-      await new Promise<void>((r) => meter.write(Buffer.from('abc'), () => r()));
-      await new Promise<void>((r) => meter.end(r));
+    pipelineImpl.mockImplementationOnce(async (_s: unknown, meter: NodeJS.ReadWriteStream) => {
+      meter.write(Buffer.from('abc'));
+      meter.end();
       if (tmp.path) files.set(norm(tmp.path), 3);
     });
     installPumpingPipeline(tmp, 6); // mirror writes full 6
@@ -238,5 +238,68 @@ describe('modelDownloader.downloadTier', () => {
     const [a, b] = await Promise.all([downloadTier('tiny'), downloadTier('tiny')]);
     expect(a).toBe(b); // same Promise resolution
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels mid-stream: error "cancelled", tmp unlinked, no mirror fetch', async () => {
+    const tmp = { path: null as string | null };
+    // pipeline rejects with an AbortError once the signal is aborted, mirroring
+    // node's stream/promises behavior on AbortController.abort().
+    pipelineImpl.mockImplementation(
+      (
+        _source: unknown,
+        _meter: unknown,
+        _dest: unknown,
+        opts: { signal: AbortSignal },
+      ) =>
+        new Promise((_resolve, reject) => {
+          opts.signal.addEventListener('abort', () => {
+            const err = new Error('The operation was aborted');
+            err.name = 'AbortError';
+            reject(err);
+          });
+        }),
+    );
+    const fetchMock = vi.fn(async () =>
+      makeResponse({ ok: true, contentLength: '6', chunks: [Buffer.from('abcdef')] }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { downloadTier, cancelDownload } = await import('../modelDownloader');
+    const fs = await import('fs');
+    (fs.createWriteStream as unknown as ReturnType<typeof vi.fn>).mockImplementation((p: string) => {
+      tmp.path = p;
+      files.set(norm(p), 3); // a partial is on disk when we abort
+      return {
+        write: (_c: Buffer, cb: (e?: Error | null) => void) => cb(null),
+        end: (cb: () => void) => cb(),
+      };
+    });
+    (fs.unlinkSync as unknown as ReturnType<typeof vi.fn>).mockClear();
+
+    const promise = downloadTier('tiny');
+    // Let the fetch + pipeline wiring settle, then cancel.
+    await Promise.resolve();
+    await Promise.resolve();
+    cancelDownload('tiny');
+
+    const status = await promise;
+    expect(status).toEqual({ kind: 'error', tier: 'tiny', message: 'cancelled' });
+    // Mirror must NOT be fetched after cancel (break path), only the primary.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // The partial tmp file was cleaned up.
+    expect(fs.unlinkSync).toHaveBeenCalled();
+  });
+
+  it('short-circuits to ready when the tier is already downloaded', async () => {
+    files.set('/userData/models/ggml-tiny.bin', 12345);
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { downloadTier } = await import('../modelDownloader');
+    const status = await downloadTier('tiny');
+    expect(status).toEqual({ kind: 'ready', tier: 'tiny' });
+    expect(fetchMock).not.toHaveBeenCalled();
+    const ready = sentMessages.filter((m) => (m.payload as { kind: string }).kind === 'ready');
+    expect(ready).toHaveLength(1);
   });
 });

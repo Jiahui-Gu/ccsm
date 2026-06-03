@@ -167,7 +167,7 @@ export function VoicePane() {
                     className="h-full bg-accent transition-[width] duration-200"
                     style={{
                       width:
-                        status.total != null
+                        status.total != null && status.total > 0
                           ? `${Math.min(100, (status.transferred / status.total) * 100)}%`
                           : '100%'
                     }}
