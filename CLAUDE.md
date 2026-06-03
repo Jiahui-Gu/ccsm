@@ -12,9 +12,10 @@ things" checklist. For the full architecture and module map, read
   build.
 - **Node >= 22.** `engines.node` is `">=22.0.0"` and `.npmrc` sets
   `engine-strict=true`, so install hard-errors on older Node.
-- **Native modules:** `better-sqlite3` and `node-pty` are rebuilt for
-  Electron's ABI by `postinstall`. After dependency or Electron version
-  changes, re-run `npm install` so the rebuild happens.
+- **Native modules:** `node-pty` is rebuilt for Electron's ABI by
+  `postinstall`. After dependency or Electron version changes, re-run
+  `npm install` so the rebuild happens. (The DB uses Node's built-in
+  `node:sqlite`, which needs no native rebuild.)
 - **Renderer (`src/`) must not import from `electron/`.** It talks to the main
   process only via `window.ccsm` (typed in `src/global.d.ts`, exposed by
   `electron/preload/`). Convention from `docs/mvp-design.md` §15 — keep it.
@@ -40,7 +41,7 @@ Before claiming work is done, run `npm run typecheck`, `npm run lint`, and
   `terminal/` (xterm.js), `i18n/` (en + zh locales).
 - `electron/` — main process: `window/` (BrowserWindow + CSP), `ipc/` handlers,
   `preload/bridges/` (the `window.ccsm` surface), `ptyHost/` (node-pty),
-  `db.ts` (better-sqlite3).
+  `db.ts` (node:sqlite).
 - `scripts/` — `dev.mjs`, `postinstall.mjs`, e2e/`harness-*`/`dogfood-*` runners.
 - `docs/` — `mvp-design.md` (frozen scope), `design-system.md`,
   `status/STATUS.md`; index in `docs/README.md`.

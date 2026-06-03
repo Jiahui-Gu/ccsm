@@ -19,12 +19,13 @@ user-facing product framing see [`README.md`](README.md).
   `.npmrc` sets `engine-strict=true`, so `npm install` hard-errors on older
   Node. (`scripts/postinstall.mjs` still carries an older Node-20 warning
   string; the authoritative gate is `engine-strict`.)
-- **Native modules are rebuilt for Electron's ABI.** `better-sqlite3` (the
-  local DB) and `node-pty` (the terminal backend) are rebuilt against
-  Electron's ABI by the `postinstall` script. A mismatch shows up at runtime
-  as cryptic "renderer window didn't appear" errors, not at install time.
-  better-sqlite3 failure is fatal; node-pty failure is non-fatal because it
-  ships a prebuilt binary fallback (asserted by `scripts/after-pack.cjs`).
+- **Native modules are rebuilt for Electron's ABI.** `node-pty` (the
+  terminal backend) is rebuilt against Electron's ABI by the `postinstall`
+  script. A mismatch shows up at runtime as cryptic "renderer window didn't
+  appear" errors, not at install time. node-pty failure is non-fatal because
+  it ships a prebuilt binary fallback (asserted by `scripts/after-pack.cjs`).
+  The local DB uses Node's built-in `node:sqlite`, which needs no native
+  rebuild.
 - **Renderer must not import from `electron/`.** Frontend code under `src/`
   talks to the main process only through `window.ccsm` (typed in
   `src/global.d.ts`, exposed via `electron/preload/`). This is a convention
@@ -46,7 +47,7 @@ flowchart LR
   subgraph Main["Main (electron/) — Node + Electron"]
     IPC[IPC handlers]
     PTY[PTY host / node-pty]
-    DB[(better-sqlite3)]
+    DB[(node:sqlite)]
     CLI[[claude CLI]]
   end
   UI -->|invoke / on| Bridge
@@ -96,7 +97,7 @@ flowchart LR
   `utilityIpc`, `windowIpc`.
 - `preload/` — contextBridge entry + `bridges/`.
 - `ptyHost/` — PTY lifecycle (node-pty). `db.ts` / `db-validate.ts` —
-  better-sqlite3 schema + validation.
+  node:sqlite schema + validation.
 - Supporting subsystems: `agent/`, `notify/`, `remote/`, `security/`,
   `sentry/`, `sessionTitles/`, `sessionWatcher/`, `tray/`, `updater.ts`,
   `import-scanner.ts`, `commands-loader.ts`, `badgeController.ts`,
@@ -140,7 +141,7 @@ Run from the repo root with npm:
 ## Conventions
 
 - **Stack:** Electron (main + renderer), React 18, webpack 5, zustand state,
-  xterm.js + node-pty terminal, better-sqlite3 DB, i18next (en/zh),
+  xterm.js + node-pty terminal, node:sqlite DB, i18next (en/zh),
   Tailwind v4, electron-builder packaging, vitest + Playwright tests.
 - **Tests** live in `__tests__/` folders and `tests/`. Prefer adding a test
   with any behavioural change.

@@ -90,7 +90,7 @@ To disable after opting in: open Settings → Notifications and uncheck "Send cr
 
 ## Development
 
-Requires Node 20+ and `npm`. The native module `better-sqlite3` is rebuilt for Electron's ABI on `npm install` via `electron-builder install-app-deps`.
+Requires Node 22+ and `npm`. The native module `node-pty` is rebuilt for Electron's ABI on `npm install` via `scripts/postinstall.mjs`. (The local DB uses Node's built-in `node:sqlite`, which needs no native rebuild.)
 
 ```bash
 npm install
@@ -107,7 +107,7 @@ The architecture has a hard rule: **frontend code under `src/` may not import fr
 
 ### Windows: `gyp ERR! find Python` on `npm install`
 
-`better-sqlite3`'s native rebuild uses `node-gyp`, which on Windows often
+`node-pty`'s native rebuild uses `node-gyp`, which on Windows often
 picks up the `WindowsApps\python.exe` Microsoft Store launcher stub instead
 of a real interpreter and fails. If you see `gyp ERR! find Python`, point
 node-gyp at a real Python 3.x in your **user-level** `~/.npmrc` (not the
@@ -169,7 +169,7 @@ CCSM falls back to plain Electron notifications.
 - **Electron** (main + renderer) with TypeScript throughout
 - **React 18** for the renderer UI, bundled by **webpack 5**
 - **xterm.js** + `node-pty` for the embedded terminal that hosts each `claude` session
-- **better-sqlite3** for the local database (groups, sessions, ordering, preferences)
+- **node:sqlite** (Node built-in) for the local database (groups, sessions, ordering, preferences)
 - **electron-builder** for packaging (NSIS / dmg / AppImage / deb / rpm)
 - **vitest** for unit + integration tests, **playwright** for e2e
 
