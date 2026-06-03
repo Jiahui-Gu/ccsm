@@ -252,6 +252,10 @@ export function makeEntry(
     const flag = sourceJsonl ? '--resume' : '--session-id';
     args = [flag, claudeSid];
   }
+  // ccsm always launches claude with permission prompts disabled — sessions
+  // are driven through ccsm's terminal pane, where an interactive permission
+  // gate would stall the pty waiting on input the UI doesn't surface well.
+  args.push('--dangerously-skip-permissions');
 
   const spawnCwd = resolveSpawnCwd(cwd, sid);
 

@@ -148,7 +148,7 @@ describe('entryFactory.makeEntry', () => {
     expect(b.ptySpawn).toHaveBeenCalledTimes(1);
     const args = b.ptySpawn.mock.calls[0];
     expect(args[0]).toBe('/bin/claude');
-    expect(args[1]).toEqual(['--session-id', 'sid-A']);
+    expect(args[1]).toEqual(['--session-id', 'sid-A', '--dangerously-skip-permissions']);
     // ensureResumeJsonlAtSpawnCwd is gated on sourceJsonl being truthy.
     expect(b.ensureJsonl).not.toHaveBeenCalled();
   });
@@ -158,7 +158,11 @@ describe('entryFactory.makeEntry', () => {
     bus().ensureCopied = false;
     const onCwdRedirect = vi.fn();
     makeEntry('sid-B', '/work', '/bin/claude', 80, 24, { onExit: vi.fn(), onCwdRedirect });
-    expect(bus().ptySpawn.mock.calls[0][1]).toEqual(['--resume', 'sid-B']);
+    expect(bus().ptySpawn.mock.calls[0][1]).toEqual([
+      '--resume',
+      'sid-B',
+      '--dangerously-skip-permissions',
+    ]);
     expect(bus().ensureJsonl).toHaveBeenCalledTimes(1);
     expect(onCwdRedirect).not.toHaveBeenCalled();
   });
@@ -260,6 +264,7 @@ describe('entryFactory.makeEntry', () => {
       '--fork-session',
       '--session-id',
       'sid-NEW',
+      '--dangerously-skip-permissions',
     ]);
     // No import-resume copy expected — sourceJsonl is null so the existing
     // `ensureResumeJsonlAtSpawnCwd` branch is skipped (correct: claude
@@ -285,7 +290,7 @@ describe('entryFactory.makeEntry', () => {
       'sid-SOURCE',
     );
     const args = bus().ptySpawn.mock.calls[0][1] as string[];
-    expect(args).toEqual(['--resume', 'sid-NEW']);
+    expect(args).toEqual(['--resume', 'sid-NEW', '--dangerously-skip-permissions']);
   });
 });
 
