@@ -10,6 +10,15 @@ export default defineConfig({
     ],
     globals: true,
     setupFiles: ['tests/setup.ts'],
+    // node:sqlite is a Node built-in (DatabaseSync). Some CI runners drive
+    // vitest's bundler to try inlining it and fail with "Cannot bundle
+    // Node.js built-in node:sqlite". Mark it external so it stays a runtime
+    // require instead of being bundled.
+    server: {
+      deps: {
+        external: ['node:sqlite'],
+      },
+    },
     // v8 coverage instrumentation roughly doubles test wall-clock under
     // jsdom, so the default 5s testTimeout starts to flake on slower
     // suites (e.g. shortcut-overlay-platform with multiple act/render
