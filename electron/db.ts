@@ -1,9 +1,27 @@
-import Database from 'better-sqlite3';
+import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { app } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 
-let db: Database.Database | null = null;
+// node:sqlite is still flagged experimental in Node 22–24, so it emits one
+// `ExperimentalWarning` on first use. A plain `process.on('warning')` listener
+// can't suppress it — it runs *alongside* Node's built-in `onWarning` printer,
+// which always prints. So we detach that one named default listener and
+// reinstall a filter that drops ONLY the SQLite ExperimentalWarning and
+// delegates every other warning back to Node's original handler untouched
+// (deprecations, unhandled rejections, etc. print exactly as before). This is
+// surgical — not `--no-warnings`, not `removeAllListeners`. Runs once at load.
+const defaultWarningHandler = process
+  .listeners('warning')
+  .find((l) => l.name === 'onWarning');
+if (defaultWarningHandler) process.removeListener('warning', defaultWarningHandler);
+process.on('warning', (warning) => {
+  if (warning.name === 'ExperimentalWarning' && /\bSQLite\b/.test(warning.message)) return;
+  if (defaultWarningHandler) defaultWarningHandler(warning);
+  else console.warn(warning.stack ?? `${warning.name}: ${warning.message}`);
+});
+
+let db: DatabaseSync | null = null;
 
 // Schema version for the on-disk SQLite layout. Bumped only when the table
 // shapes change in a way readers care about. Use `PRAGMA user_version` so
@@ -11,21 +29,21 @@ let db: Database.Database | null = null;
 //
 // Migration policy: on a fresh DB (`user_version === 0`), we run the current
 // schema and stamp it. On a downgrade (stored > current) we log a warning
-// and proceed; better-sqlite3 will tolerate unknown columns/indexes added by
-// a future version. Real upgrades land in `migrate()` below — empty for now
+// and proceed; SQLite will tolerate unknown columns/indexes added by a
+// future version. Real upgrades land in `migrate()` below — empty for now
 // because v1 is the only shipped version.
 const SCHEMA_VERSION = 1;
 
 // ── Cached prepared statements ───────────────────────────────────────────────
-// better-sqlite3 caches compiled SQL inside each Statement object, but the
+// node:sqlite caches compiled SQL inside each Statement object, but the
 // JavaScript-side allocation/lookup still costs ~10 microseconds per call.
 // For hot paths (saveState on every keystroke in the composer draft persister)
 // that adds up. Cache the Statement once per process lifetime; reset to null
 // when the underlying db closes so the next initDb() rebuilds them.
 type PreparedCache = {
-  loadState: Database.Statement<[string]> | null;
-  upsertState: Database.Statement<[string, string, number]> | null;
-  deleteState: Database.Statement<[string]> | null;
+  loadState: StatementSync | null;
+  upsertState: StatementSync | null;
+  deleteState: StatementSync | null;
 };
 
 const stmts: PreparedCache = {
@@ -72,11 +90,11 @@ function migrate(_from: number, _to: number): void {
  * read to throw. Cost is roughly proportional to db size; on a fresh DB
  * (the common case) it returns in microseconds.
  */
-function ensureHealthyDb(file: string, current: Database.Database): Database.Database {
+function ensureHealthyDb(file: string, current: DatabaseSync): DatabaseSync {
   let result: string | null = null;
   try {
-    const row = current.pragma('quick_check', { simple: true });
-    result = typeof row === 'string' ? row : null;
+    const row = current.prepare('PRAGMA quick_check').get() as { quick_check?: string } | undefined;
+    result = typeof row?.quick_check === 'string' ? row.quick_check : null;
   } catch (err) {
     // The pragma itself threw — treat the same as corruption.
     console.error('[db] quick_check threw, treating as corruption:', err);
@@ -98,13 +116,13 @@ function ensureHealthyDb(file: string, current: Database.Database): Database.Dat
     console.error(`[db] corrupt database moved to ${backup}`);
   } catch (err) {
     // If we can't rename (file locked, missing, etc.) fall back to deleting
-    // so the next `new Database()` gets a clean slate. Logging both paths
+    // so the next `new DatabaseSync()` gets a clean slate. Logging both paths
     // helps post-mortem when a user reports "my data vanished".
     console.error('[db] failed to back up corrupt db, removing instead:', err);
     try {
       fs.unlinkSync(file);
     } catch {
-      // ignore — `new Database` will create one
+      // ignore — `new DatabaseSync` will create one
     }
   }
   // Also clear sidecar WAL/SHM files so SQLite doesn't try to replay a
@@ -116,35 +134,36 @@ function ensureHealthyDb(file: string, current: Database.Database): Database.Dat
       // ignore — they may not exist
     }
   }
-  return new Database(file);
+  return new DatabaseSync(file);
 }
 
-export function initDb(): Database.Database {
+export function initDb(): DatabaseSync {
   if (db) return db;
   const dir = app.getPath('userData');
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'ccsm.db');
 
-  let handle = new Database(file);
+  let handle = new DatabaseSync(file);
   handle = ensureHealthyDb(file, handle);
-  handle.pragma('journal_mode = WAL');
-  handle.pragma('foreign_keys = ON');
+  handle.exec('PRAGMA journal_mode = WAL');
+  handle.exec('PRAGMA foreign_keys = ON');
   // WAL's default `synchronous = NORMAL` skips the fsync on each commit, so a
   // commit that's only reached the WAL can be lost on power loss / OS restart.
   // FULL fsyncs every commit. Write volume here is tiny (one debounced ~1 KB
   // app_state row per 250 ms at most), so the cost is negligible. This is the
   // durability half of the OS-restart fix; `wal_checkpoint` in saveState() is
   // the other half (see there).
-  handle.pragma('synchronous = FULL');
+  handle.exec('PRAGMA synchronous = FULL');
   handle.exec(SCHEMA_SQL);
 
   // Schema versioning. `user_version` defaults to 0 on a brand-new file.
-  const stored = handle.pragma('user_version', { simple: true }) as number;
+  const stored = (handle.prepare('PRAGMA user_version').get() as { user_version: number })
+    .user_version;
   if (stored === 0) {
-    handle.pragma(`user_version = ${SCHEMA_VERSION}`);
+    handle.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   } else if (stored < SCHEMA_VERSION) {
     migrate(stored, SCHEMA_VERSION);
-    handle.pragma(`user_version = ${SCHEMA_VERSION}`);
+    handle.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   } else if (stored > SCHEMA_VERSION) {
     // Downgrade scenario (user installed v0.3, then rolled back to v0.2).
     // We don't refuse to boot — that's worse than risking a stale read —
@@ -179,16 +198,16 @@ export function initDb(): Database.Database {
 }
 
 // Test-only: swap in an in-memory database. Never call from app code.
-export function __setDbForTests(instance: Database.Database | null): void {
+export function __setDbForTests(instance: DatabaseSync | null): void {
   db = instance;
   resetStmts();
   if (instance) {
-    instance.pragma('foreign_keys = ON');
+    instance.exec('PRAGMA foreign_keys = ON');
     instance.exec(SCHEMA_SQL);
   }
 }
 
-export function getDb(): Database.Database {
+export function getDb(): DatabaseSync {
   return initDb();
 }
 
@@ -218,7 +237,7 @@ export function saveState(key: string, value: string): void {
   // graceful-quit snapshot. PASSIVE never blocks on readers and is a no-op
   // under contention, so it's safe on this debounced hot path. See the
   // `db hardening: WAL durability` suite for the forced-shutdown regression.
-  d.pragma('wal_checkpoint(PASSIVE)');
+  d.exec('PRAGMA wal_checkpoint(PASSIVE)');
 }
 
 export function closeDb(): void {

@@ -3,19 +3,19 @@
 //
 // Background: previously package.json had
 //   "postinstall": "electron-builder install-app-deps || true"
-// which silently swallowed native rebuild failures. better-sqlite3 would
+// which silently swallowed native rebuild failures. A native module would
 // end up compiled against the host Node ABI (e.g. NODE_MODULE_VERSION 127)
 // instead of Electron's ABI (e.g. 130), and the app would fail at runtime
 // with cryptic "renderer window didn't appear" errors.
 //
-// Now we fail loudly for native deps required by the app — currently
-// better-sqlite3 (DB) and node-pty (terminal). Windows toast no longer
-// requires a native rebuild; it goes through Electron's built-in
-// `Notification` API directly.
+// Now we fail loudly for native deps required by the app. The DB layer uses
+// Node's built-in node:sqlite (no native rebuild), so node-pty (terminal) is
+// the only remaining native module. Windows toast no longer requires a native
+// rebuild; it goes through Electron's built-in `Notification` API directly.
 //
 // `electron-builder install-app-deps` walks every native module declared
 // in package.json's `dependencies` and rebuilds against Electron's ABI,
-// so node-pty is covered automatically alongside better-sqlite3.
+// so node-pty is covered automatically.
 //
 // node-pty rebuild failure caveat (Windows): node-pty pulls winpty as a
 // transitive dep whose `GetCommitHash.bat` shells out to git-bash;
@@ -30,26 +30,24 @@ import { fileURLToPath } from 'node:url';
 import process from 'node:process';
 
 // Preflight: warn (don't block) when running on a Node major other than 20.
-// better-sqlite3 builds cleanly on Node 20.x; newer node-gyp + Node may need
+// node-pty builds cleanly on Node 20.x; newer node-gyp + Node may need
 // extra toolchain. We don't pin engines.node so contributors who only touch
 // UI/tests can still `npm install` on newer Node; this warning gives them
 // the clue if it breaks.
 const nodeMajor = Number.parseInt(process.versions.node.split('.')[0], 10);
 if (nodeMajor !== 20) {
   console.warn(
-    `[postinstall] WARNING: ccsm native deps (better-sqlite3 + node-pty) build cleanly on Node 20.x. You're on Node ${process.version}. If you only touch UI/tests, this is fine; if you hit \`node-gyp\` errors during install, switch with \`nvm use 20\` and re-run \`npm ci --legacy-peer-deps\`. CI uses Node 20.`,
+    `[postinstall] WARNING: ccsm native dep (node-pty) builds cleanly on Node 20.x. You're on Node ${process.version}. If you only touch UI/tests, this is fine; if you hit \`node-gyp\` errors during install, switch with \`nvm use 20\` and re-run \`npm ci --legacy-peer-deps\`. CI uses Node 20.`,
   );
 }
 
 // Strategy:
-//   1. Rebuild better-sqlite3 strictly via @electron/rebuild — failure
-//      here is fatal (DB unusable at runtime).
-//   2. Attempt to rebuild node-pty — failure here is logged but
+//   1. Attempt to rebuild node-pty — failure here is logged but
 //      non-fatal. node-pty 1.x ships a prebuilt
 //      `prebuilds/<os>-<arch>/node.napi.node` that the runtime falls
 //      back to. The common Windows failure (winpty's `GetCommitHash.bat`
 //      requiring git-bash on PATH) is benign for that reason.
-//   3. scripts/after-pack.cjs asserts ONE of the two binding paths
+//   2. scripts/after-pack.cjs asserts ONE of the two binding paths
 //      exists in the packaged app; missing both is a hard build failure.
 //
 // We deliberately do NOT use `electron-builder install-app-deps` here
@@ -110,16 +108,14 @@ function runRebuild(moduleName, { allowFailure } = { allowFailure: false }) {
   return true;
 }
 
-runRebuild('better-sqlite3', { allowFailure: false });
 runRebuild('node-pty', { allowFailure: true });
 
 function printHint() {
   console.error('');
-  console.error('Native modules (better-sqlite3 + node-pty) must be rebuilt');
+  console.error('Native modules (node-pty) must be rebuilt');
   console.error('for the Electron ABI before the app can start. If the');
   console.error('automatic rebuild fails, try running it manually:');
   console.error('');
-  console.error('  npx @electron/rebuild -f -o better-sqlite3 --build-from-source');
   console.error('  npx @electron/rebuild -f -o node-pty --build-from-source');
   console.error('');
   console.error('On Windows you need Visual Studio Build Tools (C++ workload)');

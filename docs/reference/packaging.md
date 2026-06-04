@@ -101,10 +101,11 @@ Known caveats:
 - **Auto-update on Linux** works only for `AppImage` (deb/rpm auto-update
   requires a repo which we don't host). deb/rpm users must re-download from
   GitHub Releases to upgrade.
-- **`better-sqlite3`**: the Linux build rebuilds native modules for the
+- **`node-pty`**: the Linux build rebuilds this native module for the
   Electron ABI in CI. If you see "`NODE_MODULE_VERSION` mismatch" when
-  building locally, run `npx electron-builder install-app-deps` or, for
-  running vitest against Node, `npm rebuild better-sqlite3`.
+  building locally, run `npx @electron/rebuild -f -o node-pty
+  --build-from-source`. (The DB uses Node's built-in `node:sqlite`, so it
+  needs no rebuild.)
 
 ## Icons
 
@@ -117,13 +118,15 @@ Drop a real branded asset into `build/` (and re-add the corresponding
 
 ## Native modules
 
-The only native dep right now is `better-sqlite3`. `postinstall` runs
-`electron-builder install-app-deps` which rebuilds it against the Electron
-ABI. CI additionally runs `npm rebuild better-sqlite3` before `npm test`
-because vitest executes under Node, not Electron.
+The only native dep right now is `node-pty`. `postinstall`
+(`scripts/postinstall.mjs`) rebuilds it against the Electron ABI via
+`@electron/rebuild`; a failed rebuild falls back to node-pty's bundled
+prebuilt binary, asserted by `scripts/after-pack.cjs`. The DB layer uses
+Node's built-in `node:sqlite`, so no SQLite native module is bundled or
+rebuilt.
 
 ## ASAR
 
-The app bundle uses ASAR (`asar: true`), with `better-sqlite3` unpacked via
+The app bundle uses ASAR (`asar: true`), with `node-pty` unpacked via
 `asarUnpack`. Native `.node` files cannot be loaded from inside an ASAR
 archive; unpacking them is the standard fix.

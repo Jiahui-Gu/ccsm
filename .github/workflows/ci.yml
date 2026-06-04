@@ -34,24 +34,24 @@ jobs:
           node-version: '22'
           cache: 'npm'
 
-      # Linux native builds for better-sqlite3 need python + build tools; the
+      # Linux native builds for node-pty need python + build tools; the
       # GitHub-hosted ubuntu image already has them, but setup-python makes
       # it explicit and pins the version so upstream image changes don't
       # surprise us.
       # Pinned to 3.11 because 3.12+ removed the distutils stdlib (PEP 632)
-      # which the older node-gyp invoked by better-sqlite3's postinstall
-      # still imports. Bump back when better-sqlite3 ships node-gyp >= 10.
+      # which the older node-gyp invoked by node-pty's postinstall still
+      # imports. Bump back when node-pty ships node-gyp >= 10.
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       # Cache node_modules directly (not ~/.npm) — `npm ci --legacy-peer-deps`
       # on Windows is the dominant CI cost (~178s = 49% of total wall-clock,
-      # eval #877). Restoring node_modules verbatim skips install + native
-      # rebuilds (better-sqlite3, node-pty) baked into the cached tree.
+      # eval #877). Restoring node_modules verbatim skips install + the
+      # node-pty native rebuild baked into the cached tree.
       # Key includes os/arch/node major + lockfile hash so any dep change
-      # busts the cache. Native ABI for Node-side tests is re-aligned by the
-      # `npm rebuild better-sqlite3` step below, which always runs.
+      # busts the cache. The DB layer uses Node's built-in node:sqlite, so
+      # no SQLite native ABI re-alignment is needed for the Node-side tests.
       - name: Cache node_modules
         id: nm_cache
         uses: actions/cache@v4
@@ -66,12 +66,6 @@ jobs:
           # electron-builder's postinstall needs this env to not fail on
           # first install when the Electron binary cache is cold.
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
-
-      # Rebuild better-sqlite3 against Node (tests run under node, not
-      # electron). The electron-builder `postinstall` above builds for the
-      # electron ABI; we overwrite with the node ABI for CI tests here.
-      - name: Rebuild better-sqlite3 for Node
-        run: npm rebuild better-sqlite3
 
       - name: Lint
         run: npm run lint
