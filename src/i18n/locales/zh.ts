@@ -181,7 +181,13 @@ const zh: EnCatalog = {
       cancelButton: '取消',
       useButton: '使用',
       downloading: '下载中… {{transferred}}{{total}}',
-      downloadError: '下载失败:{{message}}'
+      downloadError: '下载失败:{{message}}',
+      languageLabel: '语言',
+      languageHint:
+        '强制指定说话语言。turbo 模型上自动检测可能把简短的中文听成英文——遇到这种情况请选「中文」。',
+      languageAuto: '自动检测',
+      languageZh: '中文',
+      languageEn: 'English'
     }
   },
   notifications: {

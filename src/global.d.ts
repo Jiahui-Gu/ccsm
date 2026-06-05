@@ -28,6 +28,10 @@ export type VoiceModelStatus =
   | { kind: 'ready'; tier: VoiceTier }
   | { kind: 'error'; tier: VoiceTier; message: string };
 
+// Mirrors electron/voice/voiceLanguages.ts. The whisper `-l` value: a language
+// code or 'auto' to language-detect. Renderer can't import from electron/.
+export type VoiceLanguage = 'auto' | 'zh' | 'en';
+
 declare global {
   interface Window {
     ccsm?: {

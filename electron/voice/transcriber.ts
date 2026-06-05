@@ -7,6 +7,7 @@ import { runWhisperCli } from './whisperCli';
 import { encodeWav } from './wavEncoder';
 import { tierFilename, type VoiceTier } from './modelTiers';
 import { loadVoiceTier } from '../prefs/voiceTier';
+import { loadVoiceLanguage } from '../prefs/voiceLanguage';
 
 const BIN_FILENAME = 'whisper-cli.exe';
 
@@ -46,6 +47,7 @@ export async function transcribe(pcm: Float32Array): Promise<VoiceResult> {
       modelPath,
       wavPath,
       threads,
+      language: loadVoiceLanguage(),
     });
     if (code !== 0) {
       console.error('[voice] whisper-cli failed:', stderr);

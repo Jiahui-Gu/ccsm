@@ -1,14 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, waitFor, act, fireEvent, cleanup } from '@testing-library/react';
+import { render, screen, waitFor, act, fireEvent, cleanup, within } from '@testing-library/react';
 import React from 'react';
 import { VoicePane } from '../../src/components/settings/VoicePane';
-import type { VoiceTier, VoiceModelStatus } from '../../src/global';
+import type { VoiceTier, VoiceLanguage, VoiceModelStatus } from '../../src/global';
 
 // In-memory renderer bridges VoicePane reads: window.ccsm (loadState/saveState
-// for the selected tier) and window.ccsmVoice (per-tier downloaded check +
-// download/cancel + status push hook).
+// for the selected tier and language) and window.ccsmVoice (per-tier downloaded
+// check + download/cancel + status push hook).
 function makeBridges(opts?: {
   selectedTier?: VoiceTier;
+  selectedLanguage?: VoiceLanguage;
   downloaded?: Partial<Record<VoiceTier, boolean>>;
 }) {
   const saveState = vi.fn(async () => {});
@@ -17,9 +18,11 @@ function makeBridges(opts?: {
   let pushCb: ((s: VoiceModelStatus) => void) | null = null;
 
   const ccsm = {
-    loadState: vi.fn(async (key: string) =>
-      key === 'voiceTier' ? opts?.selectedTier ?? 'base' : undefined,
-    ),
+    loadState: vi.fn(async (key: string) => {
+      if (key === 'voiceTier') return opts?.selectedTier ?? 'base';
+      if (key === 'voiceLanguage') return opts?.selectedLanguage;
+      return undefined;
+    }),
     saveState,
   } as unknown as Window['ccsm'];
 
@@ -64,11 +67,20 @@ async function renderPane() {
   });
 }
 
+// Both the tier list and the language picker use role="radio". Scope tier-only
+// assertions to the tier radiogroup so they don't miscount the 3 language
+// radios added below it.
+function tierRadios(): HTMLElement[] {
+  return screen
+    .getAllByRole('radio')
+    .filter((el) => !el.closest('[data-voice-language]'));
+}
+
 describe('VoicePane', () => {
   it('renders all six tiers as radios', async () => {
     await renderPane();
     await waitFor(() => {
-      expect(screen.getAllByRole('radio')).toHaveLength(6);
+      expect(tierRadios()).toHaveLength(6);
     });
     for (const tier of ['tiny', 'base', 'small', 'medium', 'large-v3', 'large-v3-turbo']) {
       expect(screen.getByText(tier)).toBeInTheDocument();
@@ -111,7 +123,7 @@ describe('VoicePane', () => {
 
   it('renders a progress bar + Cancel when a download status arrives', async () => {
     await renderPane();
-    await waitFor(() => expect(screen.getAllByRole('radio')).toHaveLength(6));
+    await waitFor(() => expect(tierRadios()).toHaveLength(6));
 
     act(() => {
       current.push({ kind: 'downloading', tier: 'tiny', transferred: 1000, total: 4000 });
@@ -126,7 +138,7 @@ describe('VoicePane', () => {
 
   it('treats a zero Content-Length total as indeterminate (full-bar, no Infinity)', async () => {
     const { container } = await act(async () => render(<VoicePane />));
-    await waitFor(() => expect(screen.getAllByRole('radio')).toHaveLength(6));
+    await waitFor(() => expect(tierRadios()).toHaveLength(6));
 
     act(() => {
       // Content-Length: 0 → total === 0. transferred/0 would be Infinity; the
@@ -141,7 +153,7 @@ describe('VoicePane', () => {
 
   it('a ready status flips the tier to installed (Use button appears)', async () => {
     await renderPane();
-    await waitFor(() => expect(screen.getAllByRole('radio')).toHaveLength(6));
+    await waitFor(() => expect(tierRadios()).toHaveLength(6));
 
     act(() => {
       current.push({ kind: 'ready', tier: 'tiny' });
@@ -149,5 +161,65 @@ describe('VoicePane', () => {
     await waitFor(() => {
       expect(screen.getByRole('button', { name: 'Use' })).toBeInTheDocument();
     });
+  });
+});
+
+describe('VoicePane language selector', () => {
+  // i18n is initialized to 'en' in tests/setup.ts, so the locale default is
+  // 'auto' and the labels render as 'Auto-detect' / '中文' / 'English'.
+  function languageGroup(container: HTMLElement): HTMLElement {
+    const group = container.querySelector('[data-voice-language]') as HTMLElement | null;
+    if (!group) throw new Error('language selector not rendered');
+    return group;
+  }
+
+  it('renders the three language options as radios', async () => {
+    const { container } = await act(async () => render(<VoicePane />));
+    await waitFor(() => {
+      const group = languageGroup(container);
+      expect(group.querySelectorAll('[role="radio"]')).toHaveLength(3);
+    });
+    const group = languageGroup(container);
+    for (const label of ['Auto-detect', '中文', 'English']) {
+      expect(within(group).getByText(label)).toBeInTheDocument();
+    }
+  });
+
+  it('marks the stored language as checked (aria-checked)', async () => {
+    current = makeBridges({ selectedLanguage: 'zh' });
+    (window as { ccsm?: unknown }).ccsm = current.ccsm;
+    (window as { ccsmVoice?: unknown }).ccsmVoice = current.ccsmVoice;
+    const { container } = await act(async () => render(<VoicePane />));
+    await waitFor(() => {
+      const zh = within(languageGroup(container)).getByText('中文').closest('[role="radio"]');
+      expect(zh?.getAttribute('aria-checked')).toBe('true');
+    });
+  });
+
+  it('defaults to Auto-detect on the English locale when nothing is stored', async () => {
+    const { container } = await act(async () => render(<VoicePane />));
+    await waitFor(() => {
+      const auto = within(languageGroup(container))
+        .getByText('Auto-detect')
+        .closest('[role="radio"]');
+      expect(auto?.getAttribute('aria-checked')).toBe('true');
+    });
+  });
+
+  it('picking a language persists voiceLanguage', async () => {
+    const { container } = await act(async () => render(<VoicePane />));
+    await waitFor(() => expect(languageGroup(container)).toBeInTheDocument());
+
+    const zhRadio = within(languageGroup(container)).getByText('中文');
+    await act(async () => {
+      fireEvent.click(zhRadio);
+    });
+    expect(current.spies.saveState).toHaveBeenCalledWith('voiceLanguage', 'zh');
+
+    const enRadio = within(languageGroup(container)).getByText('English');
+    await act(async () => {
+      fireEvent.click(enRadio);
+    });
+    expect(current.spies.saveState).toHaveBeenCalledWith('voiceLanguage', 'en');
   });
 });

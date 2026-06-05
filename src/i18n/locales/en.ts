@@ -192,7 +192,13 @@ const en = {
       cancelButton: 'Cancel',
       useButton: 'Use',
       downloading: 'Downloading… {{transferred}}{{total}}',
-      downloadError: 'Download failed: {{message}}'
+      downloadError: 'Download failed: {{message}}',
+      languageLabel: 'Language',
+      languageHint:
+        'Force the spoken language. Auto-detect can mishear short Chinese audio as English on the turbo model — pick 中文 if that happens.',
+      languageAuto: 'Auto-detect',
+      languageZh: '中文',
+      languageEn: 'English'
     }
   },
   notifications: {
