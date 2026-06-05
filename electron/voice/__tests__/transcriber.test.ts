@@ -10,6 +10,12 @@ vi.mock('../../prefs/voiceTier', () => ({
   loadVoiceTier: () => 'base',
 }));
 
+// transcribe() also reads the current language pref and threads it into
+// runWhisperCli's `-l`. Pin it so the threaded value is assertable.
+vi.mock('../../prefs/voiceLanguage', () => ({
+  loadVoiceLanguage: () => 'zh',
+}));
+
 describe('resolveModelPath / resolveBinPath', () => {
   beforeEach(() => vi.resetModules());
 
@@ -74,16 +80,19 @@ describe('transcribe', () => {
 
   it('returns ok with trimmed text on success', async () => {
     mockFs({ modelExists: true, binExists: true });
-    vi.doMock('../whisperCli', () => ({
-      runWhisperCli: vi
-        .fn()
-        .mockResolvedValue({ code: 0, stdout: '  Hello world  \n', stderr: '' }),
-    }));
+    const runWhisperCli = vi
+      .fn()
+      .mockResolvedValue({ code: 0, stdout: '  Hello world  \n', stderr: '' });
+    vi.doMock('../whisperCli', () => ({ runWhisperCli }));
     const { transcribe } = await import('../transcriber');
     expect(await transcribe(new Float32Array(16000))).toEqual({
       ok: true,
       text: 'Hello world',
     });
+    // The language pref (mocked to 'zh') must be threaded into the spawned
+    // whisper-cli args — this is the fix for the Chinese-as-English misfire.
+    expect(runWhisperCli).toHaveBeenCalledTimes(1);
+    expect(runWhisperCli.mock.calls[0][0]).toMatchObject({ language: 'zh' });
   });
 
   it('returns transcribe-failed on non-zero exit', async () => {

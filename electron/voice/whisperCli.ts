@@ -5,6 +5,11 @@ export interface WhisperCliArgs {
   modelPath: string;
   wavPath: string;
   threads: number;
+  // Whisper `-l` value: a language code (e.g. 'zh', 'en') to force decoding in
+  // that language, or 'auto' to language-detect. Forcing 'zh' is what fixes
+  // the large-v3-turbo Chinese-as-English misfire; 'auto' is the legacy
+  // behaviour kept as a valid pass-through.
+  language: string;
 }
 
 export interface WhisperCliResult {
@@ -14,7 +19,7 @@ export interface WhisperCliResult {
 }
 
 export function runWhisperCli(args: WhisperCliArgs): Promise<WhisperCliResult> {
-  const { binPath, modelPath, wavPath, threads } = args;
+  const { binPath, modelPath, wavPath, threads, language } = args;
   return new Promise((resolve, reject) => {
     const child = spawn(
       binPath,
@@ -22,7 +27,7 @@ export function runWhisperCli(args: WhisperCliArgs): Promise<WhisperCliResult> {
         '-m', modelPath,
         '-f', wavPath,
         '-t', String(threads),
-        '-l', 'auto',
+        '-l', language,
         '-bo', '1',
         '-bs', '1',
         '-np',

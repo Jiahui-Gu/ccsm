@@ -3,7 +3,7 @@ import { Check } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { Button } from '../ui/Button';
 import { useTranslation } from '../../i18n/useTranslation';
-import type { VoiceTier, VoiceModelStatus } from '../../global';
+import type { VoiceTier, VoiceLanguage, VoiceModelStatus } from '../../global';
 
 // Mirrors electron/voice/modelTiers.ts (renderer can't import from electron/).
 const VOICE_TIERS: readonly VoiceTier[] = [
@@ -37,6 +37,22 @@ const ACCURACY_KEY: Record<VoiceTier, string> = {
   'large-v3-turbo': 'voice.accuracyLargeV3Turbo'
 };
 
+// Mirrors electron/voice/voiceLanguages.ts. Kept tight (auto + the two UI
+// languages) — the point is the Chinese-vs-English misfire, not a full picker.
+const VOICE_LANGUAGES: readonly VoiceLanguage[] = ['auto', 'zh', 'en'];
+
+const LANGUAGE_LABEL_KEY: Record<VoiceLanguage, string> = {
+  auto: 'voice.languageAuto',
+  zh: 'voice.languageZh',
+  en: 'voice.languageEn'
+};
+
+// Mirror electron defaultVoiceLanguage(): Chinese UI ⇒ 'zh' (the locale most
+// hurt by auto-detect misfiring to English), otherwise 'auto'.
+function defaultVoiceLanguage(uiLanguage: string | undefined): VoiceLanguage {
+  return (uiLanguage ?? '').toLowerCase().startsWith('zh') ? 'zh' : 'auto';
+}
+
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
@@ -45,8 +61,9 @@ function formatBytes(n: number): string {
 }
 
 export function VoicePane() {
-  const { t } = useTranslation('settings');
+  const { t, i18n } = useTranslation('settings');
   const [selected, setSelected] = useState<VoiceTier | null>(null);
+  const [language, setLanguage] = useState<VoiceLanguage | null>(null);
   const [downloaded, setDownloaded] = useState<Record<VoiceTier, boolean>>(
     () => Object.fromEntries(VOICE_TIERS.map((tier) => [tier, false])) as Record<VoiceTier, boolean>
   );
@@ -55,6 +72,14 @@ export function VoicePane() {
   useEffect(() => {
     void window.ccsm?.loadState('voiceTier').then((raw) => {
       setSelected((raw as VoiceTier | null) ?? 'base');
+    });
+    void window.ccsm?.loadState('voiceLanguage').then((raw) => {
+      const stored = raw as VoiceLanguage | null;
+      setLanguage(
+        stored && VOICE_LANGUAGES.includes(stored)
+          ? stored
+          : defaultVoiceLanguage(i18n.language)
+      );
     });
     for (const tier of VOICE_TIERS) {
       void window.ccsmVoice?.isModelDownloaded(tier).then((ok) => {
@@ -68,11 +93,16 @@ export function VoicePane() {
       }
     });
     return () => off?.();
-  }, []);
+  }, [i18n.language]);
 
   function onUse(tier: VoiceTier) {
     setSelected(tier);
     void window.ccsm?.saveState('voiceTier', tier);
+  }
+
+  function onPickLanguage(lang: VoiceLanguage) {
+    setLanguage(lang);
+    void window.ccsm?.saveState('voiceLanguage', lang);
   }
 
   function onDownload(tier: VoiceTier) {
@@ -177,6 +207,39 @@ export function VoicePane() {
             </div>
           );
         })}
+      </div>
+
+      <div className="mt-6" data-voice-language>
+        <div className="text-chrome font-medium text-fg-primary mb-1">
+          {t('voice.languageLabel')}
+        </div>
+        <div className="text-meta text-fg-tertiary mb-2 max-w-[520px]">{t('voice.languageHint')}</div>
+        <div
+          role="radiogroup"
+          aria-label={t('voice.languageLabel')}
+          className="flex flex-wrap gap-2"
+        >
+          {VOICE_LANGUAGES.map((lang) => {
+            const isActive = language === lang;
+            return (
+              <button
+                key={lang}
+                type="button"
+                role="radio"
+                aria-checked={isActive}
+                onClick={() => onPickLanguage(lang)}
+                className={cn(
+                  'rounded-md border px-3 py-1.5 text-chrome outline-none focus-ring transition-colors',
+                  isActive
+                    ? 'border-accent bg-bg-hover text-fg-primary'
+                    : 'border-border-default text-fg-secondary hover:bg-bg-hover'
+                )}
+              >
+                {t(LANGUAGE_LABEL_KEY[lang])}
+              </button>
+            );
+          })}
+        </div>
       </div>
     </div>
   );

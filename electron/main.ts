@@ -85,6 +85,7 @@ import { loadNotifyEnabled, subscribeNotifyEnabledInvalidation } from './prefs/n
 import { subscribeCrashReportingInvalidation } from './prefs/crashReporting';
 import { subscribeScrollbackInvalidation } from './prefs/scrollback';
 import { subscribeVoiceTierInvalidation } from './prefs/voiceTier';
+import { subscribeVoiceLanguageInvalidation } from './prefs/voiceLanguage';
 import { BadgeController } from './badgeController';
 import { registerDbIpc } from './ipc/dbIpc';
 import { registerSystemIpc } from './ipc/systemIpc';
@@ -239,6 +240,7 @@ app.whenReady().then(() => {
   subscribeNotifyEnabledInvalidation();
   subscribeScrollbackInvalidation();
   subscribeVoiceTierInvalidation();
+  subscribeVoiceLanguageInvalidation();
   // Order is significant for systemIpc: it seeds the active i18n language
   // from the OS locale, so any subsequent producer that calls i18n.t()
   // sees the correct active language.

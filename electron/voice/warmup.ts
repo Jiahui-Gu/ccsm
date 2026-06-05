@@ -25,7 +25,11 @@ export async function warmUpTranscriber(): Promise<void> {
   try {
     fs.writeFileSync(wavPath, encodeWav(pcm, 16000));
     const threads = Math.max(1, os.cpus().length - 2);
-    await runWhisperCli({ binPath, modelPath, wavPath, threads });
+    // Warmup transcribes 0.1 s of silence purely to fault the exe/DLLs/model
+    // into the page cache; the decoded text is discarded, so the language flag
+    // is behaviourally irrelevant here. Pass 'auto' to keep warmup decoupled
+    // from the user's voiceLanguage preference.
+    await runWhisperCli({ binPath, modelPath, wavPath, threads, language: 'auto' });
   } catch {
     /* best-effort: warmup failure is never user-visible */
   } finally {
