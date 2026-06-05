@@ -158,7 +158,12 @@ async function caseVoiceModelDownload({ electronApp, win }) {
   const pane = win.locator('[data-voice-pane]');
   await pane.waitFor({ state: 'visible', timeout: 10_000 });
 
-  const radiogroup = win.locator('[data-voice-pane] [role="radiogroup"]');
+  // The pane now has TWO radiogroups: the tier list and the language picker
+  // (wrapped in `[data-voice-language]`). The tier group is a DIRECT child of
+  // `[data-voice-pane]`, while the language group is nested inside the
+  // `data-voice-language` block — so the `>` combinator selects the tier group
+  // alone (locale-agnostic, mirrors the unit test's data-voice-language scope).
+  const radiogroup = win.locator('[data-voice-pane] > [role="radiogroup"]');
   await radiogroup.waitFor({ state: 'visible', timeout: 10_000 });
 
   // Assert all 6 tiers render (matched by the mono tier-name span text).
