@@ -10,8 +10,9 @@ import { AppearancePane } from './settings/AppearancePane';
 import { NotificationsPane } from './settings/NotificationsPane';
 import { UpdatesPane } from './settings/UpdatesPane';
 import { VoicePane } from './settings/VoicePane';
+import { MobileRemotePane } from './settings/MobileRemotePane';
 
-type Tab = 'appearance' | 'notifications' | 'voice' | 'updates';
+type Tab = 'appearance' | 'notifications' | 'voice' | 'mobileRemote' | 'updates';
 
 // Tab catalog. Labels are i18n keys under `settings:tabs.*` rather than
 // literal strings, so the nav re-renders when the user flips language.
@@ -19,6 +20,7 @@ const TABS: { id: Tab; tabKey: string }[] = [
   { id: 'appearance', tabKey: 'appearance' },
   { id: 'notifications', tabKey: 'notifications' },
   { id: 'voice', tabKey: 'voice' },
+  { id: 'mobileRemote', tabKey: 'mobileRemote' },
   { id: 'updates', tabKey: 'updates' }
 ];
 
@@ -73,18 +75,21 @@ export function SettingsDialog({
     appearance: null,
     notifications: null,
     voice: null,
+    mobileRemote: null,
     updates: null
   });
   const tabIds: Record<Tab, string> = {
     appearance: 'settings-tab-appearance',
     notifications: 'settings-tab-notifications',
     voice: 'settings-tab-voice',
+    mobileRemote: 'settings-tab-mobile-remote',
     updates: 'settings-tab-updates'
   };
   const panelIds: Record<Tab, string> = {
     appearance: 'settings-panel-appearance',
     notifications: 'settings-panel-notifications',
     voice: 'settings-panel-voice',
+    mobileRemote: 'settings-panel-mobile-remote',
     updates: 'settings-panel-updates'
   };
 
@@ -175,6 +180,7 @@ export function SettingsDialog({
             {tab === 'appearance' && <AppearancePane />}
             {tab === 'notifications' && <NotificationsPane />}
             {tab === 'voice' && <VoicePane />}
+            {tab === 'mobileRemote' && <MobileRemotePane />}
             {tab === 'updates' && <UpdatesPane />}
           </div>
         </div>
