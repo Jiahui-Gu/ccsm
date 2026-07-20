@@ -88,7 +88,7 @@ describe('phone relay client', () => {
     client.close();
   });
 
-  it('surfaces protocol mismatch as update_required', () => {
+  it('surfaces protocol mismatch as update_required', async () => {
     const socket = new FakeWebSocket();
     const statuses: PhoneConnectionStatus[] = [];
     const client = createRelayClient({
@@ -108,7 +108,7 @@ describe('phone relay client', () => {
       nonce: 'C'.repeat(22),
     });
 
-    expect(statuses.at(-1)).toBe('update_required');
+    await vi.waitFor(() => expect(statuses.at(-1)).toBe('update_required'));
     expect(socket.readyState).toBe(3);
   });
 
@@ -157,6 +157,51 @@ describe('phone relay client', () => {
     await pendingSend;
 
     expect(parseSent(socket).some((message) => message.type === 'encrypted')).toBe(true);
+  });
+
+  it('serializes back-to-back handshake messages', async () => {
+    const socket = new FakeWebSocket();
+    const statuses: PhoneConnectionStatus[] = [];
+    const client = createRelayClient({
+      relayUrl: 'https://relay.example',
+      pairing: { roomId: ROOM_ID, secret: SECRET },
+      createWebSocket: () => socket,
+      randomValues: (bytes) => {
+        bytes.fill(11);
+        return bytes;
+      },
+    });
+    client.onStatus((status) => statuses.push(status));
+    client.connect();
+    socket.open();
+    const phoneHello = parseSent(socket)[0]!;
+    const desktopHello = {
+      type: 'handshake.hello',
+      version: MOBILE_REMOTE_PROTOCOL_VERSION,
+      role: 'desktop',
+      connectionId: ROOM_ID,
+      nonce: 'E'.repeat(22),
+    } as const;
+    const proof = await createHandshakeProof(
+      SECRET,
+      handshakeTranscript(desktopHello, {
+        type: 'handshake.hello',
+        version: MOBILE_REMOTE_PROTOCOL_VERSION,
+        role: 'phone',
+        connectionId: ROOM_ID,
+        nonce: String(phoneHello.nonce),
+      }),
+    );
+
+    socket.receive(desktopHello);
+    socket.receive({
+      type: 'handshake.proof',
+      connectionId: ROOM_ID,
+      proof,
+    });
+
+    await vi.waitFor(() => expect(statuses.at(-1)).toBe('connected'));
+    expect(socket.readyState).toBe(FakeWebSocket.OPEN);
   });
 
   it('decrypts authenticated desktop application messages', async () => {

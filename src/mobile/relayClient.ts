@@ -261,6 +261,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
     endpoint.protocol = endpoint.protocol === 'https:' ? 'wss:' : 'ws:';
     endpoint.searchParams.set('role', 'phone');
     const current = createSocket(endpoint.toString());
+    let incomingMessages = Promise.resolve();
     socket = current;
     emitStatus(reconnectDelay === 500 ? 'connecting' : 'reconnecting');
 
@@ -276,7 +277,12 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
       current.send(JSON.stringify(phoneHello));
     };
     current.onmessage = (event) => {
-      void handleMessage(current, event.data);
+      incomingMessages = incomingMessages
+        .then(() => handleMessage(current, event.data))
+        .catch(() => {
+          emitStatus('authentication_failed');
+          suppressAndClose(current, 4003, 'invalid_message');
+        });
     };
     current.onerror = () => {
       emitStatus('connection_error');
