@@ -1,0 +1,10 @@
+{
+  "name": "CCSM Mobile Remote",
+  "short_name": "CCSM Remote",
+  "description": "Securely control CCSM terminal sessions from your phone.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0b1020",
+  "theme_color": "#0b1020"
+}
