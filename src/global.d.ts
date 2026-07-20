@@ -32,6 +32,20 @@ export type VoiceModelStatus =
 // code or 'auto' to language-detect. Renderer can't import from electron/.
 export type VoiceLanguage = 'auto' | 'zh' | 'en';
 
+export type MobileRemoteStatus =
+  | {
+      kind: 'unavailable';
+      reason: 'relay-not-configured' | 'secure-storage-unavailable';
+    }
+  | { kind: 'connecting' }
+  | { kind: 'ready'; phoneConnected: false }
+  | { kind: 'ready'; phoneConnected: true }
+  | { kind: 'paused' }
+  | {
+      kind: 'error';
+      reason: 'relay-unreachable' | 'protocol-mismatch' | 'authentication-failed';
+    };
+
 declare global {
   interface Window {
     ccsm?: {
@@ -152,6 +166,14 @@ declare global {
       downloadModel: (tier: VoiceTier) => Promise<VoiceModelStatus | null>;
       cancelDownload: (tier: VoiceTier) => Promise<void>;
       onModelStatus: (handler: (status: VoiceModelStatus) => void) => () => void;
+    };
+    ccsmMobileRemote?: {
+      getStatus: () => Promise<MobileRemoteStatus>;
+      getPairingUrl: () => Promise<string | null>;
+      pause: () => Promise<void>;
+      resume: () => Promise<void>;
+      rotate: () => Promise<void>;
+      onStatus: (handler: (status: MobileRemoteStatus) => void) => () => void;
     };
   }
 }

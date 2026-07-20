@@ -15,6 +15,7 @@ const {
   installSessionTitles,
   installShell,
   installVoice,
+  installMobileRemote,
   sentryLoaded,
 } = vi.hoisted(() => ({
   installCore: vi.fn(),
@@ -24,6 +25,7 @@ const {
   installSessionTitles: vi.fn(),
   installShell: vi.fn(),
   installVoice: vi.fn(),
+  installMobileRemote: vi.fn(),
   sentryLoaded: vi.fn(),
 }));
 
@@ -48,6 +50,9 @@ vi.mock('../ccsmShell', () => ({
 vi.mock('../ccsmVoice', () => ({
   installCcsmVoiceBridge: installVoice,
 }));
+vi.mock('../ccsmMobileRemote', () => ({
+  installCcsmMobileRemoteBridge: installMobileRemote,
+}));
 
 describe('preload/index entry point', () => {
   it('loads sentry/preload and invokes every install function exactly once', async () => {
@@ -61,5 +66,6 @@ describe('preload/index entry point', () => {
     expect(installSessionTitles).toHaveBeenCalledTimes(1);
     expect(installShell).toHaveBeenCalledTimes(1);
     expect(installVoice).toHaveBeenCalledTimes(1);
+    expect(installMobileRemote).toHaveBeenCalledTimes(1);
   });
 });
