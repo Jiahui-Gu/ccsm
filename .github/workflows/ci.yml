@@ -83,6 +83,14 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Test Cloudflare relay
+        if: matrix.os == 'ubuntu-latest'
+        run: npm run test:cloudflare
+
+      - name: Dry-run Cloudflare bundle
+        if: matrix.os == 'ubuntu-latest'
+        run: npm run cloudflare:dry-run
+
       # Tech-debt R6 (Task #802 / Task #43) — coverage gate. Runs only on
       # Linux to keep the matrix lean (coverage instrumentation roughly
       # doubles wall-clock; one OS is enough for the lcov artifact and

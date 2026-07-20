@@ -24,6 +24,8 @@
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "npm run clean && tsc -p tsconfig.electron.json && webpack --mode production && npm run build:mobile && node -e \"const fs=require('fs');const p='dist/renderer/bundle.js';const t=Date.now()/1000;fs.utimesSync(p,t,t)\"",
     "build:mobile": "webpack --config webpack.mobile.config.js --mode production",
+    "test:cloudflare": "vitest run --config cloudflare/vitest.config.ts",
+    "cloudflare:dry-run": "wrangler deploy --dry-run --config cloudflare/wrangler.jsonc",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.electron.json",
     "lint": "eslint . --ext .ts,.tsx --max-warnings 0",
     "test": "vitest run",

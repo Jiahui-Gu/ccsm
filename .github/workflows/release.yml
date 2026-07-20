@@ -24,6 +24,26 @@ permissions:
   contents: write
 
 jobs:
+  validate-mobile-remote-deployment:
+    name: validate Cloudflare deployment configuration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate required Cloudflare credentials and subdomain
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_WORKERS_SUBDOMAIN: ${{ vars.CLOUDFLARE_WORKERS_SUBDOMAIN }}
+        run: |
+          missing=()
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then missing+=(CLOUDFLARE_API_TOKEN); fi
+          if [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then missing+=(CLOUDFLARE_ACCOUNT_ID); fi
+          if [ -z "$CLOUDFLARE_WORKERS_SUBDOMAIN" ]; then missing+=(CLOUDFLARE_WORKERS_SUBDOMAIN); fi
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error title=Missing Cloudflare configuration::Required values are not configured: ${missing[*]}"
+            exit 1
+          fi
+
   verify:
     name: lint + typecheck + test
     runs-on: ubuntu-latest
@@ -45,9 +65,39 @@ jobs:
       - run: npm run build
       - run: npm test
 
+  deploy-mobile-remote:
+    name: deploy Cloudflare mobile relay
+    needs: [verify, validate-mobile-remote-deployment]
+    runs-on: ubuntu-latest
+    outputs:
+      relay_url: ${{ steps.relay.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install deps
+        run: npm ci --legacy-peer-deps
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      - name: Build mobile client
+        run: npm run build:mobile
+      - name: Deploy Cloudflare Worker
+        run: npx wrangler deploy --config cloudflare/wrangler.jsonc
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Output relay URL
+        id: relay
+        shell: bash
+        env:
+          CLOUDFLARE_WORKERS_SUBDOMAIN: ${{ vars.CLOUDFLARE_WORKERS_SUBDOMAIN }}
+        run: echo "url=https://ccsm-mobile-remote.${CLOUDFLARE_WORKERS_SUBDOMAIN}.workers.dev" >> "$GITHUB_OUTPUT"
+
   build:
     name: build (${{ matrix.os }})
-    needs: verify
+    needs: [verify, deploy-mobile-remote]
     strategy:
       fail-fast: false
       matrix:
@@ -120,6 +170,9 @@ jobs:
           else
             echo "signed=true" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Stamp relay URL into package metadata
+        run: node scripts/stamp-mobile-remote-url.mjs package.json "${{ needs.deploy-mobile-remote.outputs.relay_url }}"
 
       - name: Build web + electron
         run: npm run build
