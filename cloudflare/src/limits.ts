@@ -1,0 +1,3 @@
+export const MAX_RELAY_FRAME_BYTES = 1_048_576;
+export const HANDSHAKE_TIMEOUT_MS = 10_000;
+export const DESKTOP_ABSENT_TIMEOUT_MS = 60_000;

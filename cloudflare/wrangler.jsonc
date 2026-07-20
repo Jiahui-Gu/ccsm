@@ -1,0 +1,17 @@
+{
+  "name": "ccsm-mobile-remote",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-07-20",
+  "durable_objects": {
+    "bindings": [{ "name": "RELAY", "class_name": "RelayRoom" }]
+  },
+  "ratelimits": [
+    {
+      "name": "RELAY_RATE_LIMITER",
+      "namespace_id": "1001",
+      "simple": { "limit": 20, "period": 60 }
+    }
+  ],
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RelayRoom"] }],
+  "assets": { "directory": "../dist/mobile", "binding": "ASSETS" }
+}
