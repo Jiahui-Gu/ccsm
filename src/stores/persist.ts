@@ -96,7 +96,9 @@ export function schedulePersist(state: PersistedState): void {
     const snap = pendingSnapshot;
     pendingSnapshot = null;
     if (!snap) return;
-    window.ccsm!.saveState(STATE_KEY, JSON.stringify(snap)).catch((err) => {
+    const bridge = window.ccsm;
+    if (!bridge) return;
+    bridge.saveState(STATE_KEY, JSON.stringify(snap)).catch((err) => {
       if (onPersistError) onPersistError(err);
     });
   }, WRITE_DEBOUNCE_MS);
