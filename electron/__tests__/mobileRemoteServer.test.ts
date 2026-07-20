@@ -300,6 +300,7 @@ describe('mobileRemoteServer: HTTP token auth', () => {
     const res = await httpGet(active.port, `/?token=${active.token}`);
     expect(res.status).toBe(200);
     expect(res.body).toMatch(/CCSM Mobile Remote/);
+    expect(res.body).not.toMatch(/https:\/\/(?:cdn\.jsdelivr|unpkg|cdnjs\.)/);
   });
 
   it('returns 404 for unknown paths even with valid token', async () => {

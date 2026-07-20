@@ -55,19 +55,27 @@ export function createPairingStore(options: PairingStoreOptions = {}): PairingSt
     async loadOrCreate() {
       if (!storage.isEncryptionAvailable()) return null;
 
+      let encrypted: Buffer | null = null;
       try {
-        const encrypted = await files.readFile(filePath);
-        const decoded = JSON.parse(storage.decryptString(encrypted)) as unknown;
-        if (!isPairingIdentity(decoded)) throw new Error('invalid_pairing');
-        return decoded;
+        encrypted = await files.readFile(filePath);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       }
 
+      if (encrypted) {
+        try {
+          const decoded = JSON.parse(storage.decryptString(encrypted)) as unknown;
+          if (!isPairingIdentity(decoded)) throw new Error('invalid_pairing');
+          return decoded;
+        } catch {
+          await files.unlink(filePath);
+        }
+      }
+
       const pairing = generateIdentity();
       if (!isPairingIdentity(pairing)) throw new Error('invalid_pairing');
-      const encrypted = storage.encryptString(JSON.stringify(pairing));
-      await files.writeFile(filePath, encrypted, { mode: 0o600 });
+      const encryptedPairing = storage.encryptString(JSON.stringify(pairing));
+      await files.writeFile(filePath, encryptedPairing, { mode: 0o600 });
       return pairing;
     },
 

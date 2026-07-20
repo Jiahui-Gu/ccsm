@@ -136,7 +136,7 @@ describe('desktop mobile remote controller', () => {
     } as const;
     const proof = await createHandshakeProof(
       firstIdentity.secret,
-      handshakeTranscript(desktopHello, phoneHello),
+      handshakeTranscript(desktopHello, phoneHello, 'phone'),
     );
 
     socket.emitMessage(phoneHello);
@@ -150,7 +150,46 @@ describe('desktop mobile remote controller', () => {
     });
 
     await vi.waitFor(() => expect(peer.authenticated).toBe(true));
+    expect(
+      socket.sent.some((message) => JSON.parse(message).type === 'relay.authenticated'),
+    ).toBe(true);
     expect(socket.close).not.toHaveBeenCalled();
+  });
+
+  it('rejects a reflected desktop proof as a phone proof', async () => {
+    const socket = new FakeRelaySocket();
+    const peer = createEncryptedPeer({
+      pairing: firstIdentity,
+      socket,
+      handleMessage: vi.fn(),
+      randomValues: (bytes) => {
+        bytes.fill(10);
+        return bytes;
+      },
+    });
+    peer.start();
+    socket.emitStatus('open');
+    const phoneHello = {
+      type: 'handshake.hello',
+      version: MOBILE_REMOTE_PROTOCOL_VERSION,
+      role: 'phone',
+      connectionId: firstIdentity.roomId,
+      nonce: 'R'.repeat(22),
+    } as const;
+
+    socket.emitMessage(phoneHello);
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(3));
+    const reflectedProof = JSON.parse(socket.sent[2]!) as {
+      type: 'handshake.proof';
+      connectionId: string;
+      proof: string;
+    };
+    socket.emitMessage(reflectedProof);
+
+    await vi.waitFor(() =>
+      expect(socket.close).toHaveBeenCalledWith(4003, 'invalid_proof'),
+    );
+    expect(peer.authenticated).toBe(false);
   });
 
   it('does not dispatch a decrypted command after the peer is closed', async () => {
@@ -187,7 +226,7 @@ describe('desktop mobile remote controller', () => {
       connectionId: firstIdentity.roomId,
       proof: await createHandshakeProof(
         firstIdentity.secret,
-        handshakeTranscript(desktopHello, phoneHello),
+        handshakeTranscript(desktopHello, phoneHello, 'phone'),
       ),
     });
     await vi.waitFor(() => expect(peer.authenticated).toBe(true));
@@ -325,6 +364,81 @@ describe('desktop mobile remote controller', () => {
     expect(sockets[1]!.close).toHaveBeenCalled();
     expect(sockets[2]!.close).not.toHaveBeenCalled();
     expect(controller.getPairingUrl()).toContain(thirdIdentity.roomId);
+    controller.close();
+  });
+
+  it('does not reconnect the old credential when resumed during rotation', async () => {
+    let resolveRotatedIdentity: ((identity: typeof firstIdentity) => void) | undefined;
+    const pairingStore = {
+      loadOrCreate: vi
+        .fn()
+        .mockResolvedValueOnce(firstIdentity)
+        .mockImplementationOnce(
+          () =>
+            new Promise<typeof firstIdentity>((resolve) => {
+              resolveRotatedIdentity = resolve;
+            }),
+        ),
+      delete: vi.fn(async () => undefined),
+    };
+    const sockets: FakeRelaySocket[] = [];
+    const controller = await createMobileRemoteController({
+      relayUrl: 'https://relay.example.workers.dev',
+      pairingStore,
+      createSocket: () => {
+        const socket = new FakeRelaySocket();
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    controller.pause();
+
+    const rotation = controller.rotate();
+    await vi.waitFor(() => expect(resolveRotatedIdentity).toBeTypeOf('function'));
+    controller.resume();
+
+    expect(sockets).toHaveLength(1);
+    resolveRotatedIdentity!(secondIdentity);
+    await rotation;
+    expect(sockets).toHaveLength(2);
+    expect(sockets[0]!.close).toHaveBeenCalledTimes(1);
+    expect(sockets[1]!.close).not.toHaveBeenCalled();
+    expect(controller.getPairingUrl()).toContain(secondIdentity.roomId);
+    controller.close();
+  });
+
+  it('recovers after a failed rotation and reports secure storage unavailable', async () => {
+    const pairingStore = {
+      loadOrCreate: vi
+        .fn()
+        .mockResolvedValueOnce(firstIdentity)
+        .mockResolvedValueOnce(secondIdentity),
+      delete: vi
+        .fn()
+        .mockRejectedValueOnce(new Error('storage unavailable'))
+        .mockResolvedValueOnce(undefined),
+    };
+    const sockets: FakeRelaySocket[] = [];
+    const controller = await createMobileRemoteController({
+      relayUrl: 'https://relay.example.workers.dev',
+      pairingStore,
+      createSocket: () => {
+        const socket = new FakeRelaySocket();
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    await expect(controller.rotate()).resolves.toBeUndefined();
+    expect(controller.getStatus()).toEqual({
+      kind: 'unavailable',
+      reason: 'secure-storage-unavailable',
+    });
+
+    await expect(controller.rotate()).resolves.toBeUndefined();
+    expect(pairingStore.delete).toHaveBeenCalledTimes(2);
+    expect(sockets).toHaveLength(2);
+    expect(controller.getPairingUrl()).toContain(secondIdentity.roomId);
     controller.close();
   });
 });

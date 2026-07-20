@@ -1,4 +1,4 @@
-/* global Request, Response */
+/* global Headers, Request, Response */
 
 import type {
   DurableObjectNamespace,
@@ -31,6 +31,18 @@ type ParsedRelayRequest =
     };
 
 const RELAY_PATH = /^\/relay\/([A-Za-z0-9_-]{43})$/;
+const PHONE_CSP = [
+  "default-src 'none'",
+  "script-src 'self'",
+  "style-src 'self'",
+  "connect-src 'self' wss:",
+  "manifest-src 'self'",
+  "worker-src 'self'",
+  "img-src 'self'",
+  "base-uri 'none'",
+  "form-action 'none'",
+  "frame-ancestors 'none'",
+].join('; ');
 
 export function parseRelayRequest(request: Request): ParsedRelayRequest {
   if (request.method !== 'GET') return { ok: false, status: 400 };
@@ -66,7 +78,16 @@ const worker = {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === 'GET' && !url.pathname.startsWith('/relay/')) {
-      return env.ASSETS.fetch(request);
+      const asset = await env.ASSETS.fetch(request);
+      const headers = new Headers(asset.headers);
+      headers.set('Content-Security-Policy', PHONE_CSP);
+      headers.set('X-Frame-Options', 'DENY');
+      headers.set('X-Content-Type-Options', 'nosniff');
+      return new Response(asset.body, {
+        status: asset.status,
+        statusText: asset.statusText,
+        headers,
+      });
     }
 
     const parsed = parseRelayRequest(request);

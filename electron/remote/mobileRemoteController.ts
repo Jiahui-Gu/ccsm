@@ -61,6 +61,7 @@ export async function createMobileRemoteController(
   let offSocketStatus: (() => void) | null = null;
   let paused = false;
   let closed = false;
+  let rotating = false;
   let rotation = Promise.resolve();
 
   const setStatus = (next: MobileRemoteStatus): void => {
@@ -78,7 +79,8 @@ export async function createMobileRemoteController(
   };
 
   const connect = (): void => {
-    if (!relayUrl || !pairing || paused || closed) return;
+    if (!relayUrl || !pairing || paused || closed || rotating) return;
+    disconnect();
     setStatus({ kind: 'connecting' });
     socket = socketFactory({ relayUrl, roomId: pairing.roomId });
     const currentSocket = socket;
@@ -132,17 +134,27 @@ export async function createMobileRemoteController(
       connect();
     },
     rotate() {
-      rotation = rotation.then(async () => {
+      const rotatePairing = async (): Promise<void> => {
         if (closed || !relayUrl) return;
-        disconnect();
-        await store.delete();
-        pairing = await store.loadOrCreate();
-        if (!pairing) {
+        rotating = true;
+        try {
+          disconnect();
+          pairing = null;
+          await store.delete();
+          pairing = await store.loadOrCreate();
+          if (!pairing) {
+            setStatus({ kind: 'unavailable', reason: 'secure-storage-unavailable' });
+            return;
+          }
+        } catch {
           setStatus({ kind: 'unavailable', reason: 'secure-storage-unavailable' });
           return;
+        } finally {
+          rotating = false;
         }
         if (!paused) connect();
-      });
+      };
+      rotation = rotation.then(rotatePairing, rotatePairing);
       return rotation;
     },
     subscribe(handler) {

@@ -1,7 +1,8 @@
 # Mobile Remote — Cloudflare Relay
 
 **Date:** 2026-07-20  
-**Status:** Design approved in conversation; awaiting written-spec review  
+**Status:** Implemented and verified by the focused Wrangler/Playwright relay harness
+
 **Scope:** One user, one CCSM desktop, and one phone browser controlling CCSM
 terminal sessions over the public internet.
 

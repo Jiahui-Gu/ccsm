@@ -77,7 +77,7 @@ export async function importPairingFromFragment(
 ): Promise<PairingIdentity | null> {
   const pairing = parsePairingFragment(location.hash);
   if (!pairing) return store.get();
-  await store.put(pairing);
   history.replaceState(null, '', `${location.pathname}${location.search}`);
+  await store.put(pairing);
   return pairing;
 }

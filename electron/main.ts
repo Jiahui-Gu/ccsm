@@ -169,6 +169,7 @@ let notifyPipelineDispose: (() => void) | null = null;
 let mobileRemoteServer: { close: () => void } | null = null;
 let mobileRemoteController: MobileRemoteController | null = null;
 let mobileRemoteStatusDispose: (() => void) | null = null;
+let mobileRemoteStartupGeneration = 0;
 const badgeController = new BadgeController(() => badgeManager);
 
 function getTrayBaseImage() {
@@ -215,9 +216,14 @@ function getTray(): Tray | null {
 }
 
 async function startPublicMobileRemote(): Promise<void> {
+  const generation = ++mobileRemoteStartupGeneration;
   try {
     const { createMobileRemoteController } = await import('./remote/mobileRemoteController');
     const controller = await createMobileRemoteController();
+    if (generation !== mobileRemoteStartupGeneration || isQuitting) {
+      controller.close();
+      return;
+    }
     mobileRemoteController = controller;
     const publishStatus = (status: MobileRemoteStatus): void => {
       for (const win of BrowserWindow.getAllWindows()) {
@@ -229,6 +235,22 @@ async function startPublicMobileRemote(): Promise<void> {
   } catch (error) {
     console.error('[mobile-remote] public controller failed after app ready', error);
   }
+}
+
+function stopPublicMobileRemote(): void {
+  mobileRemoteStartupGeneration++;
+  try {
+    mobileRemoteStatusDispose?.();
+  } catch (err) {
+    console.warn('[main] disposer mobileRemoteStatusDispose threw', err);
+  }
+  mobileRemoteStatusDispose = null;
+  try {
+    mobileRemoteController?.close();
+  } catch (err) {
+    console.warn('[main] disposer mobileRemoteController.close threw', err);
+  }
+  mobileRemoteController = null;
 }
 
 app.whenReady().then(() => {
@@ -420,6 +442,7 @@ registerLifecycleHandlers({
     createWindow();
   },
   getWindowCount: () => BrowserWindow.getAllWindows().length,
+  disposeBeforePtyShutdown: stopPublicMobileRemote,
   disposeNotifyPipeline: () => {
     // Each disposer is wrapped in its own try/catch so a throw from one
     // (e.g. mobileRemoteServer.close() on an already-closed server) does
@@ -438,26 +461,6 @@ registerLifecycleHandlers({
       mobileRemoteServer = null;
     } catch (err) {
       console.warn('[main] disposer clear mobileRemoteServer threw', err);
-    }
-    try {
-      mobileRemoteStatusDispose?.();
-    } catch (err) {
-      console.warn('[main] disposer mobileRemoteStatusDispose threw', err);
-    }
-    try {
-      mobileRemoteStatusDispose = null;
-    } catch (err) {
-      console.warn('[main] disposer clear mobileRemoteStatusDispose threw', err);
-    }
-    try {
-      mobileRemoteController?.close();
-    } catch (err) {
-      console.warn('[main] disposer mobileRemoteController.close threw', err);
-    }
-    try {
-      mobileRemoteController = null;
-    } catch (err) {
-      console.warn('[main] disposer clear mobileRemoteController threw', err);
     }
     try {
       notifyPipelineDispose?.();

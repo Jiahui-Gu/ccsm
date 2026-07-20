@@ -1,5 +1,6 @@
 // Batch runner for every `scripts/probe-e2e-*.mjs` AND every
-// `scripts/harness-*.mjs` themed harness.
+// `scripts/harness-*.mjs` themed harness. This includes the mobile remote relay
+// harness, which owns its dynamically-ported Wrangler dev process.
 //
 // - Discovers probes by glob, sorts deterministically.
 // - Runs them serially (Electron can't share its singleton lock — parallel
@@ -25,9 +26,8 @@ import { fileURLToPath } from 'node:url';
  * electron.exe` shows 30+ leaked processes after a full run.
  *
  * Windows: `taskkill /T /F /PID` walks the process tree.
- * POSIX: not currently exercised by this runner (Electron e2e is Windows-only
- * dogfood), but support `process.kill(-pid)` if the child was spawned with
- * `detached: true`. We don't detach here, so fall back to `child.kill('SIGKILL')`.
+ * POSIX: each probe owns a detached process group, so a negative PID reaches
+ * the probe and descendants such as Electron or Wrangler.
  *
  * @param {import('node:child_process').ChildProcess} child
  */
@@ -46,7 +46,7 @@ function treeKill(child) {
     return;
   }
   try {
-    child.kill('SIGKILL');
+    process.kill(-pid, 'SIGKILL');
   } catch { /* ignore */ }
 }
 
@@ -170,10 +170,9 @@ function runOne(scriptPath, timeoutMs) {
       // probes can still launch electron directly with their own env
       // when run by hand for debugging (no CCSM_E2E_HIDDEN set).
       env: { ...process.env, LANG: 'en_US.UTF-8', LC_ALL: 'en_US.UTF-8', CCSM_E2E_HIDDEN: process.env.CCSM_E2E_HIDDEN ?? '1' },
-      // Keep the child in our process group so `taskkill /T /PID <us>`
-      // would also reach it if the runner itself is killed. Explicit for
-      // clarity — also means we can't use `process.kill(-pid)` on POSIX.
-      detached: false,
+      // POSIX needs a dedicated process group so timeout cleanup reaches
+      // descendants. Windows uses taskkill's process-tree traversal.
+      detached: process.platform !== 'win32',
       windowsHide: true,
     });
 

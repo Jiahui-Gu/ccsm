@@ -34,10 +34,11 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_WORKERS_SUBDOMAIN: ${{ vars.CLOUDFLARE_WORKERS_SUBDOMAIN }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           missing=()
-          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then missing+=(CLOUDFLARE_API_TOKEN); fi
-          if [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then missing+=(CLOUDFLARE_ACCOUNT_ID); fi
+          if [ "$EVENT_NAME" = "push" ] && [ -z "$CLOUDFLARE_API_TOKEN" ]; then missing+=(CLOUDFLARE_API_TOKEN); fi
+          if [ "$EVENT_NAME" = "push" ] && [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then missing+=(CLOUDFLARE_ACCOUNT_ID); fi
           if [ -z "$CLOUDFLARE_WORKERS_SUBDOMAIN" ]; then missing+=(CLOUDFLARE_WORKERS_SUBDOMAIN); fi
           if [ ${#missing[@]} -gt 0 ]; then
             echo "::error title=Missing Cloudflare configuration::Required values are not configured: ${missing[*]}"
@@ -56,6 +57,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: Verify tag matches package.json version
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          PKG=$(node -p "require('./package.json').version")
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::Tag v$TAG mismatches package.json version $PKG"
+            exit 1
+          fi
+          echo "tag v$TAG matches package.json $PKG"
       - name: Install deps
         run: npm ci --legacy-peer-deps
         env:
@@ -84,10 +96,14 @@ jobs:
       - name: Build mobile client
         run: npm run build:mobile
       - name: Deploy Cloudflare Worker
+        if: github.event_name == 'push'
         run: npx wrangler deploy --config cloudflare/wrangler.jsonc
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Validate Cloudflare Worker bundle
+        if: github.event_name == 'workflow_dispatch'
+        run: npm run cloudflare:dry-run
       - name: Output relay URL
         id: relay
         shell: bash
@@ -111,21 +127,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-
-      # Guard against a mismatch between the git tag and package.json version —
-      # e.g. someone tags v0.2.0 but forgot to bump version. Skipped on
-      # workflow_dispatch so dry-runs (v0.0.0-dryrun tag input) don't fail.
-      - name: Verify tag matches package.json version
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        run: |
-          TAG="${GITHUB_REF#refs/tags/v}"
-          PKG=$(node -p "require('./package.json').version")
-          if [ "$TAG" != "$PKG" ]; then
-            echo "::error::Tag v$TAG mismatches package.json version $PKG"
-            exit 1
-          fi
-          echo "tag v$TAG matches package.json $PKG"
 
       - uses: actions/setup-node@v4
         with:

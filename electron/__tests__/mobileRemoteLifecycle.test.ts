@@ -198,11 +198,54 @@ describe('mobile remote main lifecycle', () => {
     (publishStatus as (status: { kind: 'paused' }) => void)({ kind: 'paused' });
     expect(send).toHaveBeenCalledWith('mobileRemote:status', { kind: 'paused' });
     const deps = h.lifecycle.mock.calls[0][0];
+    deps.disposeBeforePtyShutdown();
     deps.disposeNotifyPipeline();
 
     expect(loopbackClose).toHaveBeenCalledTimes(1);
     expect(publicClose).toHaveBeenCalledTimes(1);
     delete process.env.CCSM_MOBILE_REMOTE;
     warnSpy.mockRestore();
+  });
+
+  it('closes a public controller that finishes starting after shutdown', async () => {
+    let resolveController:
+      | ((controller: {
+          getStatus: ReturnType<typeof vi.fn>;
+          getPairingUrl: ReturnType<typeof vi.fn>;
+          pause: ReturnType<typeof vi.fn>;
+          resume: ReturnType<typeof vi.fn>;
+          rotate: ReturnType<typeof vi.fn>;
+          subscribe: ReturnType<typeof vi.fn>;
+          close: ReturnType<typeof vi.fn>;
+        }) => void)
+      | undefined;
+    const close = vi.fn();
+    const subscribe = vi.fn(() => vi.fn());
+    vi.doMock('../remote/mobileRemoteController', () => ({
+      createMobileRemoteController: vi.fn(
+        () =>
+          new Promise((resolve) => {
+            resolveController = resolve;
+          }),
+      ),
+    }));
+
+    await import('../main');
+    await vi.waitFor(() => expect(resolveController).toBeTypeOf('function'));
+    const deps = h.lifecycle.mock.calls[0][0];
+    deps.disposeBeforePtyShutdown();
+    resolveController!({
+      getStatus: vi.fn(),
+      getPairingUrl: vi.fn(),
+      pause: vi.fn(),
+      resume: vi.fn(),
+      rotate: vi.fn(),
+      subscribe,
+      close,
+    });
+
+    await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(1));
+    expect(subscribe).not.toHaveBeenCalled();
+    expect(h.registerMobileIpc.mock.calls[0][0].getController()).toBeNull();
   });
 });

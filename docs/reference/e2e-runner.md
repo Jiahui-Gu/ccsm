@@ -13,7 +13,8 @@ Two test surfaces share one runner:
   process. Current harnesses: `harness-dnd.mjs`, `harness-ui.mjs`,
   `harness-ime-overflow.mjs`, and the `harness-e2e-*.mjs` family
   (`error-recovery`, `import-from-claude`, `paste-fidelity`,
-  `persistence-resume`, `session-lifecycle`, `window-lifecycle-notify`).
+  `persistence-resume`, `session-lifecycle`, `window-lifecycle-notify`, and
+  `mobile-remote-relay`).
 
 `scripts/run-all-e2e.mjs` discovers harnesses and probes by glob and runs
 harnesses first, then probes. There is no skip-list; if a case has been
@@ -103,7 +104,15 @@ const electronApp = await electron.launch({
 npm run probe:e2e            # build + every harness + every probe
 node scripts/harness-ui.mjs                          # one harness, all cases
 node scripts/harness-e2e-session-lifecycle.mjs       # another harness
+node scripts/harness-e2e-mobile-remote-relay.mjs     # Wrangler + phone PWA relay proof
 ```
+
+The Mobile Remote harness selects a free localhost port, launches and owns
+Wrangler dev, simulates the encrypted desktop and PTY protocol, and opens the
+built phone PWA in Playwright. It proves pairing, snapshot/list rendering,
+input, live output, relay interruption recovery with sequence deduplication,
+and old-secret rejection after rotation. Cleanup targets only the exact child
+PIDs created by the harness.
 
 `E2E_SKIP=streaming,tray` (or any comma list of probe / harness suffixes)
 skips entries from `run-all-e2e.mjs` end-to-end.

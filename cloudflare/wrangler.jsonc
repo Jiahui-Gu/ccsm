@@ -1,7 +1,7 @@
 {
   "name": "ccsm-mobile-remote",
   "main": "src/worker.ts",
-  "compatibility_date": "2026-07-20",
+  "compatibility_date": "2026-07-15",
   "durable_objects": {
     "bindings": [{ "name": "RELAY", "class_name": "RelayRoom" }]
   },

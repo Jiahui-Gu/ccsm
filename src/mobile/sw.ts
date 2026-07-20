@@ -1,13 +1,17 @@
 /// <reference lib="webworker" />
 /* global ExtendableEvent, FetchEvent, Response, ServiceWorkerGlobalScope, caches, fetch */
 
+import { classifyMobileRequest } from './serviceWorkerPolicy';
+
+declare const __MOBILE_CACHE_VERSION__: string;
+
 const worker = globalThis as unknown as ServiceWorkerGlobalScope;
 
-const CACHE_NAME = 'ccsm-mobile-v1';
-const SHELL = ['./', './index.html', './manifest.webmanifest'];
+const CACHE_PREFIX = 'ccsm-mobile-';
+const CACHE_NAME = `${CACHE_PREFIX}${__MOBILE_CACHE_VERSION__}`;
 
 worker.addEventListener('install', (event: ExtendableEvent) => {
-  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL)));
+  event.waitUntil(Promise.resolve());
   void worker.skipWaiting();
 });
 
@@ -16,7 +20,11 @@ worker.addEventListener('activate', (event: ExtendableEvent) => {
     caches
       .keys()
       .then((names) =>
-        Promise.all(names.filter((name) => name !== CACHE_NAME).map((name) => caches.delete(name))),
+        Promise.all(
+          names
+            .filter((name) => name.startsWith(CACHE_PREFIX) && name !== CACHE_NAME)
+            .map((name) => caches.delete(name)),
+        ),
       )
       .then(() => worker.clients.claim()),
   );
@@ -27,6 +35,11 @@ worker.addEventListener('fetch', (event: FetchEvent) => {
     event.request.method !== 'GET' ||
     new URL(event.request.url).origin !== worker.location.origin
   ) {
+    return;
+  }
+  const strategy = classifyMobileRequest(event.request);
+  if (strategy === 'network-only') {
+    event.respondWith(fetch(event.request).catch(() => Response.error()));
     return;
   }
   event.respondWith(
@@ -40,9 +53,6 @@ worker.addEventListener('fetch', (event: FetchEvent) => {
         }
         return response;
       } catch {
-        if (event.request.mode === 'navigate') {
-          return (await caches.match('./index.html')) ?? Response.error();
-        }
         return Response.error();
       }
     }),

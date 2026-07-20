@@ -1471,10 +1471,10 @@ async function caseTerminalPaneMounted({ win, log }) {
     window.__ccsmStore.setState({
       groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
       sessions: [
-        { id: 's-term', name: 'terminal-probe', state: 'idle', cwd, model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' },
+        { id: 's-terminal', name: 'terminal-probe', state: 'idle', cwd, model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' },
       ],
-      activeId: 's-term',
-      messagesBySession: { 's-term': [] },
+      activeId: 's-terminal',
+      messagesBySession: { 's-terminal': [] },
       tutorialSeen: true,
     });
   }, probeCwd);
@@ -1522,22 +1522,31 @@ async function caseTerminalPaneMounted({ win, log }) {
   // Wiring contract: window.ccsmPty.list() must report ≥1 entry,
   // proving the renderer→main IPC bridge is wired and main has at
   // least one pty for the active session.
-  const ptyList = await win.evaluate(async () => {
-    if (!window.ccsmPty || typeof window.ccsmPty.list !== 'function') {
-      return { ok: false, reason: 'window.ccsmPty.list unavailable' };
-    }
-    try {
-      const arr = await window.ccsmPty.list();
-      return { ok: true, count: Array.isArray(arr) ? arr.length : 0, entries: arr };
-    } catch (err) {
-      return { ok: false, reason: String(err) };
-    }
-  });
+  let ptyList = { ok: true, count: 0, entries: [] };
+  const ptyDeadline = Date.now() + 8000;
+  while (Date.now() < ptyDeadline && ptyList.count < 1) {
+    ptyList = await win.evaluate(async () => {
+      if (!window.ccsmPty || typeof window.ccsmPty.list !== 'function') {
+        return { ok: false, reason: 'window.ccsmPty.list unavailable', count: 0, entries: [] };
+      }
+      try {
+        const entries = await window.ccsmPty.list();
+        return { ok: true, count: Array.isArray(entries) ? entries.length : 0, entries };
+      } catch (err) {
+        return { ok: false, reason: String(err), count: 0, entries: [] };
+      }
+    });
+    if (ptyList.count < 1) await new Promise((resolve) => setTimeout(resolve, 100));
+  }
   if (!ptyList.ok) {
     throw new Error(`window.ccsmPty.list failed: ${ptyList.reason}`);
   }
   if (!ptyList.count || ptyList.count < 1) {
-    throw new Error(`window.ccsmPty.list returned 0 entries — pty bridge wired but no pty spawned`);
+    const paneText = (await host.first().textContent())?.trim();
+    throw new Error(
+      `window.ccsmPty.list returned 0 entries — pty bridge wired but no pty spawned` +
+        (paneText ? `; pane=${paneText}` : '')
+    );
   }
 
   log(`claudeAvailable=true branch: terminal host mounted with .xterm, pty list reports ${ptyList.count} entry/entries`);

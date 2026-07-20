@@ -22,6 +22,17 @@ describe('phone pairing', () => {
     expect(replaceState).toHaveBeenCalledWith(null, '', '/');
   });
 
+  it('removes a parsed pairing secret before persistence can fail', async () => {
+    const store = { get: vi.fn(), put: vi.fn().mockRejectedValue(new Error('quota_exceeded')) };
+    const replaceState = vi.spyOn(history, 'replaceState');
+    location.hash = `#pair=${ROOM_ID}.${SECRET}`;
+
+    await expect(importPairingFromFragment(store)).rejects.toThrow('quota_exceeded');
+
+    expect(replaceState).toHaveBeenCalledWith(null, '', '/');
+    expect(location.hash).toBe('');
+  });
+
   it('rejects malformed fragments without storing them', async () => {
     const store = { get: vi.fn(), put: vi.fn() };
     location.hash = '#pair=not-a-capability';

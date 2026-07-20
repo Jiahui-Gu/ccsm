@@ -78,13 +78,18 @@ function isEnvelope(value: unknown): value is EncryptedEnvelope {
   );
 }
 
-export function handshakeTranscript(desktop: HandshakeHello, phone: HandshakeHello): string {
+export function handshakeTranscript(
+  desktop: HandshakeHello,
+  phone: HandshakeHello,
+  provingRole: 'desktop' | 'phone',
+): string {
   return JSON.stringify([
     'ccsm-mobile-remote-handshake',
     MOBILE_REMOTE_PROTOCOL_VERSION,
     desktop.connectionId,
     desktop.nonce,
     phone.nonce,
+    provingRole,
   ]);
 }
 
@@ -157,6 +162,7 @@ export function createEncryptedPeer(options: EncryptedPeerOptions): EncryptedPee
         fail('authentication-failed', 'invalid_hello');
         return;
       }
+      if (phoneHello?.nonce === message.nonce && keys) return;
       phoneHello = message;
       const derivedKeys = await deriveSessionKeys({
         ...options.pairing,
@@ -168,7 +174,7 @@ export function createEncryptedPeer(options: EncryptedPeerOptions): EncryptedPee
       keys = derivedKeys;
       const proof = await createHandshakeProof(
         options.pairing.secret,
-        handshakeTranscript(desktopHello, phoneHello),
+        handshakeTranscript(desktopHello, phoneHello, 'desktop'),
       );
       if (!isCurrent()) return;
       // The relay does not buffer frames when the other role is absent. Re-send
@@ -196,7 +202,7 @@ export function createEncryptedPeer(options: EncryptedPeerOptions): EncryptedPee
       }
       const expected = await createHandshakeProof(
         options.pairing.secret,
-        handshakeTranscript(desktopHello, phoneHello),
+        handshakeTranscript(desktopHello, phoneHello, 'phone'),
       );
       if (!isCurrent()) return;
       if (message.proof !== expected) {
@@ -204,6 +210,7 @@ export function createEncryptedPeer(options: EncryptedPeerOptions): EncryptedPee
         return;
       }
       authenticated = true;
+      options.socket.send(JSON.stringify({ type: 'relay.authenticated' }));
       options.onAuthenticated?.();
       return;
     }

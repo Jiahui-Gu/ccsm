@@ -70,22 +70,52 @@ describe('desktop pairing store', () => {
     expect(generateIdentity).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects decrypted identities with invalid base64url lengths', async () => {
+  it('deletes corrupt encrypted content and persists a fresh identity', async () => {
+    const writeFile = vi.fn();
+    const unlink = vi.fn(async () => undefined);
     const store = createPairingStore({
       safeStorage: {
         isEncryptionAvailable: () => true,
-        encryptString: vi.fn(),
+        encryptString: vi.fn(() => Buffer.from('fresh ciphertext')),
         decryptString: () => JSON.stringify({ roomId: 'short', secret: 'also-short' }),
       },
       userDataPath: 'user-data',
       files: {
         readFile: async () => Buffer.from('ciphertext'),
+        writeFile,
+        unlink,
+      },
+      generateIdentity: () => identity,
+    });
+
+    await expect(store.loadOrCreate()).resolves.toEqual(identity);
+    expect(unlink).toHaveBeenCalledWith(expect.stringMatching(/mobile-remote-pairing\.bin$/));
+    expect(writeFile).toHaveBeenCalledWith(
+      expect.stringMatching(/mobile-remote-pairing\.bin$/),
+      Buffer.from('fresh ciphertext'),
+      { mode: 0o600 },
+    );
+  });
+
+  it('propagates non-corruption file read failures', async () => {
+    const readError = Object.assign(new Error('access denied'), { code: 'EACCES' });
+    const store = createPairingStore({
+      safeStorage: {
+        isEncryptionAvailable: () => true,
+        encryptString: vi.fn(),
+        decryptString: vi.fn(),
+      },
+      userDataPath: 'user-data',
+      files: {
+        readFile: async () => {
+          throw readError;
+        },
         writeFile: vi.fn(),
         unlink: vi.fn(),
       },
       generateIdentity: () => identity,
     });
 
-    await expect(store.loadOrCreate()).rejects.toThrow('invalid_pairing');
+    await expect(store.loadOrCreate()).rejects.toBe(readError);
   });
 });

@@ -47,7 +47,7 @@ export function renderMissingPairing(root: HTMLElement): void {
 export function createPhonePage(root: HTMLElement, client: RelayClient): () => void {
   root.innerHTML = `
     <div class="phone-shell">
-      <header><strong>CCSM Mobile Remote</strong><span id="status">Connecting…</span></header>
+      <header><strong>CCSM Mobile Remote</strong><span id="status" data-remote-status>Connecting…</span></header>
       <nav id="sessions" aria-label="Terminal sessions"><span class="muted">Loading sessions…</span></nav>
       <main id="terminal" aria-label="Terminal"></main>
       <nav id="keybar" aria-label="Terminal keys"></nav>

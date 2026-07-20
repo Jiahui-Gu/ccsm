@@ -1,10 +1,27 @@
 /* global __dirname, module, require */
 
+const crypto = require('crypto');
+const fs = require('fs');
 const path = require('path');
+const webpack = require('webpack');
 const CopyPlugin = require('copy-webpack-plugin');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
 const MiniCssExtractPlugin = require('mini-css-extract-plugin');
 const { typescriptRule } = require('./webpack.config.js');
+
+const mobileSourceDirectory = path.resolve(__dirname, 'src/mobile');
+const mobileCacheVersion = crypto
+  .createHash('sha256')
+  .update(fs.readFileSync(path.resolve(__dirname, 'src/phone.html')))
+  .update(
+    fs
+      .readdirSync(mobileSourceDirectory)
+      .sort()
+      .map((name) => fs.readFileSync(path.join(mobileSourceDirectory, name)))
+      .join(''),
+  )
+  .digest('hex')
+  .slice(0, 12);
 
 module.exports = {
   entry: {
@@ -31,6 +48,9 @@ module.exports = {
     ],
   },
   plugins: [
+    new webpack.DefinePlugin({
+      __MOBILE_CACHE_VERSION__: JSON.stringify(mobileCacheVersion),
+    }),
     new HtmlWebpackPlugin({
       template: './src/phone.html',
       chunks: ['phone'],

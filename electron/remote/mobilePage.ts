@@ -1,4 +1,24 @@
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+
+const requireFromHere = createRequire(__filename);
+let cachedXtermAssets: { css: string; scripts: string } | null = null;
+
+function getXtermAssets(): { css: string; scripts: string } {
+  if (cachedXtermAssets) return cachedXtermAssets;
+  const css = readFileSync(requireFromHere.resolve('@xterm/xterm/css/xterm.css'), 'utf8');
+  const scripts = [
+    readFileSync(requireFromHere.resolve('@xterm/xterm'), 'utf8'),
+    readFileSync(requireFromHere.resolve('@xterm/addon-fit'), 'utf8'),
+  ]
+    .join('\n')
+    .replace(/<\/script/gi, '<\\/script');
+  cachedXtermAssets = { css, scripts };
+  return cachedXtermAssets;
+}
+
 export function renderMobilePage(): string {
+  const xterm = getXtermAssets();
   return `<!doctype html>
 <html>
 <head>
@@ -8,7 +28,7 @@ export function renderMobilePage(): string {
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>CCSM Mobile Remote</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css" />
+  <style>${xterm.css}</style>
   <style>
     * { box-sizing: border-box; }
     html, body { margin: 0; height: 100%; background: #0b1020; color: #e5e7eb; font: 14px system-ui, sans-serif; }
@@ -38,8 +58,7 @@ export function renderMobilePage(): string {
   <div id="sessions"><span class="muted">Loading sessions...</span></div>
   <div id="terminal"></div>
   <div id="keybar"></div>
-  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+  <script>${xterm.scripts}</script>
   <script>
     const token = new URLSearchParams(location.search).get('token') || '';
 

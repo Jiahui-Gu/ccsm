@@ -11,8 +11,12 @@ import {
 
 export type RelayAttachment = {
   role: RelayRole;
-  authenticated: boolean;
+  connectionId: string;
   connectedAt: number;
+  handshakeDeadline: number | null;
+  hasForwardedFrame: boolean;
+  authenticationConfirmed: boolean;
+  authenticatedPeerConnectionId: string | null;
 };
 
 export type RelayRoomContext = DurableObjectState;
@@ -26,20 +30,35 @@ export class RelayRoom extends DurableObject<RelayEnv> {
 
   async fetch(request: Request): Promise<Response> {
     const role = new URL(request.url).searchParams.get('role') as RelayRole;
+    const occupants = this.ctx.getWebSockets(role);
+    if (occupants.length > 0) {
+      const now = Date.now();
+      for (const occupant of occupants) {
+        const attachment = this.attachmentFor(occupant);
+        if (
+          attachment.handshakeDeadline !== null &&
+          now >= attachment.handshakeDeadline
+        ) {
+          occupant.close(4003, 'handshake_timeout');
+        }
+      }
+      return new Response('Role already connected', { status: 409 });
+    }
+
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
-
-    for (const old of this.ctx.getWebSockets(role)) {
-      old.close(4001, 'replaced');
-    }
 
     this.ctx.acceptWebSocket(server, [role]);
     const connectedAt = Date.now();
     server.serializeAttachment({
       role,
-      authenticated: false,
+      connectionId: crypto.randomUUID(),
       connectedAt,
+      handshakeDeadline: connectedAt + HANDSHAKE_TIMEOUT_MS,
+      hasForwardedFrame: false,
+      authenticationConfirmed: false,
+      authenticatedPeerConnectionId: null,
     } satisfies RelayAttachment);
     await this.scheduleAlarm(connectedAt + HANDSHAKE_TIMEOUT_MS);
 
@@ -59,18 +78,71 @@ export class RelayRoom extends DurableObject<RelayEnv> {
       return;
     }
 
-    const attachment = ws.deserializeAttachment() as RelayAttachment;
-    if (!attachment.authenticated && isAuthenticationFrame(message)) {
-      ws.serializeAttachment({
+    let attachment = this.attachmentFor(ws);
+    if (
+      attachment.handshakeDeadline !== null &&
+      Date.now() >= attachment.handshakeDeadline
+    ) {
+      ws.close(4003, 'handshake_timeout');
+      return;
+    }
+    if (isAuthenticationConfirmation(message)) {
+      const peerRole: RelayRole =
+        attachment.role === 'desktop' ? 'phone' : 'desktop';
+      const peers = this.ctx.getWebSockets(peerRole);
+      const peer =
+        peers.length === 1
+          ? peers[0]
+          : undefined;
+      attachment = {
         ...attachment,
-        authenticated: true,
-        connectedAt: Date.now(),
-      } satisfies RelayAttachment);
+        authenticationConfirmed: true,
+        authenticatedPeerConnectionId: peer
+          ? this.attachmentFor(peer).connectionId
+          : null,
+      };
+      ws.serializeAttachment(attachment);
+      const peerAttachment = peer
+        ? this.attachmentFor(peer)
+        : null;
+      if (
+        peer &&
+        peerAttachment?.authenticationConfirmed &&
+        attachment.authenticatedPeerConnectionId === peerAttachment.connectionId &&
+        peerAttachment.authenticatedPeerConnectionId === attachment.connectionId
+      ) {
+        attachment = { ...attachment, handshakeDeadline: null };
+        ws.serializeAttachment(attachment);
+        peer.serializeAttachment({
+          ...peerAttachment,
+          handshakeDeadline: null,
+        } satisfies RelayAttachment);
+      } else if (
+        peer &&
+        peerAttachment?.authenticationConfirmed &&
+        peerAttachment.handshakeDeadline === null
+      ) {
+        peer.serializeAttachment({
+          ...peerAttachment,
+          handshakeDeadline:
+            attachment.handshakeDeadline ?? Date.now() + HANDSHAKE_TIMEOUT_MS,
+        } satisfies RelayAttachment);
+      }
+      await this.rescheduleCleanup();
+      return;
+    }
+    if (!attachment.hasForwardedFrame) {
+      attachment = {
+        ...attachment,
+        hasForwardedFrame: true,
+      };
+      ws.serializeAttachment(attachment);
     }
 
     const peerRole: RelayRole =
       attachment.role === 'desktop' ? 'phone' : 'desktop';
-    for (const peer of this.ctx.getWebSockets(peerRole)) {
+    const peers = this.ctx.getWebSockets(peerRole);
+    for (const peer of peers) {
       peer.send(message);
     }
     await this.rescheduleCleanup();
@@ -82,7 +154,12 @@ export class RelayRoom extends DurableObject<RelayEnv> {
     reason: string,
     _wasClean: boolean,
   ): Promise<void> {
-    const { role } = ws.deserializeAttachment() as RelayAttachment;
+    const attachment = this.attachmentFor(ws);
+    if (this.hasRoleSuccessor(ws, attachment)) {
+      await this.rescheduleCleanup();
+      return;
+    }
+    const { role } = attachment;
     const peerRole: RelayRole = role === 'desktop' ? 'phone' : 'desktop';
     const peerCode = isSendableCloseCode(code) ? code : 1011;
     for (const peer of this.ctx.getWebSockets(peerRole)) {
@@ -92,7 +169,12 @@ export class RelayRoom extends DurableObject<RelayEnv> {
   }
 
   async webSocketError(ws: WebSocket, _error: unknown): Promise<void> {
-    const { role } = ws.deserializeAttachment() as RelayAttachment;
+    const attachment = this.attachmentFor(ws);
+    if (this.hasRoleSuccessor(ws, attachment)) {
+      await this.rescheduleCleanup();
+      return;
+    }
+    const { role } = attachment;
     const peerRole: RelayRole = role === 'desktop' ? 'phone' : 'desktop';
     for (const peer of this.ctx.getWebSockets(peerRole)) {
       peer.close(1011, 'peer_error');
@@ -104,15 +186,14 @@ export class RelayRoom extends DurableObject<RelayEnv> {
     const now = Date.now();
     const sockets = this.ctx.getWebSockets();
     const desktopPresent = sockets.some(
-      (ws) =>
-        (ws.deserializeAttachment() as RelayAttachment).role === 'desktop',
+      (ws) => this.attachmentFor(ws).role === 'desktop',
     );
 
     for (const ws of sockets) {
-      const attachment = ws.deserializeAttachment() as RelayAttachment;
+      const attachment = this.attachmentFor(ws);
       if (
-        !attachment.authenticated &&
-        now >= attachment.connectedAt + HANDSHAKE_TIMEOUT_MS
+        attachment.handshakeDeadline !== null &&
+        now >= attachment.handshakeDeadline
       ) {
         ws.close(4003, 'handshake_timeout');
       } else if (
@@ -130,16 +211,22 @@ export class RelayRoom extends DurableObject<RelayEnv> {
   private async rescheduleCleanup(now = Date.now()): Promise<void> {
     const sockets = this.ctx.getWebSockets();
     const desktopPresent = sockets.some(
-      (ws) =>
-        (ws.deserializeAttachment() as RelayAttachment).role === 'desktop',
+      (ws) => this.attachmentFor(ws).role === 'desktop',
     );
     let nextDeadline: number | undefined;
 
     for (const ws of sockets) {
-      const attachment = ws.deserializeAttachment() as RelayAttachment;
+      const attachment = this.attachmentFor(ws);
+      if (
+        attachment.handshakeDeadline !== null &&
+        now >= attachment.handshakeDeadline
+      ) {
+        ws.close(4003, 'handshake_timeout');
+        continue;
+      }
       let deadline: number | undefined;
-      if (!attachment.authenticated) {
-        deadline = attachment.connectedAt + HANDSHAKE_TIMEOUT_MS;
+      if (attachment.handshakeDeadline !== null) {
+        deadline = attachment.handshakeDeadline;
       } else if (attachment.role === 'phone' && !desktopPresent) {
         deadline = attachment.connectedAt + DESKTOP_ABSENT_TIMEOUT_MS;
       }
@@ -161,17 +248,56 @@ export class RelayRoom extends DurableObject<RelayEnv> {
       await this.ctx.storage.setAlarm(deadline);
     }
   }
+
+  private hasRoleSuccessor(
+    ws: WebSocket,
+    attachment: RelayAttachment,
+  ): boolean {
+    return this.ctx.getWebSockets(attachment.role).some((candidate) => {
+      if (candidate === ws) return false;
+      const candidateAttachment = this.attachmentFor(candidate);
+      return candidateAttachment.connectionId !== attachment.connectionId;
+    });
+  }
+
+  private attachmentFor(ws: WebSocket): RelayAttachment {
+    const stored = ws.deserializeAttachment() as Partial<RelayAttachment> &
+      Pick<RelayAttachment, 'connectedAt' | 'role'>;
+    if (
+      typeof stored.connectionId === 'string' &&
+      typeof stored.hasForwardedFrame === 'boolean' &&
+      typeof stored.authenticationConfirmed === 'boolean' &&
+      (stored.authenticatedPeerConnectionId === null ||
+        typeof stored.authenticatedPeerConnectionId === 'string') &&
+      (stored.handshakeDeadline === null ||
+        typeof stored.handshakeDeadline === 'number')
+    ) {
+      return stored as RelayAttachment;
+    }
+
+    const attachment: RelayAttachment = {
+      role: stored.role,
+      connectionId: crypto.randomUUID(),
+      connectedAt: stored.connectedAt,
+      handshakeDeadline: stored.connectedAt + HANDSHAKE_TIMEOUT_MS,
+      hasForwardedFrame: false,
+      authenticationConfirmed: false,
+      authenticatedPeerConnectionId: null,
+    };
+    ws.serializeAttachment(attachment);
+    return attachment;
+  }
 }
 
 function isSendableCloseCode(code: number): boolean {
   return code === 1000 || (code >= 3000 && code <= 4999);
 }
 
-function isAuthenticationFrame(message: string | ArrayBuffer): boolean {
+function isAuthenticationConfirmation(message: string | ArrayBuffer): boolean {
   if (typeof message !== 'string') return false;
   try {
     const value = JSON.parse(message) as { type?: unknown };
-    return value.type === 'handshake.proof' || value.type === 'encrypted';
+    return value.type === 'relay.authenticated';
   } catch {
     return false;
   }

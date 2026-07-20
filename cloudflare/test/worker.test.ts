@@ -48,6 +48,20 @@ describe('relay worker', () => {
     expect(assetFetch).toHaveBeenCalledWith(input);
   });
 
+  it('prevents the phone UI from being framed', async () => {
+    const { env } = fakeEnv();
+
+    const response = await worker.fetch(
+      request('/index.html', { upgrade: false }),
+      env,
+    );
+
+    expect(response.headers.get('Content-Security-Policy')).toContain(
+      "frame-ancestors 'none'",
+    );
+    expect(response.headers.get('X-Frame-Options')).toBe('DENY');
+  });
+
   it.each([
     ['non-GET method', request(`/relay/${ROOM_ID}?role=desktop`, { method: 'POST' })],
     ['bad path', request('/relay/bad?role=desktop')],

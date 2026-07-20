@@ -179,17 +179,10 @@ export function startMobileRemoteServer(options?: {
   heartbeatTimer.unref();
 
   server.listen(port, HOST, () => {
-    // Redact the bearer token in the persistent log line: stdout/stderr get
-    // captured into bug reports and shared, and a full token there is a
-    // credential leak. The host:port/path stay discoverable; the full URL
-    // (with token) is exposed on the returned handle's `url` field for the
-    // desktop UI/user to retrieve without it ever hitting the console.
-    const tokenHint = token.slice(0, 6);
     console.log(
-      `[mobile-remote] listening at http://${HOST}:${port}/?token=${tokenHint}… ` +
-        `(full URL on the desktop session handle)`,
+      `[mobile-remote] listening at http://${HOST}:${port} ` +
+        `(authenticated URL available on the desktop session handle)`,
     );
-    console.log(`[mobile-remote] tailscale: tailscale serve --bg http://${HOST}:${port}`);
   });
 
   server.on('error', (err) => {
