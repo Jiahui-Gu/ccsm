@@ -29,3 +29,4 @@ DOC_AUDIT.md
 
 resources/models/*.bin
 .claude/worktrees/
+.superpowers/
