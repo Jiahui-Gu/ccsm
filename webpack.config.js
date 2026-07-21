@@ -1,6 +1,12 @@
 const path = require('path');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
 
+const typescriptRule = {
+  test: /\.tsx?$/,
+  exclude: /node_modules/,
+  use: { loader: 'ts-loader', options: { transpileOnly: true } }
+};
+
 // `publicPath` differs between dev (served by webpack-dev-server at root)
 // and production (loaded by Electron via `file://` from dist/renderer/).
 // Absolute `/` works for the dev server but resolves to the drive root under
@@ -21,11 +27,7 @@ module.exports = (_env, argv = {}) => ({
   },
   module: {
     rules: [
-      {
-        test: /\.tsx?$/,
-        exclude: /node_modules/,
-        use: { loader: 'ts-loader', options: { transpileOnly: true } }
-      },
+      typescriptRule,
       {
         test: /\.css$/,
         use: ['style-loader', 'css-loader', 'postcss-loader']
@@ -51,3 +53,5 @@ module.exports = (_env, argv = {}) => ({
     historyApiFallback: true
   }
 });
+
+module.exports.typescriptRule = typescriptRule;

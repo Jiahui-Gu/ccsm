@@ -70,6 +70,21 @@ CCSM does **not** make any HTTP calls to Anthropic itself. All API traffic goes 
 - `Cmd/Ctrl+N` — New session
 - `Cmd/Ctrl+Shift+N` — New group
 
+## Mobile Remote
+
+Release builds can control live CCSM terminals from one phone browser through
+the end-to-end encrypted Cloudflare relay. Open **Settings → Mobile Remote**,
+then scan the QR code. The phone can list terminal sessions, view their current
+buffer, type commands, and use terminal shortcut keys; it does not control the
+rest of CCSM or the operating-system desktop.
+
+The initial scope is one user, one CCSM desktop, and one phone. **Pause remote
+control** disconnects the phone without discarding the pairing. **Refresh QR**
+rotates the pairing identity and rejects the old credential. The relay depends
+on the Cloudflare Workers and Durable Objects free tiers, so an unavailable or
+exhausted relay temporarily disables phone access without affecting local CCSM
+sessions.
+
 ## Data location
 
 Local SQLite database (groups, sessions, user-defined order, sidebar width, theme):
@@ -189,6 +204,23 @@ For maintainers:
 4. The workflow uploads the artifacts to a **draft** GitHub Release with auto-generated notes. Review the draft, edit notes if needed, then **publish** it manually.
 
 The `workflow_dispatch` trigger exists for dry-run builds; it stops after uploading workflow artifacts and does not touch the Releases tab. Signing secrets (`CSC_LINK` / `CSC_KEY_PASSWORD` for Windows + macOS, plus Apple notarization creds for mac) are optional — builds proceed unsigned with a CI warning if they're absent.
+
+Mobile Remote releases additionally require repository secrets
+`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, plus the repository variable
+`CLOUDFLARE_WORKERS_SUBDOMAIN`. The release workflow verifies the application,
+deploys the phone PWA and relay first, stamps that deployed URL into
+`package.json`, and only then packages desktop installers. Missing configuration
+or a failed relay deployment stops packaging rather than publishing an
+installer with a dead QR code. For local relay development, build the phone PWA,
+run Wrangler, and launch CCSM with
+`CCSM_MOBILE_REMOTE_RELAY_URL=http://127.0.0.1:<port>`; this override is not an
+installed-user setting.
+
+The relay deliberately has no WebRTC runtime dependency. An earlier `werift`
+implementation was reverted after electron-builder pruning caused startup
+failure. Keep the remote controller behind its guarded post-ready lazy import:
+relay loading or configuration failures must never prevent the main window from
+opening.
 
 ## License
 

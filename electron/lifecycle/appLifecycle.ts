@@ -185,6 +185,8 @@ export interface LifecycleDeps {
    *  has time to drain its 100 ms-buffered JSONL writer before the
    *  Electron process exits. See `ptyHost/lifecycle.ts:killAll`. */
   killAllPtySessions: () => Promise<void>;
+  /** Stop network services that must not reconnect while PTYs flush. */
+  disposeBeforePtyShutdown?: () => void;
   /** Tear down the notify pipeline + its app-level listeners (focus/blur,
    *  sessionWatcher 'unwatched') and any pending flash timers. Optional
    *  because `before-quit` may fire before the pipeline is constructed
@@ -220,6 +222,7 @@ export function registerLifecycleHandlers(deps: LifecycleDeps): void {
     getIsQuitting,
     setIsQuitting,
     killAllPtySessions,
+    disposeBeforePtyShutdown,
     closeDb,
     createWindow,
     getWindowCount,
@@ -260,6 +263,13 @@ export function registerLifecycleHandlers(deps: LifecycleDeps): void {
 
     event.preventDefault();
     flushingForQuit = true;
+    if (disposeBeforePtyShutdown) {
+      try {
+        disposeBeforePtyShutdown();
+      } catch {
+        /* ignore — best-effort cleanup on quit */
+      }
+    }
 
     void (async () => {
       try {

@@ -17,6 +17,7 @@ import { installCcsmNotifyBridge } from './bridges/ccsmNotify';
 import { installCcsmSessionTitlesBridge } from './bridges/ccsmSessionTitles';
 import { installCcsmShellBridge } from './bridges/ccsmShell';
 import { installCcsmVoiceBridge } from './bridges/ccsmVoice';
+import { installCcsmMobileRemoteBridge } from './bridges/ccsmMobileRemote';
 
 installCcsmCoreBridge();
 installCcsmPtyBridge();
@@ -25,6 +26,7 @@ installCcsmNotifyBridge();
 installCcsmSessionTitlesBridge();
 installCcsmShellBridge();
 installCcsmVoiceBridge();
+installCcsmMobileRemoteBridge();
 
 export type { CCSMAPI } from './bridges/ccsmCore';
 export type { CCSMPtyAPI } from './bridges/ccsmPty';
@@ -33,3 +35,4 @@ export type { CCSMNotifyAPI } from './bridges/ccsmNotify';
 export type { CCSMSessionTitlesAPI } from './bridges/ccsmSessionTitles';
 export type { CCSMShellAPI } from './bridges/ccsmShell';
 export type { CCSMVoiceAPI } from './bridges/ccsmVoice';
+export type { CCSMMobileRemoteAPI } from './bridges/ccsmMobileRemote';

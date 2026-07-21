@@ -129,6 +129,7 @@ function buildDeps(overrides: Partial<LifecycleDeps> = {}): {
     closeDb: ReturnType<typeof vi.fn>;
     createWindow: ReturnType<typeof vi.fn>;
     disposeNotifyPipeline: ReturnType<typeof vi.fn>;
+    disposeBeforePtyShutdown: ReturnType<typeof vi.fn>;
   };
   state: { isQuitting: boolean; windowCount: number };
 } {
@@ -141,6 +142,7 @@ function buildDeps(overrides: Partial<LifecycleDeps> = {}): {
   const closeDb = vi.fn();
   const createWindow = vi.fn();
   const disposeNotifyPipeline = vi.fn();
+  const disposeBeforePtyShutdown = vi.fn();
   const deps: LifecycleDeps = {
     app: fakeApp as unknown as App,
     getIsQuitting: () => state.isQuitting,
@@ -149,6 +151,7 @@ function buildDeps(overrides: Partial<LifecycleDeps> = {}): {
     closeDb,
     createWindow,
     getWindowCount: () => state.windowCount,
+    disposeBeforePtyShutdown,
     disposeNotifyPipeline,
     ...overrides,
   };
@@ -160,6 +163,7 @@ function buildDeps(overrides: Partial<LifecycleDeps> = {}): {
       killAllPtySessions,
       closeDb,
       createWindow,
+      disposeBeforePtyShutdown,
       disposeNotifyPipeline,
     },
     state,
@@ -311,6 +315,7 @@ describe('registerLifecycleHandlers', () => {
 
       fakeApp.fire('before-quit');
       expect(killAllPtySessions).toHaveBeenCalledTimes(1);
+      expect(spies.disposeBeforePtyShutdown).toHaveBeenCalledTimes(1);
       // disposeNotifyPipeline + app.quit() must NOT have fired yet — the
       // flush is still in flight.
       expect(spies.disposeNotifyPipeline).not.toHaveBeenCalled();
@@ -328,6 +333,23 @@ describe('registerLifecycleHandlers', () => {
       // killAllPtySessions.
       expect(fakeApp.quit).toHaveBeenCalledTimes(1);
       expect(killAllPtySessions).toHaveBeenCalledTimes(1);
+    });
+
+    it('stops reconnecting network services before waiting for PTY shutdown', () => {
+      let resolveKill!: () => void;
+      const killAllPtySessions = vi.fn(
+        () => new Promise<void>((resolve) => {
+          resolveKill = resolve;
+        }),
+      );
+      const { deps, fakeApp, spies } = buildDeps({ killAllPtySessions });
+      registerLifecycleHandlers(deps);
+
+      fakeApp.fire('before-quit');
+
+      expect(spies.disposeBeforePtyShutdown).toHaveBeenCalledTimes(1);
+      expect(spies.disposeNotifyPipeline).not.toHaveBeenCalled();
+      resolveKill();
     });
 
     it('second before-quit (flushingForQuit=true) does NOT preventDefault, does NOT re-invoke killAll', async () => {

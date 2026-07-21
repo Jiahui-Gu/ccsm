@@ -1,0 +1,131 @@
+:root {
+  color-scheme: dark;
+  --app-height: 100%;
+  font-family: Inter, system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: #0b1020;
+  color: #e5e7eb;
+}
+
+button {
+  color: inherit;
+  font: inherit;
+}
+
+.phone-shell {
+  display: flex;
+  flex-direction: column;
+  height: var(--app-height);
+  overflow: hidden;
+}
+
+header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: calc(10px + env(safe-area-inset-top)) 12px 10px;
+  border-bottom: 1px solid #263042;
+  background: #111827;
+}
+
+#status,
+.muted {
+  color: #9ca3af;
+}
+
+#status[data-status='connected'] {
+  color: #86efac;
+}
+
+#status[data-status='update_required'],
+#status[data-status='authentication_failed'],
+#status[data-status='connection_error'] {
+  color: #fca5a5;
+}
+
+#sessions,
+#keybar {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 7px;
+  overflow-x: auto;
+  background: #0f172a;
+  scrollbar-width: none;
+}
+
+#sessions {
+  min-height: 51px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #1f2937;
+}
+
+#sessions button,
+#keybar button {
+  flex: 0 0 auto;
+  border: 1px solid #374151;
+  background: #1f2937;
+}
+
+#sessions button {
+  padding: 8px 12px;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+
+#sessions button.active {
+  border-color: #60a5fa;
+  background: #1e3a8a;
+}
+
+#terminal {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  padding: 6px;
+  background: #000;
+}
+
+#terminal .xterm {
+  height: 100%;
+}
+
+#keybar {
+  padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+  border-top: 1px solid #1f2937;
+}
+
+#keybar button {
+  min-width: 44px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font: 13px ui-monospace, Menlo, Consolas, monospace;
+}
+
+#keybar button:active {
+  background: #334155;
+}
+
+#keybar button.sticky {
+  border-color: #f59e0b;
+  background: #78350f;
+}
+
+.missing-pairing {
+  max-width: 32rem;
+  margin: 20vh auto;
+  padding: 24px;
+  text-align: center;
+}

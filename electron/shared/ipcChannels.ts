@@ -98,3 +98,12 @@ export const VOICE_CHANNELS = {
   // main → renderer (fan-out: per-tier download progress / ready / error)
   status: 'voice:modelStatus',
 } as const;
+
+export const MOBILE_REMOTE_CHANNELS = {
+  status: 'mobileRemote:status',
+  getStatus: 'mobileRemote:getStatus',
+  getPairingUrl: 'mobileRemote:getPairingUrl',
+  pause: 'mobileRemote:pause',
+  resume: 'mobileRemote:resume',
+  rotate: 'mobileRemote:rotate',
+} as const;

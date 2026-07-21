@@ -6,7 +6,7 @@ import {
   resizePtySession,
 } from '../ptyHost';
 import { isRecord } from './remoteHttp';
-import type { WsClient } from './wsProtocol';
+import type { RemotePeer } from './remotePeer';
 
 /** The session-chip payload the mobile client renders: just the identity and
  *  size it needs. We deliberately omit `pid` — it is noise on the wire and the
@@ -17,6 +17,21 @@ export type SessionListEntry = {
   cols: number;
   rows: number;
 };
+
+export type MobileServerMessage =
+  | { type: 'auth.ok' }
+  | { type: 'sessions.list'; sessions: SessionListEntry[] }
+  | {
+      type: 'session.snapshot';
+      sid: string;
+      seq: number;
+      data?: string;
+      snapshot?: string;
+      cols: number | null;
+      rows: number | null;
+    }
+  | { type: 'pty.data'; sid: string; seq: number; chunk: string }
+  | { type: 'error'; message: string };
 
 export function listEntries(): SessionListEntry[] {
   return listPtySessions().map((s) => ({ sid: s.sid, cwd: s.cwd, cols: s.cols, rows: s.rows }));
@@ -30,7 +45,7 @@ export function listSignature(entries: SessionListEntry[]): string {
   return entries.map((e) => `${e.sid}:${e.cwd}`).join('|');
 }
 
-export async function handleClientMessage(client: WsClient, raw: string): Promise<void> {
+export async function handleClientMessage(client: RemotePeer, raw: string): Promise<void> {
   let message: unknown;
   try {
     message = JSON.parse(raw);

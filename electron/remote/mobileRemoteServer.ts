@@ -1,7 +1,7 @@
 import * as crypto from 'crypto';
 import * as http from 'http';
-import { onPtyData } from '../ptyHost';
 import { renderMobilePage } from './mobilePage';
+import { installPtyFanout } from './ptyFanout';
 import { HOST, parseRequestUrl, resolvePort, sendHtml, sendJson, sendText, tokenMatches } from './remoteHttp';
 import { handleClientMessage, listEntries, listSignature } from './remoteMessages';
 import {
@@ -135,22 +135,7 @@ export function startMobileRemoteServer(options?: {
     socket.on('error', () => clients.delete(client));
   });
 
-  const offPtyData = onPtyData((sid, chunk, seq) => {
-    // seq is ptyHost's authoritative per-session chunk counter — the SAME one
-    // getBufferSnapshot captures. Forward it verbatim so the client can dedupe
-    // live chunks already baked into a snapshot (drop seq <= snapSeq). Earlier
-    // this server kept its own seqBySid counter starting at 0, which diverged
-    // from ptyHost's and made the client drop every live chunk after a
-    // non-empty snapshot — a frozen mobile terminal.
-    for (const client of clients) {
-      // Only forward this session's bytes to clients viewing it. Without this
-      // gate every client receives every session's raw terminal output over
-      // the wire — a cross-session data leak (the HTML client only filters for
-      // display, not on the network).
-      if (client.subscribedSid !== sid) continue;
-      client.send({ type: 'pty.data', sid, chunk, seq });
-    }
-  });
+  const offPtyData = installPtyFanout(clients);
 
   const url = `http://${HOST}:${port}/?token=${token}`;
 
@@ -194,17 +179,10 @@ export function startMobileRemoteServer(options?: {
   heartbeatTimer.unref();
 
   server.listen(port, HOST, () => {
-    // Redact the bearer token in the persistent log line: stdout/stderr get
-    // captured into bug reports and shared, and a full token there is a
-    // credential leak. The host:port/path stay discoverable; the full URL
-    // (with token) is exposed on the returned handle's `url` field for the
-    // desktop UI/user to retrieve without it ever hitting the console.
-    const tokenHint = token.slice(0, 6);
     console.log(
-      `[mobile-remote] listening at http://${HOST}:${port}/?token=${tokenHint}… ` +
-        `(full URL on the desktop session handle)`,
+      `[mobile-remote] listening at http://${HOST}:${port} ` +
+        `(authenticated URL available on the desktop session handle)`,
     );
-    console.log(`[mobile-remote] tailscale: tailscale serve --bg http://${HOST}:${port}`);
   });
 
   server.on('error', (err) => {

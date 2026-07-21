@@ -17,12 +17,16 @@ git push origin --tags
 
 The tag push triggers `.github/workflows/release.yml`:
 
-1. `verify` job — `npm run lint`, `npm run typecheck`, `npm test` on Ubuntu.
-2. `build` matrix — Linux / macOS / Windows build each platform's installers
-   using `electron-builder`.
-3. Each build uploads its artifacts into a **draft** GitHub Release named
-   after the tag. Once all three jobs are green, edit the release on GitHub
-   and click **Publish**.
+1. `validate-mobile-remote-deployment` fails immediately if required
+   Cloudflare configuration is absent, while `verify` runs lint, typecheck,
+   build, and tests on Ubuntu.
+2. `deploy-mobile-remote` deploys the Worker and publishes its HTTPS
+   `workers.dev` origin as a workflow output.
+3. The Linux / macOS / Windows `build` matrix waits for that deployment,
+   stamps the relay origin into each platform's package metadata, and builds
+   installers using `electron-builder`.
+4. After all platform builds succeed, `publish` creates the GitHub Release
+   atomically and attaches all installers and update metadata.
 
 ## Dry run (no real release)
 
@@ -32,6 +36,20 @@ workflow run (Actions → Release → artifacts section). Every PR that touches
 release infra should include a dry-run link in its body.
 
 ## Secrets
+
+Cloudflare relay deployment is **required** for releases. Configure these
+values under Repository → Settings → Secrets and variables → Actions:
+
+| Name                            | Kind                | Purpose                                      |
+| ------------------------------- | ------------------- | -------------------------------------------- |
+| `CLOUDFLARE_API_TOKEN`          | Repository secret   | Worker deployment token.                     |
+| `CLOUDFLARE_ACCOUNT_ID`         | Repository secret   | Cloudflare account that owns the Worker.     |
+| `CLOUDFLARE_WORKERS_SUBDOMAIN`  | Repository variable | Account `workers.dev` subdomain (name only). |
+
+The release workflow never stamps either Cloudflare credential into package
+metadata or prints their values. Only the public relay origin is embedded.
+Local `package.json` remains unstamped; stamping occurs independently in every
+packaging job after deployment.
 
 Signing is **optional**. If any of the secrets below are missing, the build
 prints a GitHub Actions warning and continues with unsigned output — the

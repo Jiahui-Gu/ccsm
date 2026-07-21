@@ -92,6 +92,12 @@ import { registerSystemIpc } from './ipc/systemIpc';
 import { registerSessionIpc } from './ipc/sessionIpc';
 import { registerWindowIpc } from './ipc/windowIpc';
 import { registerVoiceIpc } from './ipc/voiceIpc';
+import { registerMobileRemoteIpc } from './ipc/mobileRemoteIpc';
+import { MOBILE_REMOTE_CHANNELS } from './shared/ipcChannels';
+import type {
+  MobileRemoteController,
+  MobileRemoteStatus,
+} from './remote/mobileRemoteController';
 import { warmUpTranscriber } from './voice/warmup';
 import { startMobileRemoteServer } from './remote/mobileRemoteServer';
 import {
@@ -161,6 +167,9 @@ let badgeManager: BadgeManager | null = null;
 let notifyPipeline: NotifyPipeline | null = null;
 let notifyPipelineDispose: (() => void) | null = null;
 let mobileRemoteServer: { close: () => void } | null = null;
+let mobileRemoteController: MobileRemoteController | null = null;
+let mobileRemoteStatusDispose: (() => void) | null = null;
+let mobileRemoteStartupGeneration = 0;
 const badgeController = new BadgeController(() => badgeManager);
 
 function getTrayBaseImage() {
@@ -204,6 +213,44 @@ function applyTrayLocale(): void {
 
 function getTray(): Tray | null {
   return trayController?.tray ?? null;
+}
+
+async function startPublicMobileRemote(): Promise<void> {
+  const generation = ++mobileRemoteStartupGeneration;
+  try {
+    const { createMobileRemoteController } = await import('./remote/mobileRemoteController');
+    const controller = await createMobileRemoteController();
+    if (generation !== mobileRemoteStartupGeneration || isQuitting) {
+      controller.close();
+      return;
+    }
+    mobileRemoteController = controller;
+    const publishStatus = (status: MobileRemoteStatus): void => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        win.webContents.send(MOBILE_REMOTE_CHANNELS.status, status);
+      }
+    };
+    mobileRemoteStatusDispose = controller.subscribe(publishStatus);
+    publishStatus(controller.getStatus());
+  } catch (error) {
+    console.error('[mobile-remote] public controller failed after app ready', error);
+  }
+}
+
+function stopPublicMobileRemote(): void {
+  mobileRemoteStartupGeneration++;
+  try {
+    mobileRemoteStatusDispose?.();
+  } catch (err) {
+    console.warn('[main] disposer mobileRemoteStatusDispose threw', err);
+  }
+  mobileRemoteStatusDispose = null;
+  try {
+    mobileRemoteController?.close();
+  } catch (err) {
+    console.warn('[main] disposer mobileRemoteController.close threw', err);
+  }
+  mobileRemoteController = null;
 }
 
 app.whenReady().then(() => {
@@ -275,6 +322,10 @@ app.whenReady().then(() => {
   registerWindowIpc({ ipcMain });
   registerUtilityIpc({ ipcMain });
   registerVoiceIpc({ ipcMain });
+  registerMobileRemoteIpc({
+    ipcMain,
+    getController: () => mobileRemoteController,
+  });
 
   // Best-effort: warm the whisper exe/DLLs/model into the OS page cache a few
   // seconds after launch so the user's first voice transcription isn't slowed
@@ -312,7 +363,9 @@ app.whenReady().then(() => {
     () => BrowserWindow.getAllWindows()[0] ?? null,
   );
 
-  mobileRemoteServer = startMobileRemoteServer();
+  if (process.env.CCSM_MOBILE_REMOTE === '1') {
+    mobileRemoteServer = startMobileRemoteServer();
+  }
 
   // ─────────────────────── notify pipeline (Phase C, #689) ───────────────
   // BadgeManager is bumped via `onNotified` to update the tray/dock badge.
@@ -369,6 +422,7 @@ app.whenReady().then(() => {
 
   createWindow();
   ensureTray();
+  void startPublicMobileRemote();
 
   // Eager-load CLI transcripts so ImportDialog has data the moment the user
   // opens it. Fire-and-forget; primeImportableCache logs its own errors and
@@ -388,6 +442,7 @@ registerLifecycleHandlers({
     createWindow();
   },
   getWindowCount: () => BrowserWindow.getAllWindows().length,
+  disposeBeforePtyShutdown: stopPublicMobileRemote,
   disposeNotifyPipeline: () => {
     // Each disposer is wrapped in its own try/catch so a throw from one
     // (e.g. mobileRemoteServer.close() on an already-closed server) does

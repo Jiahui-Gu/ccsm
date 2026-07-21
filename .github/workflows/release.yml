@@ -15,6 +15,11 @@ on:
         description: 'Tag to release (e.g. v0.0.0-dryrun)'
         required: false
         default: ''
+      deploy_mobile_remote:
+        description: 'Deploy only the Cloudflare mobile relay'
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: release-${{ github.ref }}
@@ -24,6 +29,27 @@ permissions:
   contents: write
 
 jobs:
+  validate-mobile-remote-deployment:
+    name: validate Cloudflare deployment configuration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate required Cloudflare credentials and subdomain
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_WORKERS_SUBDOMAIN: ${{ vars.CLOUDFLARE_WORKERS_SUBDOMAIN }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          missing=()
+          if { [ "$EVENT_NAME" = "push" ] || [ "${{ inputs.deploy_mobile_remote }}" = "true" ]; } && [ -z "$CLOUDFLARE_API_TOKEN" ]; then missing+=(CLOUDFLARE_API_TOKEN); fi
+          if { [ "$EVENT_NAME" = "push" ] || [ "${{ inputs.deploy_mobile_remote }}" = "true" ]; } && [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then missing+=(CLOUDFLARE_ACCOUNT_ID); fi
+          if [ -z "$CLOUDFLARE_WORKERS_SUBDOMAIN" ]; then missing+=(CLOUDFLARE_WORKERS_SUBDOMAIN); fi
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error title=Missing Cloudflare configuration::Required values are not configured: ${missing[*]}"
+            exit 1
+          fi
+
   verify:
     name: lint + typecheck + test
     runs-on: ubuntu-latest
@@ -36,18 +62,62 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: Verify tag matches package.json version
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          PKG=$(node -p "require('./package.json').version")
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::Tag v$TAG mismatches package.json version $PKG"
+            exit 1
+          fi
+          echo "tag v$TAG matches package.json $PKG"
       - name: Install deps
         run: npm ci --legacy-peer-deps
-        env:
-          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run build
       - run: npm test
 
+  deploy-mobile-remote:
+    name: deploy Cloudflare mobile relay
+    needs: [verify, validate-mobile-remote-deployment]
+    runs-on: ubuntu-latest
+    outputs:
+      relay_url: ${{ steps.relay.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install deps
+        run: npm ci --legacy-peer-deps
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      - name: Build mobile client
+        run: npm run build:mobile
+      - name: Deploy Cloudflare Worker
+        if: github.event_name == 'push' || inputs.deploy_mobile_remote
+        run: npx wrangler deploy --config cloudflare/wrangler.jsonc
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Validate Cloudflare Worker bundle
+        if: github.event_name == 'workflow_dispatch' && !inputs.deploy_mobile_remote
+        run: npm run cloudflare:dry-run
+      - name: Output relay URL
+        id: relay
+        shell: bash
+        env:
+          CLOUDFLARE_WORKERS_SUBDOMAIN: ${{ vars.CLOUDFLARE_WORKERS_SUBDOMAIN }}
+        run: echo "url=https://ccsm-mobile-remote.${CLOUDFLARE_WORKERS_SUBDOMAIN}.workers.dev" >> "$GITHUB_OUTPUT"
+
   build:
     name: build (${{ matrix.os }})
-    needs: verify
+    needs: [verify, deploy-mobile-remote]
+    if: github.event_name != 'workflow_dispatch' || !inputs.deploy_mobile_remote
     strategy:
       fail-fast: false
       matrix:
@@ -61,21 +131,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-
-      # Guard against a mismatch between the git tag and package.json version —
-      # e.g. someone tags v0.2.0 but forgot to bump version. Skipped on
-      # workflow_dispatch so dry-runs (v0.0.0-dryrun tag input) don't fail.
-      - name: Verify tag matches package.json version
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        run: |
-          TAG="${GITHUB_REF#refs/tags/v}"
-          PKG=$(node -p "require('./package.json').version")
-          if [ "$TAG" != "$PKG" ]; then
-            echo "::error::Tag v$TAG mismatches package.json version $PKG"
-            exit 1
-          fi
-          echo "tag v$TAG matches package.json $PKG"
 
       - uses: actions/setup-node@v4
         with:
@@ -120,6 +175,9 @@ jobs:
           else
             echo "signed=true" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Stamp relay URL into package metadata
+        run: node scripts/stamp-mobile-remote-url.mjs package.json "${{ needs.deploy-mobile-remote.outputs.relay_url }}"
 
       - name: Build web + electron
         run: npm run build
