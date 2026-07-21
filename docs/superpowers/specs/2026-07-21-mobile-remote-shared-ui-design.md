@@ -200,6 +200,41 @@ Live slash-command and `@`-file completion, shell history search, Vim-style
 editing, and arbitrary raw-key streaming are deferred. Complete slash commands
 such as `/status` remain supported through the composer.
 
+## Terminal rendering and incremental synchronization
+
+The phone retains xterm.js as the ANSI/PTY rendering engine. React owns the
+terminal container and surrounding controls; a dedicated adapter owns one
+long-lived xterm instance, its addons, sizing, and relay writes. React renders
+no terminal rows and does not remount the terminal during ordinary state
+updates.
+
+The phone terminal is configured as a read-only display surface. Fit, Unicode,
+clipboard, and web-link behavior may use the existing xterm.js addons. Mobile
+CSS and event handling preserve touch scrolling and text selection while
+preventing xterm's hidden textarea from becoming a software-keyboard entry
+point.
+
+Each session's PTY chunks already carry a monotonic `seq`, and the desktop's
+headless xterm snapshot records the last sequence represented in that snapshot.
+The phone enforces the following synchronization contract:
+
+1. During steady state, only a chunk with `seq === lastSeq + 1` is written to
+   xterm.
+2. Chunks with `seq <= lastSeq` are duplicates or stale and are discarded.
+3. A chunk with `seq > lastSeq + 1` indicates a gap. Incremental writes pause
+   and the phone requests one authoritative snapshot.
+4. During session selection, initial connection, reconnect, and gap recovery,
+   live chunks are buffered by sequence while the snapshot is in flight.
+5. The snapshot is applied exactly once with `reset()` followed by its
+   serialized data. Buffered chunks at or below the snapshot sequence are
+   discarded, and newer contiguous chunks are written in order.
+6. A snapshot is never appended to an existing screen. Routine polling never
+   requests snapshots.
+
+This preserves ANSI cursor movement and in-place Claude TUI redraws without
+re-appending historical output. A terminal remount, sequence gap, or
+snapshot/live race cannot silently create duplicate lines.
+
 ## Connection and error states
 
 The phone keeps the last terminal frame visible during transient disconnects.
@@ -256,6 +291,9 @@ automatic retries until the user rescans or updates.
 - input contract tests for multiline and CJK IME drafts, CRLF normalization,
   bracketed paste, successful clearing, failed-send preservation, and no replay
   after reconnect;
+- synchronization tests for duplicate, stale, missing, out-of-order, and
+  snapshot-overlap frames, including exactly-once snapshot replacement and
+  ordered tail draining;
 - visual snapshots at representative portrait, landscape, and narrow desktop
   sizes;
 - public-relay Playwright E2E that scans/imports pairing, runs `/status` from
@@ -263,6 +301,27 @@ automatic retries until the user rescans or updates.
   answers selection and free-text `AskUserQuestion` paths, switches sessions,
   interrupts input, rotates orientation, disconnects and reconnects with a
   preserved unsent draft, and re-pairs in an existing tab.
+
+### Dogfood
+
+Release dogfood compares the phone's serialized xterm buffer with the desktop's
+authoritative headless xterm buffer after each scenario:
+
+1. a deterministic PTY fixture emits uniquely numbered lines, long wrapped
+   text, ANSI cursor rewrites, progress updates, clear-screen sequences, and
+   alternate-screen transitions;
+2. transport fault injection duplicates frames, interleaves a snapshot with
+   live output, drops a sequence, and disconnects during active output;
+3. the phone must recover to exact buffer parity with each sequence applied at
+   most once, with no duplicate lines, stale repaint, or reconnect flashback;
+4. a real Claude CLI session runs a long response, `/status`, a permission
+   confirmation, and both selection and free-text `AskUserQuestion` flows;
+5. a physical phone verifies long-output scrolling, selection and copy,
+   portrait/landscape rotation, composer behavior, and software-keyboard
+   occlusion.
+
+Any final-buffer mismatch, duplicated historical content, unrecovered sequence
+gap, or visible snapshot/live replay blocks v0.3.0.
 
 ### Release gate
 
