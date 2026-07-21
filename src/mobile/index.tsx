@@ -24,4 +24,3 @@ void bootstrap().catch(() => {
   const root = document.querySelector<HTMLElement>('#app');
   if (root) root.innerHTML = START_FAILURE_MARKUP;
 });
-

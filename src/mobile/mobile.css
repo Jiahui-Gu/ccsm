@@ -163,6 +163,11 @@ button {
   color: var(--ccsm-warning);
 }
 
+.phone-banner--exited {
+  color: var(--ccsm-error);
+  box-shadow: inset 3px 0 0 var(--ccsm-error);
+}
+
 .phone-banner__retry {
   flex: none;
   min-width: var(--touch-target);
