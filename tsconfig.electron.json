@@ -3,6 +3,7 @@
     "target": "ES2022",
     "module": "CommonJS",
     "moduleResolution": "node",
+    "jsx": "react-jsx",
     "strict": true,
     "noImplicitOverride": true,
     "noUncheckedIndexedAccess": true,

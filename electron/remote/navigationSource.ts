@@ -1,6 +1,7 @@
 import { loadState } from '../db';
 import { listPtySessions } from '../ptyHost';
-import { buildSessionNavigatorModel, type SessionNavigatorModel } from '../../src/shared/sessionNavigator';
+import { buildSessionNavigatorModel } from '../../src/shared/sessionNavigator/buildModel';
+import type { SessionNavigatorModel } from '../../src/shared/sessionNavigator/types';
 
 type NavigationSourceDeps = {
   loadState: (key: string) => string | null;

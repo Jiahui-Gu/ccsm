@@ -2,6 +2,8 @@ export const SESSION_NAVIGATOR_MESSAGE_VERSION = 1 as const;
 
 export type SessionNavigatorState = 'active' | 'idle' | 'waiting' | 'exited';
 
+export type SessionNavigatorDensity = 'desktop' | 'touch';
+
 export type SessionNavigatorSession = {
   id: string;
   name: string;
