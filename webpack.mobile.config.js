@@ -35,7 +35,7 @@ const mobileCacheVersion = crypto
 
 module.exports = {
   entry: {
-    phone: './src/mobile/index.ts',
+    phone: './src/mobile/index.tsx',
     sw: './src/mobile/sw.ts',
   },
   target: 'web',
@@ -46,7 +46,7 @@ module.exports = {
     clean: true,
   },
   resolve: {
-    extensions: ['.ts', '.js'],
+    extensions: ['.tsx', '.ts', '.js'],
   },
   module: {
     rules: [
