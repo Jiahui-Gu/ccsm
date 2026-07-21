@@ -162,6 +162,12 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
   let generation = 0;
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
+  // The socket (if any) whose `onerror` has already fired for the current
+  // generation but whose `onclose` has not yet followed. retry() uses this
+  // to tell an errored-but-still-open transport apart from a healthy one, so
+  // a manual retry during the connection_error window actually opens a new
+  // connection immediately instead of silently waiting for a close event.
+  let erroredSocket: SocketLike | null = null;
 
   function emitStatus(status: PhoneConnectionStatus): void {
     for (const handler of statusHandlers) handler(status);
@@ -422,6 +428,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
     keys = null;
     peerVerified = false;
     desktopHello = null;
+    erroredSocket = null;
     const endpoint = new URL(`/relay/${options.pairing.roomId}`, options.relayUrl);
     endpoint.protocol = endpoint.protocol === 'https:' ? 'wss:' : 'ws:';
     endpoint.searchParams.set('role', 'phone');
@@ -457,6 +464,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
     };
     current.onerror = () => {
       if (socket !== current || generation !== currentGeneration) return;
+      erroredSocket = current;
       emitStatus('connection_error');
     };
     current.onclose = () => {
@@ -467,6 +475,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
       peerVerified = false;
       clearConnectionTimers();
       rejectUnsafePending();
+      if (erroredSocket === current) erroredSocket = null;
       if (manuallyClosed || suppressedSockets.has(current as object)) return;
       emitStatus('reconnecting');
       const delay = reconnectDelay;
@@ -493,10 +502,37 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
         reconnectTimer = null;
       }
       reconnectDelay = 500;
+      if (!socket) {
+        // No live socket (already between attempts, e.g. status
+        // "reconnecting") — the existing post-close reconnect path just
+        // needs its timer cancelled and backoff reset, done above.
+        openConnection();
+        return;
+      }
+      if (socket === erroredSocket) {
+        // The transport already reported `onerror` (status connection_error)
+        // but has not closed yet. Waiting for that close would leave retry()
+        // a no-op during exactly the window it exists for, so retire the
+        // errored socket ourselves: null it and advance the generation
+        // first so its own eventual `onclose` — whenever it fires — is a
+        // stale-generation no-op and never schedules a second, duplicate
+        // automatic reconnect. Then open exactly one new connection now.
+        const errored = socket;
+        socket = null;
+        generation += 1;
+        keys = null;
+        peerVerified = false;
+        clearConnectionTimers();
+        rejectUnsafePending();
+        erroredSocket = null;
+        suppressedSockets.add(errored as object);
+        errored.close(4000, 'manual_retry');
+        openConnection();
+        return;
+      }
       // A live socket is already connecting, authenticating, or connected —
       // resetting the backoff is enough; the existing lifecycle continues (or
       // its own onclose will reconnect immediately at the reset delay).
-      if (!socket) openConnection();
     },
     send(message) {
       return new Promise<void>((resolve, reject) => {

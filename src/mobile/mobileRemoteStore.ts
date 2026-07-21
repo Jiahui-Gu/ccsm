@@ -96,17 +96,25 @@ function initialViewState(): MobileRemoteViewState {
 function collectLiveSessionIds(navigator: SessionNavigatorModel): Set<string> {
   const ids = new Set<string>();
   for (const group of navigator.groups) {
-    for (const session of group.sessions) ids.add(session.id);
+    for (const session of group.sessions) {
+      if (session.state === 'exited') continue;
+      ids.add(session.id);
+    }
   }
   return ids;
 }
 
 // First session in group order, then session order — matches the order the
 // shared navigator already produces its (filtered, non-empty) `groups` and
-// each group's `sessions` arrays in.
+// each group's `sessions` arrays in. Exited sessions are skipped: they may
+// still be listed (e.g. so the phone can show a just-exited session briefly)
+// but are never a live selection candidate.
 function firstLiveSessionId(navigator: SessionNavigatorModel): string | null {
   for (const group of navigator.groups) {
-    for (const session of group.sessions) return session.id;
+    for (const session of group.sessions) {
+      if (session.state === 'exited') continue;
+      return session.id;
+    }
   }
   return null;
 }
@@ -126,13 +134,30 @@ function resolveSelection(
 // "Live" here means currently selected and not the session that was just
 // force-exited by a navigator update (selectedSessionId and exitedSessionId
 // are never equal by construction, but the check documents the contract and
-// stays correct if that invariant is ever revisited).
+// stays correct if that invariant is ever revisited) — and not a session the
+// navigator itself currently lists with state 'exited' (e.g. a directly
+// selected sid that was never routed through applyNavigator's own fallback).
+function isSessionExited(navigator: SessionNavigatorModel, sid: string): boolean {
+  for (const group of navigator.groups) {
+    for (const session of group.sessions) {
+      if (session.id === sid) return session.state === 'exited';
+    }
+  }
+  return false;
+}
+
 function deriveInputEnabled(
   connection: PhoneConnectionStatus,
   selectedSessionId: string | null,
   exitedSessionId: string | null,
+  navigator: SessionNavigatorModel,
 ): boolean {
-  return connection === 'connected' && selectedSessionId !== null && selectedSessionId !== exitedSessionId;
+  return (
+    connection === 'connected' &&
+    selectedSessionId !== null &&
+    selectedSessionId !== exitedSessionId &&
+    !isSessionExited(navigator, selectedSessionId)
+  );
 }
 
 // `update_required`/`authentication_failed` need re-pairing or an app update
@@ -203,6 +228,14 @@ export function createMobileRemoteStore(
       try {
         await client.send({ type: 'session.submit', sid, requestId, draft });
       } catch (error) {
+        const current = get().pendingSubmission;
+        if (!current || current.sid !== sid || current.requestId !== requestId) {
+          // The pending submission this rejection belongs to was already
+          // cleared (e.g. by a connection status change) or superseded by a
+          // newer submission for the same session — a stale rejection must
+          // never clobber that state or surface a phantom error.
+          return;
+        }
         set({ pendingSubmission: null, submissionError: normalizeSubmitError(error) });
       }
     },
@@ -221,7 +254,7 @@ export function createMobileRemoteStore(
         terminalSync: beginTerminalSync(sid),
         terminalBatch: null,
         drawerOpen: false,
-        inputEnabled: deriveInputEnabled(state.connection, sid, null),
+        inputEnabled: deriveInputEnabled(state.connection, sid, null, state.navigator),
       });
       sendSafely({ type: 'session.snapshot', sid });
     },
@@ -278,7 +311,7 @@ export function createMobileRemoteStore(
       // snapshot for a routine (e.g. polling-driven) navigator refresh.
       store.setState({
         navigator: model,
-        inputEnabled: deriveInputEnabled(state.connection, nextSelected, state.exitedSessionId),
+        inputEnabled: deriveInputEnabled(state.connection, nextSelected, state.exitedSessionId, model),
       });
       return;
     }
@@ -307,7 +340,7 @@ export function createMobileRemoteStore(
       terminalSync: beginTerminalSync(nextSelected),
       terminalBatch: null,
       drawerOpen: false,
-      inputEnabled: deriveInputEnabled(state.connection, nextSelected, exitedSessionId),
+      inputEnabled: deriveInputEnabled(state.connection, nextSelected, exitedSessionId, model),
     });
     sendSafely({ type: 'session.snapshot', sid: nextSelected });
   }
@@ -371,7 +404,7 @@ export function createMobileRemoteStore(
     store.setState({
       connection: status,
       retryMode: retryModeForStatus(status),
-      inputEnabled: deriveInputEnabled(status, state.selectedSessionId, state.exitedSessionId),
+      inputEnabled: deriveInputEnabled(status, state.selectedSessionId, state.exitedSessionId, state.navigator),
       // Connection loss clears any in-flight submission (it was never queued
       // for recovery) but every draft — sent or not — is left untouched.
       pendingSubmission: status === 'connected' ? state.pendingSubmission : null,

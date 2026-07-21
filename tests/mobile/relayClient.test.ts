@@ -41,6 +41,10 @@ class FakeWebSocket {
     this.readyState = 3;
     this.onclose?.();
   }
+
+  error(): void {
+    this.onerror?.();
+  }
 }
 
 function parseSent(socket: FakeWebSocket): Array<Record<string, unknown>> {
@@ -714,6 +718,79 @@ describe('phone relay client', () => {
 
     client.retry();
     expect(sockets).toHaveLength(1);
+  });
+
+  it('retry immediately replaces a socket stuck in the onerror window instead of waiting for its close', async () => {
+    const sockets: FakeWebSocket[] = [];
+    const statuses: PhoneConnectionStatus[] = [];
+    const delays: number[] = [];
+    const client = createRelayClient({
+      relayUrl: 'https://relay.example',
+      pairing: { roomId: ROOM_ID, secret: SECRET },
+      createWebSocket: () => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      schedule: (handler, delay) => {
+        delays.push(delay);
+        // Never fires within the test — proves the old socket's own close
+        // does not schedule a second, duplicate reconnect.
+        return setTimeout(handler, 100_000);
+      },
+    });
+    client.onStatus((status) => statuses.push(status));
+    client.connect();
+    sockets[0]!.open();
+
+    // retry() on a healthy (not-yet-errored) socket stays a no-op.
+    client.retry();
+    expect(sockets).toHaveLength(1);
+
+    await authenticate(client, sockets[0]!, 'U'.repeat(22));
+
+    // Queue one unsafe (session.input) and one bounded recovery
+    // (sessions.list) message on the still-open, authenticated socket before
+    // it errors, without yielding the event loop so both remain unflushed.
+    const unsafe = client
+      .send({ type: 'session.input', sid: 'mobile-e2e', data: 'stale\r' })
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+    const recovery = client.send({ type: 'sessions.list' }).then(
+      () => null,
+      (error: unknown) => error,
+    );
+
+    sockets[0]!.error();
+    expect(statuses.at(-1)).toBe('connection_error');
+    expect(sockets).toHaveLength(1);
+    expect(delays).toHaveLength(0);
+
+    client.retry();
+
+    // Exactly one fresh socket, opened immediately (no scheduled delay).
+    expect(sockets).toHaveLength(2);
+    expect(delays).toHaveLength(0);
+    // The errored transport was retired (closed) as part of the retry.
+    expect(sockets[0]!.readyState).toBe(3);
+
+    const unsafeResult = await unsafe;
+    expect(unsafeResult).toMatchObject({ message: 'connection_changed' });
+
+    // The bounded recovery request survived the retry and is delivered once
+    // the new (second-generation) socket authenticates — proving stale
+    // frames/timers from the retired socket never mutate the new generation
+    // and no duplicate automatic reconnect fired from its late close.
+    sockets[1]!.open();
+    await authenticate(client, sockets[1]!, 'V'.repeat(22));
+    await recovery;
+    expect(parseSent(sockets[1]!).some((message) => message.type === 'encrypted')).toBe(true);
+    expect(sockets).toHaveLength(2);
+    expect(delays).toHaveLength(0);
+
+    client.close();
   });
 
   it('rejects an unsafe session.submit if its connection changes during encryption and never resends it', async () => {

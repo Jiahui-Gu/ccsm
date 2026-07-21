@@ -271,6 +271,189 @@ describe('mobileRemoteStore', () => {
     await pending;
   });
 
+  it('ignores a stale submit rejection that arrives after a disconnect already cleared pending', async () => {
+    let rejectSend: ((error: unknown) => void) | undefined;
+    const client = createFakeClient();
+    client.send = vi.fn(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectSend = reject;
+        }),
+    );
+    const store = createMobileRemoteStore(client);
+    client.emitStatus('connected');
+    store.getState().selectSession('s1');
+    store.getState().setDraft('keep me');
+    const submission = store.getState().submitDraft();
+    expect(store.getState().pendingSubmission).not.toBeNull();
+
+    // Disconnect clears the pending submission (existing contract) before
+    // the deferred send() ever settles.
+    client.emitStatus('reconnecting');
+    expect(store.getState().pendingSubmission).toBeNull();
+
+    rejectSend?.(new Error('connection_changed'));
+    await submission;
+
+    expect(store.getState().submissionError).toBeNull();
+    expect(store.getState().pendingSubmission).toBeNull();
+    expect(store.getState().drafts.s1).toBe('keep me');
+  });
+
+  it('does not let a stale rejection from an old request clobber a newer pending submission', async () => {
+    const rejectors: Array<(error: unknown) => void> = [];
+    const client = createFakeClient();
+    client.send = vi.fn((message: MobileClientMessage) => {
+      // Only session.submit sends are deferred here; selectSession's
+      // fire-and-forget session.snapshot recovery request must not shift the
+      // rejectors indices below.
+      if (message.type !== 'session.submit') return Promise.resolve();
+      return new Promise<void>((_resolve, reject) => {
+        rejectors.push(reject);
+      });
+    });
+    let requestSequence = 0;
+    const store = createMobileRemoteStore(client, {
+      requestId: () => `req-${(requestSequence += 1)}`,
+    });
+    client.emitStatus('connected');
+    store.getState().selectSession('s1');
+    store.getState().setDraft('first');
+    const firstSubmit = store.getState().submitDraft();
+    const firstPending = store.getState().pendingSubmission;
+    expect(firstPending?.requestId).toBe('req-1');
+
+    // The first request's send() never settles here; the connection drops
+    // and recovers, clearing it, and a second submission takes its place.
+    client.emitStatus('reconnecting');
+    client.emitStatus('connected');
+    store.getState().setDraft('second');
+    const secondSubmit = store.getState().submitDraft();
+    const secondPending = store.getState().pendingSubmission;
+    expect(secondPending?.requestId).toBe('req-2');
+
+    // The stale first request rejects only now, well after the newer pending
+    // submission has taken its place.
+    rejectors[0]?.(new Error('connection_changed'));
+    await firstSubmit;
+
+    expect(store.getState().pendingSubmission).toEqual(secondPending);
+    expect(store.getState().submissionError).toBeNull();
+
+    rejectors[1]?.(new Error('later_failure'));
+    await secondSubmit;
+    expect(store.getState().submissionError).toBe('later_failure');
+    expect(store.getState().pendingSubmission).toBeNull();
+  });
+
+  it('does not select an exited session when resolving navigator selection', () => {
+    const { store, client } = createTestStore();
+    connect(store, client);
+    const model = navigatorModel({
+      activeSessionId: 's1',
+      groups: [
+        {
+          id: 'g1',
+          name: 'Group 1',
+          order: 0,
+          collapsed: false,
+          sessions: [
+            { id: 's1', name: 's1', cwd: '/repo', state: 'exited', order: 0 },
+            { id: 's2', name: 's2', cwd: '/repo', state: 'idle', order: 1 },
+          ],
+        },
+      ],
+    });
+    store.getState().receive({ type: 'sessions.navigator', version: 1, model });
+    expect(store.getState().selectedSessionId).toBe('s2');
+  });
+
+  it('falls back to a non-exited session and disables input when the current selection exits', () => {
+    const { store, client } = createTestStore();
+    connect(store, client);
+    store.getState().selectSession('s1');
+    expect(store.getState().inputEnabled).toBe(true);
+
+    const model = navigatorModel({
+      activeSessionId: null,
+      groups: [
+        {
+          id: 'g1',
+          name: 'Group 1',
+          order: 0,
+          collapsed: false,
+          sessions: [
+            { id: 's1', name: 's1', cwd: '/repo', state: 'exited', order: 0 },
+            { id: 's2', name: 's2', cwd: '/repo', state: 'idle', order: 1 },
+          ],
+        },
+      ],
+    });
+    store.getState().receive({ type: 'sessions.navigator', version: 1, model });
+
+    expect(store.getState().selectedSessionId).toBe('s2');
+    expect(store.getState().exitedSessionId).toBe('s1');
+    expect(store.getState().inputEnabled).toBe(true);
+  });
+
+  it('clears the selection and disables input when the only session exits with no live sessions left', () => {
+    const { store, client } = createTestStore();
+    connect(store, client);
+    store.getState().selectSession('s1');
+
+    const model: SessionNavigatorModel = {
+      groups: [
+        {
+          id: 'g1',
+          name: 'Group 1',
+          order: 0,
+          collapsed: false,
+          sessions: [{ id: 's1', name: 's1', cwd: '/repo', state: 'exited', order: 0 }],
+        },
+      ],
+      activeSessionId: null,
+    };
+    store.getState().receive({ type: 'sessions.navigator', version: 1, model });
+
+    expect(store.getState().selectedSessionId).toBeNull();
+    expect(store.getState().exitedSessionId).toBe('s1');
+    expect(store.getState().inputEnabled).toBe(false);
+  });
+
+  it('disables input and blocks input/submit sends when selecting a session marked exited in the navigator', async () => {
+    const { store, client } = createTestStore();
+    connect(store, client);
+    const model = navigatorModel({
+      activeSessionId: null,
+      groups: [
+        {
+          id: 'g1',
+          name: 'Group 1',
+          order: 0,
+          collapsed: false,
+          sessions: [
+            { id: 's1', name: 's1', cwd: '/repo', state: 'exited', order: 0 },
+            { id: 's2', name: 's2', cwd: '/repo', state: 'idle', order: 1 },
+          ],
+        },
+      ],
+    });
+    store.getState().receive({ type: 'sessions.navigator', version: 1, model });
+
+    // Force-select the exited sid directly (e.g. a stale UI affordance) to
+    // prove the store itself gates it rather than relying on the caller
+    // never offering it.
+    store.getState().selectSession('s1');
+    expect(store.getState().inputEnabled).toBe(false);
+
+    store.getState().setDraft('nope');
+    store.getState().sendControl('\x03');
+    expect(client.sent.filter((message) => message.type === 'session.input')).toHaveLength(0);
+
+    await store.getState().submitDraft();
+    expect(client.sent.filter((message) => message.type === 'session.submit')).toHaveLength(0);
+  });
+
   it('replaces the navigator, retaining the current selection if still present', () => {
     const { store, client } = createTestStore();
     connect(store, client);
