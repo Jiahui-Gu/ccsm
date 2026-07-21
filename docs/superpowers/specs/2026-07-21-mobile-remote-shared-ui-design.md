@@ -14,7 +14,7 @@ The first release covers the high-frequency control path:
 
 - grouped live-session navigation;
 - session names, working directories, ordering, and runtime state;
-- terminal output and input;
+- terminal output, composed text input, and discrete control keys;
 - session switching;
 - touch-friendly terminal keys;
 - explicit connection, reconnect, authentication, version, and empty states.
@@ -152,19 +152,59 @@ action buttons remain desktop wrappers around the shared presentation.
   navigator;
 - selecting a session closes the drawer and requests its current terminal
   snapshot;
-- the bottom key bar provides Esc, Tab, sticky Ctrl, arrows, interrupt, and
-  Enter, with horizontal scrolling and safe-area padding;
-- xterm focus, `visualViewport`, orientation refit, and PWA standalone behavior
-  remain supported.
+- the bottom controls contain a horizontally scrollable key bar and a persistent
+  text composer, with safe-area padding;
+- `visualViewport`, orientation refit, and PWA standalone behavior remain
+  supported.
 
 The drawer is temporary in portrait mode. A later tablet breakpoint may pin it
 open, but v0.3.0 does not require a tablet-specific split view.
 
+## Phone input model
+
+The terminal is a read, scroll, select, and copy surface. Tapping it never
+focuses xterm's hidden textarea and never opens the software keyboard. The
+composer textarea is the phone's only software-keyboard entry point:
+
+- focusing the composer allows the operating system to show the keyboard;
+- blurring the composer or dismissing the keyboard allows it to close;
+- session output, connection changes, permission prompts, and
+  `AskUserQuestion` never call `focus()` or `blur()`;
+- Return inserts a local newline and the explicit Send button submits the
+  complete draft;
+- a successful submission clears the draft; a rejected submission preserves
+  it with a visible error;
+- changing sessions and transient disconnects preserve a separate local draft
+  for each session;
+- reconnect never submits or replays a draft automatically.
+
+The key bar sends discrete PTY control input without focusing the composer. It
+provides Esc, Tab, Up, Down, Left, Right, Space, digits 1 through 4, Ctrl+C, and
+Enter. These keys cover Claude's native permission and question selectors while
+keeping the underlying terminal UI visible.
+
+`AskUserQuestion` remains Claude's native PTY interface in v0.3.0. The user
+selects an option with the key bar. When an option requests free text, the user
+enters that text in the same composer and sends it. The phone does not parse
+terminal output, infer question state, create a separate form, or change
+keyboard focus automatically.
+
+Text submission uses a complete-draft protocol message rather than streaming
+IME composition events. The desktop validates the target session, normalizes
+CRLF to LF, applies the PTY's bracketed-paste mode when active, writes the
+complete draft, and then writes Enter. An empty draft is not submitted. The
+message is not recoverable or replayable by the relay, matching existing
+`session.input` safety semantics.
+
+Live slash-command and `@`-file completion, shell history search, Vim-style
+editing, and arbitrary raw-key streaming are deferred. Complete slash commands
+such as `/status` remain supported through the composer.
+
 ## Connection and error states
 
 The phone keeps the last terminal frame visible during transient disconnects.
-It disables terminal input and shows a non-modal reconnect banner. Successful
-reconnect performs these steps in order:
+It disables Send and the key bar, preserves per-session drafts, and shows a
+non-modal reconnect banner. Successful reconnect performs these steps in order:
 
 1. authenticate the encrypted peer;
 2. fetch the latest navigation model;
@@ -195,8 +235,11 @@ automatic retries until the user rescans or updates.
 - status is conveyed through text and glyph shape in addition to color;
 - session rows expose selected and expanded states to assistive technology;
 - focus rings use the shared desktop token;
-- terminal controls account for bottom safe-area insets and the visible
-  viewport above the software keyboard.
+- terminal controls and the composer account for bottom safe-area insets and
+  the visible viewport above the software keyboard;
+- terminal selection and copy remain available without opening the keyboard;
+- the composer has an accessible label, and key-bar buttons expose their PTY
+  action rather than only their displayed symbol.
 
 ## Testing and acceptance
 
@@ -207,13 +250,19 @@ automatic retries until the user rescans or updates.
 - protocol contract tests for navigation messages and malformed metadata;
 - desktop regression tests for grouped navigation, selection, and runtime
   glyphs after extraction;
-- phone component tests for drawer behavior, session switching, reconnect
-  input gating, empty states, and keyboard controls;
+- phone component tests for drawer behavior, session switching, per-session
+  drafts, explicit submission, reconnect input gating, empty states, and
+  keyboard controls;
+- input contract tests for multiline and CJK IME drafts, CRLF normalization,
+  bracketed paste, successful clearing, failed-send preservation, and no replay
+  after reconnect;
 - visual snapshots at representative portrait, landscape, and narrow desktop
   sizes;
 - public-relay Playwright E2E that scans/imports pairing, runs `/status` from
-  the phone page, switches sessions, interrupts input, rotates orientation,
-  disconnects and reconnects, and re-pairs in an existing tab.
+  the phone composer, copies terminal output without opening the keyboard,
+  answers selection and free-text `AskUserQuestion` paths, switches sessions,
+  interrupts input, rotates orientation, disconnects and reconnects with a
+  preserved unsent draft, and re-pairs in an existing tab.
 
 ### Release gate
 
@@ -223,8 +272,10 @@ v0.3.0 is created only after:
    checks pass;
 2. the public Cloudflare deployment passes the real desktop + real Claude CLI
    E2E;
-3. a physical phone confirms readable navigation, reliable software-keyboard
-   input, no keybar occlusion, session switching, and reconnect recovery;
+3. a physical phone confirms readable navigation, terminal selection without
+   keyboard activation, reliable CJK and multiline composition, native
+   `AskUserQuestion` selection and free-text answers, no composer or key-bar
+   occlusion, session switching, and reconnect recovery without input replay;
 4. the desktop UI has no navigation or terminal regression.
 
 ## Rollout
