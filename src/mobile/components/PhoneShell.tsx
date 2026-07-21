@@ -26,6 +26,13 @@ import type { SessionNavigatorModel } from '../../shared/sessionNavigator';
 
 export type PhoneShellProps = {
   client: RelayClient;
+  // Ownership seam (mobile composer/terminal-sync plan, Task 5 review fix):
+  // when the caller already created a `MobileRemoteStore` itself — e.g. the
+  // phone bootstrap, which must wire the store's `onMessage`/`onStatus`
+  // subscriptions before `client.connect()` — it passes that instance here.
+  // The caller keeps ownership: PhoneShell renders with it but never calls
+  // `dispose()` on it, so lifecycle stays with whichever layer created it.
+  store?: StoreApi<MobileRemoteStore>;
   // Test/DI seams — both default to the real production implementations,
   // so `<PhoneShell client={client} />` remains the whole production API.
   createStore?: (client: RelayClient) => StoreApi<MobileRemoteStore>;
@@ -43,6 +50,17 @@ const STATUS_COPY: Record<PhoneConnectionStatus, string> = {
   closed: 'Disconnected.',
 };
 
+// Distinct from the transport connection banner: a live connection whose
+// previously-selected session exited (or was removed) still needs a visible
+// notice, without implying the transport itself is unhealthy. Never derived
+// by parsing terminal output — only from the navigator-driven
+// `exitedSessionId`/`selectedSessionId` the store already tracks.
+function exitedBannerCopy(selectedSessionId: string | null): string {
+  return selectedSessionId
+    ? 'Session exited. Switched to another session.'
+    : 'Session exited. No live session remains.';
+}
+
 type SessionInfo = { name: string; groupName: string; cwd: string } | null;
 
 function findSessionInfo(navigator: SessionNavigatorModel, sid: string | null): SessionInfo {
@@ -57,16 +75,24 @@ function findSessionInfo(navigator: SessionNavigatorModel, sid: string | null): 
 
 export function PhoneShell({
   client,
+  store: providedStore,
   createStore = createMobileRemoteStore,
   createAdapter,
 }: PhoneShellProps) {
-  const store = useMemo(() => createStore(client), [client, createStore]);
+  // `providedStore` is only ever read here — `createStore(client)` (the
+  // right side of `??`) is never evaluated when a store was supplied, so a
+  // caller-owned store is never shadowed by a second, PhoneShell-created one.
+  const store = useMemo(
+    () => providedStore ?? createStore(client),
+    [client, createStore, providedStore],
+  );
   const state = useSyncExternalStore(store.subscribe, store.getState, store.getState);
   const adapterRef = useRef<MobileTerminalAdapter | null>(null);
 
   useEffect(() => {
+    if (providedStore) return undefined; // caller owns disposal, not PhoneShell
     return () => store.getState().dispose();
-  }, [store]);
+  }, [store, providedStore]);
 
   // Stable identity across re-renders: reads fresh state via `store.getState()`
   // inside the callback body instead of depending on the reactive `state`
@@ -102,7 +128,12 @@ export function PhoneShell({
   const sessionInfo = findSessionInfo(state.navigator, state.selectedSessionId);
   const draft = state.selectedSessionId ? state.drafts[state.selectedSessionId] ?? '' : '';
   const submitting = state.pendingSubmission !== null;
-  const showBanner = state.connection !== 'connected';
+  // Priority: a disconnected/blocked/updating transport banner always wins —
+  // it is the more urgent, actionable state. Only once the transport is
+  // `connected` can the (never-retryable-through-this-banner) exited-session
+  // notice render instead.
+  const showConnectionBanner = state.connection !== 'connected';
+  const showExitedBanner = !showConnectionBanner && state.exitedSessionId !== null;
 
   function handleDraftChange(text: string): void {
     store.getState().setDraft(text);
@@ -161,7 +192,7 @@ export function PhoneShell({
         </span>
       </header>
 
-      {showBanner ? (
+      {showConnectionBanner ? (
         <div className="phone-banner" role="status">
           <span>{STATUS_COPY[state.connection]}</span>
           {state.retryMode === 'manual' ? (
@@ -169,6 +200,10 @@ export function PhoneShell({
               Retry
             </button>
           ) : null}
+        </div>
+      ) : showExitedBanner ? (
+        <div className="phone-banner phone-banner--exited" role="status">
+          <span>{exitedBannerCopy(state.selectedSessionId)}</span>
         </div>
       ) : null}
 

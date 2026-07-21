@@ -664,4 +664,16 @@ describe('mobileRemoteStore', () => {
     ]);
     expect(() => store.getState().dispose()).not.toThrow();
   });
+
+  it('dispose() is idempotent — calling it more than once never throws or double-unsubscribes', () => {
+    const client = createFakeClient();
+    const store = createMobileRemoteStore(client);
+    store.getState().dispose();
+    expect(() => store.getState().dispose()).not.toThrow();
+    expect(() => store.getState().dispose()).not.toThrow();
+    // Disposed handlers must stay detached: emitting afterwards must not
+    // throw and must not resurrect any state.
+    expect(() => client.emitStatus('connected')).not.toThrow();
+    expect(() => client.emitMessage({ type: 'sessions.list', sessions: [] })).not.toThrow();
+  });
 });

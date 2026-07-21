@@ -8,7 +8,7 @@
 
 import { useRef } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { PhoneShell } from '../../src/mobile/components/PhoneShell';
@@ -345,6 +345,188 @@ describe('PhoneShell', () => {
     expect(retrySpy).toHaveBeenCalledOnce();
   });
 
+  it('shows an exited-session banner (with the terminal still visible) when the navigator switches away from the selected session', () => {
+    const client = createFakeClient();
+    const { factory } = createFakeAdapterFactory();
+    const { container } = render(<PhoneShell client={client} createAdapter={factory} />);
+    client.emitStatus('connected');
+    client.emitMessage({ type: 'sessions.navigator', version: 1, model: navigatorModel() });
+    expect(screen.getByText('Alpha')).toBeInTheDocument(); // selected s1 first
+
+    client.emitMessage({
+      type: 'sessions.navigator',
+      version: 1,
+      model: navigatorModel({
+        groups: [
+          {
+            id: 'g1',
+            name: 'Group 1',
+            order: 0,
+            collapsed: false,
+            sessions: [
+              { id: 's1', name: 'Alpha', cwd: '/repo/alpha', state: 'exited', order: 0 },
+              { id: 's2', name: 'Beta', cwd: '/repo/beta', state: 'idle', order: 1 },
+            ],
+          },
+        ],
+      }),
+    });
+
+    expect(screen.getByText(/session exited/i)).toBeInTheDocument();
+    expect(screen.getByText(/switched to another session/i)).toBeInTheDocument();
+    expect(screen.getByText('Beta')).toBeInTheDocument();
+    expect(container.querySelector('.mobile-terminal')).not.toBeNull();
+    expect(screen.getByRole('textbox', { name: 'Message' })).not.toBeDisabled();
+  });
+
+  it('shows a no-live-session exited banner and disables controls when the only session exits', () => {
+    const client = createFakeClient();
+    const { factory } = createFakeAdapterFactory();
+    const { container } = render(<PhoneShell client={client} createAdapter={factory} />);
+    client.emitStatus('connected');
+    client.emitMessage({
+      type: 'sessions.navigator',
+      version: 1,
+      model: navigatorModel({
+        groups: [
+          {
+            id: 'g1',
+            name: 'Group 1',
+            order: 0,
+            collapsed: false,
+            sessions: [{ id: 's1', name: 'Alpha', cwd: '/repo/alpha', state: 'idle', order: 0 }],
+          },
+        ],
+      }),
+    });
+
+    client.emitMessage({
+      type: 'sessions.navigator',
+      version: 1,
+      model: navigatorModel({
+        groups: [
+          {
+            id: 'g1',
+            name: 'Group 1',
+            order: 0,
+            collapsed: false,
+            sessions: [{ id: 's1', name: 'Alpha', cwd: '/repo/alpha', state: 'exited', order: 0 }],
+          },
+        ],
+      }),
+    });
+
+    expect(screen.getByText(/session exited/i)).toBeInTheDocument();
+    expect(screen.getByText(/no live session/i)).toBeInTheDocument();
+    expect(container.querySelector('.mobile-terminal')).not.toBeNull();
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Interrupt' })).toBeDisabled();
+  });
+
+  it('does not show a manual Retry action inside the exited-session banner', () => {
+    const client = createFakeClient();
+    const { factory } = createFakeAdapterFactory();
+    render(<PhoneShell client={client} createAdapter={factory} />);
+    client.emitStatus('connected');
+    client.emitMessage({
+      type: 'sessions.navigator',
+      version: 1,
+      model: navigatorModel({
+        groups: [
+          {
+            id: 'g1',
+            name: 'Group 1',
+            order: 0,
+            collapsed: false,
+            sessions: [{ id: 's1', name: 'Alpha', cwd: '/repo/alpha', state: 'idle', order: 0 }],
+          },
+        ],
+      }),
+    });
+    client.emitMessage({
+      type: 'sessions.navigator',
+      version: 1,
+      model: navigatorModel({
+        groups: [
+          {
+            id: 'g1',
+            name: 'Group 1',
+            order: 0,
+            collapsed: false,
+            sessions: [{ id: 's1', name: 'Alpha', cwd: '/repo/alpha', state: 'exited', order: 0 }],
+          },
+        ],
+      }),
+    });
+
+    expect(screen.getByText(/session exited/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /retry/i })).toBeNull();
+  });
+
+  it('prioritizes the transport connection banner over the exited-session banner', () => {
+    const client = createFakeClient();
+    const { factory } = createFakeAdapterFactory();
+    render(<PhoneShell client={client} createAdapter={factory} />);
+    client.emitStatus('connected');
+    client.emitMessage({ type: 'sessions.navigator', version: 1, model: navigatorModel() });
+    client.emitMessage({
+      type: 'sessions.navigator',
+      version: 1,
+      model: navigatorModel({
+        groups: [
+          {
+            id: 'g1',
+            name: 'Group 1',
+            order: 0,
+            collapsed: false,
+            sessions: [
+              { id: 's1', name: 'Alpha', cwd: '/repo/alpha', state: 'exited', order: 0 },
+              { id: 's2', name: 'Beta', cwd: '/repo/beta', state: 'idle', order: 1 },
+            ],
+          },
+        ],
+      }),
+    });
+    expect(screen.getByText(/session exited/i)).toBeInTheDocument();
+
+    client.emitStatus('connection_error');
+    expect(screen.queryByText(/session exited/i)).toBeNull();
+    expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument();
+  });
+
+  it('clears the exited-session banner once the user explicitly selects a session', async () => {
+    const user = userEvent.setup();
+    const client = createFakeClient();
+    const { factory } = createFakeAdapterFactory();
+    render(<PhoneShell client={client} createAdapter={factory} />);
+    client.emitStatus('connected');
+    client.emitMessage({ type: 'sessions.navigator', version: 1, model: navigatorModel() });
+    client.emitMessage({
+      type: 'sessions.navigator',
+      version: 1,
+      model: navigatorModel({
+        groups: [
+          {
+            id: 'g1',
+            name: 'Group 1',
+            order: 0,
+            collapsed: false,
+            sessions: [
+              { id: 's1', name: 'Alpha', cwd: '/repo/alpha', state: 'exited', order: 0 },
+              { id: 's2', name: 'Beta', cwd: '/repo/beta', state: 'idle', order: 1 },
+            ],
+          },
+        ],
+      }),
+    });
+    expect(screen.getByText(/session exited/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /sessions menu/i }));
+    await user.click(within(screen.getByRole('dialog')).getByText('Beta'));
+
+    expect(screen.queryByText(/session exited/i)).toBeNull();
+  });
+
   it('creates the adapter exactly once and never remounts it across store-driven re-renders', () => {
     const client = createFakeClient();
     const { factory, adapters } = createFakeAdapterFactory();
@@ -443,6 +625,31 @@ describe('PhoneShell', () => {
     // not throw and must not touch any DOM (component already unmounted).
     expect(() => client.emitStatus('connected')).not.toThrow();
     disposeSpy.mockRestore();
+  });
+
+  it('uses a store passed in via the `store` prop instead of creating its own, and never disposes it on unmount', () => {
+    const client = createFakeClient();
+    const { factory } = createFakeAdapterFactory();
+    const externalStore = createMobileRemoteStore(client);
+    const createStore = vi.fn(() => {
+      throw new Error('createStore must not be called when a store prop is provided');
+    });
+
+    const { unmount } = render(
+      <PhoneShell client={client} createAdapter={factory} store={externalStore} createStore={createStore} />,
+    );
+    expect(createStore).not.toHaveBeenCalled();
+
+    client.emitMessage({ type: 'sessions.navigator', version: 1, model: navigatorModel() });
+    client.emitStatus('connected');
+    expect(screen.getByText('Alpha')).toBeInTheDocument();
+
+    const disposeSpy = vi.spyOn(externalStore.getState(), 'dispose');
+    unmount();
+    // The caller (bootstrap) owns this store's lifecycle, not PhoneShell —
+    // unmounting the component must never call dispose() on a store it did
+    // not create itself.
+    expect(disposeSpy).not.toHaveBeenCalled();
   });
 
   it('exposes a stable onResize identity so an unrelated ref prop does not defeat memoization', () => {

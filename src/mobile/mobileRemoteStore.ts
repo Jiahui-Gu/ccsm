@@ -201,6 +201,13 @@ export function createMobileRemoteStore(
     return batchSequence;
   }
 
+  // Guards `dispose()` itself, independent of whatever `client.onMessage`/
+  // `onStatus` happen to return: two independent owners (e.g. a bootstrap
+  // that created this store and a `<PhoneShell>` unmount) must never be
+  // able to double-dispose, so idempotence is a contract of this store, not
+  // an incidental property of the relay client's unsubscribe functions.
+  let disposed = false;
+
   function sendSafely(message: MobileClientMessage): void {
     // Fire-and-forget commands (session.snapshot recovery requests,
     // discrete control keys): the relay already queues/rejects these
@@ -295,6 +302,8 @@ export function createMobileRemoteStore(
     },
 
     dispose() {
+      if (disposed) return;
+      disposed = true;
       offMessage();
       offStatus();
     },

@@ -134,7 +134,7 @@ function defaultCreateWebLinksAddon(): MobileXtermAddon {
 // public `Terminal.prototype.focus` API and unreachable from outside xterm.
 // Replacing the instance property (not calling it) is the only way to stop
 // that internal call from moving keyboard focus; it is exported so the
-// legacy `phonePage` production entry point can reuse the exact same
+// production bootstrap entry point (`src/mobile/bootstrap.tsx`) can reuse the exact same
 // hardening instead of duplicating it. Safe to call with `undefined` and
 // safe to call more than once (idempotent).
 export function hardenMobileTerminalTextarea(textarea: HTMLTextAreaElement | undefined): void {
