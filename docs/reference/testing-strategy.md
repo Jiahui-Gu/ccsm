@@ -11,8 +11,8 @@ and reviewable.
 | Tier | What it covers | Convention |
 |---|---|---|
 | **unit** | Pure functions/helpers/reducers, no I/O. | Co-located or in `tests/`; no strict suffix requirement today, but prefer `*.unit.test.ts` for new files that sit next to integration/contract tests in the same directory so the tier is visible from the filename. |
-| **integration** | Real module chains behind a faked *boundary* (a `node:sqlite` temp file, the `window.ccsm` stub, fake timers) — e.g. `renderer-main-payloads.test.ts`, `electron/ptyHost/__tests__/lifecycle.test.ts`, the notify-pipeline fake-timer tests. | `*.int.test.ts` for new files where the distinction from a pure unit test matters. |
-| **contract** | Cross-boundary shape/parity: IPC channel parity, IPC payload shape, relay protocol, persisted-state shape. Currently thin (4 files in `tests/contract/`) relative to its ROI — expand this tier before adding more E2E. | `tests/contract/*.test.ts`. |
+| **integration** | Real module chains behind a faked *boundary* (a `node:sqlite` temp file, the `window.ccsm` stub, fake timers) — e.g. `electron/ptyHost/__tests__/lifecycle.test.ts` (PTY spawn/kill/resize race guards) and `electron/notify/sinks/__tests__/dogfood-idle-confirm.evidence.test.ts` (real notify pipeline under fake timers). | `*.int.test.ts` for new files where the distinction from a pure unit test matters. |
+| **contract** | Cross-boundary shape/parity: IPC channel parity, IPC payload shape, relay protocol, persisted-state shape — e.g. `tests/contract/ipc-channel-parity.test.ts`, `tests/contract/renderer-main-payloads.test.ts`. Currently thin (4 files in `tests/contract/`) relative to its ROI — expand this tier before adding more E2E. | `tests/contract/*.test.ts`. |
 | **e2e** | Real Electron + built renderer, driven via Playwright. Today: hand-rolled `scripts/harness-*.mjs` + `scripts/run-all-e2e.mjs` (see `docs/reference/e2e-runner.md`). A future migration moves this to `@playwright/test` under a top-level `e2e/` project — out of scope for the surgical-consolidation PRs. | `scripts/harness-*.mjs` today; `e2e/*.spec.ts` after migration. |
 
 Existing tests are not being mass-renamed or mass-moved to fit this table —
@@ -41,6 +41,23 @@ round-trip).
   E2E's fake Anthropic API (`scripts/fixtures/fake-anthropic-api.mjs`) lets
   E2E drive the *real* `claude` binary reproducibly without a live API key;
   keep using it rather than hitting a real endpoint.
+
+## Exact-value tests are valid when protecting a duplicated cross-runtime contract
+
+The general guidance in this doc (and the audit that produced it) is to
+avoid change-detector tests that pin an isolated constant's exact literal
+value with no behavioral signal beyond "the constant didn't change." That
+guidance does **not** apply when the value is duplicated by hand across
+runtimes/systems that can't share an import — e.g. a design-token value
+that also exists as a CSS custom property, a Tailwind literal, or an inline
+`framer-motion` prop in multiple components. In that case the token module
+is the intended source of truth for values that are still manually
+mirrored elsewhere, and a literal-value assertion is the only test that
+catches the token silently drifting from its CSS/inline copies (an
+ordering/shape-only invariant would happily let a typo through). See
+`tests/lib-motion.test.ts`'s `EASING.standard`/`enter`/`exit` pins for a
+worked example — comment the test to say *why* it's pinning an exact value
+so a future reader doesn't "clean it up" back into a shape-only check.
 
 ## Deletion requires a named, already-green replacement
 

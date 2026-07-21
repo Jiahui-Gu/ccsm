@@ -1,10 +1,23 @@
 // UT for src/lib/motion.ts — motion token kit. These are mostly constants,
-// so we test *invariants* (ordering, shape, cross-token consistency,
-// alias identity) rather than mirroring exact literal values. A literal
-// mirror (e.g. `expect(DURATION.standard).toBeCloseTo(0.18)`) fails in
-// lockstep with any intentional token tweak and asserts nothing beyond
-// "the constant is still the constant" — see docs/reference/testing-strategy.md
-// on avoiding change-detector tests.
+// so most of this file tests *invariants* (ordering, shape, cross-token
+// consistency, alias identity) rather than mirroring exact literal values.
+// A literal mirror (e.g. `expect(DURATION.standard).toBeCloseTo(0.18)`)
+// normally fails in lockstep with any intentional token tweak and asserts
+// nothing beyond "the constant is still the constant" — see
+// docs/reference/testing-strategy.md on avoiding change-detector tests.
+//
+// EXCEPTION: `EASING.standard`/`enter` are a genuine shared cross-runtime
+// contract, not an isolated constant. The exact same cubic-bezier tuples
+// are hand-duplicated as CSS custom properties/literals
+// (`src/styles/global.css` `--ease-spring: cubic-bezier(0.32, 0.72, 0, 1)`
+// and inline `transition:` rules) and as inline framer-motion `ease` props
+// across 10+ components (e.g. `FileTree.tsx`'s `ease: [0, 0, 0.2, 1]`) that
+// don't import from this module. `motion.ts`'s own doc comments assert
+// these values "match existing inline" usage. A pure shape/ordering
+// invariant would let a typo in `EASING.standard` (e.g. `0.72` -> `0.27`)
+// pass here while silently diverging from every CSS/inline copy — so this
+// one set of values is pinned explicitly, on purpose, as a cross-runtime
+// consistency guard, not a change-detector test.
 import { describe, it, expect } from 'vitest';
 import {
   DURATION,
@@ -56,6 +69,17 @@ describe('motion tokens', () => {
 
     it('enter and exit are distinct curves (soft-in vs firm-out are not the same shape)', () => {
       expect(EASING.enter).not.toEqual(EASING.exit);
+    });
+
+    // Cross-runtime contract guard (see file header): these three curves
+    // are hand-duplicated as CSS custom properties/inline literals and as
+    // inline framer-motion `ease` props elsewhere in the renderer. Pin the
+    // exact values so a typo here is caught instead of silently forking
+    // from every other copy.
+    it('standard/enter/exit match the canonical curves duplicated in CSS + inline framer-motion usage', () => {
+      expect(EASING.standard).toEqual([0.32, 0.72, 0, 1]);
+      expect(EASING.enter).toEqual([0, 0, 0.2, 1]);
+      expect(EASING.exit).toEqual([0.7, 0, 0.84, 0]);
     });
   });
 
