@@ -9,6 +9,8 @@ import type {
   MobileServerMessage as SharedMobileServerMessage,
   SessionListEntry,
 } from '../../src/shared/mobileRemote';
+import { SESSION_NAVIGATOR_MESSAGE_VERSION } from '../../src/shared/sessionNavigator';
+import { readRemoteNavigationModel } from './navigationSource';
 import { isRecord } from './remoteHttp';
 import type { RemotePeer } from './remotePeer';
 
@@ -31,6 +33,15 @@ export function listSignature(entries: SessionListEntry[]): string {
   return entries.map((e) => `${e.sid}:${e.cwd}`).join('|');
 }
 
+export function sendSessionCatalog(peer: { send(payload: MobileServerMessage): void }): void {
+  peer.send({ type: 'sessions.list', sessions: listEntries() });
+  peer.send({
+    type: 'sessions.navigator',
+    version: SESSION_NAVIGATOR_MESSAGE_VERSION,
+    model: readRemoteNavigationModel(),
+  });
+}
+
 export async function handleClientMessage(client: RemotePeer, raw: string): Promise<void> {
   let message: unknown;
   try {
@@ -46,7 +57,7 @@ export async function handleClientMessage(client: RemotePeer, raw: string): Prom
   }
 
   if (message.type === 'sessions.list') {
-    client.send({ type: 'sessions.list', sessions: listEntries() });
+    sendSessionCatalog(client);
     return;
   }
 

@@ -5,6 +5,22 @@ import * as net from 'net';
 import type { AddressInfo } from 'net';
 import type { Socket } from 'net';
 
+const loadState = vi.fn();
+const listPtySessions = vi.fn();
+const getPtySession = vi.fn();
+function defaultNavigationState(): string {
+  return JSON.stringify({
+    version: 1,
+    activeId: 'mock-sid',
+    groups: [{ id: 'g1', name: 'Work', collapsed: false, kind: 'normal' }],
+    sessions: [{ id: 'mock-sid', name: 'Live', cwd: '/tmp/mock', groupId: 'g1', state: 'idle' }],
+  });
+}
+
+vi.mock('../db', () => ({
+  loadState,
+}));
+
 // Mock the ptyHost surface the server consumes. We don't want a real PTY,
 // and pulling in ../ptyHost would drag node-pty + electron transitively.
 //
@@ -18,10 +34,8 @@ import type { Socket } from 'net';
 vi.mock('../ptyHost', () => {
   const listeners: Array<(sid: string, chunk: string, seq: number) => void> = [];
   return {
-    listPtySessions: vi.fn(() => [{ sid: 'mock-sid', cwd: '/tmp/mock', cols: 80, rows: 24 }]),
-    getPtySession: vi.fn((sid: string) =>
-      sid === 'mock-sid' ? { sid, cwd: '/tmp/mock', cols: 80, rows: 24 } : null
-    ),
+    listPtySessions,
+    getPtySession,
     inputPtySession: vi.fn(),
     resizePtySession: vi.fn(),
     getBufferSnapshot: vi.fn(async (_sid: string) => ({ snapshot: 'hello\r\n', seq: 0 })),
@@ -260,6 +274,16 @@ function encodeClientFrame(
 let active: Started | null = null;
 beforeEach(() => {
   active = null;
+  loadState.mockReset();
+  listPtySessions.mockReset();
+  getPtySession.mockReset();
+  loadState.mockImplementation((key: string) => (key === 'main' ? defaultNavigationState() : null));
+  listPtySessions.mockImplementation(() => [
+    { sid: 'mock-sid', cwd: '/tmp/mock', cols: 80, rows: 24 },
+  ]);
+  getPtySession.mockImplementation((sid: string) =>
+    sid === 'mock-sid' ? { sid, cwd: '/tmp/mock', cols: 80, rows: 24 } : null,
+  );
 });
 afterEach(async () => {
   if (active) {
@@ -347,14 +371,20 @@ describe('mobileRemoteServer: WebSocket token auth', () => {
     ).rejects.toThrow(/401/);
   });
 
-  it('accepts upgrade with valid token and emits auth.ok + sessions.list', async () => {
+  it('accepts upgrade with valid token and emits auth.ok + sessions.list + sessions.navigator', async () => {
     active = await startServer();
     const ws = await wsConnect(active.port, `/ws?token=${active.token}`);
     const msgs = await ws.recvText;
     const parsed = msgs.map((m) => JSON.parse(m));
     expect(parsed[0]).toEqual({ type: 'auth.ok' });
-    expect(parsed[1].type).toBe('sessions.list');
-    expect(Array.isArray(parsed[1].sessions)).toBe(true);
+    expect(parsed.slice(1, 3)).toEqual([
+      { type: 'sessions.list', sessions: expect.any(Array) },
+      {
+        type: 'sessions.navigator',
+        version: 1,
+        model: expect.objectContaining({ groups: expect.any(Array) }),
+      },
+    ]);
     ws.socket.destroy();
   });
 });
@@ -409,14 +439,20 @@ describe('mobileRemoteServer: 1 MiB message cap', () => {
 });
 
 describe('mobileRemoteServer: message handling', () => {
-  it('replies with sessions.list on demand', async () => {
+  it('replies with sessions.list and sessions.navigator on demand', async () => {
     active = await startServer();
     const ws = await wsConnect(active.port, `/ws?token=${active.token}`);
     await ws.recvText;
 
     ws.socket.write(encodeClientText(JSON.stringify({ type: 'sessions.list' })));
-    const text = await ws.nextMessage();
-    expect(JSON.parse(text).type).toBe('sessions.list');
+    expect([JSON.parse(await ws.nextMessage()), JSON.parse(await ws.nextMessage())]).toEqual([
+      { type: 'sessions.list', sessions: expect.any(Array) },
+      {
+        type: 'sessions.navigator',
+        version: 1,
+        model: expect.objectContaining({ groups: expect.any(Array) }),
+      },
+    ]);
     ws.socket.destroy();
   });
 
