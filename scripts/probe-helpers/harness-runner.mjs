@@ -1,6 +1,6 @@
 // Shared runner for themed harnesses (harness-agent.mjs, harness-permission.mjs,
-// ...). Implements the Phase-1 deliverables from
-// docs/e2e/single-harness-brainstorm.md §8:
+// ...). See docs/reference/e2e-runner.md for the themed-harness convention.
+// Implements:
 //
 //   1. case-id logging — every console line a case emits is wrapped in
 //      `[case=<id>] ...` so a tail of mixed output is bisectable.
