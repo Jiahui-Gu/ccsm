@@ -1,36 +1,30 @@
 # E2E runner
 
-Two test surfaces share one runner:
+All end-to-end coverage runs through **themed harnesses**
+(`scripts/harness-*.mjs`) — one Electron launch packs many cases. Cases
+share the renderer + main process and rely on
+`scripts/probe-helpers/reset-between-cases.mjs` to scrub state between
+cases. Current harnesses: `harness-dnd.mjs`, `harness-ui.mjs`,
+`harness-ime-overflow.mjs`, `harness-scrollbar-6-scenarios.mjs`, and the
+`harness-e2e-*.mjs` family (`error-recovery`, `import-from-claude`,
+`paste-fidelity`, `persistence-resume`, `session-lifecycle`,
+`window-lifecycle-notify`, `voice-download`, `voice-input`, and
+`mobile-remote-relay`).
 
-- **Per-file probes** (`scripts/probe-e2e-*.mjs`) — one Electron launch per
-  file, ~10–30 s cold start, isolated by tmp `--user-data-dir`. Best for
-  cases that need cold-start, custom DB seeding, or singleton main-process
-  state (tray, titlebar, db-corruption recovery).
-- **Themed harnesses** (`scripts/harness-*.mjs`) — one Electron launch packs
-  many cases. Cases share the renderer + main process and rely on
-  `scripts/probe-helpers/reset-between-cases.mjs` to scrub state between
-  cases. Best for cases that are session-scoped and don't need a fresh
-  process. Current harnesses: `harness-dnd.mjs`, `harness-ui.mjs`,
-  `harness-ime-overflow.mjs`, and the `harness-e2e-*.mjs` family
-  (`error-recovery`, `import-from-claude`, `paste-fidelity`,
-  `persistence-resume`, `session-lifecycle`, `window-lifecycle-notify`, and
-  `mobile-remote-relay`).
-
-`scripts/run-all-e2e.mjs` discovers harnesses and probes by glob and runs
-harnesses first, then probes. There is no skip-list; if a case has been
-absorbed into a harness, delete the original per-file probe.
+`scripts/run-all-e2e.mjs` discovers harnesses by glob and runs them serially
+(Electron can't share its singleton lock — parallel launches race on
+user-data-dir and port allocation). It also still discovers a
+`scripts/probe-e2e-*.mjs` per-file-probe naming convention from an earlier
+iteration of this runner; all such probes have since been absorbed into
+harnesses, so this glob currently matches zero files and is a harmless
+no-op left in place pending the `@playwright/test` migration (which
+replaces this runner outright).
 
 ## Adding a new case
 
-1. **Pick the right surface.**
-   - If the case touches only renderer state + a session, add it as a case
-     in an existing themed harness.
-   - If the case needs cold-start, app-icon assets, tray init, db corruption,
-     window-shutdown semantics, or other singleton main-process state, write
-     a per-file probe (see “Cases that can’t be merged” below).
-2. **For a harness case**: open the harness file, write a named function
-   `caseFoo({ app, win, log, registerDispose })`, and register it in the
-   `cases:` array.
+1. Open the harness file that matches the feature area, write a named
+   function `caseFoo({ app, win, log, registerDispose })`, and register it
+   in the `cases:` array.
    - Use `log()` instead of `console.log` so output is prefixed
      `[case=<id>] …`.
    - Throw on failure — the runner records the message + per-case Playwright
@@ -39,9 +33,11 @@ absorbed into a harness, delete the original per-file probe.
      side effect (i18n language, theme, …), pass a restore function to
      `registerDispose(...)`. The runner drains these inside
      `resetBetweenCases` before the next case.
-3. **Delete the original per-file probe** (if a probe was absorbed into a
-   harness). The runner has no skip-list — leftover duplicate cases will
-   just run twice.
+2. If the case genuinely needs a fresh Electron launch (cold-start,
+   app-icon/tray init, pre-seeded DB state, or asserting on app shutdown)
+   and can't share a process with other cases in an existing harness,
+   create a new `scripts/harness-<name>.mjs` file with its own `cases:`
+   array rather than reviving the old per-file-probe convention.
 
 ## Harness-author gotchas
 
@@ -101,7 +97,7 @@ const electronApp = await electron.launch({
 ## Running locally
 
 ```bash
-npm run probe:e2e            # build + every harness + every probe
+npm run probe:e2e            # build + every harness
 node scripts/harness-ui.mjs                          # one harness, all cases
 node scripts/harness-e2e-session-lifecycle.mjs       # another harness
 node scripts/harness-e2e-mobile-remote-relay.mjs     # Wrangler + phone PWA relay proof
@@ -114,8 +110,8 @@ input, live output, relay interruption recovery with sequence deduplication,
 and old-secret rejection after rotation. Cleanup targets only the exact child
 PIDs created by the harness.
 
-`E2E_SKIP=streaming,tray` (or any comma list of probe / harness suffixes)
-skips entries from `run-all-e2e.mjs` end-to-end.
+`E2E_SKIP=ime-overflow,dnd` (or any comma list of harness suffixes) skips
+entries from `run-all-e2e.mjs` end-to-end.
 
 ## Artifacts
 
@@ -128,24 +124,18 @@ On case failure, the harness runner persists:
 
 Successful runs leave nothing behind.
 
-## Cases that can’t be merged (keep one Electron per file)
+## Known coverage gaps (tracked, not yet closed)
 
-Per `docs/e2e/single-harness-brainstorm.md` §9, the following exercise
-singleton main-process state or first-launch UI and **must stay as
-per-file probes** (one Electron launch per case):
+These require a fresh Electron launch per case (cold-start, pre-seeded DB
+state, or asserting on app shutdown) and have no harness today:
 
-- `probe-e2e-tray`
-- `probe-e2e-db-corruption-recovery` (pre-seeds garbage DB before launch)
-- `probe-e2e-import-session` (depends on userData state at launch)
-- `probe-e2e-close-window-aborts-sessions` (asserts on app shutdown)
-- `probe-e2e-restore*` family (specifically test "what happens after
-  restart" — they require a relaunch by definition)
-- (`probe-e2e-dnd` was absorbed into `harness-dnd.mjs` — its own
-  visible-mode harness because dnd-kit needs `CCSM_E2E_HIDDEN=0` and
-  per-case env override is not in the capability surface)
+- Cold-start **DB-corruption recovery** (pre-seed a garbage DB file before
+  launch, assert the recovery UI). Currently unit-covered only.
+- **IME overflow** exists as `harness-ime-overflow.mjs` but is skipped in CI
+  (`E2E_SKIP=harness-ime-overflow` in `e2e.yml`, tracked under #1324).
 
-If you’re tempted to merge one of these, re-read the brainstorm §3
-(shared-state inventory) and §9 first.
+Closing these is scoped to the E2E-framework migration (`@playwright/test`),
+not ad-hoc per-file probes — see the test-suite audit's Phase 2/3 plan.
 
 ## What the reset between cases actually does
 

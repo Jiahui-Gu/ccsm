@@ -1,10 +1,10 @@
 // Themed harness — UI cluster.
 //
-// Per docs/e2e/single-harness-brainstorm.md §8 (option B + C). Each case
-// below is the de-duplicated body of one of the per-file probes in
-// scripts/probe-e2e-*.mjs. Absorbed probe files are deleted outright (no
-// breadcrumb files); run-all-e2e.mjs auto-discovers via glob so the runner
-// just stops seeing them.
+// See docs/reference/e2e-runner.md for the themed-harness convention. Each
+// case below was originally its own scripts/probe-e2e-*.mjs per-file probe;
+// those have all since been absorbed into this harness and deleted outright
+// (no breadcrumb files); run-all-e2e.mjs auto-discovers via glob so the
+// runner just stops seeing them.
 //
 // Scope:
 //   - sidebar-align                        (probe-e2e-sidebar-align)

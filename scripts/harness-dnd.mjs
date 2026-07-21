@@ -1,8 +1,8 @@
 // Themed harness — DND cluster (visible-mode).
 //
-// Per docs/e2e/single-harness-brainstorm.md §8 (option B + C). Each case
-// below is the de-duplicated body of one of the per-file probes in
-// scripts/probe-e2e-*.mjs. Absorbed probe files have been deleted (#72
+// See docs/reference/e2e-runner.md for the themed-harness convention. Each
+// case below was originally its own scripts/probe-e2e-*.mjs per-file probe;
+// those have all since been absorbed into this harness and deleted (#72
 // no-skipped-e2e rule — no breadcrumb files).
 //
 // WHY A SEPARATE HARNESS (not absorbed into harness-ui):
