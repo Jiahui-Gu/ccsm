@@ -9,10 +9,14 @@ const loadState = vi.fn();
 const listPtySessions = vi.fn();
 const getPtySession = vi.fn();
 function defaultNavigationState(): string {
+  return navigationState(false);
+}
+
+function navigationState(collapsed: boolean): string {
   return JSON.stringify({
     version: 1,
     activeId: 'mock-sid',
-    groups: [{ id: 'g1', name: 'Work', collapsed: false, kind: 'normal' }],
+    groups: [{ id: 'g1', name: 'Work', collapsed, kind: 'normal' }],
     sessions: [{ id: 'mock-sid', name: 'Live', cwd: '/tmp/mock', groupId: 'g1', state: 'idle' }],
   });
 }
@@ -454,6 +458,87 @@ describe('mobileRemoteServer: message handling', () => {
       },
     ]);
     ws.socket.destroy();
+  });
+
+  it('rebroadcasts a fresh sessions.navigator when persisted navigation metadata changes without a PTY list change', async () => {
+    vi.useFakeTimers();
+    let ws: WsHandle | null = null;
+    try {
+      active = await startServer();
+      ws = await wsConnect(active.port, `/ws?token=${active.token}`);
+      const initial = (await ws.recvText).map((m) => JSON.parse(m));
+      expect(initial).toEqual([
+        { type: 'auth.ok' },
+        {
+          type: 'sessions.list',
+          sessions: [{ sid: 'mock-sid', cwd: '/tmp/mock', cols: 80, rows: 24 }],
+        },
+        {
+          type: 'sessions.navigator',
+          version: 1,
+          model: {
+            activeSessionId: 'mock-sid',
+            groups: [
+              {
+                id: 'g1',
+                name: 'Work',
+                order: 0,
+                collapsed: false,
+                sessions: [
+                  {
+                    id: 'mock-sid',
+                    name: 'Live',
+                    cwd: '/tmp/mock',
+                    state: 'active',
+                    order: 0,
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      ]);
+
+      loadState.mockImplementation((key: string) =>
+        key === 'main' ? navigationState(true) : null,
+      );
+
+      await vi.advanceTimersByTimeAsync(2000);
+
+      expect(JSON.parse(await ws.nextMessage())).toEqual({
+        type: 'sessions.list',
+        sessions: [{ sid: 'mock-sid', cwd: '/tmp/mock', cols: 80, rows: 24 }],
+      });
+      expect(JSON.parse(await ws.nextMessage())).toEqual({
+        type: 'sessions.navigator',
+        version: 1,
+        model: {
+          activeSessionId: 'mock-sid',
+          groups: [
+            {
+              id: 'g1',
+              name: 'Work',
+              order: 0,
+              collapsed: true,
+              sessions: [
+                {
+                  id: 'mock-sid',
+                  name: 'Live',
+                  cwd: '/tmp/mock',
+                  state: 'active',
+                  order: 0,
+                },
+              ],
+            },
+          ],
+        },
+      });
+    } finally {
+      ws?.socket.destroy();
+      active?.close();
+      active = null;
+      vi.useRealTimers();
+    }
   });
 
   it('responds with error on invalid JSON', async () => {
