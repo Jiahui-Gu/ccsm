@@ -78,4 +78,25 @@ describe('<GroupRow /> (extracted)', () => {
     expect(container.querySelector('ul[role="listbox"]')).toBeFalsy();
     expect(getByRole('button', { name: /Archived stuff/ }).getAttribute('aria-expanded')).toBe('false');
   });
+
+  // Task 4 (mobile-remote-shared-ui plan) — GroupRow's header body (chevron
+  // + label + count) now composes the shared SessionGroupHeader presentation
+  // via SessionGroupHeaderBody, while GroupRow keeps ownership of the
+  // droppable header, focus/rename/menu behavior, and the button itself.
+  it('exposes aria-expanded on the header button when expanded (shared presentation)', () => {
+    const group: Group = { id: 'g1', name: 'Group A', collapsed: false, kind: 'normal' };
+    const sessions: Session[] = [
+      {
+        id: 's1',
+        name: 'Session A',
+        state: 'idle',
+        cwd: '/tmp',
+        model: 'claude-sonnet-4',
+        groupId: 'g1',
+        agentType: 'claude-code',
+      },
+    ];
+    const { getByRole } = renderGroupRow(group, sessions);
+    expect(getByRole('button', { name: /Group A/ })).toHaveAttribute('aria-expanded', 'true');
+  });
 });

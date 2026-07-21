@@ -23,6 +23,8 @@ import {
   MOTION_STANDARD_EASING,
 } from '../../lib/motion';
 import type { Group, Session } from '../../types';
+import { toDesktopNavigatorSession } from './DesktopSessionPresentation';
+import { SessionNavigatorItemBody } from '../../shared/sessionNavigator/presentation';
 
 function SessionRowImpl({
   session,
@@ -242,19 +244,25 @@ function SessionRowImpl({
                 inputClassName="text-chrome"
               />
             ) : (
-              <>
-                <span
-                  className="truncate block"
-                  title={session.name}
-                  onDoubleClick={(e) => {
+              // Shared session-navigator presentation body (state glyph +
+              // name/cwd typography) — Task 4 (mobile-remote-shared-ui
+              // plan). SessionRow keeps ownership of the outer <li>,
+              // dnd-kit wiring, selection, and rename-trigger handler; only
+              // the row's *content* comes from the shared component so
+              // desktop and the mobile/remote navigator render the same
+              // name/cwd/state-glyph vocabulary from one source.
+              <span className="flex items-center gap-1.5 min-w-0">
+                <SessionNavigatorItemBody
+                  session={toDesktopNavigatorSession(session, active, crashed)}
+                  onNameDoubleClick={(e) => {
                     // Double-click the label to enter rename mode — matches
                     // Finder / VS Code explorer convention. Stop propagation
                     // so the row's onClick doesn't fire a redundant select.
                     e.stopPropagation();
                     setRenaming(true);
                   }}
-                >{session.name}</span>
-              </>
+                />
+              </span>
             )}
           </span>
           {active && (

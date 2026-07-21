@@ -23,21 +23,40 @@ export type SessionStateGlyphProps = {
   state: SessionNavigatorState;
   label: string;
   size?: number;
+  /**
+   * When true, the glyph is purely decorative and hidden from the
+   * accessibility tree (aria-hidden, no role/label). Defaults to false,
+   * which keeps the existing role="img" + aria-label behavior used by the
+   * shared session navigator list.
+   */
+  decorative?: boolean;
+  /** Extra class name(s) appended to the wrapper's base glyph class. */
+  className?: string;
 };
 
-export function SessionStateGlyph({ state, label, size = 12 }: SessionStateGlyphProps) {
+export function SessionStateGlyph({
+  state,
+  label,
+  size = 12,
+  decorative = false,
+  className,
+}: SessionStateGlyphProps) {
+  const wrapperClassName = className
+    ? `ccsm-session-navigator__glyph ${className}`
+    : 'ccsm-session-navigator__glyph';
   return (
     <span
-      role="img"
-      aria-label={label}
+      role={decorative ? undefined : 'img'}
+      aria-label={decorative ? undefined : label}
+      aria-hidden={decorative ? 'true' : undefined}
       title={label}
       data-state={state}
-      className="ccsm-session-navigator__glyph"
+      className={wrapperClassName}
     >
       <svg width={size} height={size} viewBox="0 0 12 12" aria-hidden="true" focusable="false">
         {PATHS[state]}
       </svg>
-      <span className="ccsm-session-navigator__sr-only">{label}</span>
+      {!decorative && <span className="ccsm-session-navigator__sr-only">{label}</span>}
     </span>
   );
 }
