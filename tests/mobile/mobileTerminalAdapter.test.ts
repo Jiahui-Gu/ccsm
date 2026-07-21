@@ -4,7 +4,8 @@
 // the adapter is read/scroll/select/copy only and must never call
 // `terminal.focus()` / `terminal.blur()` or register `terminal.onData`.
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Terminal } from '@xterm/xterm';
 
 import {
   createMobileTerminalAdapter,
@@ -376,5 +377,103 @@ describe('createMobileTerminalAdapter', () => {
       vi.advanceTimersByTime(200);
       expect(terminal.resize).not.toHaveBeenCalled();
     });
+  });
+});
+
+// Regression coverage for Task 4 review finding C1: a real `@xterm/xterm`
+// `Terminal`'s internal core registers its OWN "mousedown" listener on
+// `terminal.element` (xterm.js `bindMouse()`) that calls the core's private
+// `focus()` method directly on `this.textarea` — completely bypassing the
+// public `Terminal.prototype.focus` API. Fake-terminal tests above (and the
+// public-`focus`-spying tests elsewhere) cannot see this: they either don't
+// exercise a real Terminal, or they spy on the wrong (public) method, or
+// they dispatch synthetic pointer/click events that xterm's mousedown
+// listener never receives. This suite opens a REAL Terminal through the
+// production `createMobileTerminalAdapter` entry point, captures it via a
+// pass-through spy on `Terminal.prototype.open` (the only way to reach the
+// live instance without unsafely mocking the module), and dispatches an
+// actual native `mousedown` on `terminal.element`.
+describe('real @xterm/xterm focus hardening (Task 4 finding C1)', () => {
+  beforeAll(() => {
+    const w = window as unknown as Record<string, unknown>;
+    if (!w.matchMedia) {
+      w.matchMedia = () => ({
+        matches: false,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        addListener: () => {},
+        removeListener: () => {},
+      });
+    }
+    if (typeof window.requestAnimationFrame !== 'function') {
+      window.requestAnimationFrame = ((cb: FrameRequestCallback) =>
+        setTimeout(() => cb(performance.now()), 16)) as typeof window.requestAnimationFrame;
+      window.cancelAnimationFrame = (id: number) => clearTimeout(id as unknown as NodeJS.Timeout);
+    }
+    if (typeof HTMLCanvasElement !== 'undefined') {
+      const proto = HTMLCanvasElement.prototype as unknown as { getContext?: () => null };
+      if (!proto.getContext) proto.getContext = () => null;
+    }
+  });
+
+  function captureTerminalOnOpen(): { instance: () => Terminal | undefined; restore: () => void } {
+    const originalOpen = Terminal.prototype.open;
+    let captured: Terminal | undefined;
+    const openSpy = vi
+      .spyOn(Terminal.prototype, 'open')
+      .mockImplementation(function (this: Terminal, parent: HTMLElement) {
+        captured = this;
+        return originalOpen.call(this, parent);
+      });
+    return {
+      instance: () => captured,
+      restore: () => openSpy.mockRestore(),
+    };
+  }
+
+  it('never lets the real xterm core focus .xterm-helper-textarea on a native mousedown of terminal.element', async () => {
+    const capture = captureTerminalOnOpen();
+    // The prototype-level spy proves the browser's real focus algorithm
+    // (which is what actually moves `document.activeElement`) is never
+    // reached — an own-property override on the textarea instance would
+    // shadow this entirely, which is exactly the hardening this test
+    // demands.
+    const protoFocusSpy = vi.spyOn(HTMLElement.prototype, 'focus');
+
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const adapter = createMobileTerminalAdapter(host);
+
+    const terminal = capture.instance();
+    expect(terminal).toBeDefined();
+    const textarea = terminal!.textarea as HTMLTextAreaElement;
+    expect(textarea).toBeTruthy();
+    expect(textarea.classList.contains('xterm-helper-textarea')).toBe(true);
+    expect(document.activeElement).not.toBe(textarea);
+
+    // Records whatever `focus` implementation is live on the textarea AT
+    // THE TIME the real mousedown fires (production hardening already ran
+    // inside `createMobileTerminalAdapter` above) — this is the "own focus
+    // behavior" the finding asks to spy/record.
+    const textareaFocusSpy = vi.spyOn(textarea, 'focus');
+
+    terminal!.element!.dispatchEvent(
+      new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }),
+    );
+
+    // xterm's internal mousedown handler does call `.focus()` on the helper
+    // textarea (proving this test actually exercises the real code path)...
+    expect(textareaFocusSpy).toHaveBeenCalled();
+    // ...but the real/native focus implementation must never run, and focus
+    // must never actually move onto the helper textarea.
+    expect(protoFocusSpy).not.toHaveBeenCalled();
+    expect(document.activeElement).not.toBe(textarea);
+
+    textareaFocusSpy.mockRestore();
+    protoFocusSpy.mockRestore();
+    capture.restore();
+    adapter.dispose();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    host.remove();
   });
 });

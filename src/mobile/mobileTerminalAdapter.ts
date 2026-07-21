@@ -9,6 +9,15 @@
 // native browser text selection + copy — nothing in this file reacts to
 // pointer events by moving focus.
 //
+// One structural exception: `hardenMobileTerminalTextarea` (below) replaces
+// the helper textarea's own `focus` property with a no-op. This is not a
+// `focus()`/`blur()` *call* — xterm.js's internal core independently
+// registers a native "mousedown" listener on the terminal element that
+// calls its own private `focus()`, reaching straight into the helper
+// textarea. That internal wiring is otherwise unreachable/unwireable from
+// outside xterm, so neutering the instance property is the only way to
+// keep the composer as the sole keyboard entry point.
+//
 // One `Terminal` is created per adapter instance and lives for the whole
 // phone session; switching PTYs re-applies effects (`reset` + `write`) to
 // the same instance rather than recreating it. Terminal/addon/factory
@@ -112,16 +121,29 @@ function defaultCreateWebLinksAddon(): MobileXtermAddon {
 
 // Hardens the helper textarea xterm uses to capture keyboard input, without
 // ever calling `focus()`/`blur()` on it (never fight the browser's/xterm's
-// own focus handling — only make the element unable to summon a software
-// keyboard or receive input if it does end up focused). Pointer events are
-// left completely untouched so mouse/touch text selection inside the
-// terminal viewport keeps working.
-function hardenHelperTextarea(textarea: HTMLTextAreaElement | undefined): void {
+// own focus handling by invoking it ourselves) — it only makes the element
+// unable to summon a software keyboard or receive input if it does end up
+// focused. Pointer events are left completely untouched so mouse/touch text
+// selection inside the terminal viewport keeps working.
+//
+// Also replaces the textarea's own `focus` with a configurable own no-op.
+// This is necessary because xterm.js's internal core registers its OWN
+// native "mousedown" listener directly on the terminal element
+// (`bindMouse()`), which calls a private `focus()` reaching straight into
+// `this.textarea.focus({ preventScroll: true })` — completely bypassing the
+// public `Terminal.prototype.focus` API and unreachable from outside xterm.
+// Replacing the instance property (not calling it) is the only way to stop
+// that internal call from moving keyboard focus; it is exported so the
+// legacy `phonePage` production entry point can reuse the exact same
+// hardening instead of duplicating it. Safe to call with `undefined` and
+// safe to call more than once (idempotent).
+export function hardenMobileTerminalTextarea(textarea: HTMLTextAreaElement | undefined): void {
   if (!textarea) return;
   textarea.readOnly = true;
   textarea.tabIndex = -1;
   textarea.setAttribute('inputmode', 'none');
   textarea.setAttribute('aria-hidden', 'true');
+  textarea.focus = () => {};
 }
 
 export function createMobileTerminalAdapter(
@@ -142,6 +164,9 @@ export function createMobileTerminalAdapter(
     fontFamily: FONT_FAMILY,
     scrollback: 5000,
     theme: THEME,
+    // Unicode11Addon uses a proposed API; without this, activating it
+    // (below) throws at runtime — in a real browser, not just under test.
+    allowProposedApi: true,
   });
 
   const fitAddon = createFitAddon();
@@ -162,7 +187,7 @@ export function createMobileTerminalAdapter(
   terminal.unicode.activeVersion = '11';
 
   terminal.open(element);
-  hardenHelperTextarea(terminal.textarea);
+  hardenMobileTerminalTextarea(terminal.textarea);
 
   let lastEmittedCols = -1;
   let lastEmittedRows = -1;
@@ -255,7 +280,8 @@ export function createMobileTerminalAdapter(
       try {
         addon.dispose();
       } catch {
-        /* addon may already be torn down by terminal.dispose() */
+        /* an addon's dispose() may throw if it was already torn down some
+           other way — swallow so the remaining addons still get disposed */
       }
     }
     terminal.dispose();

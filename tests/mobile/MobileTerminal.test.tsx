@@ -57,6 +57,35 @@ describe('MobileTerminal', () => {
     expect(adapterRef.current).toBe(adapter);
   });
 
+  // Task 4 review finding I1: a non-null `batch` present on the VERY FIRST
+  // mount (e.g. a snapshot batch already queued by the store before
+  // `MobileTerminal` renders) must still be applied in that same mount —
+  // not silently dropped because the adapter hadn't been created yet when
+  // the batch-application effect ran. Both effects must fire in the same
+  // commit, in an order where the adapter exists before it's needed.
+  it('applies a batch that is already non-null on the very first mount (no drop)', () => {
+    const adapter = createFakeAdapter();
+    const createAdapter: MobileTerminalAdapterFactory = vi.fn(() => adapter);
+    const onConsumed = vi.fn();
+    const adapterRef = createRef();
+    const firstBatch = batch(1, 'already-queued-snapshot');
+
+    render(
+      <MobileTerminal
+        batch={firstBatch}
+        onResize={vi.fn()}
+        onConsumed={onConsumed}
+        adapterRef={adapterRef}
+        createAdapter={createAdapter}
+      />,
+    );
+
+    expect(createAdapter).toHaveBeenCalledOnce();
+    expect(adapter.apply).toHaveBeenCalledTimes(1);
+    expect(adapter.apply).toHaveBeenCalledWith(firstBatch.effects);
+    expect(onConsumed).toHaveBeenCalledWith(1);
+  });
+
   it('does not recreate the adapter when unrelated props (e.g. batch) change', () => {
     const adapter = createFakeAdapter();
     const createAdapter: MobileTerminalAdapterFactory = vi.fn(() => adapter);

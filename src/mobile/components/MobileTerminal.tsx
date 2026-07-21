@@ -9,8 +9,19 @@
 // applied at most once, in `useLayoutEffect` so the DOM reflects new PTY
 // output before the browser paints, and `onConsumed` is only called after a
 // successful `apply`.
+//
+// Both the adapter-creation effect and the batch-application effect are
+// `useLayoutEffect`, and the adapter-creation one is declared FIRST. React
+// runs same-phase effects (all `useLayoutEffect`s before any `useEffect`) in
+// declaration order within a component, so this guarantees the adapter
+// exists in `adapterRef` before the batch effect runs in the very same
+// commit — including the first mount, when `batch` can already be non-null
+// (e.g. a snapshot batch queued by the store before this component ever
+// rendered). Using `useEffect` for adapter creation would defer it until
+// after paint, one tick later than the batch effect, silently dropping
+// whatever batch was already queued on that first render.
 
-import { useEffect, useLayoutEffect, useRef, type MutableRefObject } from 'react';
+import { useLayoutEffect, useRef, type MutableRefObject } from 'react';
 
 import {
   createMobileTerminalAdapter,
@@ -45,7 +56,10 @@ export function MobileTerminal({
   const hostRef = useRef<HTMLDivElement>(null);
   const lastAppliedBatch = useRef(0);
 
-  useEffect(() => {
+  // Declared before the batch-application effect below so the adapter is
+  // guaranteed to exist in `adapterRef` by the time that effect runs in the
+  // same commit (see the module doc above) — order matters here.
+  useLayoutEffect(() => {
     if (!hostRef.current) return;
     const adapter = createAdapter(hostRef.current, { onResize });
     adapterRef.current = adapter;

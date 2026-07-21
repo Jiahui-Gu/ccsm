@@ -128,6 +128,50 @@ describe('phonePage read-only terminal contract (Task 4 stale-behavior removal)'
     expect(focusSpy).not.toHaveBeenCalled();
   });
 
+  // Task 4 review finding C1: `Terminal.prototype.focus` (the public API,
+  // spied on above) is never what xterm's internal core calls on a real
+  // mousedown — xterm.js's `bindMouse()` registers its own "mousedown"
+  // listener directly on `terminal.element` and calls the CORE's private
+  // `focus()`, which reaches straight into `this.textarea.focus(...)`.
+  // click/touchend/pointerup (above) never reach that listener at all. This
+  // test captures the real, live `Terminal` instance via a pass-through spy
+  // on `Terminal.prototype.open` and dispatches an actual native
+  // `mousedown` on `terminal.element` to exercise xterm's real internal
+  // wiring end-to-end.
+  it('never lets the real xterm core focus .xterm-helper-textarea on a native mousedown of terminal.element', async () => {
+    const capture = captureTerminalOnOpen();
+    const protoFocusSpy = vi.spyOn(HTMLElement.prototype, 'focus');
+
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    const dispose = createPhonePage(root, createFakeClient());
+    cleanups.push(dispose);
+    cleanups.push(() => root.remove());
+
+    const terminal = capture.instance();
+    cleanups.push(capture.restore);
+    expect(terminal).toBeDefined();
+    const textarea = terminal!.textarea as HTMLTextAreaElement;
+    expect(textarea).toBeTruthy();
+    expect(document.activeElement).not.toBe(textarea);
+
+    const textareaFocusSpy = vi.spyOn(textarea, 'focus');
+    cleanups.push(() => textareaFocusSpy.mockRestore());
+    cleanups.push(() => protoFocusSpy.mockRestore());
+
+    terminal!.element!.dispatchEvent(
+      new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }),
+    );
+
+    // xterm's internal mousedown handler does call `.focus()` (proving this
+    // exercises the real code path)...
+    expect(textareaFocusSpy).toHaveBeenCalled();
+    // ...but the real/native focus implementation must never run, and focus
+    // must never actually move onto the helper textarea.
+    expect(protoFocusSpy).not.toHaveBeenCalled();
+    expect(document.activeElement).not.toBe(textarea);
+  });
+
   it('renders only fixed, explicit-data hard keys (no sticky Ctrl toggle) that send session.input without focusing', () => {
     const focusSpy = vi.spyOn(Terminal.prototype, 'focus');
     cleanups.push(() => focusSpy.mockRestore());

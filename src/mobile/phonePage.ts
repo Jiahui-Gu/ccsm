@@ -8,6 +8,7 @@ import {
   type MobileClientMessage,
   type PhoneState,
 } from './phoneApp';
+import { hardenMobileTerminalTextarea } from './mobileTerminalAdapter';
 import type { PhoneConnectionStatus, RelayClient } from './relayClient';
 import type { TerminalSyncEffect } from './terminalSync';
 
@@ -59,10 +60,10 @@ export function createPhonePage(root: HTMLElement, client: RelayClient): () => v
   const sessionsElement = root.querySelector<HTMLElement>('#sessions')!;
   const terminalElement = root.querySelector<HTMLElement>('#terminal')!;
   const keybarElement = root.querySelector<HTMLElement>('#keybar')!;
-  // Read-only: no `terminal.onData`, no `focus()`/`blur()` anywhere in this
-  // module. This page is superseded by the `MobileTerminal` adapter wrapper
-  // in a later task; until then it must not reintroduce a software-keyboard
-  // entry point on the terminal itself.
+  // Read-only: no `terminal.onData`, no `focus()`/`blur()` calls anywhere in
+  // this module. This page is superseded by the `MobileTerminal` adapter
+  // wrapper in a later task; until then it must not reintroduce a
+  // software-keyboard entry point on the terminal itself.
   const terminal = new Terminal({
     convertEol: false,
     disableStdin: true,
@@ -75,6 +76,11 @@ export function createPhonePage(root: HTMLElement, client: RelayClient): () => v
   const fitAddon = new FitAddon();
   terminal.loadAddon(fitAddon);
   terminal.open(terminalElement);
+  // Reuses the same structural hardening as `createMobileTerminalAdapter`
+  // (see its module doc for why: xterm's internal core focuses the helper
+  // textarea straight from its own native mousedown listener, bypassing
+  // this module entirely). Kept in one place to avoid duplicating it here.
+  hardenMobileTerminalTextarea(terminal.textarea);
 
   let state: PhoneState = emptyPhoneState();
   let fitTimer: ReturnType<typeof setTimeout> | null = null;
