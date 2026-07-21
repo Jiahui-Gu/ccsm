@@ -6,18 +6,20 @@
 // nothing beyond "the constant is still the constant" — see
 // docs/reference/testing-strategy.md on avoiding change-detector tests.
 //
-// EXCEPTION: `EASING.standard`/`enter` are a genuine shared cross-runtime
-// contract, not an isolated constant. The exact same cubic-bezier tuples
-// are hand-duplicated as CSS custom properties/literals
-// (`src/styles/global.css` `--ease-spring: cubic-bezier(0.32, 0.72, 0, 1)`
-// and inline `transition:` rules) and as inline framer-motion `ease` props
-// across 10+ components (e.g. `FileTree.tsx`'s `ease: [0, 0, 0.2, 1]`) that
-// don't import from this module. `motion.ts`'s own doc comments assert
-// these values "match existing inline" usage. A pure shape/ordering
-// invariant would let a typo in `EASING.standard` (e.g. `0.72` -> `0.27`)
-// pass here while silently diverging from every CSS/inline copy — so this
-// one set of values is pinned explicitly, on purpose, as a cross-runtime
-// consistency guard, not a change-detector test.
+// EXCEPTION: `EASING.standard`/`enter`/`exit` and `DURATION.fast`/`standard`
+// are genuine shared cross-runtime contracts, not isolated constants. The
+// exact same values are hand-duplicated as CSS custom properties/literals
+// (`src/styles/global.css` `--ease-spring: cubic-bezier(0.32, 0.72, 0, 1)`,
+// `transition: opacity 180ms ...`) and as Tailwind arbitrary-value classes
+// / inline framer-motion props across 10+ components (e.g. `FileTree.tsx`'s
+// `ease: [0, 0, 0.2, 1]`, `ContextMenu.tsx`/`Tooltip.tsx`'s
+// `animate-[...140ms...]`, `SessionRow.tsx`'s `duration-[180ms]`) that don't
+// import from this module. `motion.ts`'s own doc comments assert these
+// values "match existing inline" usage. A pure shape/ordering invariant
+// would let a typo in one of these (e.g. `0.72` -> `0.27`, or `0.14` ->
+// `0.15`) pass here while silently diverging from every CSS/Tailwind copy —
+// so this specific subset of values is pinned explicitly, on purpose, as a
+// cross-runtime consistency guard, not a change-detector test.
 import { describe, it, expect } from 'vitest';
 import {
   DURATION,
@@ -40,6 +42,19 @@ describe('motion tokens', () => {
         expect(typeof n).toBe('number');
         expect(n).toBeGreaterThan(0);
       }
+    });
+
+    // Cross-runtime contract guard (see file header): `fast` (140ms) and
+    // `standard` (180ms) are hand-duplicated as Tailwind arbitrary-value
+    // literals and CSS `transition:` rules elsewhere in the renderer (e.g.
+    // `ContextMenu.tsx`/`Tooltip.tsx`'s `animate-[...140ms...]`,
+    // `SessionRow.tsx`'s `duration-[180ms]`, `global.css`'s
+    // `transition: opacity 180ms ...`). The ordering/uniqueness invariant
+    // above would let either value drift by typo without catching the
+    // resulting mismatch against those copies.
+    it('fast/standard match the canonical durations duplicated in CSS + Tailwind usage', () => {
+      expect(DURATION.fast).toBeCloseTo(0.14);
+      expect(DURATION.standard).toBeCloseTo(0.18);
     });
   });
 

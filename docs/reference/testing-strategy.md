@@ -55,9 +55,10 @@ is the intended source of truth for values that are still manually
 mirrored elsewhere, and a literal-value assertion is the only test that
 catches the token silently drifting from its CSS/inline copies (an
 ordering/shape-only invariant would happily let a typo through). See
-`tests/lib-motion.test.ts`'s `EASING.standard`/`enter`/`exit` pins for a
-worked example — comment the test to say *why* it's pinning an exact value
-so a future reader doesn't "clean it up" back into a shape-only check.
+`tests/lib-motion.test.ts`'s `EASING.standard`/`enter`/`exit` and
+`DURATION.fast`/`standard` pins for worked examples — comment the test to
+say *why* it's pinning an exact value so a future reader doesn't "clean it
+up" back into a shape-only check.
 
 ## Deletion requires a named, already-green replacement
 
