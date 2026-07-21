@@ -10,6 +10,7 @@ import {
   type PhoneState,
 } from './phoneApp';
 import type { PhoneConnectionStatus, RelayClient } from './relayClient';
+import type { TerminalSyncEffect } from './terminalSync';
 
 const HARD_KEYS = [
   { label: 'Esc', data: '\x1b' },
@@ -80,6 +81,15 @@ export function createPhonePage(root: HTMLElement, client: RelayClient): () => v
     void client.send(message).catch(() => undefined);
   }
 
+  function applyTerminalEffects(effects: TerminalSyncEffect[]): void {
+    for (const effect of effects) {
+      if (effect.type === 'reset') terminal.reset();
+      else if (effect.type === 'write') terminal.write(effect.data);
+      // requestSnapshot carries no direct terminal action; the matching
+      // session.snapshot command is already queued by the reducer.
+    }
+  }
+
   function renderSessions(): void {
     sessionsElement.textContent = '';
     if (state.sessions.length === 0) {
@@ -101,7 +111,7 @@ export function createPhonePage(root: HTMLElement, client: RelayClient): () => v
         lastSentRows = 0;
         terminal.reset();
         renderSessions();
-        send(selection.message);
+        for (const command of selection.commands) send(command);
       });
       sessionsElement.append(button);
     }
@@ -187,7 +197,10 @@ export function createPhonePage(root: HTMLElement, client: RelayClient): () => v
   });
   const removeMessageHandler = client.onMessage((message) => {
     const previousSid = state.activeSid;
-    state = applyServerMessage(state, message);
+    const transition = applyServerMessage(state, message);
+    state = transition.state;
+    applyTerminalEffects(transition.terminalEffects);
+    for (const command of transition.commands) send(command);
     if (message.type === 'sessions.list') {
       renderSessions();
       if (!previousSid && state.sessions.length > 0) {
@@ -195,12 +208,10 @@ export function createPhonePage(root: HTMLElement, client: RelayClient): () => v
         state = selection.state;
         renderSessions();
         terminal.reset();
-        send(selection.message);
+        for (const command of selection.commands) send(command);
       }
       return;
     }
-    if (state.terminalReset) terminal.reset();
-    for (const data of state.terminalWrites) terminal.write(data);
     if (message.type === 'session.snapshot') scheduleFit();
   });
   const removeStatusHandler = client.onStatus((status) => {
@@ -209,9 +220,10 @@ export function createPhonePage(root: HTMLElement, client: RelayClient): () => v
     if (status === 'connected') {
       send({ type: 'sessions.list' });
       if (state.activeSid) {
+        const selection = selectSession(state, state.activeSid);
+        state = selection.state;
         terminal.reset();
-        state = { ...state, snapshotSequence: -1 };
-        send({ type: 'session.snapshot', sid: state.activeSid });
+        for (const command of selection.commands) send(command);
       }
     }
   });
