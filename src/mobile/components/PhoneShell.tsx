@@ -11,9 +11,26 @@
 // normal composer submission over the native PTY, and the visual-viewport
 // CSS custom properties the adapter maintains are what keep the shell
 // pinned to the visible viewport, not any JS-side keyboard-state guess.
+//
+// Deterministic buffer-parity test bridge (Task 6): when the page URL has
+// `?ccsmTest=1`, this component assigns `window.__ccsmMobileTest` — a tiny,
+// JSON-safe read seam (`src/mobile/testBridge.d.ts`) that a Playwright
+// harness uses to read the *actual* rendered terminal buffer and pure sync
+// state without ever touching the DOM, focus, or the encrypted transport.
+// It is installed in a plain `useEffect` keyed only on the stable `store`
+// instance (never on `state`, `batch`, or any other per-render value), so
+// it neither remounts the adapter nor recreates the store, and both bridge
+// functions read `store.getState()`/`adapterRef.current` fresh on every
+// call rather than closing over a stale snapshot. It is removed on
+// unmount. It never exposes the pairing identity/secret, encryption keys,
+// drafts, raw relay frames, the `RelayClient`, or the raw store — only a
+// derived, read-only copy of `terminalSync` and the adapter's own
+// `serialize()`.
 
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import type { StoreApi } from 'zustand/vanilla';
+
+/* global URLSearchParams, location */
 
 import { MessageComposer } from './MessageComposer';
 import { TerminalKeyBar } from './TerminalKeyBar';
@@ -93,6 +110,30 @@ export function PhoneShell({
     if (providedStore) return undefined; // caller owns disposal, not PhoneShell
     return () => store.getState().dispose();
   }, [store, providedStore]);
+
+  // Test-only serialization bridge (Task 6) — see the module doc above.
+  // Keyed only on `store` (stable for the component's whole lifetime), so
+  // this never reinstalls itself on unrelated re-renders; both functions
+  // read live state on every call instead of closing over a stale value.
+  useEffect(() => {
+    if (new URLSearchParams(location.search).get('ccsmTest') !== '1') return undefined;
+    window.__ccsmMobileTest = {
+      serializeTerminal: () => adapterRef.current?.serialize() ?? '',
+      getSyncState: () => {
+        const sync = store.getState().terminalSync;
+        return {
+          sid: sync.sid,
+          phase: sync.phase,
+          lastSeq: sync.lastSeq,
+          snapshotRequested: sync.snapshotRequested,
+          bufferedSeqs: [...sync.buffered.keys()].sort((a, b) => a - b),
+        };
+      },
+    };
+    return () => {
+      delete window.__ccsmMobileTest;
+    };
+  }, [store]);
 
   // Stable identity across re-renders: reads fresh state via `store.getState()`
   // inside the callback body instead of depending on the reactive `state`

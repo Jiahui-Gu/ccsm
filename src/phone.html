@@ -14,10 +14,19 @@
       <style> rules at runtime for its theme colors and character-cell
       dimensions (it has no external stylesheet API for these). This is not
       an allowance for general app inline CSS/styles.
+
+      frame-ancestors is intentionally omitted here: browsers ignore that
+      directive entirely when delivered via a <meta> element (and Chrome
+      logs a console warning saying so), so it would be dead weight in
+      every delivery mode. The real enforcement point is the HTTP
+      Content-Security-Policy header the Cloudflare relay Worker sets on
+      every response (`cloudflare/src/worker.ts`'s PHONE_CSP), which does
+      include frame-ancestors 'none' — reinforced by the same worker's
+      X-Frame-Options: DENY header for legacy browsers.
     -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' wss:; manifest-src 'self'; worker-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' wss:; manifest-src 'self'; worker-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'"
     />
     <meta name="ccsm-service-worker" content="<%= swAsset %>" />
     <link rel="manifest" href="manifest.webmanifest" />

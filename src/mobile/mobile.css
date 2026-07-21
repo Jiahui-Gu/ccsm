@@ -69,6 +69,15 @@ button {
   width: 100%;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
+  /* Without an explicit column track, an implicit single grid column
+     defaults to `auto` sizing — its MAX-CONTENT width, not the container's
+     own width. Any row with unwrapped content (e.g. `.phone-topbar__cwd`'s
+     `white-space: nowrap`) then silently grows the whole grid wider than
+     the phone shell; `overflow: hidden` clips it instead of the intended
+     per-row ellipsis/scroll behavior ever engaging. `minmax(0, 1fr)`
+     forces the column to track the container's actual width exactly, the
+     same way the terminal row's own `minmax(0, 1fr)` already does. */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-areas:
     'topbar'
     'banner'
@@ -85,6 +94,16 @@ button {
   align-items: center;
   gap: 10px;
   min-height: var(--touch-target);
+  /* Grid items default to `min-width: auto` (their content's min-content
+     size), which is a DIFFERENT constraint than the flex `min-width: 0`
+     already set on `.phone-topbar__session` below — that inner rule only
+     governs how space is split *among* this row's own flex children, not
+     how the grid treats this row as a whole. Without this, an unwrapped
+     `.phone-topbar__cwd` (`white-space: nowrap`) silently pushes this
+     entire row wider than the phone shell on a narrow viewport; the shell's
+     `overflow: hidden` then clips it instead of letting the cwd's own
+     `text-overflow: ellipsis` do its job. */
+  min-width: 0;
   padding: calc(8px + env(safe-area-inset-top)) calc(10px + env(safe-area-inset-right)) 8px
     calc(10px + env(safe-area-inset-left));
   background: var(--ccsm-topbar);

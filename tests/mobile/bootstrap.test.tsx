@@ -70,8 +70,13 @@ function setAppRoot(): void {
   document.body.innerHTML = '<div id="app"></div>';
 }
 
+function setSearch(search: string): void {
+  window.history.pushState(null, '', `${window.location.pathname}${search}${window.location.hash}`);
+}
+
 afterEach(() => {
   document.body.innerHTML = '';
+  setSearch('');
   vi.restoreAllMocks();
 });
 
@@ -180,5 +185,44 @@ describe('phone bootstrap', () => {
 
     window.dispatchEvent(new Event('beforeunload'));
     expect(closeSpy).toHaveBeenCalledOnce();
+  });
+
+  // Task 6: end-to-end proof that the real bootstrap wiring (not just the
+  // PhoneShell unit tests) surfaces/hides the test-only serialization
+  // bridge exactly on the `?ccsmTest=1` query param.
+  it('does not define window.__ccsmMobileTest after a normal bootstrap (no ccsmTest query param)', async () => {
+    setAppRoot();
+    setSearch('');
+    const client = createOrderTrackingClient([]);
+
+    await act(async () => {
+      await bootstrap({
+        createPairingStore: fakePairingStore,
+        importPairingFromFragment: async () => PAIRING,
+        createRelayClient: () => client,
+        createAdapter: fakeCreateAdapter,
+      });
+    });
+
+    expect(window.__ccsmMobileTest).toBeUndefined();
+  });
+
+  it('defines window.__ccsmMobileTest after bootstrap when the page URL has ?ccsmTest=1', async () => {
+    setAppRoot();
+    setSearch('?ccsmTest=1');
+    const client = createOrderTrackingClient([]);
+
+    await act(async () => {
+      await bootstrap({
+        createPairingStore: fakePairingStore,
+        importPairingFromFragment: async () => PAIRING,
+        createRelayClient: () => client,
+        createAdapter: fakeCreateAdapter,
+      });
+    });
+
+    expect(window.__ccsmMobileTest).toBeDefined();
+    expect(Object.keys(window.__ccsmMobileTest!).sort()).toEqual(['getSyncState', 'serializeTerminal']);
+    expect(typeof window.__ccsmMobileTest!.serializeTerminal()).toBe('string');
   });
 });
