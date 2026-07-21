@@ -651,4 +651,123 @@ describe('phone relay client', () => {
     expect(socket.readyState).toBe(3);
     client.close();
   });
+
+  it('retry cancels the pending reconnect timer and resets backoff to 500ms', () => {
+    const sockets: FakeWebSocket[] = [];
+    const delays: number[] = [];
+    const client = createRelayClient({
+      relayUrl: 'https://relay.example',
+      pairing: { roomId: ROOM_ID, secret: SECRET },
+      createWebSocket: () => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      schedule: (handler, delay) => {
+        delays.push(delay);
+        // Never fires within the test — proves retry() does not wait for it.
+        return setTimeout(handler, 100_000);
+      },
+    });
+
+    client.connect();
+    sockets[0]!.open();
+    sockets[0]!.close();
+    expect(delays).toEqual([500]);
+    expect(sockets).toHaveLength(1);
+
+    client.retry();
+    expect(sockets).toHaveLength(2);
+
+    sockets[1]!.open();
+    sockets[1]!.close();
+    expect(delays).toEqual([500, 500]);
+
+    client.close();
+  });
+
+  it('retry is a no-op once authentication or protocol failure has blocked the connection', async () => {
+    const sockets: FakeWebSocket[] = [];
+    const statuses: PhoneConnectionStatus[] = [];
+    const client = createRelayClient({
+      relayUrl: 'https://relay.example',
+      pairing: { roomId: ROOM_ID, secret: SECRET },
+      createWebSocket: () => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    client.onStatus((status) => statuses.push(status));
+    client.connect();
+    sockets[0]!.open();
+    sockets[0]!.receive({
+      type: 'handshake.hello',
+      version: MOBILE_REMOTE_PROTOCOL_VERSION + 1,
+      role: 'desktop',
+      connectionId: ROOM_ID,
+      nonce: 'Z'.repeat(22),
+    });
+
+    await vi.waitFor(() => expect(statuses.at(-1)).toBe('update_required'));
+    expect(sockets).toHaveLength(1);
+
+    client.retry();
+    expect(sockets).toHaveLength(1);
+  });
+
+  it('rejects an unsafe session.submit if its connection changes during encryption and never resends it', async () => {
+    const sockets: FakeWebSocket[] = [];
+    let encryptionStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      encryptionStarted = resolve;
+    });
+    let unblockEncryption!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      unblockEncryption = resolve;
+    });
+    const client = createRelayClient({
+      relayUrl: 'https://relay.example',
+      pairing: { roomId: ROOM_ID, secret: SECRET },
+      createWebSocket: () => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      seal: async (key, plaintext) => {
+        encryptionStarted();
+        await blocked;
+        return sealEnvelope(key, plaintext);
+      },
+    });
+    client.connect();
+    sockets[0]!.open();
+    await authenticate(client, sockets[0]!, 'P'.repeat(22));
+
+    const pending = client.send({
+      type: 'session.submit',
+      sid: 'mobile-e2e',
+      requestId: 'req-1',
+      draft: 'echo hi\r',
+    });
+    const rejection = pending.then(
+      () => null,
+      (error: unknown) => error,
+    );
+    await started;
+    sockets[0]!.close();
+    unblockEncryption();
+
+    await expect(rejection).resolves.toMatchObject({ message: 'connection_changed' });
+
+    await vi.advanceTimersByTimeAsync(500);
+    sockets[1]!.open();
+    await authenticate(client, sockets[1]!, 'Q'.repeat(22));
+    expect(
+      parseSent(sockets[1]!).filter(
+        (message) => message.type === 'encrypted',
+      ),
+    ).toHaveLength(0);
+    client.close();
+  });
 });

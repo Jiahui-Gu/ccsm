@@ -27,6 +27,7 @@ export type PhoneConnectionStatus =
 
 export type RelayClient = {
   connect(): void;
+  retry(): void;
   send(message: MobileClientMessage): Promise<void>;
   close(): void;
   onMessage(handler: (message: MobileServerMessage) => void): () => void;
@@ -148,6 +149,11 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let reconnectDelay = 500;
   let manuallyClosed = false;
+  // Set once an authentication/protocol failure (update_required or any
+  // authentication_failed cause) has closed the connection. Reconnecting
+  // automatically — or via retry() — would only repeat the same failure, so
+  // this client instance stays blocked until the caller re-pairs or updates.
+  let blocked = false;
   let keys: SessionKeys | null = null;
   let peerVerified = false;
   let phoneHello: HandshakeHello | null = null;
@@ -164,6 +170,21 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
   function suppressAndClose(current: SocketLike, code: number, reason: string): void {
     suppressedSockets.add(current as object);
     current.close(code, reason);
+  }
+
+  // Authentication/protocol failures are terminal for this client instance:
+  // emit the failure status, mark the client blocked (so retry() and the
+  // automatic reconnect loop both stay off), and close without scheduling a
+  // reconnect attempt.
+  function failConnection(
+    current: SocketLike,
+    status: PhoneConnectionStatus,
+    code: number,
+    reason: string,
+  ): void {
+    blocked = true;
+    emitStatus(status);
+    suppressAndClose(current, code, reason);
   }
 
   function isRecoveryMessage(
@@ -303,15 +324,13 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
     try {
       message = JSON.parse(data);
     } catch {
-      emitStatus('authentication_failed');
-      suppressAndClose(current, 4003, 'invalid_message');
+      failConnection(current, 'authentication_failed', 4003, 'invalid_message');
       return;
     }
 
     if (isHello(message)) {
       if (message.version !== MOBILE_REMOTE_PROTOCOL_VERSION) {
-        emitStatus('update_required');
-        suppressAndClose(current, 4002, 'update_required');
+        failConnection(current, 'update_required', 4002, 'update_required');
         return;
       }
       if (
@@ -319,8 +338,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
         message.connectionId !== options.pairing.roomId ||
         !phoneHello
       ) {
-        emitStatus('authentication_failed');
-        suppressAndClose(current, 4003, 'invalid_hello');
+        failConnection(current, 'authentication_failed', 4003, 'invalid_hello');
         return;
       }
       if (desktopHello?.nonce === message.nonce && keys) return;
@@ -361,8 +379,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
         !keys ||
         message.connectionId !== options.pairing.roomId
       ) {
-        emitStatus('authentication_failed');
-        suppressAndClose(current, 4003, 'unexpected_proof');
+        failConnection(current, 'authentication_failed', 4003, 'unexpected_proof');
         return;
       }
       const expected = await createHandshakeProof(
@@ -371,8 +388,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
       );
       if (!isCurrent()) return;
       if (message.proof !== expected) {
-        emitStatus('authentication_failed');
-        suppressAndClose(current, 4003, 'invalid_proof');
+        failConnection(current, 'authentication_failed', 4003, 'invalid_proof');
         return;
       }
       peerVerified = true;
@@ -386,8 +402,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
 
     if (isEnvelope(message)) {
       if (!peerVerified || !keys) {
-        emitStatus('authentication_failed');
-        suppressAndClose(current, 4003, 'proof_required');
+        failConnection(current, 'authentication_failed', 4003, 'proof_required');
         return;
       }
       try {
@@ -397,8 +412,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
         const applicationMessage = JSON.parse(textDecoder.decode(plaintext)) as MobileServerMessage;
         for (const handler of messageHandlers) handler(applicationMessage);
       } catch {
-        emitStatus('authentication_failed');
-        suppressAndClose(current, 4003, 'invalid_frame');
+        failConnection(current, 'authentication_failed', 4003, 'invalid_frame');
       }
     }
   }
@@ -438,8 +452,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
         .then(() => handleMessage(current, currentGeneration, event.data))
         .catch(() => {
           if (socket !== current || generation !== currentGeneration) return;
-          emitStatus('authentication_failed');
-          suppressAndClose(current, 4003, 'invalid_message');
+          failConnection(current, 'authentication_failed', 4003, 'invalid_message');
         });
     };
     current.onerror = () => {
@@ -469,6 +482,21 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
     connect() {
       if (socket || reconnectTimer || manuallyClosed) return;
       openConnection();
+    },
+    retry() {
+      // Blocked (authentication/protocol failure) and manually-closed clients
+      // never retry: repeating the same handshake would only reproduce the
+      // same failure, and an explicit close() is a deliberate full stop.
+      if (blocked || manuallyClosed) return;
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      reconnectDelay = 500;
+      // A live socket is already connecting, authenticating, or connected —
+      // resetting the backoff is enough; the existing lifecycle continues (or
+      // its own onclose will reconnect immediately at the reset delay).
+      if (!socket) openConnection();
     },
     send(message) {
       return new Promise<void>((resolve, reject) => {
