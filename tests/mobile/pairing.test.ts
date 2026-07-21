@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { importPairingFromFragment, parsePairingFragment } from '../../src/mobile/pairing';
+import {
+  importPairingFromFragment,
+  installPairingFragmentReload,
+  parsePairingFragment
+} from '../../src/mobile/pairing';
 
 const ROOM_ID = 'B'.repeat(43);
 const SECRET = 'A'.repeat(43);
@@ -40,5 +44,16 @@ describe('phone pairing', () => {
     await expect(importPairingFromFragment(store)).rejects.toThrow('invalid_pairing');
     expect(store.put).not.toHaveBeenCalled();
     expect(parsePairingFragment('#other=value')).toBeNull();
+  });
+
+  it('reloads when a new pairing fragment arrives in an existing phone tab', () => {
+    const reload = vi.fn();
+    const dispose = installPairingFragmentReload(reload);
+
+    history.replaceState(null, '', `/#pair=${ROOM_ID}.${SECRET}`);
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+
+    expect(reload).toHaveBeenCalledTimes(1);
+    dispose();
   });
 });

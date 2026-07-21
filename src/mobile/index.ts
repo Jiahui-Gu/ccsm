@@ -3,7 +3,11 @@
 import '@xterm/xterm/css/xterm.css';
 import './mobile.css';
 
-import { createPairingStore, importPairingFromFragment } from './pairing';
+import {
+  createPairingStore,
+  importPairingFromFragment,
+  installPairingFragmentReload,
+} from './pairing';
 import { createPhonePage, renderMissingPairing } from './phonePage';
 import { createRelayClient } from './relayClient';
 
@@ -37,6 +41,7 @@ async function bootstrap(): Promise<void> {
   }
 }
 
+installPairingFragmentReload();
 void bootstrap().catch(() => {
   const root = document.querySelector<HTMLElement>('#app');
   if (root) {

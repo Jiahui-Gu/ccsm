@@ -72,6 +72,17 @@ export function parsePairingFragment(fragment: string): PairingIdentity | null {
   return { roomId, secret };
 }
 
+export function installPairingFragmentReload(
+  reload: () => void = () => location.reload(),
+): () => void {
+  const handleHashChange = (): void => {
+    const parameters = new URLSearchParams(location.hash.replace(/^#/, ''));
+    if (parameters.has('pair')) reload();
+  };
+  window.addEventListener('hashchange', handleHashChange);
+  return () => window.removeEventListener('hashchange', handleHashChange);
+}
+
 export async function importPairingFromFragment(
   store: PairingStore,
 ): Promise<PairingIdentity | null> {
