@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
-import { SessionStateGlyph } from '../../../src/shared/sessionNavigator';
+import { SessionStateGlyph } from '../../../src/shared/sessionNavigator/presentation';
 
 describe('SessionStateGlyph', () => {
   it.each([

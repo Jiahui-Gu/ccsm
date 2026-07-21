@@ -2,8 +2,10 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { SessionNavigatorModel } from '../../../src/shared/sessionNavigator';
-import { SessionNavigator } from '../../../src/shared/sessionNavigator';
+import {
+  SessionNavigator,
+  type SessionNavigatorModel,
+} from '../../../src/shared/sessionNavigator/presentation';
 
 function buildModel(): SessionNavigatorModel {
   return {

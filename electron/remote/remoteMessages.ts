@@ -9,7 +9,7 @@ import type {
   MobileServerMessage as SharedMobileServerMessage,
   SessionListEntry,
 } from '../../src/shared/mobileRemote';
-import { SESSION_NAVIGATOR_MESSAGE_VERSION } from '../../src/shared/sessionNavigator/types';
+import { SESSION_NAVIGATOR_MESSAGE_VERSION } from '../../src/shared/sessionNavigator';
 import { readRemoteNavigationModel } from './navigationSource';
 import { isRecord } from './remoteHttp';
 import type { RemotePeer } from './remotePeer';
