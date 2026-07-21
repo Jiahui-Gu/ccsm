@@ -22,25 +22,20 @@
 - Keep `sessions.list` during the compatibility window and add the richer navigation message alongside it.
 - Keep English and Chinese desktop copy synchronized when copy changes.
 - Phone targets are at least 44 CSS pixels and account for safe-area and `visualViewport` changes.
-- Mobile input interaction is on design hold: do not implement terminal tap-to-focus, soft-keyboard activation, or a replacement input control until the parent session supplies the approved independent-input-bar design.
+- The terminal is read/scroll/select/copy only and never focuses xterm's hidden textarea; the persistent composer textarea is the sole software-keyboard entry point, and application state never calls `focus()` or `blur()` on either surface.
 - Every behavior change begins with a failing focused test and ends with the smallest targeted passing command.
 
-## Input Interaction Design Hold
+## Supersession
 
-Tasks 1-5 and the navigation, metadata, connection-state, drawer, visual-layout,
-and read-only terminal portions of Tasks 6-8 may proceed. The following work
-must remain unimplemented until the replacement input design is approved:
+Tasks 1 through 4 remain binding for shared navigation and desktop adaptation.
+Tasks 5 through 8 are superseded in full by
+`docs/superpowers/plans/2026-07-21-mobile-composer-terminal-sync.md` and must
+not be executed from this document.
 
-- terminal click/touch calling `xterm.focus()` or focusing its hidden textarea;
-- software-keyboard activation and keyboard-specific `visualViewport` layout;
-- terminal `onData` routing from the phone shell;
-- the final touch keybar/input-bar composition and its input semantics;
-- Playwright assertions that type `/status`, send interrupt input, or validate
-  keyboard appearance.
-
-The phone terminal must remain selectable/copyable during this hold. A later
-plan revision will replace the held steps with the approved input-bar contract
-before Task 6 is dispatched.
+The replacement plan is binding: read-only xterm, composer-only keyboard entry,
+no app-driven focus/blur, discrete controls without focus changes, native
+`AskUserQuestion` with free text through the composer, exactly-once incremental
+terminal synchronization, and deterministic buffer-parity dogfood.
 
 ## File Structure
 
@@ -734,7 +729,10 @@ git commit -m "refactor(ui): share desktop navigation presentation" -m "Co-autho
 
 ---
 
-### Task 5: Phone Reducer, Navigation Selection, and Reconnect State Machine
+### Task 5: Phone Reducer, Navigation Selection, and Reconnect State Machine — Superseded
+
+**Do not execute.** Use Tasks 1-7 in
+`docs/superpowers/plans/2026-07-21-mobile-composer-terminal-sync.md`.
 
 **Files:**
 - Create: `src/mobile/mobileRemoteStore.ts`
@@ -861,11 +859,10 @@ git commit -m "feat(mobile): add remote navigation state machine" -m "Co-authore
 
 ---
 
-### Task 6: React Phone Shell, Touch Drawer, Terminal Chrome, and Key Bar
+### Task 6: React Phone Shell, Touch Drawer, Terminal Chrome, and Key Bar — Superseded
 
-**Execution hold:** Do not dispatch this task while the Input Interaction
-Design Hold above remains active. Update this task from the approved
-independent-input-bar design first.
+**Do not execute.** Use Tasks 1-7 in
+`docs/superpowers/plans/2026-07-21-mobile-composer-terminal-sync.md`.
 
 **Files:**
 - Create: `src/mobile/components/PhoneShell.tsx`
@@ -1039,11 +1036,10 @@ git commit -m "feat(mobile): build touch-first React remote shell" -m "Co-author
 
 ---
 
-### Task 7: End-to-End Navigation, Reconnect, Orientation, and Visual Proof
+### Task 7: End-to-End Navigation, Reconnect, Orientation, and Visual Proof — Superseded
 
-**Execution hold:** The grouped navigation, switching, reconnect, re-pairing,
-orientation, and visual checks may proceed after Task 6 is revised. Input
-typing, interrupt, and software-keyboard checks remain held.
+**Do not execute.** Use Tasks 1-7 in
+`docs/superpowers/plans/2026-07-21-mobile-composer-terminal-sync.md`.
 
 **Files:**
 - Modify: `scripts/harness-e2e-mobile-remote-relay.mjs`
@@ -1157,7 +1153,10 @@ git commit -m "test(mobile): cover shared remote navigation flow" -m "Co-authore
 
 ---
 
-### Task 8: Full Gates, Review, and Pull Request
+### Task 8: Full Gates, Review, and Pull Request — Superseded
+
+**Do not execute.** Use Task 7 in
+`docs/superpowers/plans/2026-07-21-mobile-composer-terminal-sync.md`.
 
 **Files:**
 - Modify only files required by failures or important review findings.
