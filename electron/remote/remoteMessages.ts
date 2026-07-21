@@ -4,10 +4,12 @@ import {
   inputPtySession,
   listPtySessions,
   resizePtySession,
+  submitPtySession,
 } from '../ptyHost';
-import type {
-  MobileServerMessage as SharedMobileServerMessage,
-  SessionListEntry,
+import {
+  MAX_MOBILE_SUBMIT_CHARS,
+  type MobileServerMessage as SharedMobileServerMessage,
+  type SessionListEntry,
 } from '../../src/shared/mobileRemote';
 import { SESSION_NAVIGATOR_MESSAGE_VERSION } from '../../src/shared/sessionNavigator';
 import { readRemoteNavigationModel } from './navigationSource';
@@ -88,6 +90,48 @@ export async function handleClientMessage(client: RemotePeer, raw: string): Prom
       return;
     }
     inputPtySession(message.sid, message.data);
+    return;
+  }
+
+  // Acknowledged complete-draft submission (mobile composer). Unlike
+  // `session.input` (fire-and-forget keystroke relay, best-effort `error`
+  // on malformed shape), a submission is correlated by `requestId` so the
+  // phone can resolve/reject its pending Send button. Malformed fields get
+  // exactly ONE `session.submit.result` failure and the PTY is never
+  // touched; valid fields call `submitPtySession` exactly once and map its
+  // explicit `PtySubmitResult` 1:1 onto the response — no broad catch, no
+  // silent success fallback.
+  if (message.type === 'session.submit') {
+    // Preserve whatever valid string sid/requestId exists so the failure
+    // response stays typed and serializable even when the OTHER field (or
+    // the draft) is what failed validation; empty string when the field
+    // itself isn't a valid non-empty string.
+    const sid = typeof message.sid === 'string' ? message.sid : '';
+    const requestId = typeof message.requestId === 'string' ? message.requestId : '';
+    const sidValid = typeof message.sid === 'string' && message.sid.length > 0;
+    const requestIdValid = typeof message.requestId === 'string' && message.requestId.length > 0;
+    const draftValid =
+      typeof message.draft === 'string' &&
+      message.draft.length > 0 &&
+      message.draft.length <= MAX_MOBILE_SUBMIT_CHARS;
+
+    if (!sidValid || !requestIdValid || !draftValid) {
+      client.send({
+        type: 'session.submit.result',
+        sid,
+        requestId,
+        ok: false,
+        error: 'invalid_submission',
+      });
+      return;
+    }
+
+    const result = submitPtySession(message.sid as string, message.draft as string);
+    if (result === 'ok') {
+      client.send({ type: 'session.submit.result', sid, requestId, ok: true });
+      return;
+    }
+    client.send({ type: 'session.submit.result', sid, requestId, ok: false, error: result });
     return;
   }
 

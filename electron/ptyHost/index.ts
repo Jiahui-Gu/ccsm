@@ -51,7 +51,7 @@ export {
 } from './jsonlResolver';
 export type { EnsureResumeJsonlResult } from './jsonlResolver';
 export { resolveSpawnCwd } from './cwdResolver';
-export type { PtySessionInfo, AttachResult, BufferSnapshot } from './lifecycle';
+export type { PtySessionInfo, AttachResult, BufferSnapshot, PtySubmitResult } from './lifecycle';
 
 // --- Singleton registry ------------------------------------------------------
 
@@ -80,6 +80,14 @@ export const inputPtySession = (sid: string, data: string): void =>
 
 export const resizePtySession = (sid: string, cols: number, rows: number): void =>
   L.resize(sessions, sid, cols, rows);
+
+// Acknowledged complete-draft submission (mobile composer). Returns the
+// explicit `PtySubmitResult` — NOT a boolean — so the `session.submit`
+// protocol handler can map every outcome ('ok' | 'invalid_submission' |
+// 'session_not_found' | 'pty_write_failed') to exactly one correlated
+// `session.submit.result` response.
+export const submitPtySession = (sid: string, draft: string): L.PtySubmitResult =>
+  L.submit(sessions, sid, draft);
 
 export const killPtySession = (sid: string): Promise<boolean> => L.kill(sessions, sid);
 

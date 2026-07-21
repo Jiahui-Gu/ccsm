@@ -22,7 +22,10 @@ interface FakePty {
 
 interface FakeEntry {
   pty: FakePty;
-  headless: { resize: ReturnType<typeof vi.fn> };
+  headless: {
+    resize: ReturnType<typeof vi.fn>;
+    modes?: { bracketedPasteMode: boolean };
+  };
   serialize: { serialize: () => string };
   attached: Map<number, unknown>;
   cols: number;
@@ -789,5 +792,67 @@ describe('lifecycle.killAll', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// ─── submit ───────────────────────────────────────────────────────────────
+//
+// Acknowledged complete-draft submission (mobile composer). `submit` is the
+// exactly-once seam: one prepared payload (normalized + optionally bracketed
+// per the LIVE session's headless bracketed-paste mode), one `pty.write`,
+// plus a trailing `\r` so the CLI treats the draft as a submitted line —
+// never a partial/typed stream. Reads `entry.headless.modes?.bracketedPasteMode`
+// so a fake entry lacking `.modes` degrades to `false`, matching the plan's
+// explicit optional-chaining contract.
+
+function makeSession(opts: { bracketedPasteMode: boolean }): {
+  sessions: Map<string, FakeEntry>;
+  pty: FakePty;
+} {
+  const sessions = new Map<string, FakeEntry>();
+  const entry = makeFakeEntry({
+    headless: { resize: vi.fn(), modes: { bracketedPasteMode: opts.bracketedPasteMode } },
+  });
+  sessions.set('s1', entry);
+  return { sessions, pty: entry.pty };
+}
+
+describe('lifecycle.submit', () => {
+  it('submits a complete bracketed multiline draft and Enter in one PTY write', () => {
+    const { sessions, pty } = makeSession({ bracketedPasteMode: true });
+
+    expect(L.submit(sessions as any, 's1', 'one\r\ntwo')).toBe('ok');
+    expect(pty.write).toHaveBeenCalledOnce();
+    expect(pty.write).toHaveBeenCalledWith('\x1b[200~one\ntwo\x1b[201~\r');
+  });
+
+  it('submits a complete plain multiline draft and Enter in one PTY write when bracketed paste is off', () => {
+    const { sessions, pty } = makeSession({ bracketedPasteMode: false });
+
+    expect(L.submit(sessions as any, 's1', 'one\r\ntwo')).toBe('ok');
+    expect(pty.write).toHaveBeenCalledOnce();
+    expect(pty.write).toHaveBeenCalledWith('one\ntwo\r');
+  });
+
+  it('rejects empty drafts and missing sessions without writing', () => {
+    const { sessions, pty } = makeSession({ bracketedPasteMode: false });
+    expect(L.submit(sessions as any, 's1', '')).toBe('invalid_submission');
+    expect(L.submit(sessions as any, 'missing', 'hello')).toBe('session_not_found');
+    expect(pty.write).not.toHaveBeenCalled();
+  });
+
+  it('returns pty_write_failed when the synchronous write throws, without swallowing via a broad catch elsewhere', () => {
+    const { sessions, pty } = makeSession({ bracketedPasteMode: false });
+    pty.write = vi.fn(() => { throw new Error('EPIPE'); });
+    expect(L.submit(sessions as any, 's1', 'hello')).toBe('pty_write_failed');
+    expect(pty.write).toHaveBeenCalledOnce();
+  });
+
+  it('treats a fake entry with no headless.modes as bracketed-paste off', () => {
+    const sessions = new Map<string, FakeEntry>();
+    const entry = makeFakeEntry({ headless: { resize: vi.fn() } });
+    sessions.set('s1', entry);
+    expect(L.submit(sessions as any, 's1', 'hi')).toBe('ok');
+    expect(entry.pty.write).toHaveBeenCalledWith('hi\r');
   });
 });

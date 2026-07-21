@@ -41,11 +41,25 @@ export type SessionListEntry = {
   rows: number;
 };
 
+// Mobile composer complete-draft submission (Task 1). 64 KiB character
+// ceiling — generous for any pasted/typed draft, but bounded so a
+// malformed/hostile client can't force an unbounded PTY write.
+export const MAX_MOBILE_SUBMIT_CHARS = 65_536;
+
 export type MobileClientMessage =
   | { type: 'sessions.list' }
   | { type: 'session.snapshot'; sid: string }
   | { type: 'session.input'; sid: string; data: string }
+  | { type: 'session.submit'; sid: string; requestId: string; draft: string }
   | { type: 'session.resize'; sid: string; cols: number; rows: number };
+
+export type SessionSubmitResult = {
+  type: 'session.submit.result';
+  sid: string;
+  requestId: string;
+  ok: boolean;
+  error?: 'invalid_submission' | 'session_not_found' | 'pty_write_failed';
+};
 
 export type SessionSnapshotMessage = {
   type: 'session.snapshot';
@@ -66,4 +80,5 @@ export type MobileServerMessage =
     }
   | SessionSnapshotMessage
   | { type: 'pty.data'; sid: string; seq: number; chunk: string }
+  | SessionSubmitResult
   | { type: 'error'; message: string };

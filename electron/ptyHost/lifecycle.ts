@@ -16,6 +16,7 @@ import { killProcessSubtree } from './processKiller';
 import { DEFAULT_COLS, DEFAULT_ROWS, makeEntry } from './entryFactory';
 import type { Entry } from './entryFactory';
 import { loadScrollbackLines } from '../prefs/scrollback';
+import { preparePastePayload } from '../../src/shared/terminal/preparePastePayload';
 
 export interface PtySessionInfo {
   sid: string;
@@ -137,6 +138,48 @@ export function input(sessions: Map<string, Entry>, sid: string, data: string): 
     entry.pty.write(data);
   } catch {
     /* pty already exited — exit handler will clean up */
+  }
+}
+
+export type PtySubmitResult =
+  | 'ok'
+  | 'invalid_submission'
+  | 'session_not_found'
+  | 'pty_write_failed';
+
+/**
+ * Acknowledged complete-draft submission (mobile composer). Unlike `input`
+ * (raw keystroke passthrough, silently no-ops on any failure), `submit`
+ * writes exactly ONE fully-prepared draft plus a trailing `\r` so the CLI
+ * treats it as a submitted line, and returns an explicit `PtySubmitResult`
+ * so the caller (the `session.submit` protocol handler) can send exactly
+ * one correlated success/failure response back to the phone. No broad
+ * catch, no silent fallback: only the synchronous `pty.write` call is
+ * guarded, and only to distinguish "PTY rejected the write" from "wrote
+ * fine" — everything else propagates.
+ *
+ * Bracketed-paste mode is read off the LIVE session's headless mirror
+ * (`entry.headless.modes?.bracketedPasteMode`) at submit time, mirroring
+ * desktop paste's `getBracketedPasteMode` — the phone never tracks this
+ * mode itself.
+ */
+export function submit(
+  sessions: Map<string, Entry>,
+  sid: string,
+  draft: string,
+): PtySubmitResult {
+  if (draft.length === 0) return 'invalid_submission';
+  const entry = sessions.get(sid);
+  if (!entry) return 'session_not_found';
+  const payload = preparePastePayload(
+    draft,
+    entry.headless.modes?.bracketedPasteMode === true,
+  );
+  try {
+    entry.pty.write(`${payload}\r`);
+    return 'ok';
+  } catch {
+    return 'pty_write_failed';
   }
 }
 
