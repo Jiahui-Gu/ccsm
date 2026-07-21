@@ -15,6 +15,11 @@ on:
         description: 'Tag to release (e.g. v0.0.0-dryrun)'
         required: false
         default: ''
+      deploy_mobile_remote:
+        description: 'Deploy only the Cloudflare mobile relay'
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: release-${{ github.ref }}
@@ -37,8 +42,8 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
         run: |
           missing=()
-          if [ "$EVENT_NAME" = "push" ] && [ -z "$CLOUDFLARE_API_TOKEN" ]; then missing+=(CLOUDFLARE_API_TOKEN); fi
-          if [ "$EVENT_NAME" = "push" ] && [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then missing+=(CLOUDFLARE_ACCOUNT_ID); fi
+          if { [ "$EVENT_NAME" = "push" ] || [ "${{ inputs.deploy_mobile_remote }}" = "true" ]; } && [ -z "$CLOUDFLARE_API_TOKEN" ]; then missing+=(CLOUDFLARE_API_TOKEN); fi
+          if { [ "$EVENT_NAME" = "push" ] || [ "${{ inputs.deploy_mobile_remote }}" = "true" ]; } && [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then missing+=(CLOUDFLARE_ACCOUNT_ID); fi
           if [ -z "$CLOUDFLARE_WORKERS_SUBDOMAIN" ]; then missing+=(CLOUDFLARE_WORKERS_SUBDOMAIN); fi
           if [ ${#missing[@]} -gt 0 ]; then
             echo "::error title=Missing Cloudflare configuration::Required values are not configured: ${missing[*]}"
@@ -96,13 +101,13 @@ jobs:
       - name: Build mobile client
         run: npm run build:mobile
       - name: Deploy Cloudflare Worker
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || inputs.deploy_mobile_remote
         run: npx wrangler deploy --config cloudflare/wrangler.jsonc
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       - name: Validate Cloudflare Worker bundle
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && !inputs.deploy_mobile_remote
         run: npm run cloudflare:dry-run
       - name: Output relay URL
         id: relay
@@ -114,6 +119,7 @@ jobs:
   build:
     name: build (${{ matrix.os }})
     needs: [verify, deploy-mobile-remote]
+    if: github.event_name != 'workflow_dispatch' || !inputs.deploy_mobile_remote
     strategy:
       fail-fast: false
       matrix:

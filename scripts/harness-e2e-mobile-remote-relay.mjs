@@ -208,10 +208,15 @@ async function stopExactChild(child) {
 }
 
 async function main() {
-  const port = await reservePort();
-  const started = await startWrangler(port);
-  wrangler = started.child;
-  const relayUrl = started.relayUrl;
+  const configuredRelayUrl = process.env.CCSM_RELAY_URL?.replace(/\/+$/, '');
+  let relayUrl = configuredRelayUrl;
+  let port = null;
+  if (!relayUrl) {
+    port = await reservePort();
+    const started = await startWrangler(port);
+    wrangler = started.child;
+    relayUrl = started.relayUrl;
+  }
   const pairing = generatePairingIdentity();
   const snapshotState = { seq: 7, data: 'snapshot-ready\r\n' };
   desktop = createSimulatedDesktop(relayUrl, pairing, snapshotState);
@@ -273,21 +278,31 @@ async function main() {
   desktop.sendPty(8, 'live-output\r\n');
   await phone.locator('.xterm-rows').filter({ hasText: 'live-output' }).waitFor();
 
-  await stopExactChild(wrangler);
-  wrangler = null;
+  if (configuredRelayUrl) {
+    desktop.close();
+    desktop = null;
+  } else {
+    await stopExactChild(wrangler);
+    wrangler = null;
+  }
   await waitFor(
     'phone network interruption',
     async () => (await status.getAttribute('data-status')) === 'reconnecting',
   );
   snapshotState.seq = 20;
   snapshotState.data = 'snapshot-ready\r\nrecovered-snapshot\r\n';
-  const restarted = await startWrangler(port);
-  wrangler = restarted.child;
+  if (configuredRelayUrl) {
+    desktop = createSimulatedDesktop(relayUrl, pairing, snapshotState);
+  } else {
+    const restarted = await startWrangler(port);
+    wrangler = restarted.child;
+  }
   try {
     await waitFor(
       'encrypted phone reconnection',
       async () =>
-        (await status.textContent()) === 'Connected' && desktop.authenticatedCount >= 2,
+        (await status.textContent()) === 'Connected' &&
+        desktop.authenticatedCount >= (configuredRelayUrl ? 1 : 2),
       30_000,
     );
   } catch (error) {
