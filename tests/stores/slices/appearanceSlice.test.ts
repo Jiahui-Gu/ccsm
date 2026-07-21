@@ -94,6 +94,11 @@ describe('appearance helpers (pure)', () => {
     expect(legacyFontSizeToPx('lg')).toBe(16);
   });
 
+  it('round-trips px -> legacy -> px for endpoint stops', () => {
+    expect(legacyFontSizeToPx(pxToLegacyFontSize(12))).toBe(12);
+    expect(legacyFontSizeToPx(pxToLegacyFontSize(16))).toBe(16);
+  });
+
   it('pxToLegacyFontSize buckets edges', () => {
     expect(pxToLegacyFontSize(12)).toBe('sm');
     expect(pxToLegacyFontSize(13)).toBe('md');
@@ -102,12 +107,18 @@ describe('appearance helpers (pure)', () => {
     expect(pxToLegacyFontSize(16)).toBe('lg');
   });
 
-  it('sanitizeFontSizePx accepts valid stops, defaults to 14', () => {
-    expect(sanitizeFontSizePx(12)).toBe(12);
-    expect(sanitizeFontSizePx(15)).toBe(15);
+  it('sanitizeFontSizePx accepts every official stop', () => {
+    for (const n of [12, 13, 14, 15, 16] as const) {
+      expect(sanitizeFontSizePx(n)).toBe(n);
+    }
+  });
+
+  it('sanitizeFontSizePx coerces garbage to default 14', () => {
     expect(sanitizeFontSizePx(99)).toBe(14);
     expect(sanitizeFontSizePx('big')).toBe(14);
     expect(sanitizeFontSizePx(undefined)).toBe(14);
+    expect(sanitizeFontSizePx(null)).toBe(14);
+    expect(sanitizeFontSizePx(NaN)).toBe(14);
   });
 
   it('sanitizeSidebarWidth clamps and rounds', () => {
@@ -117,14 +128,28 @@ describe('appearance helpers (pure)', () => {
     expect(sanitizeSidebarWidth('garbage')).toBe(SIDEBAR_WIDTH_DEFAULT);
   });
 
+  it('sanitizeSidebarWidth falls back to default for non-finite input', () => {
+    expect(sanitizeSidebarWidth(NaN)).toBe(SIDEBAR_WIDTH_DEFAULT);
+    expect(sanitizeSidebarWidth(undefined)).toBe(SIDEBAR_WIDTH_DEFAULT);
+  });
+
   it('resolvePersistedSidebarWidth prefers px', () => {
     expect(resolvePersistedSidebarWidth({ sidebarWidth: 333 })).toBe(333);
+  });
+
+  it('resolvePersistedSidebarWidth clamps a persisted px value out of range', () => {
+    expect(resolvePersistedSidebarWidth({ sidebarWidth: 50 })).toBe(SIDEBAR_WIDTH_MIN);
+    expect(resolvePersistedSidebarWidth({ sidebarWidth: 9999 })).toBe(SIDEBAR_WIDTH_MAX);
   });
 
   it('resolvePersistedSidebarWidth falls back to legacy pct', () => {
     const win = (globalThis as unknown as { window?: { innerWidth: number } }).window;
     if (win) win.innerWidth = 1000;
     expect(resolvePersistedSidebarWidth({ sidebarWidthPct: 0.25 })).toBe(250);
+  });
+
+  it('resolvePersistedSidebarWidth returns the default when nothing is persisted', () => {
+    expect(resolvePersistedSidebarWidth({})).toBe(SIDEBAR_WIDTH_DEFAULT);
   });
 
   it('resolveEffectiveTheme honors explicit + system', () => {
