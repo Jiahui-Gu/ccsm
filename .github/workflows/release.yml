@@ -75,8 +75,6 @@ jobs:
           echo "tag v$TAG matches package.json $PKG"
       - name: Install deps
         run: npm ci --legacy-peer-deps
-        env:
-          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run build
