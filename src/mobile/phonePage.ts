@@ -3,7 +3,6 @@ import { Terminal } from '@xterm/xterm';
 
 import {
   applyServerMessage,
-  controlInput,
   emptyPhoneState,
   selectSession,
   type MobileClientMessage,
@@ -12,10 +11,13 @@ import {
 import type { PhoneConnectionStatus, RelayClient } from './relayClient';
 import type { TerminalSyncEffect } from './terminalSync';
 
+// Fixed discrete keys, each sending an explicit `session.input` payload.
+// No sticky/modal toggle keys (the old `Ctrl` sticky modifier is gone along
+// with the typed-input path it modified — see the module doc below) and no
+// key here ever focuses the terminal or composer.
 const HARD_KEYS = [
   { label: 'Esc', data: '\x1b' },
   { label: 'Tab', data: '\t' },
-  { label: 'Ctrl', ctrl: true },
   { label: '↑', data: '\x1b[A' },
   { label: '↓', data: '\x1b[B' },
   { label: '←', data: '\x1b[D' },
@@ -57,10 +59,14 @@ export function createPhonePage(root: HTMLElement, client: RelayClient): () => v
   const sessionsElement = root.querySelector<HTMLElement>('#sessions')!;
   const terminalElement = root.querySelector<HTMLElement>('#terminal')!;
   const keybarElement = root.querySelector<HTMLElement>('#keybar')!;
+  // Read-only: no `terminal.onData`, no `focus()`/`blur()` anywhere in this
+  // module. This page is superseded by the `MobileTerminal` adapter wrapper
+  // in a later task; until then it must not reintroduce a software-keyboard
+  // entry point on the terminal itself.
   const terminal = new Terminal({
     convertEol: false,
-    disableStdin: false,
-    cursorBlink: true,
+    disableStdin: true,
+    cursorBlink: false,
     fontSize: 13,
     fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
     theme: { background: '#000000' },
@@ -71,7 +77,6 @@ export function createPhonePage(root: HTMLElement, client: RelayClient): () => v
   terminal.open(terminalElement);
 
   let state: PhoneState = emptyPhoneState();
-  let ctrlSticky = false;
   let fitTimer: ReturnType<typeof setTimeout> | null = null;
   let orientationTimer: ReturnType<typeof setTimeout> | null = null;
   let lastSentCols = 0;
@@ -123,14 +128,8 @@ export function createPhonePage(root: HTMLElement, client: RelayClient): () => v
       const button = document.createElement('button');
       button.type = 'button';
       button.textContent = key.label;
-      if ('ctrl' in key && key.ctrl && ctrlSticky) button.classList.add('sticky');
       button.addEventListener('click', () => {
-        if ('ctrl' in key && key.ctrl) {
-          ctrlSticky = !ctrlSticky;
-          renderKeybar();
-          return;
-        }
-        if (!state.activeSid || !('data' in key)) return;
+        if (!state.activeSid) return;
         send({ type: 'session.input', sid: state.activeSid, data: key.data });
       });
       keybarElement.append(button);
@@ -184,17 +183,6 @@ export function createPhonePage(root: HTMLElement, client: RelayClient): () => v
     scheduleFit();
   }
 
-  function focusTerminal(): void {
-    terminal.focus();
-  }
-
-  const dataDisposable = terminal.onData((rawData) => {
-    if (!state.activeSid) return;
-    const input = controlInput(rawData, ctrlSticky);
-    ctrlSticky = input.ctrlSticky;
-    renderKeybar();
-    send({ type: 'session.input', sid: state.activeSid, data: input.data });
-  });
   const removeMessageHandler = client.onMessage((message) => {
     const previousSid = state.activeSid;
     const transition = applyServerMessage(state, message);
@@ -237,15 +225,12 @@ export function createPhonePage(root: HTMLElement, client: RelayClient): () => v
   window.addEventListener('orientationchange', handleOrientation);
   window.visualViewport?.addEventListener('resize', syncViewportHeight);
   window.visualViewport?.addEventListener('scroll', syncViewportHeight);
-  terminalElement.addEventListener('touchend', focusTerminal);
-  terminalElement.addEventListener('click', focusTerminal);
   renderKeybar();
   syncViewportHeight();
 
   return () => {
     removeMessageHandler();
     removeStatusHandler();
-    dataDisposable.dispose();
     terminal.dispose();
     if (fitTimer) clearTimeout(fitTimer);
     if (orientationTimer) clearTimeout(orientationTimer);
@@ -253,7 +238,5 @@ export function createPhonePage(root: HTMLElement, client: RelayClient): () => v
     window.removeEventListener('orientationchange', handleOrientation);
     window.visualViewport?.removeEventListener('resize', syncViewportHeight);
     window.visualViewport?.removeEventListener('scroll', syncViewportHeight);
-    terminalElement.removeEventListener('touchend', focusTerminal);
-    terminalElement.removeEventListener('click', focusTerminal);
   };
 }
