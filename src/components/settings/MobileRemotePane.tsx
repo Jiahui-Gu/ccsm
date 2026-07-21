@@ -27,6 +27,7 @@ export function MobileRemotePane() {
 
   useEffect(() => {
     let mounted = true;
+    let receivedStatusEvent = false;
     const bridge = window.ccsmMobileRemote;
     if (!bridge) {
       setStatus({ kind: 'unavailable', reason: 'relay-not-configured' });
@@ -36,10 +37,15 @@ export function MobileRemotePane() {
     const applyStatus = (next: MobileRemoteStatus) => {
       if (!mounted) return;
       setStatus(next);
-      if (next.kind === 'ready') void fetchPairingUrl();
     };
-    void bridge.getStatus().then(applyStatus);
-    const unsubscribe = bridge.onStatus(applyStatus);
+    const unsubscribe = bridge.onStatus((next) => {
+      receivedStatusEvent = true;
+      applyStatus(next);
+    });
+    void fetchPairingUrl();
+    void bridge.getStatus().then((initialStatus) => {
+      if (!receivedStatusEvent) applyStatus(initialStatus);
+    });
     return () => {
       mounted = false;
       unsubscribe();
@@ -47,7 +53,8 @@ export function MobileRemotePane() {
   }, [fetchPairingUrl]);
 
   const statusCopy = getStatusCopy(status, t);
-  const canPair = status.kind === 'ready' && pairingUrl !== null;
+  const canPair =
+    (status.kind === 'ready' || status.kind === 'connecting') && pairingUrl !== null;
 
   async function runAction(action: () => Promise<void>) {
     setBusy(true);

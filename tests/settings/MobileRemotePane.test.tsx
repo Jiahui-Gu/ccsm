@@ -74,11 +74,31 @@ describe('MobileRemotePane', () => {
 
     expect(await screen.findByText('Connecting')).toBeInTheDocument();
     expect(screen.getByText('Desktop is connecting to the relay…')).toBeInTheDocument();
-    expect(screen.queryByLabelText('Phone pairing QR code')).not.toBeInTheDocument();
+    expect(await screen.findByLabelText('Phone pairing QR code')).toBeInTheDocument();
 
     remote.pushStatus({ kind: 'ready', phoneConnected: true });
     expect(await screen.findByText('Phone connected')).toBeInTheDocument();
     expect(screen.getByText('Desktop connected')).toBeInTheDocument();
+  });
+
+  it('does not let a stale initial status overwrite a newer relay event', async () => {
+    let resolveInitialStatus!: (status: MobileRemoteStatus) => void;
+    remote.bridge.getStatus.mockImplementation(
+      () =>
+        new Promise<MobileRemoteStatus>((resolve) => {
+          resolveInitialStatus = resolve;
+        })
+    );
+    render(<MobileRemotePane />);
+    await waitFor(() => expect(remote.bridge.onStatus).toHaveBeenCalledTimes(1));
+
+    remote.pushStatus({ kind: 'ready', phoneConnected: false });
+    expect(await screen.findByText('Ready')).toBeInTheDocument();
+
+    resolveInitialStatus({ kind: 'connecting' });
+    await act(async () => {});
+    expect(screen.getByText('Ready')).toBeInTheDocument();
+    expect(screen.getByLabelText('Phone pairing QR code')).toBeInTheDocument();
   });
 
   it('pauses and resumes from the status action', async () => {
