@@ -110,8 +110,10 @@ input, live output, relay interruption recovery with sequence deduplication,
 and old-secret rejection after rotation. Cleanup targets only the exact child
 PIDs created by the harness.
 
-`E2E_SKIP=ime-overflow,dnd` (or any comma list of harness suffixes) skips
-entries from `run-all-e2e.mjs` end-to-end.
+`E2E_SKIP=harness-ime-overflow,harness-dnd` (or any comma list of full
+harness filename stems — `probeName()` in `run-all-e2e.mjs` uses the whole
+`harness-*` filename, not a suffix) skips entries from `run-all-e2e.mjs`
+end-to-end.
 
 ## Artifacts
 

@@ -12,7 +12,7 @@ and reviewable.
 |---|---|---|
 | **unit** | Pure functions/helpers/reducers, no I/O. | Co-located or in `tests/`; no strict suffix requirement today, but prefer `*.unit.test.ts` for new files that sit next to integration/contract tests in the same directory so the tier is visible from the filename. |
 | **integration** | Real module chains behind a faked *boundary* (a `node:sqlite` temp file, the `window.ccsm` stub, fake timers) — e.g. `renderer-main-payloads.test.ts`, `electron/ptyHost/__tests__/lifecycle.test.ts`, the notify-pipeline fake-timer tests. | `*.int.test.ts` for new files where the distinction from a pure unit test matters. |
-| **contract** | Cross-boundary shape/parity: IPC channel parity, IPC payload shape, relay protocol, persisted-state shape. Currently thin (6 files) relative to its ROI — expand this tier before adding more E2E. | `tests/contract/*.test.ts`. |
+| **contract** | Cross-boundary shape/parity: IPC channel parity, IPC payload shape, relay protocol, persisted-state shape. Currently thin (4 files in `tests/contract/`) relative to its ROI — expand this tier before adding more E2E. | `tests/contract/*.test.ts`. |
 | **e2e** | Real Electron + built renderer, driven via Playwright. Today: hand-rolled `scripts/harness-*.mjs` + `scripts/run-all-e2e.mjs` (see `docs/reference/e2e-runner.md`). A future migration moves this to `@playwright/test` under a top-level `e2e/` project — out of scope for the surgical-consolidation PRs. | `scripts/harness-*.mjs` today; `e2e/*.spec.ts` after migration. |
 
 Existing tests are not being mass-renamed or mass-moved to fit this table —
