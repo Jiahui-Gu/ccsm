@@ -1,6 +1,19 @@
 import { TextEncoder } from 'node:util';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('electron', () => ({
+  app: {
+    getAppPath: vi.fn(() => ''),
+    getPath: vi.fn(() => ''),
+    isPackaged: false,
+  },
+  safeStorage: {
+    isEncryptionAvailable: vi.fn(() => false),
+    encryptString: vi.fn(),
+    decryptString: vi.fn(),
+  },
+}));
+
 import {
   createHandshakeProof,
   deriveSessionKeys,

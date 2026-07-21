@@ -77,6 +77,8 @@ jobs:
       # (Task #913)
       - name: Ensure Electron binary
         run: node node_modules/electron/install.js
+      - name: Ensure Playwright Chromium
+        run: npx playwright install chromium
       # Rebuild native modules against Electron's ABI on every run. The
       # node_modules cache is shared with ci.yml, which compiles node-pty
       # against Node 20's ABI (NODE_MODULE_VERSION 115). When the e2e job

@@ -1,4 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+vi.mock('electron', () => ({
+  app: {
+    getAppPath: vi.fn(() => ''),
+    isPackaged: false,
+  },
+}));
 
 import { resolveRelayUrl } from '../relayConfig';
 

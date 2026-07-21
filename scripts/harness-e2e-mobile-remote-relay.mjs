@@ -349,5 +349,10 @@ try {
   desktop?.close();
   await browser?.close();
   await stopExactChild(wrangler);
-  rmSync(path.join(rootDir, 'cloudflare', '.wrangler'), { recursive: true, force: true });
+  rmSync(path.join(rootDir, 'cloudflare', '.wrangler'), {
+    recursive: true,
+    force: true,
+    maxRetries: 10,
+    retryDelay: 200,
+  });
 }

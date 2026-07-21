@@ -1,5 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 
+vi.mock('electron', () => ({
+  app: { getPath: vi.fn(() => '') },
+  safeStorage: {
+    isEncryptionAvailable: vi.fn(() => false),
+    encryptString: vi.fn(),
+    decryptString: vi.fn(),
+  },
+}));
+
 import { createPairingStore } from '../pairingStore';
 
 const identity = {
