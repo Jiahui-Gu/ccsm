@@ -1,32 +1,15 @@
-export type SessionListEntry = {
-  sid: string;
-  cwd: string;
-  cols: number;
-  rows: number;
-};
+import type {
+  MobileClientMessage,
+  MobileServerMessage,
+  SessionListEntry,
+} from '../shared/mobileRemote';
+import type { SessionNavigatorModel } from '../shared/sessionNavigator';
 
-export type MobileClientMessage =
-  | { type: 'sessions.list' }
-  | { type: 'session.snapshot'; sid: string }
-  | { type: 'session.input'; sid: string; data: string }
-  | { type: 'session.resize'; sid: string; cols: number; rows: number };
-
-export type MobileServerMessage =
-  | { type: 'sessions.list'; sessions: SessionListEntry[] }
-  | {
-      type: 'session.snapshot';
-      sid: string;
-      seq: number;
-      data?: string;
-      snapshot?: string;
-      cols: number | null;
-      rows: number | null;
-    }
-  | { type: 'pty.data'; sid: string; seq: number; chunk: string }
-  | { type: 'error'; message: string };
+export type { MobileClientMessage, MobileServerMessage, SessionListEntry } from '../shared/mobileRemote';
 
 export type PhoneState = {
   sessions: SessionListEntry[];
+  navigator: SessionNavigatorModel | null;
   activeSid: string;
   snapshotSequence: number;
   terminalReset: boolean;
@@ -36,6 +19,7 @@ export type PhoneState = {
 export function emptyPhoneState(): PhoneState {
   return {
     sessions: [],
+    navigator: null,
     activeSid: '',
     snapshotSequence: -1,
     terminalReset: false,
@@ -82,6 +66,12 @@ export function applyServerMessage(state: PhoneState, message: MobileServerMessa
       sessions: message.sessions,
       terminalReset: false,
       terminalWrites: [],
+    };
+  }
+  if (message.type === 'sessions.navigator') {
+    return {
+      ...state,
+      navigator: message.model,
     };
   }
   if (message.type === 'session.snapshot') return applySnapshot(state, message);

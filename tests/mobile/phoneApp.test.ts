@@ -6,6 +6,7 @@ import {
   applySnapshot,
   controlInput,
   emptyPhoneState,
+  type MobileServerMessage,
   selectSession,
 } from '../../src/mobile/phoneApp';
 
@@ -33,6 +34,18 @@ describe('phone protocol state', () => {
     expect(selected.message).toEqual({ type: 'session.snapshot', sid: 's1' });
     expect(repainted.terminalReset).toBe(true);
     expect(repainted.terminalWrites).toEqual(['screen']);
+  });
+
+  it('applies shared navigator server messages', () => {
+    const navigatorMessage: MobileServerMessage = {
+      type: 'sessions.navigator',
+      version: 1,
+      model: { groups: [], activeSessionId: null },
+    };
+
+    expect(applyServerMessage(emptyPhoneState(), navigatorMessage).navigator).toEqual(
+      navigatorMessage.model,
+    );
   });
 
   it('applies sticky Ctrl once to ASCII letters', () => {
