@@ -25,6 +25,7 @@ interface PtyFakeBus {
   ensureJsonl: ReturnType<typeof vi.fn>;
   emitData: ReturnType<typeof vi.fn>;
   sourceJsonl: string | null;
+  jsonlBySid?: Record<string, string | null>;
   ensureCopied: boolean;
   deferHeadlessWrite: boolean;
 }
@@ -88,7 +89,7 @@ vi.mock('../../sessionWatcher', () => ({
 
 vi.mock('../jsonlResolver', () => ({
   toClaudeSid: (s: string) => s,
-  findJsonlForSid: () => bus().sourceJsonl,
+  findJsonlForSid: (sid: string) => bus().jsonlBySid?.[sid] ?? bus().sourceJsonl,
   resolveJsonlPath: () => '/tmp/live.jsonl',
   ensureResumeJsonlAtSpawnCwd: (...a: unknown[]) => {
     bus().ensureJsonl(...a);
@@ -129,6 +130,7 @@ describe('entryFactory.makeEntry', () => {
       ensureJsonl: vi.fn(),
       emitData: vi.fn(),
       sourceJsonl: null,
+      jsonlBySid: {},
       ensureCopied: false,
       deferHeadlessWrite: false,
     };
@@ -270,6 +272,28 @@ describe('entryFactory.makeEntry', () => {
     // `ensureResumeJsonlAtSpawnCwd` branch is skipped (correct: claude
     // CLI handles the transcript copy itself with --fork-session).
     expect(bus().ensureJsonl).not.toHaveBeenCalled();
+  });
+
+  it('copies the source transcript into the spawn project before forking when the source JSONL lives elsewhere', () => {
+    bus().sourceJsonl = null;
+    bus().jsonlBySid = {
+      'sid-NEW': null,
+      'sid-SOURCE': '/projects/old/sid-SOURCE.jsonl',
+    };
+    makeEntry(
+      'sid-NEW',
+      'C:\\Users\\jiahuigu',
+      '/bin/claude',
+      80,
+      24,
+      { onExit: vi.fn() },
+      'sid-SOURCE',
+    );
+    expect(bus().ensureJsonl).toHaveBeenCalledExactlyOnceWith(
+      'sid-SOURCE',
+      'C:\\Users\\jiahuigu',
+      '/projects/old/sid-SOURCE.jsonl',
+    );
   });
 
   // Defensive: once the forked session has booted at least once, its own

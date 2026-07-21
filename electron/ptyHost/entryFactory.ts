@@ -230,6 +230,7 @@ export function makeEntry(
 ): Entry {
   const claudeSid = toClaudeSid(sid);
   const sourceJsonl = findJsonlForSid(claudeSid);
+  const sourceClaudeSid = forkSourceSid ? toClaudeSid(forkSourceSid) : null;
 
   // `--fork-session` path: the renderer is creating a new session that should
   // boot with another (source) session's full transcript context but write to
@@ -245,8 +246,7 @@ export function makeEntry(
   // through `findJsonlForSid` → `--resume` like any other ccsm-tracked
   // session, no special-casing needed downstream.
   let args: string[];
-  if (forkSourceSid && !sourceJsonl) {
-    const sourceClaudeSid = toClaudeSid(forkSourceSid);
+  if (sourceClaudeSid && !sourceJsonl) {
     args = ['--resume', sourceClaudeSid, '--fork-session', '--session-id', claudeSid];
   } else {
     const flag = sourceJsonl ? '--resume' : '--session-id';
@@ -258,6 +258,19 @@ export function makeEntry(
   args.push('--dangerously-skip-permissions');
 
   const spawnCwd = resolveSpawnCwd(cwd, sid);
+
+  // First-copy fork path: Claude still resolves `--resume <source>` through
+  // the SPAWN cwd's project key. If the source transcript currently lives
+  // under a different projectDir (same mismatch as import-resume #603),
+  // the fork would boot with "No conversation found" / blank history.
+  // Mirror the import-resume copy-into-place fix for the SOURCE sid so the
+  // CLI can find the transcript before it duplicates it into the new sid.
+  if (sourceClaudeSid && !sourceJsonl) {
+    const forkSourceJsonl = findJsonlForSid(sourceClaudeSid);
+    if (forkSourceJsonl) {
+      ensureResumeJsonlAtSpawnCwd(sourceClaudeSid, spawnCwd, forkSourceJsonl);
+    }
+  }
 
   // See `ensureResumeJsonlAtSpawnCwd` for the bug context (#603) — copies
   // the import-source JSONL into the spawn cwd's projectDir so
