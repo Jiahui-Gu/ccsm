@@ -49,6 +49,12 @@ export type MobileRemoteViewState = {
   // unacknowledged submission must never block or clobber session B's (see
   // `submitDraft`/`applySubmitResult` below and `deriveSubmitting`, the
   // selector `PhoneShell` uses for the *selected* session's own Send state).
+  // Follow-up B fix: a sid's own entry here is also pruned the moment the
+  // authoritative navigator stops listing it as live (removed or exited —
+  // see `pruneStaleSubmissions`/`applyNavigator` below), so a session that
+  // is gone can never accumulate an unbounded, permanently-unacknowledged
+  // entry, and a late/stale ack that still arrives afterward is already
+  // inert rather than clobbering that removed session's retained draft.
   pendingSubmissions: Record<string, PendingSubmission>;
   // Follow-up A fix: also keyed by sid, never a single global slot. A
   // rejected/failed submission for one session must never be visible on a
@@ -113,6 +119,31 @@ function collectLiveSessionIds(navigator: SessionNavigatorModel): Set<string> {
     }
   }
   return ids;
+}
+
+// Follow-up B fix: called on every `applyNavigator` reconciliation (not only
+// when it changes the current selection) so a non-selected sid's own
+// unacknowledged submission is pruned the moment that sid drops out of the
+// authoritative navigator — whether it is removed outright or merely
+// flagged `state: 'exited'`, `liveIds` (from `collectLiveSessionIds`)
+// already treats both the same way. Every still-live sid's own entry is
+// left completely untouched, and the same (`===`) object is returned when
+// nothing needed pruning so a routine refresh never triggers a redundant
+// state update.
+function pruneStaleSubmissions(
+  pendingSubmissions: Record<string, PendingSubmission>,
+  liveIds: Set<string>,
+): Record<string, PendingSubmission> {
+  let changed = false;
+  const pruned: Record<string, PendingSubmission> = {};
+  for (const [sid, pending] of Object.entries(pendingSubmissions)) {
+    if (liveIds.has(sid)) {
+      pruned[sid] = pending;
+    } else {
+      changed = true;
+    }
+  }
+  return changed ? pruned : pendingSubmissions;
 }
 
 // First session in group order, then session order — matches the order the
@@ -387,6 +418,10 @@ export function createMobileRemoteStore(
     const state = store.getState();
     const liveIds = collectLiveSessionIds(model);
     const nextSelected = resolveSelection(model, state.selectedSessionId, liveIds);
+    // Computed unconditionally — every branch below applies it, since a
+    // non-selected sid can drop out of the navigator on a refresh that
+    // otherwise retains the current selection (see `pruneStaleSubmissions`).
+    const pendingSubmissions = pruneStaleSubmissions(state.pendingSubmissions, liveIds);
 
     if (nextSelected === state.selectedSessionId) {
       // Selection retained (including staying null) — refresh the navigator
@@ -394,6 +429,7 @@ export function createMobileRemoteStore(
       // snapshot for a routine (e.g. polling-driven) navigator refresh.
       store.setState({
         navigator: model,
+        pendingSubmissions,
         inputEnabled: deriveInputEnabled(state.connection, nextSelected, state.exitedSessionId, model),
       });
       return;
@@ -409,6 +445,7 @@ export function createMobileRemoteStore(
         navigator: model,
         selectedSessionId: null,
         exitedSessionId,
+        pendingSubmissions,
         terminalSync: emptyTerminalSync(),
         terminalBatch: null,
         inputEnabled: false,
@@ -420,6 +457,7 @@ export function createMobileRemoteStore(
       navigator: model,
       selectedSessionId: nextSelected,
       exitedSessionId,
+      pendingSubmissions,
       terminalSync: beginTerminalSync(nextSelected),
       terminalBatch: null,
       drawerOpen: false,

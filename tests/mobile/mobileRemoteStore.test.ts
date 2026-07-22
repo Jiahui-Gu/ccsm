@@ -633,6 +633,281 @@ describe('mobileRemoteStore', () => {
     });
   });
 
+  // Follow-up B: the authoritative navigator is this store's own source of
+  // truth for which sids are still live (`collectLiveSessionIds`,
+  // `resolveSelection`), but `applyNavigator` never reconciled
+  // `pendingSubmissions` against it — only a full connection drop
+  // (`offStatus`) ever cleared an entry, and that clears every sid
+  // indiscriminately rather than the one sid the navigator just dropped. A
+  // session's own unacknowledged `session.submit` therefore outlived that
+  // session's removal/exit from the navigator with no bound at all, and a
+  // late/stale `session.submit.result` that still happened to arrive for the
+  // already-gone sid would pass `applySubmitResult`'s requestId+sid guard
+  // unopposed and could clear that removed session's own retained draft —
+  // state for a session the navigator has already disavowed and the user
+  // can no longer act on.
+  describe('pruning pending submissions on navigator removal (follow-up B)', () => {
+    function liveModel(): SessionNavigatorModel {
+      return navigatorModel({
+        activeSessionId: null,
+        groups: [
+          {
+            id: 'g1',
+            name: 'Group 1',
+            order: 0,
+            collapsed: false,
+            sessions: [
+              { id: 's1', name: 's1', cwd: '/repo', state: 'idle', order: 0 },
+              { id: 's2', name: 's2', cwd: '/repo', state: 'idle', order: 1 },
+            ],
+          },
+        ],
+      });
+    }
+
+    // s1 is entirely absent (e.g. deleted/archived on the desktop), not
+    // merely marked exited. Production actually produces this shape —
+    // `buildSessionNavigatorModel` drops non-live sids outright rather than
+    // ever emitting `state: 'exited'` — but the type still allows the other
+    // shape below, which the store must treat identically.
+    function removedModel(): SessionNavigatorModel {
+      return navigatorModel({
+        activeSessionId: null,
+        groups: [
+          {
+            id: 'g1',
+            name: 'Group 1',
+            order: 0,
+            collapsed: false,
+            sessions: [{ id: 's2', name: 's2', cwd: '/repo', state: 'idle', order: 0 }],
+          },
+        ],
+      });
+    }
+
+    // s1 is still listed but flagged exited — the other "removed" shape
+    // `collectLiveSessionIds` recognizes; there is no separate
+    // `session.exited` protocol message (see `MobileServerMessage`), only
+    // this per-session `state` field carried inside `sessions.navigator`.
+    function exitedModel(): SessionNavigatorModel {
+      return navigatorModel({
+        activeSessionId: null,
+        groups: [
+          {
+            id: 'g1',
+            name: 'Group 1',
+            order: 0,
+            collapsed: false,
+            sessions: [
+              { id: 's1', name: 's1', cwd: '/repo', state: 'exited', order: 0 },
+              { id: 's2', name: 's2', cwd: '/repo', state: 'idle', order: 1 },
+            ],
+          },
+        ],
+      });
+    }
+
+    it("prunes a removed session's pending submission when the removal also changes the current selection, leaving a still-live session's own pending submission and every draft untouched", async () => {
+      let requestSequence = 0;
+      const { store, client } = createTestStore({ requestId: () => `req-${(requestSequence += 1)}` });
+      connect(store, client);
+      store.getState().receive({ type: 'sessions.navigator', version: 1, model: liveModel() });
+
+      store.getState().selectSession('s1');
+      store.getState().setDraft('from s1');
+      await store.getState().submitDraft(); // s1 stays unacknowledged for the whole test
+
+      store.getState().selectSession('s2');
+      store.getState().setDraft('from s2');
+      await store.getState().submitDraft(); // s2 stays unacknowledged too
+      store.getState().selectSession('s1'); // s1 is selected again when its removal arrives
+
+      const s2Pending = store.getState().pendingSubmissions.s2;
+      expect(store.getState().pendingSubmissions.s1).toBeDefined();
+      expect(s2Pending).toBeDefined();
+
+      // The authoritative navigator now says s1 no longer exists at all;
+      // selection must move off it since it was the current selection.
+      store.getState().receive({ type: 'sessions.navigator', version: 1, model: removedModel() });
+
+      expect(store.getState().selectedSessionId).toBe('s2');
+      expect(store.getState().pendingSubmissions.s1).toBeUndefined();
+      expect(store.getState().pendingSubmissions.s2).toEqual(s2Pending);
+      expect(store.getState().drafts).toEqual({ s1: 'from s1', s2: 'from s2' });
+    });
+
+    it("prunes a session's pending submission when the navigator still lists it but flags it exited, not only when it is fully absent", async () => {
+      const { store, client } = createTestStore();
+      connect(store, client);
+      store.getState().receive({ type: 'sessions.navigator', version: 1, model: liveModel() });
+
+      store.getState().selectSession('s1');
+      store.getState().setDraft('from s1');
+      await store.getState().submitDraft();
+      expect(store.getState().pendingSubmissions.s1).toBeDefined();
+
+      store.getState().receive({ type: 'sessions.navigator', version: 1, model: exitedModel() });
+
+      expect(store.getState().pendingSubmissions.s1).toBeUndefined();
+      expect(store.getState().drafts.s1).toBe('from s1');
+    });
+
+    it("prunes a non-selected session's pending submission even on a routine navigator refresh that keeps the current selection", async () => {
+      const { store, client } = createTestStore();
+      connect(store, client);
+      store.getState().receive({ type: 'sessions.navigator', version: 1, model: liveModel() });
+
+      store.getState().selectSession('s1');
+      store.getState().setDraft('from s1');
+      await store.getState().submitDraft(); // s1 unacknowledged, then the user moves on
+
+      store.getState().selectSession('s2'); // s2 is selected when the removal arrives
+      expect(store.getState().pendingSubmissions.s1).toBeDefined();
+
+      // s2 stays selected and stays live, so this hits the "selection
+      // retained" refresh branch, not a selection-change branch — yet s1's
+      // now-stale correlation must still be pruned.
+      store.getState().receive({ type: 'sessions.navigator', version: 1, model: removedModel() });
+
+      expect(store.getState().selectedSessionId).toBe('s2');
+      expect(store.getState().pendingSubmissions.s1).toBeUndefined();
+    });
+
+    it("prunes the sole session's pending submission when it exits and no live sessions remain", async () => {
+      const { store, client } = createTestStore();
+      connect(store, client);
+      store.getState().receive({
+        type: 'sessions.navigator',
+        version: 1,
+        model: navigatorModel({
+          activeSessionId: null,
+          groups: [
+            {
+              id: 'g1',
+              name: 'Group 1',
+              order: 0,
+              collapsed: false,
+              sessions: [{ id: 's1', name: 's1', cwd: '/repo', state: 'idle', order: 0 }],
+            },
+          ],
+        }),
+      });
+
+      store.getState().selectSession('s1');
+      store.getState().setDraft('from s1');
+      await store.getState().submitDraft();
+      expect(store.getState().pendingSubmissions.s1).toBeDefined();
+
+      store.getState().receive({
+        type: 'sessions.navigator',
+        version: 1,
+        model: {
+          groups: [
+            {
+              id: 'g1',
+              name: 'Group 1',
+              order: 0,
+              collapsed: false,
+              sessions: [{ id: 's1', name: 's1', cwd: '/repo', state: 'exited', order: 0 }],
+            },
+          ],
+          activeSessionId: null,
+        },
+      });
+
+      expect(store.getState().selectedSessionId).toBeNull();
+      expect(store.getState().pendingSubmissions.s1).toBeUndefined();
+      expect(store.getState().drafts.s1).toBe('from s1');
+    });
+
+    it('makes a stale session.submit.result for an already-pruned session inert: it cannot resurrect its pending entry, clear its retained draft, or touch a different, still-live session', async () => {
+      let requestSequence = 0;
+      const { store, client } = createTestStore({ requestId: () => `req-${(requestSequence += 1)}` });
+      connect(store, client);
+      store.getState().receive({ type: 'sessions.navigator', version: 1, model: liveModel() });
+
+      store.getState().selectSession('s1');
+      store.getState().setDraft('from s1');
+      await store.getState().submitDraft();
+      const s1Submit = client.sent
+        .filter(
+          (message): message is Extract<MobileClientMessage, { type: 'session.submit' }> =>
+            message.type === 'session.submit' && message.sid === 's1',
+        )
+        .at(-1)!;
+
+      store.getState().selectSession('s2');
+      store.getState().setDraft('from s2');
+      await store.getState().submitDraft();
+      const s2Submit = client.sent
+        .filter(
+          (message): message is Extract<MobileClientMessage, { type: 'session.submit' }> =>
+            message.type === 'session.submit' && message.sid === 's2',
+        )
+        .at(-1)!;
+
+      store.getState().receive({ type: 'sessions.navigator', version: 1, model: removedModel() });
+      expect(store.getState().pendingSubmissions.s1).toBeUndefined();
+
+      // The desktop's ack for s1's original submission finally arrives —
+      // late, after s1 is already gone from the navigator.
+      store.getState().receive({
+        type: 'session.submit.result',
+        sid: 's1',
+        requestId: s1Submit.requestId,
+        ok: true,
+      });
+
+      expect(store.getState().pendingSubmissions.s1).toBeUndefined();
+      expect(store.getState().drafts.s1).toBe('from s1'); // never cleared by the stale ack
+      expect(store.getState().drafts.s2).toBe('from s2');
+      expect(store.getState().pendingSubmissions.s2).toMatchObject({ requestId: s2Submit.requestId });
+
+      // A stale late rejection for the same gone sid must be equally inert.
+      store.getState().receive({
+        type: 'session.submit.result',
+        sid: 's1',
+        requestId: s1Submit.requestId,
+        ok: false,
+        error: 'session_not_found',
+      });
+      expect(store.getState().submissionErrors.s1).toBeUndefined();
+      expect(store.getState().drafts.s1).toBe('from s1');
+      expect(store.getState().pendingSubmissions.s2).toMatchObject({ requestId: s2Submit.requestId });
+    });
+
+    it("leaves a removed session's own prior submissionErrors entry alone, consistent with follow-up A's survives-navigation design", async () => {
+      const { store, client } = createTestStore();
+      connect(store, client);
+      store.getState().receive({ type: 'sessions.navigator', version: 1, model: liveModel() });
+
+      store.getState().selectSession('s1');
+      store.getState().setDraft('from s1');
+      await store.getState().submitDraft();
+      const s1Submit = client.sent
+        .filter(
+          (message): message is Extract<MobileClientMessage, { type: 'session.submit' }> =>
+            message.type === 'session.submit' && message.sid === 's1',
+        )
+        .at(-1)!;
+      store.getState().receive({
+        type: 'session.submit.result',
+        sid: 's1',
+        requestId: s1Submit.requestId,
+        ok: false,
+        error: 'alpha_rejected',
+      });
+      expect(store.getState().submissionErrors.s1).toBe('alpha_rejected');
+
+      store.getState().receive({ type: 'sessions.navigator', version: 1, model: removedModel() });
+
+      // Follow-up A made submissionErrors sticky across reconnects; this
+      // fix only prunes pendingSubmissions, so navigator reconciliation
+      // must not start pruning submissionErrors either.
+      expect(store.getState().submissionErrors.s1).toBe('alpha_rejected');
+    });
+  });
+
   it('does not select an exited session when resolving navigator selection', () => {
     const { store, client } = createTestStore();
     connect(store, client);
