@@ -508,7 +508,18 @@ async function caseSessionSwitchRace(relayUrl) {
     // NOT part of any fixture chunk, so its (correct) absence is
     // unambiguous — it can never be confused with B's own legitimate
     // content.
-    desktop.sendRawPty(SID, A_LIVE_UPTO + 1, 'STALE-SID-A-TAIL-MUST-NOT-APPEAR\r\n');
+    //
+    // Deliberately uses the ungated `sendInFlightPty` here, NOT the
+    // production-gated `sendRawPty`: this frame models one already having
+    // been handed to the transport for A in the instant before this
+    // peer's `subscribedSid` actually flips to B (a real race the gate
+    // itself cannot reproduce, since by the time this line runs the
+    // desktop may or may not have processed the phone's new
+    // `session.snapshot: B` request yet). Using the gated send here would
+    // make the "must not appear" assertion below pass vacuously whenever
+    // that race already flipped `subscribedSid` to B — never actually
+    // exercising the client's own old-sid discard — instead of proving it.
+    desktop.sendInFlightPty(SID, A_LIVE_UPTO + 1, 'STALE-SID-A-TAIL-MUST-NOT-APPEAR\r\n');
 
     const bFull = FIXTURE; // full, independent fixture playback for B.
     for (const { seq, chunk } of bFull) {

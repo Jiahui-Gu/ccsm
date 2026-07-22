@@ -146,6 +146,18 @@ function isSessionExited(navigator: SessionNavigatorModel, sid: string): boolean
   return false;
 }
 
+// Shared by `deriveInputEnabled` and the reconnect re-subscribe check
+// below: a selected session id is "live" exactly when it is not the
+// specific id a navigator update just force-cleared and the navigator does
+// not (yet) list it as exited.
+function isSelectionLive(
+  navigator: SessionNavigatorModel,
+  selectedSessionId: string,
+  exitedSessionId: string | null,
+): boolean {
+  return selectedSessionId !== exitedSessionId && !isSessionExited(navigator, selectedSessionId);
+}
+
 function deriveInputEnabled(
   connection: PhoneConnectionStatus,
   selectedSessionId: string | null,
@@ -155,8 +167,7 @@ function deriveInputEnabled(
   return (
     connection === 'connected' &&
     selectedSessionId !== null &&
-    selectedSessionId !== exitedSessionId &&
-    !isSessionExited(navigator, selectedSessionId)
+    isSelectionLive(navigator, selectedSessionId, exitedSessionId)
   );
 }
 
@@ -410,6 +421,7 @@ export function createMobileRemoteStore(
   });
   const offStatus = client.onStatus((status) => {
     const state = store.getState();
+    const reconnected = status === 'connected' && state.connection !== 'connected';
     store.setState({
       connection: status,
       retryMode: retryModeForStatus(status),
@@ -418,6 +430,29 @@ export function createMobileRemoteStore(
       // for recovery) but every draft — sent or not — is left untouched.
       pendingSubmission: status === 'connected' ? state.pendingSubmission : null,
     });
+
+    // A freshly (re)established connection's desktop peer never fans out
+    // live `pty.data` on its own: production
+    // (`electron/remote/ptyFanout.ts`) only forwards it once a
+    // `session.snapshot` request has recorded that peer's `subscribedSid`,
+    // and a plain reconnect changes neither the navigator nor the phone's
+    // own retained selection — so nothing else would ever send one, and
+    // the terminal would otherwise freeze silently forever. So: exactly
+    // once, only on a genuine not-connected -> connected transition (never
+    // a duplicate `connected` while already connected), and only while the
+    // retained selection is still live, restart terminal sync (so the
+    // eventual snapshot reply is never rejected as stale by `lastSeq` —
+    // see `terminalSync.ts`), drop any stale queued render batch, and
+    // re-request the snapshot. This never touches drafts, focus, or
+    // in-flight input/submission — an initial connect with nothing
+    // selected yet simply has nothing to re-subscribe.
+    if (reconnected && state.selectedSessionId !== null) {
+      const sid = state.selectedSessionId;
+      if (isSelectionLive(state.navigator, sid, state.exitedSessionId)) {
+        store.setState({ terminalSync: beginTerminalSync(sid), terminalBatch: null });
+        sendSafely({ type: 'session.snapshot', sid });
+      }
+    }
   });
 
   return store;

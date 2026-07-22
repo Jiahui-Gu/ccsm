@@ -595,6 +595,57 @@ describe('mobileRemoteStore', () => {
     ).toHaveLength(1);
   });
 
+  // A fresh (re)connection's desktop peer never fans out live pty.data on
+  // its own — production (`electron/remote/ptyFanout.ts`) only forwards it
+  // once a `session.snapshot` request has recorded that peer's
+  // `subscribedSid`, and a reconnect changes neither the navigator nor the
+  // phone's own retained selection, so nothing else would ever send one.
+  // Without re-subscribing here, a reconnected phone would keep showing
+  // `phase: 'live'` forever while silently never receiving another byte.
+  it('re-subscribes exactly once and restarts terminal sync when a retained selection reconnects', () => {
+    const { store, client } = createTestStore();
+    client.emitStatus('connected');
+    store.getState().receive({
+      type: 'sessions.navigator',
+      version: 1,
+      model: navigatorModel(),
+    });
+    expect(store.getState().selectedSessionId).toBe('s1');
+
+    // Live before the (simulated) outage: a snapshot already answered and
+    // its render batch left unconsumed by the (simulated) xterm adapter —
+    // exactly the stale, queued batch a reconnect must discard rather than
+    // ever hand to the terminal after the fact.
+    store.getState().receive({
+      type: 'session.snapshot',
+      sid: 's1',
+      seq: 0,
+      data: 'before-outage',
+      cols: 80,
+      rows: 24,
+    });
+    expect(store.getState().terminalSync).toMatchObject({ sid: 's1', phase: 'live', lastSeq: 0 });
+    expect(store.getState().terminalBatch).not.toBeNull();
+    store.getState().setDraft('kept-across-reconnect');
+
+    client.sent.length = 0; // isolate exactly what the reconnect below triggers.
+
+    client.emitStatus('reconnecting');
+    client.emitStatus('connected');
+
+    expect(client.sent).toEqual([{ type: 'session.snapshot', sid: 's1' }]);
+    expect(store.getState().terminalSync).toMatchObject({ sid: 's1', phase: 'syncing', lastSeq: -1 });
+    // Cleared, not replaced with a fresh reset — the reconnect itself must
+    // never directly touch what's already on screen; only the eventual
+    // snapshot answer may do that.
+    expect(store.getState().terminalBatch).toBeNull();
+    expect(store.getState().drafts.s1).toBe('kept-across-reconnect');
+
+    client.sent.length = 0;
+    client.emitStatus('connected'); // already connected — must never resend.
+    expect(client.sent).toEqual([]);
+  });
+
   it('sends unsafe immediate input for the selected session only when enabled, without touching drafts', () => {
     const { store, client } = createTestStore();
     store.getState().selectSession('s1');

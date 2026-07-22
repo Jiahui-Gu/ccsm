@@ -224,7 +224,16 @@ export function buildNavigatorModel(sessionDescriptors, options = {}) {
  *     select a session without any extra request);
  *   - answers `session.snapshot` per-session (default: an accumulator of
  *     every chunk sent through `sendPty`, or an injected
- *     `snapshotProvider(session)` for exact xterm-authoritative control);
+ *     `snapshotProvider(session)` for exact xterm-authoritative control),
+ *     and — matching real production's `remoteMessages.ts` — records the
+ *     requested sid as this peer's `subscribedSid`;
+ *   - fans live `pty.data` out through `sendPty`/`sendRawPty` ONLY while
+ *     this peer's `subscribedSid` matches the target sid, exactly like the
+ *     real desktop's `electron/remote/ptyFanout.ts`: a fresh (e.g.
+ *     post-reconnect) peer starts with `subscribedSid: null` and drops
+ *     live output until a `session.snapshot` request re-arms it. The
+ *     narrowly-scoped `sendInFlightPty` bypasses this gate entirely, for
+ *     the one deliberate in-flight-frame race it exists to model;
  *   - records every `session.input`, `session.resize`, and `session.snapshot`
  *     request, and answers every `session.submit` with a correlated
  *     `session.submit.result` (default validation mirrors the real
@@ -409,21 +418,58 @@ export function createSimulatedDesktop(relayUrl, pairing, options = {}) {
     /** Sends a `pty.data` chunk AND appends it to that session's own
      *  accumulator/seq bookkeeping (used by the default snapshot
      *  provider) — the "normal, undisturbed" path for a harness that
-     *  doesn't own a separate authoritative reference terminal. */
+     *  doesn't own a separate authoritative reference terminal.
+     *
+     *  PRODUCTION-GATED LIVE FANOUT: like the real desktop's
+     *  `electron/remote/ptyFanout.ts`, the chunk only actually reaches the
+     *  wire when this peer's `subscribedSid` (set only by a `session.snapshot`
+     *  request — see `handleMessage` above) currently matches `sid`; a fresh
+     *  or not-yet-(re)subscribed peer silently drops it on the floor, exactly
+     *  like production. The accumulator itself still always updates —
+     *  real production's underlying PTY buffer keeps accumulating
+     *  regardless of which remote peer happens to be subscribed, so a
+     *  later `session.snapshot` answer must reflect it either way. */
     sendPty(sid, seq, chunk) {
       const session = sessions.get(sid);
       if (session) {
         session.buffer += chunk;
         session.seq = seq;
       }
-      peer.send({ type: 'pty.data', sid, seq, chunk });
+      if (peer.subscribedSid === sid) {
+        peer.send({ type: 'pty.data', sid, seq, chunk });
+      }
     },
     /** Sends a raw `pty.data` chunk over the wire WITHOUT touching any
      *  session's accumulator — the escape hatch a harness that owns its
      *  own authoritative `@xterm/headless` reference terminal (and its
      *  own snapshotProvider reading from it) uses to inject duplicates,
-     *  gaps, or stale/reordered frames precisely. */
+     *  gaps, or stale/reordered frames precisely.
+     *
+     *  PRODUCTION-GATED LIVE FANOUT: gated exactly like `sendPty` above
+     *  (and the real `ptyFanout.ts`) — only delivered while this peer's
+     *  `subscribedSid` matches `sid`. A case that needs to prove a frame
+     *  reaching the wire despite NOT (yet) being subscribed — e.g. a
+     *  frame that was already in flight before a subscription changed —
+     *  must use the deliberate, narrowly-scoped `sendInFlightPty` bypass
+     *  below instead, never this one. */
     sendRawPty(sid, seq, chunk) {
+      if (peer.subscribedSid === sid) {
+        peer.send({ type: 'pty.data', sid, seq, chunk });
+      }
+    },
+    /** DELIBERATE IN-FLIGHT INJECTION — bypasses the `subscribedSid` gate
+     *  entirely and always puts the frame on the wire, unconditionally,
+     *  exactly like `sendRawPty` did before it was gated to match
+     *  production. This does NOT model normal live fanout: it models one
+     *  specific real-world race that gating alone cannot reproduce — a
+     *  pty.data frame for the OLD session that was already handed to the
+     *  transport (already "on the wire") in the instant before this
+     *  peer's subscription actually flips to the newly selected session,
+     *  so it can still arrive just after the switch. Reserved for that
+     *  one stale-old-sid-tail assertion in the session-switch-race case;
+     *  every other case must keep using the gated `sendPty`/`sendRawPty`
+     *  above. */
+    sendInFlightPty(sid, seq, chunk) {
       peer.send({ type: 'pty.data', sid, seq, chunk });
     },
     /** Sends an arbitrary `session.snapshot` response directly, bypassing
