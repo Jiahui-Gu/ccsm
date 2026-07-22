@@ -21,6 +21,7 @@ import { rmSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { resolveAutoUpdaterEnv } from './probe-helpers/autoUpdaterGuard.mjs';
 
 const userData = path.resolve('.dogfood-userdata');
 rmSync(userData, { recursive: true, force: true });
@@ -42,6 +43,10 @@ const electronApp = await electron.launch({
     ELECTRON_DISABLE_GPU: '1',
     NODE_ENV: 'production',
     CCSM_PROD_BUNDLE: '1',
+    // Guard the user's global `claude` CLI install from its own
+    // auto-updater — see docs/reference/e2e-runner.md. This probe types a
+    // real prompt into a real claude session, so it's a genuine consumer.
+    ...resolveAutoUpdaterEnv(),
   },
   timeout: 60000,
 });

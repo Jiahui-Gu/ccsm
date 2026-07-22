@@ -36,6 +36,20 @@ export default defineConfig({
           ],
         },
       },
+      {
+        extends: true,
+        test: {
+          // Unit coverage for the E2E harness helper scripts themselves
+          // (scripts/**), e.g. the DISABLE_AUTOUPDATER isolation guard.
+          // These are plain Node ESM modules, not app code — kept out of
+          // the `electron`/`renderer` projects and out of coverage
+          // thresholds (scripts/** stays excluded in `coverage.exclude`
+          // below).
+          name: 'scripts',
+          environment: 'node',
+          include: ['scripts/**/__tests__/**/*.test.mjs'],
+        },
+      },
     ],
     globals: true,
     // v8 coverage instrumentation roughly doubles test wall-clock under

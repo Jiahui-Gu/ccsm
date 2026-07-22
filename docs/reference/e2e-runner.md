@@ -253,6 +253,65 @@ green `harness-e2e-mobile-terminal-sync.mjs` / `harness-e2e-mobile-remote-relay.
 run against local Wrangler as evidence that 1–3 passed — they are a
 different, additional gate.
 
+## Claude CLI auto-updater isolation
+
+Every path that launches the real `claude` binary sets
+`DISABLE_AUTOUPDATER=1` in the child's environment, defaulting on unless the
+caller (or the parent shell) explicitly opted out. This closes an incident
+where a background `npm run probe:e2e` run raced Claude Code's own
+auto-updater on Windows: the updater's atomic-replace step (rename the live
+`claude.exe` to `claude.exe.old.<ts>`, write the new one) collided with
+several already-running `claude` processes holding the old executable image
+open, and the new binary never landed — leaving the global install with no
+`claude.exe` at all until the `.old` copy was restored by hand. `DISABLE_AUTOUPDATER=1`
+is Anthropic's documented opt-out for exactly this class of problem; the E2E
+suite now sets it everywhere it can reach a real `claude` launch so automated
+runs can never trigger or race that updater against the developer's own
+global install.
+
+The guard is centralized in a single pure, unit-tested helper —
+`scripts/probe-helpers/autoUpdaterGuard.mjs` — `resolveAutoUpdaterEnv(env)`
+returns `{ DISABLE_AUTOUPDATER: env.DISABLE_AUTOUPDATER ?? '1' }`. It's spread
+into three seams, matching the existing `CCSM_E2E_HIDDEN` override
+precedent (parent-shell env beats the hardcoded default; an explicit
+caller-supplied `env` override at the call site beats both, since it's
+spread last):
+
+1. `scripts/probe-utils-real-cli.mjs` → `buildIsolatedLaunchEnv()`, used by
+   `launchCcsmIsolated()` — the Electron launch path for most
+   `harness-e2e-*.mjs`, `dogfood-*.mjs`, and `screenshot-*.mjs` scripts
+   (including `harness-e2e-window-lifecycle-notify.mjs`).
+2. `scripts/probe-helpers/harness-runner.mjs` → `buildLaunchOpts()`, used by
+   `runHarness()` for `harness-dnd.mjs` and `harness-ui.mjs` — covers both the
+   initial boot and any per-case relaunch.
+3. `scripts/run-all-e2e.mjs` → `buildChildEnv()`, applied to every spawned
+   harness/probe **node child** when running the full suite via
+   `npm run probe:e2e`. This is defense-in-depth on top of (1) and (2): it
+   guarantees the guard reaches a future harness's own process env even if
+   that harness bypassed both shared launch helpers.
+
+A few standalone `dogfood-*.mjs` scripts predate `launchCcsmIsolated()` and
+call `electron.launch()` directly instead of going through either shared
+helper: `dogfood-dev-process-distinguishable.mjs`,
+`dogfood-probe-current-ui.mjs`, and `dogfood-scrollback-hot-reload.mjs`.
+These import `resolveAutoUpdaterEnv()` directly and splice it into their own
+inline `env` object rather than going through seam (1) or (2) — same
+default/override contract, just wired by hand since these launches aren't
+built on top of the shared helpers.
+
+All three shared seams (plus the three standalone scripts above) are plain,
+side-effect-free functions/call sites covered by
+`scripts/**/__tests__/**/*.test.mjs` (run via `npx vitest run --project
+scripts`), so the guard's default/override behavior is verified without ever
+launching Electron or the real `claude` binary.
+
+If a future probe needs to intentionally exercise updater behavior, it can
+still opt out per-launch — pass `env: { DISABLE_AUTOUPDATER: '0' }` to
+`launchCcsmIsolated()`/`runHarness()`'s spec, or export
+`DISABLE_AUTOUPDATER=0` in the parent shell before invoking
+`run-all-e2e.mjs` directly. Do this only with a real, disposable Claude
+install — never against a developer's global one.
+
 ## Artifacts
 
 On case failure, the harness runner persists:
