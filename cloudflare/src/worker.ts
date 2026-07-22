@@ -35,6 +35,8 @@ const PHONE_CSP = [
   "default-src 'none'",
   "script-src 'self'",
   "style-src 'self'",
+  "style-src-attr 'unsafe-inline'",
+  "style-src-elem 'self' 'unsafe-inline'",
   "connect-src 'self' wss:",
   "manifest-src 'self'",
   "worker-src 'self'",
@@ -77,7 +79,10 @@ export function parseRelayRequest(request: Request): ParsedRelayRequest {
 const worker = {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    if (request.method === 'GET' && !url.pathname.startsWith('/relay/')) {
+    if (
+      (request.method === 'GET' || request.method === 'HEAD') &&
+      !url.pathname.startsWith('/relay/')
+    ) {
       const asset = await env.ASSETS.fetch(request);
       const headers = new Headers(asset.headers);
       headers.set('Content-Security-Policy', PHONE_CSP);

@@ -99,6 +99,18 @@ async function main() {
     log(`using public CCSM_RELAY_URL=${configuredUrl}`);
   }
 
+  const rootResponse = await fetch(`${relayUrl}/`);
+  assert.equal(rootResponse.status, 200, 'root HTML must be served');
+  assert.match(
+    rootResponse.headers.get('content-security-policy') ?? '',
+    /(?:^|;\s*)frame-ancestors 'none'(?:;|$)/,
+    "CSP must deny framing with frame-ancestors 'none'",
+  );
+  assert.equal(rootResponse.headers.get('x-frame-options'), 'DENY');
+  assert.equal(rootResponse.headers.get('x-content-type-options'), 'nosniff');
+  await rootResponse.body?.cancel();
+  log('PASS root HTML has CSP frame protection, DENY, and nosniff');
+
   const pairing = generatePairingIdentity();
   desktop = createSimulatedDesktop(relayUrl, pairing, {
     sessions: [{ sid: SID, cwd: 'C:\\work\\mobile-e2e' }],

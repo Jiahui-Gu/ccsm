@@ -13,5 +13,9 @@
     }
   ],
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RelayRoom"] }],
-  "assets": { "directory": "../dist/mobile", "binding": "ASSETS" }
+  "assets": {
+    "directory": "../dist/mobile",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  }
 }
