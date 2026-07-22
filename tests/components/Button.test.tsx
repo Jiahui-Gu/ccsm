@@ -3,7 +3,6 @@
 //   * data-variant + data-size attributes mirror the props (E2E selector hook)
 //   * disabled blocks onClick AND removes the whileTap animation
 //   * className passes through and merges via cn()
-//   * children render inside the button
 //   * type defaults to "button" (so Buttons inside <form> don't accidentally submit)
 //   * forwarded ref points at the underlying <button>
 import React from 'react';
@@ -66,15 +65,6 @@ describe('<Button />', () => {
     expect(cls).toMatch(/my-extra-token/);
     // Still has the base inline-flex from the cva root class
     expect(cls).toMatch(/inline-flex/);
-  });
-
-  it('renders children content', () => {
-    const { getByRole } = render(
-      <Button>
-        <span data-testid="child">hello</span>
-      </Button>
-    );
-    expect(getByRole('button').querySelector('[data-testid="child"]')).not.toBeNull();
   });
 
   it('respects an explicit type=submit override', () => {

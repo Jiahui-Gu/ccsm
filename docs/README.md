@@ -9,7 +9,7 @@
 - `status/post-migration-gap-triage-*.md` — dated snapshot, kept for history
 
 ## Reference
-- `reference/release.md`, `packaging.md`, `e2e-runner.md`
+- `reference/release.md`, `packaging.md`, `e2e-runner.md`, `testing-strategy.md`
 - `superpowers/specs/2026-07-20-mobile-remote-cloudflare-relay-design.md` — implemented Mobile Remote relay architecture and security model
 - `reference/journey-streaming-expectations.md`
 - `reference/cwd-and-first-run-design.md`

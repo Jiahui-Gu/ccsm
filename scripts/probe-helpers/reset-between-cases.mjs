@@ -1,9 +1,9 @@
 // Shared helper: reset shared Electron + renderer state between harness cases.
 //
-// Background — see docs/e2e/single-harness-brainstorm.md §3.
-// One Electron process serves multiple cases inside a "themed harness"
-// (harness-agent.mjs, harness-permission.mjs, ...). The brainstorm enumerates
-// what *isn't* per-session and therefore must be reset by hand:
+// Background — see docs/reference/e2e-runner.md ("What the reset between
+// cases actually does"). One Electron process serves multiple cases inside
+// a "themed harness" (harness-agent.mjs, harness-permission.mjs, ...). What
+// follows is what *isn't* per-session and therefore must be reset by hand:
 //
 //   1. zustand store singleton (sessions, groups, activeId, dialogs, queues,
 //      focus nonce, ...). Settings (theme/language/font) are KEPT — switching
