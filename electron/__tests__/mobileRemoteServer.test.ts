@@ -122,11 +122,14 @@ function httpGet(port: number, path: string): Promise<{ status: number; body: st
 // avoid pulling in `ws` so this stays a zero-dep test.
 type WsHandle = {
   socket: Socket;
+  /** Resolves after auth.ok + sessions.list + sessions.navigator are buffered. */
   recvText: Promise<string[]>;
   /** Returns the next not-yet-consumed text message, waiting up to `timeoutMs`. */
   nextMessage: (timeoutMs?: number) => Promise<string>;
   closeCode: Promise<number | null>;
 };
+
+const INITIAL_CATALOG_MESSAGE_COUNT = 3;
 
 function wsConnect(port: number, path: string): Promise<WsHandle> {
   return new Promise((resolve, reject) => {
@@ -198,7 +201,7 @@ function wsConnect(port: number, path: string): Promise<WsHandle> {
       socket.on('data', (chunk) => {
         buffer = Buffer.concat([buffer, chunk]);
         tryDrain();
-        if (messages.length >= 2 && resolveText) {
+        if (messages.length >= INITIAL_CATALOG_MESSAGE_COUNT && resolveText) {
           resolveText(messages.slice());
           cursor = messages.length;
           resolveText = null;
@@ -227,11 +230,11 @@ function wsConnect(port: number, path: string): Promise<WsHandle> {
 
       resolve({ socket: socket as Socket, recvText, nextMessage, closeCode: closePromise });
       // The upgrade response may carry initial server frames in `head` —
-      // drain synchronously so auth.ok / sessions.list don't wait for a
-      // later 'data' event that may never come if the server has nothing
-      // more to send.
+      // drain synchronously so auth.ok / sessions.list / sessions.navigator
+      // don't wait for a later 'data' event that may never come if the server
+      // has nothing more to send.
       tryDrain();
-      if (messages.length >= 2 && resolveText) {
+      if (messages.length >= INITIAL_CATALOG_MESSAGE_COUNT && resolveText) {
         resolveText(messages.slice());
         cursor = messages.length;
         resolveText = null;
