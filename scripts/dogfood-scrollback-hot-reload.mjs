@@ -15,6 +15,7 @@
 import { _electron as electron } from 'playwright';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveAutoUpdaterEnv } from './probe-helpers/autoUpdaterGuard.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(__dirname, '..');
@@ -29,6 +30,12 @@ const app = await electron.launch({
     CCSM_PROD_BUNDLE: '1',
     NODE_ENV: 'production',
     ELECTRON_DISABLE_GPU: '1',
+    // Guard the user's global `claude` CLI install from its own
+    // auto-updater — see docs/reference/e2e-runner.md. `...process.env`
+    // below still wins if the parent shell explicitly set
+    // DISABLE_AUTOUPDATER, matching this file's existing override
+    // convention for the other defaults above.
+    ...resolveAutoUpdaterEnv(),
     ...process.env,
   },
   timeout: 60000,

@@ -14,6 +14,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { _electron as electron } from 'playwright';
+import { resolveAutoUpdaterEnv } from './probe-helpers/autoUpdaterGuard.mjs';
 
 async function main() {
   const userDataDir = mkdtempSync(path.join(tmpdir(), 'ccsm-dogfood-50-'));
@@ -36,6 +37,9 @@ async function main() {
       // user's desktop. Same convention as scripts/probe-utils-real-cli.
       CCSM_E2E_HIDDEN: '1',
       CCSM_E2E_NO_SINGLE_INSTANCE: '1',
+      // Guard the user's global `claude` CLI install from its own
+      // auto-updater — see docs/reference/e2e-runner.md.
+      ...resolveAutoUpdaterEnv(),
     },
   });
 
