@@ -276,6 +276,169 @@ describe('PhoneShell', () => {
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('');
   });
 
+  // Follow-up A: `submissionError` remained a single global slot even after
+  // `pendingSubmissions` (review issue 2, above) was scoped per sid. A
+  // rejected submission for one session's composer leaked its
+  // `role="alert"` onto a different, unrelated session's composer purely
+  // because of which sid happened to be selected when the rejection
+  // arrived.
+  describe('per-session submission errors (follow-up A)', () => {
+    it("does not render session A's rejected-submission alert while session B is selected, but shows it again once A is reselected", async () => {
+      const user = userEvent.setup();
+      const client = createFakeClient();
+      const { factory } = createFakeAdapterFactory();
+      let requestSequence = 0;
+      render(
+        <PhoneShell
+          client={client}
+          createAdapter={factory}
+          createStore={makeStoreFactory(() => `req-${(requestSequence += 1)}`)}
+        />,
+      );
+      client.emitMessage({ type: 'sessions.navigator', version: 1, model: navigatorModel() });
+      client.emitStatus('connected');
+
+      // Alpha (s1) submits and stays unacknowledged.
+      await user.type(screen.getByRole('textbox', { name: 'Message' }), 'hello from alpha');
+      await user.click(screen.getByRole('button', { name: 'Send' }));
+      const alphaSubmit = client.sent.at(-1) as Extract<MobileClientMessage, { type: 'session.submit' }>;
+      expect(alphaSubmit).toMatchObject({ type: 'session.submit', sid: 's1' });
+
+      // Switch to Beta (s2) before Alpha's rejection arrives.
+      await user.click(screen.getByRole('button', { name: /sessions menu/i }));
+      await user.click(screen.getByText('Beta'));
+
+      // Alpha's submission is rejected while Beta is the selected session.
+      client.emitMessage({
+        type: 'session.submit.result',
+        sid: 's1',
+        requestId: alphaSubmit.requestId,
+        ok: false,
+        error: 'alpha_rejected',
+      });
+
+      // Beta never submitted anything and must not show Alpha's alert.
+      expect(screen.queryByRole('alert')).toBeNull();
+
+      // Switching back to Alpha must render its own error.
+      await user.click(screen.getByRole('button', { name: /sessions menu/i }));
+      await user.click(screen.getByText('Alpha'));
+      expect(screen.getByRole('alert')).toHaveTextContent('alpha_rejected');
+    });
+
+    it("clears only the edited session's visible error, leaving a different session's own error alert untouched", async () => {
+      const user = userEvent.setup();
+      const client = createFakeClient();
+      const { factory } = createFakeAdapterFactory();
+      let requestSequence = 0;
+      render(
+        <PhoneShell
+          client={client}
+          createAdapter={factory}
+          createStore={makeStoreFactory(() => `req-${(requestSequence += 1)}`)}
+        />,
+      );
+      client.emitMessage({ type: 'sessions.navigator', version: 1, model: navigatorModel() });
+      client.emitStatus('connected');
+
+      // Alpha submits and is rejected.
+      await user.type(screen.getByRole('textbox', { name: 'Message' }), 'hello from alpha');
+      await user.click(screen.getByRole('button', { name: 'Send' }));
+      const alphaSubmit = client.sent.at(-1) as Extract<MobileClientMessage, { type: 'session.submit' }>;
+      client.emitMessage({
+        type: 'session.submit.result',
+        sid: 's1',
+        requestId: alphaSubmit.requestId,
+        ok: false,
+        error: 'alpha_rejected',
+      });
+      expect(screen.getByRole('alert')).toHaveTextContent('alpha_rejected');
+
+      // Beta submits independently and is also rejected.
+      await user.click(screen.getByRole('button', { name: /sessions menu/i }));
+      await user.click(screen.getByText('Beta'));
+      await user.type(screen.getByRole('textbox', { name: 'Message' }), 'hello from beta');
+      await user.click(screen.getByRole('button', { name: 'Send' }));
+      const betaSubmit = client.sent.at(-1) as Extract<MobileClientMessage, { type: 'session.submit' }>;
+      client.emitMessage({
+        type: 'session.submit.result',
+        sid: 's2',
+        requestId: betaSubmit.requestId,
+        ok: false,
+        error: 'beta_rejected',
+      });
+      expect(screen.getByRole('alert')).toHaveTextContent('beta_rejected');
+
+      // Switch to Alpha and edit its draft — only Alpha's own error clears.
+      await user.click(screen.getByRole('button', { name: /sessions menu/i }));
+      await user.click(screen.getByText('Alpha'));
+      expect(screen.getByRole('alert')).toHaveTextContent('alpha_rejected');
+      await user.type(screen.getByRole('textbox', { name: 'Message' }), '!');
+      expect(screen.queryByRole('alert')).toBeNull();
+
+      // Beta's own error is untouched by editing Alpha's draft.
+      await user.click(screen.getByRole('button', { name: /sessions menu/i }));
+      await user.click(screen.getByText('Beta'));
+      expect(screen.getByRole('alert')).toHaveTextContent('beta_rejected');
+    });
+
+    it("resubmitting a session clears only that session's own prior error, leaving a different session's error alert untouched", async () => {
+      const user = userEvent.setup();
+      const client = createFakeClient();
+      const { factory } = createFakeAdapterFactory();
+      let requestSequence = 0;
+      render(
+        <PhoneShell
+          client={client}
+          createAdapter={factory}
+          createStore={makeStoreFactory(() => `req-${(requestSequence += 1)}`)}
+        />,
+      );
+      client.emitMessage({ type: 'sessions.navigator', version: 1, model: navigatorModel() });
+      client.emitStatus('connected');
+
+      // Alpha submits and is rejected; its draft is preserved unedited.
+      await user.type(screen.getByRole('textbox', { name: 'Message' }), 'hello from alpha');
+      await user.click(screen.getByRole('button', { name: 'Send' }));
+      const alphaSubmit = client.sent.at(-1) as Extract<MobileClientMessage, { type: 'session.submit' }>;
+      client.emitMessage({
+        type: 'session.submit.result',
+        sid: 's1',
+        requestId: alphaSubmit.requestId,
+        ok: false,
+        error: 'alpha_rejected',
+      });
+
+      // Beta submits independently and is also rejected.
+      await user.click(screen.getByRole('button', { name: /sessions menu/i }));
+      await user.click(screen.getByText('Beta'));
+      await user.type(screen.getByRole('textbox', { name: 'Message' }), 'hello from beta');
+      await user.click(screen.getByRole('button', { name: 'Send' }));
+      const betaSubmit = client.sent.at(-1) as Extract<MobileClientMessage, { type: 'session.submit' }>;
+      client.emitMessage({
+        type: 'session.submit.result',
+        sid: 's2',
+        requestId: betaSubmit.requestId,
+        ok: false,
+        error: 'beta_rejected',
+      });
+
+      // Resubmit Alpha's unchanged, preserved draft directly (no edit) —
+      // this must clear only Alpha's own prior error.
+      await user.click(screen.getByRole('button', { name: /sessions menu/i }));
+      await user.click(screen.getByText('Alpha'));
+      expect(screen.getByRole('alert')).toHaveTextContent('alpha_rejected');
+      expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('hello from alpha');
+      await user.click(screen.getByRole('button', { name: 'Send' }));
+      expect(screen.queryByRole('alert')).toBeNull();
+
+      // Beta's own error remains untouched by Alpha's resubmission.
+      await user.click(screen.getByRole('button', { name: /sessions menu/i }));
+      await user.click(screen.getByText('Beta'));
+      expect(screen.getByRole('alert')).toHaveTextContent('beta_rejected');
+    });
+  });
+
   it('disables composer and key bar controls while disconnected', () => {
     const client = createFakeClient();
     const { factory } = createFakeAdapterFactory();

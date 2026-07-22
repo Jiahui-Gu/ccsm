@@ -50,7 +50,15 @@ export type MobileRemoteViewState = {
   // `submitDraft`/`applySubmitResult` below and `deriveSubmitting`, the
   // selector `PhoneShell` uses for the *selected* session's own Send state).
   pendingSubmissions: Record<string, PendingSubmission>;
-  submissionError: string | null;
+  // Follow-up A fix: also keyed by sid, never a single global slot. A
+  // rejected/failed submission for one session must never be visible on a
+  // different, unrelated session's composer just because that other
+  // session happens to be selected — and it must still be there if the
+  // user navigates back to the session that actually failed. `PhoneShell`
+  // never reads this map directly; it calls `deriveSubmissionError` below,
+  // mirroring how `deriveSubmitting` derives the selected session's own
+  // pending state from `pendingSubmissions`.
+  submissionErrors: Record<string, string>;
   terminalSync: TerminalSyncState;
   terminalBatch: TerminalRenderBatch | null;
 };
@@ -90,7 +98,7 @@ function initialViewState(): MobileRemoteViewState {
     drawerOpen: false,
     drafts: {},
     pendingSubmissions: {},
-    submissionError: null,
+    submissionErrors: {},
     terminalSync: emptyTerminalSync(),
     terminalBatch: null,
   };
@@ -187,6 +195,20 @@ export function deriveSubmitting(
   return selectedSessionId !== null && pendingSubmissions[selectedSessionId] !== undefined;
 }
 
+// Follow-up A fix: the composer's visible error must reflect only the
+// *selected* session's own rejected/failed submission — never a stale error
+// left behind by a different, no-longer-selected session. Mirrors
+// `deriveSubmitting` immediately above: `PhoneShell` never reads
+// `submissionErrors` directly, so there is exactly one place that derives
+// "does the currently visible session have its own error to show".
+export function deriveSubmissionError(
+  selectedSessionId: string | null,
+  submissionErrors: Record<string, string>,
+): string | null {
+  if (selectedSessionId === null) return null;
+  return submissionErrors[selectedSessionId] ?? null;
+}
+
 // `update_required`/`authentication_failed` need re-pairing or an app update
 // (never retryable). `closed` follows only an explicit, deliberate
 // `client.close()` — not a transport failure — so it is not retryable
@@ -249,7 +271,16 @@ export function createMobileRemoteStore(
     setDraft(text) {
       const sid = get().selectedSessionId;
       if (!sid) return;
-      set((state) => ({ drafts: { ...state.drafts, [sid]: text } }));
+      set((state) => {
+        const drafts = { ...state.drafts, [sid]: text };
+        // Editing a sid's draft after a rejected/failed submission clears
+        // only that sid's own stale error — the user is actively revising
+        // this session's message, so the old alert no longer applies. A
+        // different sid's own error (or lack of one) is never touched.
+        if (!(sid in state.submissionErrors)) return { drafts };
+        const { [sid]: _clearedError, ...remainingErrors } = state.submissionErrors;
+        return { drafts, submissionErrors: remainingErrors };
+      });
     },
 
     async submitDraft() {
@@ -261,10 +292,13 @@ export function createMobileRemoteStore(
       // having its own in-flight request does.
       if (!sid || !state.inputEnabled || !draft || state.pendingSubmissions[sid]) return;
       const requestId = createRequestId();
-      set((current) => ({
-        pendingSubmissions: { ...current.pendingSubmissions, [sid]: { requestId, draft } },
-        submissionError: null,
-      }));
+      set((current) => {
+        const { [sid]: _clearedError, ...remainingErrors } = current.submissionErrors;
+        return {
+          pendingSubmissions: { ...current.pendingSubmissions, [sid]: { requestId, draft } },
+          submissionErrors: remainingErrors,
+        };
+      });
       try {
         await client.send({ type: 'session.submit', sid, requestId, draft });
       } catch (error) {
@@ -279,7 +313,10 @@ export function createMobileRemoteStore(
         }
         set((s) => {
           const { [sid]: _removed, ...remaining } = s.pendingSubmissions;
-          return { pendingSubmissions: remaining, submissionError: normalizeSubmitError(error) };
+          return {
+            pendingSubmissions: remaining,
+            submissionErrors: { ...s.submissionErrors, [sid]: normalizeSubmitError(error) },
+          };
         });
       }
     },
@@ -432,17 +469,21 @@ export function createMobileRemoteStore(
       return;
     }
     const { [sid]: _cleared, ...remainingPending } = state.pendingSubmissions;
+    const { [sid]: _clearedError, ...remainingErrors } = state.submissionErrors;
     if (ok) {
       const currentDraft = state.drafts[sid] ?? '';
       const draftUntouchedSinceSend = currentDraft === pending.draft;
       store.setState({
         pendingSubmissions: remainingPending,
-        submissionError: null,
+        submissionErrors: remainingErrors,
         drafts: draftUntouchedSinceSend ? { ...state.drafts, [sid]: '' } : state.drafts,
       });
       return;
     }
-    store.setState({ pendingSubmissions: remainingPending, submissionError: error ?? 'submission_rejected' });
+    store.setState({
+      pendingSubmissions: remainingPending,
+      submissionErrors: { ...remainingErrors, [sid]: error ?? 'submission_rejected' },
+    });
   }
 
   const offMessage = client.onMessage((message) => {

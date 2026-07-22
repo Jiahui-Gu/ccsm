@@ -36,7 +36,7 @@ import { MessageComposer } from './MessageComposer';
 import { TerminalKeyBar } from './TerminalKeyBar';
 import { SessionDrawer } from './SessionDrawer';
 import { MobileTerminal, type MobileTerminalAdapterFactory } from './MobileTerminal';
-import { createMobileRemoteStore, deriveSubmitting, type MobileRemoteStore } from '../mobileRemoteStore';
+import { createMobileRemoteStore, deriveSubmissionError, deriveSubmitting, type MobileRemoteStore } from '../mobileRemoteStore';
 import type { PhoneConnectionStatus, RelayClient } from '../relayClient';
 import type { MobileTerminalAdapter } from '../mobileTerminalAdapter';
 import type { SessionNavigatorModel } from '../../shared/sessionNavigator';
@@ -172,6 +172,11 @@ export function PhoneShell({
   // submission may disable Send — an unacknowledged submission on some
   // other session must never leak into this derivation.
   const submitting = deriveSubmitting(state.selectedSessionId, state.pendingSubmissions);
+  // Follow-up A fix: only the *selected* session's own rejected/failed
+  // submission may render as a visible alert — a different, unselected
+  // session's own error must never leak into this derivation, and must
+  // still be there once the user navigates back to that other session.
+  const submissionError = deriveSubmissionError(state.selectedSessionId, state.submissionErrors);
   // Priority: a disconnected/blocked/updating transport banner always wins —
   // it is the more urgent, actionable state. Only once the transport is
   // `connected` can the (never-retryable-through-this-banner) exited-session
@@ -273,7 +278,7 @@ export function PhoneShell({
           draft={draft}
           enabled={state.inputEnabled}
           submitting={submitting}
-          error={state.submissionError}
+          error={submissionError}
           onDraftChange={handleDraftChange}
           onSubmit={handleSubmit}
         />

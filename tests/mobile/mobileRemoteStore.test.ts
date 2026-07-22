@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createMobileRemoteStore } from '../../src/mobile/mobileRemoteStore';
+import { createMobileRemoteStore, deriveSubmissionError } from '../../src/mobile/mobileRemoteStore';
 import type { PhoneConnectionStatus, RelayClient } from '../../src/mobile/relayClient';
 import type { MobileClientMessage, MobileServerMessage } from '../../src/shared/mobileRemote';
 import type { SessionNavigatorModel } from '../../src/shared/sessionNavigator';
@@ -125,7 +125,7 @@ describe('mobileRemoteStore', () => {
     });
     expect(store.getState().drafts.s1).toBe('');
     expect(store.getState().pendingSubmissions.s1).toBeUndefined();
-    expect(store.getState().submissionError).toBeNull();
+    expect(store.getState().submissionErrors.s1).toBeUndefined();
   });
 
   it('preserves a rejected draft and never queues it for reconnect', async () => {
@@ -135,7 +135,7 @@ describe('mobileRemoteStore', () => {
     store.getState().setDraft('keep me');
     await store.getState().submitDraft();
     expect(store.getState().drafts.s1).toBe('keep me');
-    expect(store.getState().submissionError).toBe('connection_changed');
+    expect(store.getState().submissionErrors.s1).toBe('connection_changed');
     expect(store.getState().pendingSubmissions.s1).toBeUndefined();
     expect(client.sent.filter((message) => message.type === 'session.submit')).toHaveLength(1);
     expect(client.recoveryQueue).not.toContainEqual(
@@ -217,7 +217,7 @@ describe('mobileRemoteStore', () => {
     });
     expect(store.getState().drafts.s1).toBe('hello');
     expect(store.getState().pendingSubmissions.s1).toBeUndefined();
-    expect(store.getState().submissionError).toBe('session_not_found');
+    expect(store.getState().submissionErrors.s1).toBe('session_not_found');
   });
 
   it('ignores a stale or mismatched submit result without clearing another pending request', async () => {
@@ -295,7 +295,7 @@ describe('mobileRemoteStore', () => {
     rejectSend?.(new Error('connection_changed'));
     await submission;
 
-    expect(store.getState().submissionError).toBeNull();
+    expect(store.getState().submissionErrors.s1).toBeUndefined();
     expect(store.getState().pendingSubmissions).toEqual({});
     expect(store.getState().drafts.s1).toBe('keep me');
   });
@@ -338,11 +338,11 @@ describe('mobileRemoteStore', () => {
     await firstSubmit;
 
     expect(store.getState().pendingSubmissions.s1).toEqual(secondPending);
-    expect(store.getState().submissionError).toBeNull();
+    expect(store.getState().submissionErrors.s1).toBeUndefined();
 
     rejectors[1]?.(new Error('later_failure'));
     await secondSubmit;
-    expect(store.getState().submissionError).toBe('later_failure');
+    expect(store.getState().submissionErrors.s1).toBe('later_failure');
     expect(store.getState().pendingSubmissions.s1).toBeUndefined();
   });
 
@@ -513,6 +513,123 @@ describe('mobileRemoteStore', () => {
 
       resolvers.forEach((resolve) => resolve());
       await Promise.all([s1First, s2First, s1Second, s2Second]);
+    });
+  });
+
+  // Follow-up A: `submissionError` remained a single global slot even after
+  // `pendingSubmissions` (review issue 2, above) was scoped per sid. A
+  // rejected submission for one session leaked into every other session's
+  // derived error — including a session that never submitted anything and
+  // was not even selected when the rejection arrived.
+  describe('per-session submission errors (follow-up A)', () => {
+    async function submitAndReject(
+      store: ReturnType<typeof createMobileRemoteStore>,
+      client: FakeRelayClient,
+      sid: string,
+      draft: string,
+      error: string,
+    ): Promise<void> {
+      store.getState().selectSession(sid);
+      store.getState().setDraft(draft);
+      await store.getState().submitDraft();
+      const submit = client.sent
+        .filter(
+          (message): message is Extract<MobileClientMessage, { type: 'session.submit' }> =>
+            message.type === 'session.submit' && message.sid === sid,
+        )
+        .at(-1)!;
+      store.getState().receive({
+        type: 'session.submit.result',
+        sid,
+        requestId: submit.requestId,
+        ok: false,
+        error,
+      });
+    }
+
+    it("does not attribute session A's rejected submission to session B, even once B is selected", async () => {
+      const { store, client } = createTestStore();
+      connect(store, client);
+
+      store.getState().selectSession('s1');
+      store.getState().setDraft('from s1');
+      await store.getState().submitDraft(); // sent, unacknowledged
+      const s1Submit = client.sent
+        .filter(
+          (message): message is Extract<MobileClientMessage, { type: 'session.submit' }> =>
+            message.type === 'session.submit',
+        )
+        .at(-1)!;
+
+      // Switch away from s1 before its rejection ever arrives.
+      store.getState().selectSession('s2');
+
+      store.getState().receive({
+        type: 'session.submit.result',
+        sid: 's1',
+        requestId: s1Submit.requestId,
+        ok: false,
+        error: 'alpha_rejected',
+      });
+
+      // s2 never submitted anything and must never observe s1's error
+      // through the selected-session derivation.
+      expect(deriveSubmissionError('s2', store.getState().submissionErrors)).toBeNull();
+      // s1's own error is still tracked even while a different sid is selected.
+      expect(store.getState().submissionErrors.s1).toBe('alpha_rejected');
+
+      // Switching back to s1 must render its own error again.
+      store.getState().selectSession('s1');
+      expect(deriveSubmissionError('s1', store.getState().submissionErrors)).toBe('alpha_rejected');
+    });
+
+    it("clears only the edited session's error, leaving a different session's own error untouched", async () => {
+      const { store, client } = createTestStore();
+      connect(store, client);
+      await submitAndReject(store, client, 's1', 'from s1', 'alpha_rejected');
+      await submitAndReject(store, client, 's2', 'from s2', 'beta_rejected');
+      expect(store.getState().submissionErrors).toEqual({ s1: 'alpha_rejected', s2: 'beta_rejected' });
+
+      store.getState().selectSession('s1');
+      store.getState().setDraft('from s1, edited');
+      expect(deriveSubmissionError('s1', store.getState().submissionErrors)).toBeNull();
+      expect(deriveSubmissionError('s2', store.getState().submissionErrors)).toBe('beta_rejected');
+    });
+
+    it("resubmitting a session clears only that session's own prior error", async () => {
+      const { store, client } = createTestStore();
+      connect(store, client);
+      await submitAndReject(store, client, 's1', 'from s1', 'alpha_rejected');
+      await submitAndReject(store, client, 's2', 'from s2', 'beta_rejected');
+
+      store.getState().selectSession('s1');
+      expect(store.getState().submissionErrors.s1).toBe('alpha_rejected');
+      await store.getState().submitDraft(); // resubmits the preserved draft, no edit
+      expect(deriveSubmissionError('s1', store.getState().submissionErrors)).toBeNull();
+      expect(deriveSubmissionError('s2', store.getState().submissionErrors)).toBe('beta_rejected');
+    });
+
+    it('keeps two different sessions independently rejected at the same time, each attributable only to its own sid', async () => {
+      const { store, client } = createTestStore();
+      connect(store, client);
+      await submitAndReject(store, client, 's1', 'from s1', 'alpha_rejected');
+      await submitAndReject(store, client, 's2', 'from s2', 'beta_rejected');
+
+      expect(store.getState().submissionErrors).toEqual({ s1: 'alpha_rejected', s2: 'beta_rejected' });
+      expect(deriveSubmissionError('s1', store.getState().submissionErrors)).toBe('alpha_rejected');
+      expect(deriveSubmissionError('s2', store.getState().submissionErrors)).toBe('beta_rejected');
+    });
+
+    it("preserves a session's visible submission error across a connection drop and reconnect (existing semantics, unchanged)", async () => {
+      const { store, client } = createTestStore();
+      connect(store, client);
+      await submitAndReject(store, client, 's1', 'from s1', 'alpha_rejected');
+      expect(store.getState().submissionErrors.s1).toBe('alpha_rejected');
+
+      client.emitStatus('reconnecting');
+      client.emitStatus('connected');
+
+      expect(store.getState().submissionErrors.s1).toBe('alpha_rejected');
     });
   });
 
