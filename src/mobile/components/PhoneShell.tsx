@@ -36,7 +36,7 @@ import { MessageComposer } from './MessageComposer';
 import { TerminalKeyBar } from './TerminalKeyBar';
 import { SessionDrawer } from './SessionDrawer';
 import { MobileTerminal, type MobileTerminalAdapterFactory } from './MobileTerminal';
-import { createMobileRemoteStore, type MobileRemoteStore } from '../mobileRemoteStore';
+import { createMobileRemoteStore, deriveSubmitting, type MobileRemoteStore } from '../mobileRemoteStore';
 import type { PhoneConnectionStatus, RelayClient } from '../relayClient';
 import type { MobileTerminalAdapter } from '../mobileTerminalAdapter';
 import type { SessionNavigatorModel } from '../../shared/sessionNavigator';
@@ -168,7 +168,10 @@ export function PhoneShell({
 
   const sessionInfo = findSessionInfo(state.navigator, state.selectedSessionId);
   const draft = state.selectedSessionId ? state.drafts[state.selectedSessionId] ?? '' : '';
-  const submitting = state.pendingSubmission !== null;
+  // Review issue 2 fix: only the *selected* session's own pending
+  // submission may disable Send — an unacknowledged submission on some
+  // other session must never leak into this derivation.
+  const submitting = deriveSubmitting(state.selectedSessionId, state.pendingSubmissions);
   // Priority: a disconnected/blocked/updating transport banner always wins —
   // it is the more urgent, actionable state. Only once the transport is
   // `connected` can the (never-retryable-through-this-banner) exited-session

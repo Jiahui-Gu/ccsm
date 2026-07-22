@@ -124,7 +124,7 @@ describe('mobileRemoteStore', () => {
       ok: true,
     });
     expect(store.getState().drafts.s1).toBe('');
-    expect(store.getState().pendingSubmission).toBeNull();
+    expect(store.getState().pendingSubmissions.s1).toBeUndefined();
     expect(store.getState().submissionError).toBeNull();
   });
 
@@ -136,7 +136,7 @@ describe('mobileRemoteStore', () => {
     await store.getState().submitDraft();
     expect(store.getState().drafts.s1).toBe('keep me');
     expect(store.getState().submissionError).toBe('connection_changed');
-    expect(store.getState().pendingSubmission).toBeNull();
+    expect(store.getState().pendingSubmissions.s1).toBeUndefined();
     expect(client.sent.filter((message) => message.type === 'session.submit')).toHaveLength(1);
     expect(client.recoveryQueue).not.toContainEqual(
       expect.objectContaining({ type: 'session.submit' }),
@@ -198,7 +198,7 @@ describe('mobileRemoteStore', () => {
       ok: true,
     });
     expect(store.getState().drafts.s1).toBe('hello, more');
-    expect(store.getState().pendingSubmission).toBeNull();
+    expect(store.getState().pendingSubmissions.s1).toBeUndefined();
   });
 
   it('keeps the draft and records an explicit error on a negative result', async () => {
@@ -216,7 +216,7 @@ describe('mobileRemoteStore', () => {
       error: 'session_not_found',
     });
     expect(store.getState().drafts.s1).toBe('hello');
-    expect(store.getState().pendingSubmission).toBeNull();
+    expect(store.getState().pendingSubmissions.s1).toBeUndefined();
     expect(store.getState().submissionError).toBe('session_not_found');
   });
 
@@ -234,7 +234,7 @@ describe('mobileRemoteStore', () => {
       ok: true,
     });
     expect(store.getState().drafts.s1).toBe('hello');
-    expect(store.getState().pendingSubmission).not.toBeNull();
+    expect(store.getState().pendingSubmissions.s1).not.toBeUndefined();
 
     store.getState().receive({
       type: 'session.submit.result',
@@ -243,7 +243,7 @@ describe('mobileRemoteStore', () => {
       ok: true,
     });
     expect(store.getState().drafts.s1).toBe('hello');
-    expect(store.getState().pendingSubmission).not.toBeNull();
+    expect(store.getState().pendingSubmissions.s1).not.toBeUndefined();
     void client;
   });
 
@@ -261,10 +261,10 @@ describe('mobileRemoteStore', () => {
     store.getState().selectSession('s1');
     store.getState().setDraft('unsent');
     const pending = store.getState().submitDraft();
-    expect(store.getState().pendingSubmission).not.toBeNull();
+    expect(store.getState().pendingSubmissions.s1).not.toBeUndefined();
 
     client.emitStatus('reconnecting');
-    expect(store.getState().pendingSubmission).toBeNull();
+    expect(store.getState().pendingSubmissions).toEqual({});
     expect(store.getState().drafts.s1).toBe('unsent');
 
     resolveSend?.();
@@ -285,18 +285,18 @@ describe('mobileRemoteStore', () => {
     store.getState().selectSession('s1');
     store.getState().setDraft('keep me');
     const submission = store.getState().submitDraft();
-    expect(store.getState().pendingSubmission).not.toBeNull();
+    expect(store.getState().pendingSubmissions.s1).not.toBeUndefined();
 
     // Disconnect clears the pending submission (existing contract) before
     // the deferred send() ever settles.
     client.emitStatus('reconnecting');
-    expect(store.getState().pendingSubmission).toBeNull();
+    expect(store.getState().pendingSubmissions).toEqual({});
 
     rejectSend?.(new Error('connection_changed'));
     await submission;
 
     expect(store.getState().submissionError).toBeNull();
-    expect(store.getState().pendingSubmission).toBeNull();
+    expect(store.getState().pendingSubmissions).toEqual({});
     expect(store.getState().drafts.s1).toBe('keep me');
   });
 
@@ -320,7 +320,7 @@ describe('mobileRemoteStore', () => {
     store.getState().selectSession('s1');
     store.getState().setDraft('first');
     const firstSubmit = store.getState().submitDraft();
-    const firstPending = store.getState().pendingSubmission;
+    const firstPending = store.getState().pendingSubmissions.s1;
     expect(firstPending?.requestId).toBe('req-1');
 
     // The first request's send() never settles here; the connection drops
@@ -329,7 +329,7 @@ describe('mobileRemoteStore', () => {
     client.emitStatus('connected');
     store.getState().setDraft('second');
     const secondSubmit = store.getState().submitDraft();
-    const secondPending = store.getState().pendingSubmission;
+    const secondPending = store.getState().pendingSubmissions.s1;
     expect(secondPending?.requestId).toBe('req-2');
 
     // The stale first request rejects only now, well after the newer pending
@@ -337,13 +337,183 @@ describe('mobileRemoteStore', () => {
     rejectors[0]?.(new Error('connection_changed'));
     await firstSubmit;
 
-    expect(store.getState().pendingSubmission).toEqual(secondPending);
+    expect(store.getState().pendingSubmissions.s1).toEqual(secondPending);
     expect(store.getState().submissionError).toBeNull();
 
     rejectors[1]?.(new Error('later_failure'));
     await secondSubmit;
     expect(store.getState().submissionError).toBe('later_failure');
-    expect(store.getState().pendingSubmission).toBeNull();
+    expect(store.getState().pendingSubmissions.s1).toBeUndefined();
+  });
+
+  // Review issue 2: `pendingSubmission` must never be a single global slot.
+  // Two live sessions can each have their own unacknowledged submission at
+  // once; one sid's gating, draft-clearing, and correlation must never leak
+  // into another sid's.
+  describe('per-session pending submissions (review issue 2)', () => {
+    it('lets a newly selected session submit while an older session still has an unacknowledged submission', async () => {
+      let requestSequence = 0;
+      const { store, client } = createTestStore({ requestId: () => `req-${(requestSequence += 1)}` });
+      connect(store, client);
+
+      store.getState().selectSession('s1');
+      store.getState().setDraft('from s1');
+      await store.getState().submitDraft(); // unacknowledged for the rest of this test
+
+      store.getState().selectSession('s2');
+      store.getState().setDraft('from s2');
+      await store.getState().submitDraft();
+
+      const submitMessages = client.sent.filter(
+        (message): message is Extract<MobileClientMessage, { type: 'session.submit' }> =>
+          message.type === 'session.submit',
+      );
+      // A singleton `pendingSubmission` guard blocks ANY session from
+      // submitting while another session's submission is unacknowledged, so
+      // only s1's request would ever be sent here.
+      expect(submitMessages).toHaveLength(2);
+      expect(submitMessages[0]).toMatchObject({ sid: 's1', draft: 'from s1' });
+      expect(submitMessages[1]).toMatchObject({ sid: 's2', draft: 'from s2' });
+      expect(submitMessages[0]?.requestId).not.toBe(submitMessages[1]?.requestId);
+    });
+
+    it("acknowledges each session's submission independently — one sid's ack never clears or overwrites another sid's pending submission", async () => {
+      let requestSequence = 0;
+      const { store, client } = createTestStore({ requestId: () => `req-${(requestSequence += 1)}` });
+      connect(store, client);
+
+      store.getState().selectSession('s1');
+      store.getState().setDraft('from s1');
+      await store.getState().submitDraft();
+      const s1Submit = client.sent.find(
+        (message): message is Extract<MobileClientMessage, { type: 'session.submit' }> =>
+          message.type === 'session.submit' && message.sid === 's1',
+      )!;
+
+      store.getState().selectSession('s2');
+      store.getState().setDraft('from s2');
+      await store.getState().submitDraft();
+      const s2Submit = client.sent.find(
+        (message): message is Extract<MobileClientMessage, { type: 'session.submit' }> =>
+          message.type === 'session.submit' && message.sid === 's2',
+      );
+      // Fails under the unfixed singleton guard: s2's submission above is
+      // silently dropped because s1 is still unacknowledged.
+      expect(s2Submit).toBeDefined();
+
+      // A crossed/forged ack (s1's sid paired with s2's requestId) must
+      // never clear or overwrite either session's state.
+      store.getState().receive({
+        type: 'session.submit.result',
+        sid: 's1',
+        requestId: s2Submit!.requestId,
+        ok: true,
+      });
+      expect(store.getState().drafts.s1).toBe('from s1');
+      expect(store.getState().pendingSubmissions.s1).toMatchObject({ requestId: s1Submit.requestId });
+      expect(store.getState().pendingSubmissions.s2).toMatchObject({ requestId: s2Submit!.requestId });
+
+      // Acknowledge s2 for real — only s2's unchanged draft/pending entry clears.
+      store.getState().receive({
+        type: 'session.submit.result',
+        sid: 's2',
+        requestId: s2Submit!.requestId,
+        ok: true,
+      });
+      expect(store.getState().drafts.s2).toBe('');
+      expect(store.getState().pendingSubmissions.s2).toBeUndefined();
+      expect(store.getState().drafts.s1).toBe('from s1'); // s1 still untouched
+      expect(store.getState().pendingSubmissions.s1).toMatchObject({ requestId: s1Submit.requestId });
+
+      // Acknowledge s1 independently afterward.
+      store.getState().receive({ type: 'session.submit.result', sid: 's1', requestId: s1Submit.requestId, ok: true });
+      expect(store.getState().drafts.s1).toBe('');
+      expect(store.getState().pendingSubmissions.s1).toBeUndefined();
+    });
+
+    it("keeps newer text typed after sending when that session's own ack arrives, even while a different session has its own unacknowledged submission", async () => {
+      let requestSequence = 0;
+      const { store, client } = createTestStore({ requestId: () => `req-${(requestSequence += 1)}` });
+      connect(store, client);
+
+      store.getState().selectSession('s1');
+      store.getState().setDraft('from s1');
+      await store.getState().submitDraft(); // s1 stays unacknowledged for the whole test
+
+      store.getState().selectSession('s2');
+      store.getState().setDraft('from s2');
+      await store.getState().submitDraft();
+      const s2Submit = client.sent.find(
+        (message): message is Extract<MobileClientMessage, { type: 'session.submit' }> =>
+          message.type === 'session.submit' && message.sid === 's2',
+      );
+      expect(s2Submit).toBeDefined(); // same singleton-guard failure as the tests above
+
+      // The user keeps typing on s2 after Send, before its ack arrives.
+      store.getState().setDraft('from s2, more');
+      store.getState().receive({
+        type: 'session.submit.result',
+        sid: 's2',
+        requestId: s2Submit!.requestId,
+        ok: true,
+      });
+
+      expect(store.getState().drafts.s2).toBe('from s2, more'); // never clobbered by the stale ack
+      expect(store.getState().pendingSubmissions.s2).toBeUndefined();
+      expect(store.getState().drafts.s1).toBe('from s1'); // untouched throughout
+    });
+
+    it("clears every session's pending submission on connection loss while preserving every session's draft", async () => {
+      const resolvers: Array<() => void> = [];
+      const client = createFakeClient();
+      client.send = vi.fn((message: MobileClientMessage) => {
+        client.sent.push(message);
+        if (message.type !== 'session.submit') return Promise.resolve();
+        return new Promise<void>((resolve) => {
+          resolvers.push(resolve);
+        });
+      });
+      let requestSequence = 0;
+      const store = createMobileRemoteStore(client, {
+        requestId: () => `req-${(requestSequence += 1)}`,
+      });
+      client.emitStatus('connected');
+
+      store.getState().selectSession('s1');
+      store.getState().setDraft('s1 unsent');
+      const s1First = store.getState().submitDraft();
+
+      store.getState().selectSession('s2');
+      store.getState().setDraft('s2 unsent');
+      const s2First = store.getState().submitDraft();
+
+      client.emitStatus('reconnecting');
+      client.emitStatus('connected');
+
+      expect(store.getState().drafts.s1).toBe('s1 unsent');
+      expect(store.getState().drafts.s2).toBe('s2 unsent');
+      expect(store.getState().pendingSubmissions).toEqual({});
+
+      // Each session must be independently resubmittable once its pending
+      // request was cleared by the disconnect — under the unfixed singleton
+      // guard, s2's submission is never sent above (blocked by s1), so it
+      // stays permanently blocked here too once s1's second attempt takes
+      // the single slot.
+      store.getState().selectSession('s1');
+      const s1Second = store.getState().submitDraft();
+      store.getState().selectSession('s2');
+      const s2Second = store.getState().submitDraft();
+
+      const submitMessages = client.sent.filter(
+        (message): message is Extract<MobileClientMessage, { type: 'session.submit' }> =>
+          message.type === 'session.submit',
+      );
+      expect(submitMessages.filter((message) => message.sid === 's1')).toHaveLength(2);
+      expect(submitMessages.filter((message) => message.sid === 's2')).toHaveLength(2);
+
+      resolvers.forEach((resolve) => resolve());
+      await Promise.all([s1First, s2First, s1Second, s2Second]);
+    });
   });
 
   it('does not select an exited session when resolving navigator selection', () => {
@@ -657,7 +827,7 @@ describe('mobileRemoteStore', () => {
     store.getState().sendControl('\x03');
     expect(client.sent).toContainEqual({ type: 'session.input', sid: 's1', data: '\x03' });
     expect(store.getState().drafts.s1).toBe('untouched');
-    expect(store.getState().pendingSubmission).toBeNull();
+    expect(store.getState().pendingSubmissions).toEqual({});
   });
 
   it('derives inputEnabled and retryMode from the connection contract', () => {

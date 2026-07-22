@@ -218,6 +218,64 @@ describe('PhoneShell', () => {
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('draft text');
   });
 
+  // Review issue 2: `submitting` must be derived for the selected session
+  // only. An unacknowledged submission on session A must never disable
+  // Send (or block sending) for a newly selected session B.
+  it('keeps Send enabled for a newly selected session while another session has an unacknowledged submission', async () => {
+    const user = userEvent.setup();
+    const client = createFakeClient();
+    const { factory } = createFakeAdapterFactory();
+    let requestSequence = 0;
+    render(
+      <PhoneShell
+        client={client}
+        createAdapter={factory}
+        createStore={makeStoreFactory(() => `req-${(requestSequence += 1)}`)}
+      />,
+    );
+    client.emitMessage({ type: 'sessions.navigator', version: 1, model: navigatorModel() });
+    client.emitStatus('connected');
+
+    // Submit from Alpha (s1) without ever acknowledging it.
+    await user.type(screen.getByRole('textbox', { name: 'Message' }), 'hello from alpha');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    const alphaSubmit = client.sent.at(-1) as Extract<MobileClientMessage, { type: 'session.submit' }>;
+    expect(alphaSubmit).toMatchObject({ type: 'session.submit', sid: 's1' });
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled(); // Alpha's own Send reflects Alpha's own pending state
+
+    // Switch to Beta (s2) — Alpha is still unacknowledged.
+    await user.click(screen.getByRole('button', { name: /sessions menu/i }));
+    await user.click(screen.getByText('Beta'));
+
+    // Beta's Send is disabled only because its draft is empty, never because
+    // Alpha still has an unacknowledged submission.
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+    await user.type(screen.getByRole('textbox', { name: 'Message' }), 'hello from beta');
+    expect(screen.getByRole('button', { name: 'Send' })).not.toBeDisabled();
+
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    const betaSubmit = client.sent.at(-1) as Extract<MobileClientMessage, { type: 'session.submit' }>;
+    expect(betaSubmit).toMatchObject({ type: 'session.submit', sid: 's2' });
+    expect(betaSubmit.requestId).not.toBe(alphaSubmit.requestId);
+    // Beta's Send is now disabled by Beta's own pending submission.
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+
+    // Acknowledge Beta only; Alpha's correlation must remain untouched.
+    client.emitMessage({ type: 'session.submit.result', sid: 's2', requestId: betaSubmit.requestId, ok: true });
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('');
+
+    // Switch back to Alpha: its draft was never cleared (no ack yet) and
+    // Send is still disabled by Alpha's own still-pending submission.
+    await user.click(screen.getByRole('button', { name: /sessions menu/i }));
+    await user.click(screen.getByText('Alpha'));
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('hello from alpha');
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+
+    // Acknowledge Alpha now; only then does its own draft clear.
+    client.emitMessage({ type: 'session.submit.result', sid: 's1', requestId: alphaSubmit.requestId, ok: true });
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('');
+  });
+
   it('disables composer and key bar controls while disconnected', () => {
     const client = createFakeClient();
     const { factory } = createFakeAdapterFactory();

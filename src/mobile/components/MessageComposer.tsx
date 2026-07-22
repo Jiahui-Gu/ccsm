@@ -14,7 +14,9 @@
 // The Send button's disabled state is entirely prop-driven
 // (`enabled`/`submitting`/draft emptiness) — this component never tracks
 // its own "is this submission still in flight" state. That state is owned
-// by the store's `pendingSubmission`, passed down as `submitting`.
+// by the store's per-session `pendingSubmissions` (keyed by sid — never a
+// single global slot), reduced to the *selected* session's own flag and
+// passed down as `submitting`.
 
 import type { ChangeEvent } from 'react';
 

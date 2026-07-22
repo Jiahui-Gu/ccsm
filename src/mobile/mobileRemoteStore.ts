@@ -30,7 +30,6 @@ export type TerminalRenderBatch = {
 };
 
 export type PendingSubmission = {
-  sid: string;
   requestId: string;
   draft: string;
 };
@@ -46,7 +45,11 @@ export type MobileRemoteViewState = {
   retryMode: RetryMode;
   drawerOpen: boolean;
   drafts: Record<string, string>;
-  pendingSubmission: PendingSubmission | null;
+  // Keyed by sid, never a single global slot: session A having an
+  // unacknowledged submission must never block or clobber session B's (see
+  // `submitDraft`/`applySubmitResult` below and `deriveSubmitting`, the
+  // selector `PhoneShell` uses for the *selected* session's own Send state).
+  pendingSubmissions: Record<string, PendingSubmission>;
   submissionError: string | null;
   terminalSync: TerminalSyncState;
   terminalBatch: TerminalRenderBatch | null;
@@ -86,7 +89,7 @@ function initialViewState(): MobileRemoteViewState {
     retryMode: 'automatic',
     drawerOpen: false,
     drafts: {},
-    pendingSubmission: null,
+    pendingSubmissions: {},
     submissionError: null,
     terminalSync: emptyTerminalSync(),
     terminalBatch: null,
@@ -171,6 +174,19 @@ function deriveInputEnabled(
   );
 }
 
+// Review issue 2 fix: `submitting` (and therefore the composer's Send
+// disabled state) must reflect only the *selected* session's own pending
+// submission — never whether some other, unselected session happens to have
+// one in flight. `PhoneShell` calls this instead of ever reading
+// `pendingSubmissions` directly, so there is exactly one place that derives
+// "is the currently visible session's Send action in flight".
+export function deriveSubmitting(
+  selectedSessionId: string | null,
+  pendingSubmissions: Record<string, PendingSubmission>,
+): boolean {
+  return selectedSessionId !== null && pendingSubmissions[selectedSessionId] !== undefined;
+}
+
 // `update_required`/`authentication_failed` need re-pairing or an app update
 // (never retryable). `closed` follows only an explicit, deliberate
 // `client.close()` — not a transport failure — so it is not retryable
@@ -240,21 +256,31 @@ export function createMobileRemoteStore(
       const state = get();
       const sid = state.selectedSessionId;
       const draft = sid ? state.drafts[sid] ?? '' : '';
-      if (!sid || !state.inputEnabled || !draft || state.pendingSubmission) return;
+      // Gated per sid, not globally: a different session's unacknowledged
+      // submission must never block this one — only this exact sid already
+      // having its own in-flight request does.
+      if (!sid || !state.inputEnabled || !draft || state.pendingSubmissions[sid]) return;
       const requestId = createRequestId();
-      set({ pendingSubmission: { sid, requestId, draft }, submissionError: null });
+      set((current) => ({
+        pendingSubmissions: { ...current.pendingSubmissions, [sid]: { requestId, draft } },
+        submissionError: null,
+      }));
       try {
         await client.send({ type: 'session.submit', sid, requestId, draft });
       } catch (error) {
-        const current = get().pendingSubmission;
-        if (!current || current.sid !== sid || current.requestId !== requestId) {
-          // The pending submission this rejection belongs to was already
-          // cleared (e.g. by a connection status change) or superseded by a
-          // newer submission for the same session — a stale rejection must
-          // never clobber that state or surface a phantom error.
+        const current = get().pendingSubmissions[sid];
+        if (!current || current.requestId !== requestId) {
+          // This sid's entry was already cleared (e.g. by a connection
+          // status change) or superseded by a newer submission for the same
+          // session — a stale rejection must never clobber that state, and
+          // is already scoped to this sid's own key so it can never touch a
+          // different sid's entry.
           return;
         }
-        set({ pendingSubmission: null, submissionError: normalizeSubmitError(error) });
+        set((s) => {
+          const { [sid]: _removed, ...remaining } = s.pendingSubmissions;
+          return { pendingSubmissions: remaining, submissionError: normalizeSubmitError(error) };
+        });
       }
     },
 
@@ -397,23 +423,26 @@ export function createMobileRemoteStore(
     error: string | undefined,
   ): void {
     const state = store.getState();
-    const pending = state.pendingSubmission;
-    if (!pending || pending.sid !== sid || pending.requestId !== requestId) {
-      // Stale or mismatched — never clear a different in-flight submission or
-      // touch its draft.
+    const pending = state.pendingSubmissions[sid];
+    if (!pending || pending.requestId !== requestId) {
+      // Stale or mismatched for this sid — never clear a different in-flight
+      // submission (this sid's or any other sid's) or touch its draft. Since
+      // lookup is keyed by `sid`, a result for one session can never reach,
+      // clear, or overwrite another session's entry.
       return;
     }
+    const { [sid]: _cleared, ...remainingPending } = state.pendingSubmissions;
     if (ok) {
       const currentDraft = state.drafts[sid] ?? '';
       const draftUntouchedSinceSend = currentDraft === pending.draft;
       store.setState({
-        pendingSubmission: null,
+        pendingSubmissions: remainingPending,
         submissionError: null,
         drafts: draftUntouchedSinceSend ? { ...state.drafts, [sid]: '' } : state.drafts,
       });
       return;
     }
-    store.setState({ pendingSubmission: null, submissionError: error ?? 'submission_rejected' });
+    store.setState({ pendingSubmissions: remainingPending, submissionError: error ?? 'submission_rejected' });
   }
 
   const offMessage = client.onMessage((message) => {
@@ -426,9 +455,10 @@ export function createMobileRemoteStore(
       connection: status,
       retryMode: retryModeForStatus(status),
       inputEnabled: deriveInputEnabled(status, state.selectedSessionId, state.exitedSessionId, state.navigator),
-      // Connection loss clears any in-flight submission (it was never queued
-      // for recovery) but every draft — sent or not — is left untouched.
-      pendingSubmission: status === 'connected' ? state.pendingSubmission : null,
+      // Connection loss clears every session's in-flight submission (none
+      // was ever queued for recovery) but every draft — sent or not, for
+      // every session — is left untouched.
+      pendingSubmissions: status === 'connected' ? state.pendingSubmissions : {},
     });
 
     // A freshly (re)established connection's desktop peer never fans out

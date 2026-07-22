@@ -486,7 +486,10 @@ export type MobileRemoteViewState = {
   retryMode: 'automatic' | 'manual' | 'blocked';
   drawerOpen: boolean;
   drafts: Record<string, string>;
-  pendingSubmission: { sid: string; requestId: string; draft: string } | null;
+  // Keyed by sid — never a single global slot. Two sessions can each have
+  // their own unacknowledged submission at once; PhoneShell derives its
+  // Send-disabled state from only the selected sid's own entry.
+  pendingSubmissions: Record<string, { requestId: string; draft: string }>;
   submissionError: string | null;
   terminalSync: TerminalSyncState;
   terminalBatch: TerminalRenderBatch | null;
@@ -500,22 +503,28 @@ async function submitDraft(): Promise<void> {
   const state = get();
   const sid = state.selectedSessionId;
   const draft = sid ? state.drafts[sid] ?? '' : '';
-  if (!sid || !state.inputEnabled || !draft || state.pendingSubmission) return;
+  if (!sid || !state.inputEnabled || !draft || state.pendingSubmissions[sid]) return;
   const requestId = crypto.randomUUID();
-  set({ pendingSubmission: { sid, requestId, draft }, submissionError: null });
+  set((s) => ({
+    pendingSubmissions: { ...s.pendingSubmissions, [sid]: { requestId, draft } },
+    submissionError: null,
+  }));
   try {
     await client.send({ type: 'session.submit', sid, requestId, draft });
   } catch (error) {
-    set({ pendingSubmission: null, submissionError: normalizeSubmitError(error) });
+    set((s) => {
+      const { [sid]: _removed, ...remaining } = s.pendingSubmissions;
+      return { pendingSubmissions: remaining, submissionError: normalizeSubmitError(error) };
+    });
   }
 }
 ```
 
 An `ok: true` result clears the draft only when sid, requestId, and the current
-draft all match the pending submission. A negative result keeps the draft and
-sets a visible error. Connection loss clears `pendingSubmission` and keeps the
-draft. Navigator replacement retains a live selected session or chooses the
-first live session in model order.
+draft all match that sid's own pending submission. A negative result keeps the
+draft and sets a visible error. Connection loss clears every sid's entry in
+`pendingSubmissions` and keeps every draft. Navigator replacement retains a
+live selected session or chooses the first live session in model order.
 
 Every terminal reducer result is consumed once: store only `reset` and `write`
 effects in a monotonically numbered render batch, and immediately send
