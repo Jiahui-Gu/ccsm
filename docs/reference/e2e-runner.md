@@ -188,6 +188,12 @@ works; live output with sequence-duplicate deduplication; and old-secret
 rejection after rotation. Prints `[mobile-remote-relay] PASS composer,
 controls, Ask, recovery, re-pair` only on full success.
 
+Before pairing, this harness also requires the phone HTML response to include
+the Worker's CSP with `frame-ancestors 'none'`, `X-Frame-Options: DENY`, and
+`X-Content-Type-Options: nosniff`. The scripts Vitest project separately
+requires `assets.run_worker_first: true` in `cloudflare/wrangler.jsonc`, so
+Cloudflare's asset-first routing cannot bypass the canonical Worker headers.
+
 ### `harness-e2e-mobile-remote-visual.mjs` — viewport and touch-target proof
 
 Captures four screenshots under `artifacts/mobile-remote/` (regenerated

@@ -59,6 +59,12 @@ describe('relay worker', () => {
     expect(response.headers.get('Content-Security-Policy')).toContain(
       "frame-ancestors 'none'",
     );
+    expect(response.headers.get('Content-Security-Policy')).toContain(
+      "style-src-attr 'unsafe-inline'",
+    );
+    expect(response.headers.get('Content-Security-Policy')).toContain(
+      "style-src-elem 'self' 'unsafe-inline'",
+    );
     expect(response.headers.get('X-Frame-Options')).toBe('DENY');
   });
 

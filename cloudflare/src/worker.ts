@@ -35,6 +35,8 @@ const PHONE_CSP = [
   "default-src 'none'",
   "script-src 'self'",
   "style-src 'self'",
+  "style-src-attr 'unsafe-inline'",
+  "style-src-elem 'self' 'unsafe-inline'",
   "connect-src 'self' wss:",
   "manifest-src 'self'",
   "worker-src 'self'",
