@@ -1,10 +1,14 @@
 // Pure decider tests for claudeResolver.
 //
-// Pins the platform branch (Windows tries `claude.cmd` first then `claude`,
-// POSIX tries `claude` only), the success-cache, the `force: true` bypass,
-// and the failure-mode contract (returns null when both lookups fail — never
-// the literal string "claude" — so the IPC channel can surface a clean
-// `available: false` for the renderer's ClaudeMissingGuide).
+// Pins the platform branch (Windows tries `claude.exe`, then `claude.cmd`,
+// then bare `claude`; POSIX tries `claude` only), the exe-over-cmd
+// preference for mixed/broken installs (a stale npm-shim `claude.cmd` can
+// be present on PATH — so `where` succeeds — even when its target has been
+// removed; see the "broken-shim regression" case below), the success-cache,
+// the `force: true` bypass, and the failure-mode contract (returns null
+// when every lookup fails — never the literal string "claude" — so the IPC
+// channel can surface a clean `available: false` for the renderer's
+// ClaudeMissingGuide).
 //
 // Resolver is async (#PERF: original spawnSync blocked the main process
 // event loop on Windows cold start). Tests await each call and the
@@ -100,39 +104,72 @@ afterEach(() => {
 describe('resolveClaude on Windows', () => {
   beforeEach(() => setPlatform('win32'));
 
-  it('returns the path from `where claude.cmd` when present', async () => {
+  // RED (pre-fix): reproduces the real-world mixed-install failure mode —
+  // a stale global npm install leaves `claude.cmd` on PATH (the shim FILE
+  // exists, so `where claude.cmd` succeeds) but its target
+  // `...\@anthropic-ai\claude-code\bin\claude.exe` no longer exists, so
+  // ttyd spawning the shim fails with "...claude.exe is not recognized as
+  // an internal or external command". A valid native (winget) install's
+  // `claude.exe` exists side-by-side and IS runnable. The resolver must
+  // prefer `claude.exe` over `claude.cmd` so it never hands ttyd the
+  // broken shim — without filesystem-probing the shim's target (whereAsync
+  // only ever shells out to `where`).
+  it('prefers claude.exe over a claude.cmd shim that is ALSO on PATH (broken-shim regression)', async () => {
+    bus().results.set('where claude.exe', {
+      status: 0,
+      stdout: 'C:\\Users\\u\\AppData\\Local\\Microsoft\\WinGet\\Links\\claude.exe\r\n',
+    });
+    bus().results.set('where claude.cmd', {
+      status: 0,
+      stdout: 'C:\\ProgramData\\global-npm\\claude.cmd\r\n',
+    });
+    expect(await resolveClaude()).toBe('C:\\Users\\u\\AppData\\Local\\Microsoft\\WinGet\\Links\\claude.exe');
+    expect(bus().calls.map((c) => c.args[0])).toEqual(['claude.exe']);
+  });
+
+  it('returns the path from `where claude.exe` when present (no other lookups needed)', async () => {
+    bus().results.set('where claude.exe', {
+      status: 0,
+      stdout: 'C:\\Users\\u\\AppData\\Local\\Microsoft\\WinGet\\Links\\claude.exe\r\n',
+    });
+    expect(await resolveClaude()).toBe('C:\\Users\\u\\AppData\\Local\\Microsoft\\WinGet\\Links\\claude.exe');
+    expect(bus().calls.map((c) => c.args[0])).toEqual(['claude.exe']);
+  });
+
+  it('falls back to `where claude.cmd` (npm-shim install) when claude.exe lookup fails', async () => {
     bus().results.set('where claude.cmd', {
       status: 0,
       stdout: 'C:\\Users\\u\\AppData\\Roaming\\npm\\claude.cmd\r\n',
     });
     expect(await resolveClaude()).toBe('C:\\Users\\u\\AppData\\Roaming\\npm\\claude.cmd');
-    expect(bus().calls.map((c) => c.args[0])).toEqual(['claude.cmd']);
+    expect(bus().calls.map((c) => c.args[0])).toEqual(['claude.exe', 'claude.cmd']);
   });
 
-  it('falls back to `where claude` when claude.cmd lookup fails', async () => {
-    bus().results.set('where claude.cmd', { status: 1, stdout: '' });
+  it('falls back to `where claude` when both claude.exe and claude.cmd lookups fail', async () => {
     bus().results.set('where claude', {
       status: 0,
       stdout: 'C:\\tools\\claude\n',
     });
     expect(await resolveClaude()).toBe('C:\\tools\\claude');
-    expect(bus().calls.map((c) => c.args[0])).toEqual(['claude.cmd', 'claude']);
+    expect(bus().calls.map((c) => c.args[0])).toEqual(['claude.exe', 'claude.cmd', 'claude']);
   });
 
-  it('returns null (never the literal "claude") when both lookups fail', async () => {
+  it('returns null (never the literal "claude") when all three lookups fail', async () => {
     expect(await resolveClaude()).toBeNull();
-    expect(bus().calls).toHaveLength(2);
+    expect(bus().calls).toHaveLength(3);
+    expect(bus().calls.map((c) => c.args[0])).toEqual(['claude.exe', 'claude.cmd', 'claude']);
   });
 
   it('takes the FIRST line of multi-line where output (PATH may have dupes)', async () => {
-    bus().results.set('where claude.cmd', {
+    bus().results.set('where claude.exe', {
       status: 0,
-      stdout: 'C:\\first\\claude.cmd\r\nC:\\second\\claude.cmd\r\n',
+      stdout: 'C:\\first\\claude.exe\r\nC:\\second\\claude.exe\r\n',
     });
-    expect(await resolveClaude()).toBe('C:\\first\\claude.cmd');
+    expect(await resolveClaude()).toBe('C:\\first\\claude.exe');
   });
 
-  it('treats blank-stdout success as not-found (status==0 but no path)', async () => {
+  it('treats blank-stdout success as not-found at every stage (status==0 but no path)', async () => {
+    bus().results.set('where claude.exe', { status: 0, stdout: '\r\n  \r\n' });
     bus().results.set('where claude.cmd', { status: 0, stdout: '\r\n  \r\n' });
     bus().results.set('where claude', { status: 0, stdout: 'C:\\fallback\\claude' });
     expect(await resolveClaude()).toBe('C:\\fallback\\claude');

@@ -5,14 +5,35 @@
 // `%APPDATA%\npm` which lives in the user PATH only).
 //
 // Resolution strategy on Windows:
-//   1. `where claude.cmd` — npm-shim shape used by `npm i -g
-//      @anthropic-ai/claude-code`. ttyd needs an .exe-or-batch target;
-//      the .cmd shim chains into node + the JS entrypoint correctly.
-//   2. `where claude` — falls back to a non-shim install (rare on Windows
-//      but matches the spike's behavior).
+//   1. `where claude.exe` — native/standalone installs (e.g. the winget
+//      package, or Anthropic's native installer) put a real Win32
+//      executable on PATH. Tried first because it's self-contained: unlike
+//      the .cmd shim below, there's no separate "target" file that can go
+//      missing out from under it.
+//   2. `where claude.cmd` — npm-shim shape used by `npm i -g
+//      @anthropic-ai/claude-code`. The shim FILE itself can exist on PATH
+//      (so `where` succeeds) even when its target
+//      `...\@anthropic-ai\claude-code\bin\claude.exe` has been removed —
+//      e.g. a stale/partial global npm install left behind after
+//      switching to a native install. Spawning a broken shim fails at
+//      ttyd's spawn time with an opaque "...claude.exe is not recognized
+//      as an internal or external command", which is why this is NOT
+//      tried first: preferring .exe avoids ever touching a shim that
+//      *looks* present but doesn't run, without needing to filesystem-
+//      probe the shim's target (see below).
+//   3. `where claude` — falls back to a bare, extension-less install (rare
+//      on Windows but matches the spike's behavior).
 //
-// On macOS/Linux: `which claude` (single lookup is enough — no .cmd vs
-// bare-name distinction).
+// We deliberately do NOT stat/validate the .cmd shim's target — `where`
+// only proves the shim file is on PATH, not that it runs. Doing that
+// validation would mean parsing/interpreting the shim's batch script (its
+// target path isn't recorded anywhere else), which is fragile and still
+// racy (the target could be removed between the check and the spawn).
+// Trying `claude.exe` first is a simpler, deterministic policy that
+// sidesteps the whole class of "shim present but broken" failures.
+//
+// On macOS/Linux: `which claude` (single lookup is enough — no .cmd/.exe
+// vs bare-name distinction).
 //
 // Returns null if neither lookup succeeds; callers should surface a
 // "claude not on PATH" error to the user. The spike returns the literal
@@ -96,7 +117,7 @@ async function doResolve(): Promise<string | null> {
   // `where`/`which` rather than a "claude not installed" misdiagnosis.
   try {
     if (process.platform === 'win32') {
-      return (await whereAsync('claude.cmd')) ?? (await whereAsync('claude'));
+      return (await whereAsync('claude.exe')) ?? (await whereAsync('claude.cmd')) ?? (await whereAsync('claude'));
     }
     return await whereAsync('claude');
   } catch (err) {
