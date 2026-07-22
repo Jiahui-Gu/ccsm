@@ -1,4 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+// The CI test job intentionally skips downloading Electron's binary.
+// navigationSource imports db.ts for its default dependency, so isolate that
+// package boundary while exercising the injected pure dependencies below.
+vi.mock('electron', () => ({}));
 
 import { readRemoteNavigationModel } from '../navigationSource';
 
