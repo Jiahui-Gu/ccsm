@@ -188,6 +188,12 @@ works; live output with sequence-duplicate deduplication; and old-secret
 rejection after rotation. Prints `[mobile-remote-relay] PASS composer,
 controls, Ask, recovery, re-pair` only on full success.
 
+Before pairing, this harness also requires the phone HTML response to include
+the Worker's CSP with `frame-ancestors 'none'`, `X-Frame-Options: DENY`, and
+`X-Content-Type-Options: nosniff`. The scripts Vitest project separately
+requires `assets.run_worker_first: true` in `cloudflare/wrangler.jsonc`, so
+Cloudflare's asset-first routing cannot bypass the canonical Worker headers.
+
 ### `harness-e2e-mobile-remote-visual.mjs` — viewport and touch-target proof
 
 Captures four screenshots under `artifacts/mobile-remote/` (regenerated
@@ -228,11 +234,18 @@ The three harnesses above remain deterministic simulated-desktop dogfood.
 Public relay and real-browser acceptance were completed separately against
 `https://ccsm-mobile-remote.jiahuigu.workers.dev` from commit
 `85fcc0be715dc3b39a12d65299d0233fb5f30d1e`. Deployment workflow run
-`29902412040` succeeded from that SHA, followed by:
+`29902412040` succeeded from that SHA. The security-header routing correction
+was later deployed from commit `cd3edd7a439dc37f1854f71dd78f015c24bde018`
+by relay-only workflow run `29917928116`; installer builds and release
+publication were skipped. Post-deployment checks included:
 
 - public terminal synchronization: 5/5 exact buffer-parity fault cases;
-- public composer, controls, Ask, reconnect, and re-pair: 13/13 cases;
+- public composer, controls, Ask, reconnect, re-pair, and Worker security
+  headers: 13/13 interaction cases plus the header gate;
 - public visual geometry and touch targets: 5/5 cases;
+- raw HTML and current hashed JavaScript responses containing CSP with
+  `frame-ancestors 'none'`, `X-Frame-Options: DENY`, and
+  `X-Content-Type-Options: nosniff`;
 - real Electron + global Claude Code through the public relay: `/status`,
   `AskUserQuestion` option and free-text answers, Ctrl+C during active work,
   disconnect/reopen during active output, exact authoritative recovery, and

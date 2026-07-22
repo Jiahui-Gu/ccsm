@@ -71,6 +71,20 @@ async function submitViaComposer(page, text) {
   await sendButton(page).click();
 }
 
+async function assertSecurityHeaders(relayUrl) {
+  const response = await fetch(new URL('/', relayUrl));
+  assert.equal(response.status, 200, 'phone HTML must load before checking security headers');
+  assert.match(
+    response.headers.get('content-security-policy') ?? '',
+    /frame-ancestors\s+'none'/i,
+    'phone HTML must deny framing through CSP',
+  );
+  assert.equal(response.headers.get('x-frame-options'), 'DENY');
+  assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+  await response.body?.cancel();
+  log('PASS phone HTML includes Worker security headers');
+}
+
 /** Dispatches a real CompositionEvent + native-setter input sequence on
  *  the composer textarea — the same event choreography a real IME
  *  produces against a controlled React input — rather than typing
@@ -99,17 +113,7 @@ async function main() {
     log(`using public CCSM_RELAY_URL=${configuredUrl}`);
   }
 
-  const rootResponse = await fetch(`${relayUrl}/`);
-  assert.equal(rootResponse.status, 200, 'root HTML must be served');
-  assert.match(
-    rootResponse.headers.get('content-security-policy') ?? '',
-    /(?:^|;\s*)frame-ancestors 'none'(?:;|$)/,
-    "CSP must deny framing with frame-ancestors 'none'",
-  );
-  assert.equal(rootResponse.headers.get('x-frame-options'), 'DENY');
-  assert.equal(rootResponse.headers.get('x-content-type-options'), 'nosniff');
-  await rootResponse.body?.cancel();
-  log('PASS root HTML has CSP frame protection, DENY, and nosniff');
+  await assertSecurityHeaders(relayUrl);
 
   const pairing = generatePairingIdentity();
   desktop = createSimulatedDesktop(relayUrl, pairing, {
