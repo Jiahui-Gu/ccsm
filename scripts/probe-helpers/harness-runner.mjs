@@ -37,6 +37,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { appWindow } from '../probe-utils.mjs';
 import { resetBetweenCases } from './reset-between-cases.mjs';
+import { resolveAutoUpdaterEnv } from './autoUpdaterGuard.mjs';
 
 /**
  * Buffer stdout/stderr from the underlying electron child process so that
@@ -405,10 +406,15 @@ function freshUserDataDir(tag) {
  * Build the launch options used for both the initial boot and any per-case
  * relaunch. Pulled out so `userDataDir` overrides can be applied uniformly.
  *
+ * Exported for unit tests that pin the auto-updater isolation guard
+ * (`DISABLE_AUTOUPDATER`) — this is the env seam for every `runHarness`
+ * consumer (`harness-dnd.mjs`, `harness-ui.mjs`), including cases gated by
+ * `requiresClaudeBin` that exercise the real `claude` binary.
+ *
  * @param {HarnessSpec} spec
  * @param {string | null} userDataDirOverride
  */
-function buildLaunchOpts(spec, userDataDirOverride) {
+export function buildLaunchOpts(spec, userDataDirOverride) {
   const args = ['.', '--lang=en', ...(spec.launch?.args ?? [])];
   if (userDataDirOverride) {
     // Electron honors `--user-data-dir=<path>` as a CLI flag; this is the
@@ -431,6 +437,11 @@ function buildLaunchOpts(spec, userDataDirOverride) {
     LC_ALL: 'en_US.UTF-8',
     NODE_ENV: 'production',
     CCSM_PROD_BUNDLE: '1',
+    // Guard the user's global `claude` CLI install from its own
+    // auto-updater firing mid-run. Same precedence rule as CCSM_E2E_HIDDEN
+    // above: parent shell env wins over our default, `spec.launch.env` wins
+    // over both (spread last, below).
+    ...resolveAutoUpdaterEnv(),
     ...(spec.launch?.env ?? {})
   };
   return { args, env };

@@ -16,7 +16,8 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { readdirSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { resolveAutoUpdaterEnv } from './probe-helpers/autoUpdaterGuard.mjs';
 
 /**
  * Tree-kill a process by PID. The probes spawn `node`, which spawns Electron,
@@ -57,100 +58,37 @@ const HARNESS_TIMEOUT_MS = 5 * 60_000;
 const PROBE_PREFIX = 'probe-e2e-';
 const HARNESS_PREFIX = 'harness-';
 
-const skipRaw = (process.env.E2E_SKIP || '').trim();
-const skipSet = new Set(
-  skipRaw
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean)
-);
-
 function probeName(file) {
   if (file.startsWith(HARNESS_PREFIX)) return file.slice(0, -'.mjs'.length);
   return file.slice(PROBE_PREFIX.length, -'.mjs'.length);
 }
 
-const probeFiles = readdirSync(SCRIPTS_DIR)
-  .filter((f) => f.startsWith(PROBE_PREFIX) && f.endsWith('.mjs'))
-  .sort();
-const harnessFiles = readdirSync(SCRIPTS_DIR)
-  .filter((f) => f.startsWith(HARNESS_PREFIX) && f.endsWith('.mjs'))
-  .sort();
-// Run harnesses FIRST — they're slower per-file but pack many cases, so
-// failing fast on a regression in a merged case beats waiting for 70 cold
-// launches.
-const allFiles = [...harnessFiles, ...probeFiles];
-
-if (allFiles.length === 0) {
-  console.error('[run-all-e2e] no probes or harnesses found');
-  process.exit(1);
+/**
+ * Build the env every spawned harness/probe child process gets. Extracted
+ * (and exported) so unit tests can pin the auto-updater isolation guard
+ * (`DISABLE_AUTOUPDATER`) without spawning real children — this is
+ * defense-in-depth on top of the same guard applied at each child's own
+ * Electron-launch seam (`launchCcsmIsolated` / `buildLaunchOpts`), so a full
+ * `npm run probe:e2e` run can't lose the guard even if some future harness
+ * bypasses both of those and shells out to `claude` directly from its own
+ * process env.
+ *
+ * @param {NodeJS.ProcessEnv} [baseEnv]
+ * @returns {NodeJS.ProcessEnv}
+ */
+export function buildChildEnv(baseEnv = process.env) {
+  return {
+    ...baseEnv,
+    LANG: 'en_US.UTF-8',
+    LC_ALL: 'en_US.UTF-8',
+    // Default probes to hidden-window mode so a 64-probe run doesn't
+    // strobe focus stealing across the user's desktop. Individual
+    // probes can still launch electron directly with their own env
+    // when run by hand for debugging (no CCSM_E2E_HIDDEN set).
+    CCSM_E2E_HIDDEN: baseEnv.CCSM_E2E_HIDDEN ?? '1',
+    ...resolveAutoUpdaterEnv(baseEnv),
+  };
 }
-
-console.log(`[run-all-e2e] discovered ${harnessFiles.length} harness(es) + ${probeFiles.length} probe(s)`);
-if (skipSet.size > 0) {
-  console.log(`[run-all-e2e] skipping (E2E_SKIP): ${[...skipSet].join(', ')}`);
-}
-
-/** @type {Array<{name: string, status: 'passed'|'failed'|'skipped'|'timeout', code: number, ms: number, stderrTail: string}>} */
-const results = [];
-
-for (const file of allFiles) {
-  const name = probeName(file);
-  const isHarness = file.startsWith(HARNESS_PREFIX);
-  if (skipSet.has(name)) {
-    results.push({ name, status: 'skipped', code: 0, ms: 0, stderrTail: '' });
-    console.log(`\n[run-all-e2e] SKIP  ${name}`);
-    continue;
-  }
-
-  const full = path.join(SCRIPTS_DIR, file);
-  console.log(`\n[run-all-e2e] RUN   ${name}`);
-
-  const started = Date.now();
-  const timeoutMs = isHarness ? HARNESS_TIMEOUT_MS : PROBE_TIMEOUT_MS;
-  const { code, timedOut, stderrTail } = await runOne(full, timeoutMs);
-  const ms = Date.now() - started;
-
-  let status;
-  if (timedOut) status = 'timeout';
-  else if (code === 0) status = 'passed';
-  else status = 'failed';
-
-  results.push({ name, status, code, ms, stderrTail });
-  console.log(`[run-all-e2e] ${status.toUpperCase().padEnd(6)} ${name} (${ms}ms, exit=${code})`);
-}
-
-// --- summary ---
-const nameWidth = Math.max(...results.map((r) => r.name.length), 4);
-const symbol = (s) => (s === 'passed' ? '[OK]' : s === 'skipped' ? '[--]' : '[XX]');
-
-console.log('\n=== E2E summary ===');
-for (const r of results) {
-  console.log(
-    `${symbol(r.status)} ${r.name.padEnd(nameWidth)}  ${r.status.padEnd(7)} ${String(r.ms).padStart(6)}ms  exit=${r.code}`
-  );
-}
-
-const failed = results.filter((r) => r.status === 'failed' || r.status === 'timeout');
-if (failed.length > 0) {
-  console.log(`\n=== failures (${failed.length}) ===`);
-  for (const r of failed) {
-    console.log(`\n--- ${r.name} (${r.status}) ---`);
-    console.log(r.stderrTail || '<no stderr captured>');
-  }
-}
-
-const passed = results.filter((r) => r.status === 'passed').length;
-const skipped = results.filter((r) => r.status === 'skipped').length;
-console.log(
-  `\n=== totals: ${passed} passed, ${failed.length} failed, ${skipped} skipped, ${results.length} total ===`
-);
-
-const exit = results.reduce((acc, r) => {
-  if (r.status === 'skipped' || r.status === 'passed') return acc;
-  return Math.max(acc, r.code === 0 ? 1 : r.code);
-}, 0);
-process.exit(exit);
 
 /**
  * Spawn one probe with `process.execPath` (the Node binary running this
@@ -165,11 +103,7 @@ function runOne(scriptPath, timeoutMs) {
     const child = spawn(process.execPath, [scriptPath], {
       shell: false,
       stdio: ['ignore', 'inherit', 'pipe'],
-      // Default probes to hidden-window mode so a 64-probe run doesn't
-      // strobe focus stealing across the user's desktop. Individual
-      // probes can still launch electron directly with their own env
-      // when run by hand for debugging (no CCSM_E2E_HIDDEN set).
-      env: { ...process.env, LANG: 'en_US.UTF-8', LC_ALL: 'en_US.UTF-8', CCSM_E2E_HIDDEN: process.env.CCSM_E2E_HIDDEN ?? '1' },
+      env: buildChildEnv(process.env),
       // POSIX needs a dedicated process group so timeout cleanup reaches
       // descendants. Windows uses taskkill's process-tree traversal.
       detached: process.platform !== 'win32',
@@ -218,4 +152,113 @@ function runOne(scriptPath, timeoutMs) {
       resolve({ code: 1, timedOut: false, stderrTail: `spawn error: ${err.message}` });
     });
   });
+}
+
+/**
+ * Discover, run, and summarize every harness/probe. Exported (not just
+ * guarded below) so a caller with a real reason to drive the full suite
+ * programmatically can `import { main } from './run-all-e2e.mjs'` — but
+ * ordinary `import` of this module (e.g. from a unit test targeting
+ * `buildChildEnv`) must NOT trigger this. See the `isMainModule` guard at
+ * the bottom of the file.
+ */
+export async function main() {
+  const skipRaw = (process.env.E2E_SKIP || '').trim();
+  const skipSet = new Set(
+    skipRaw
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+  );
+
+  const probeFiles = readdirSync(SCRIPTS_DIR)
+    .filter((f) => f.startsWith(PROBE_PREFIX) && f.endsWith('.mjs'))
+    .sort();
+  const harnessFiles = readdirSync(SCRIPTS_DIR)
+    .filter((f) => f.startsWith(HARNESS_PREFIX) && f.endsWith('.mjs'))
+    .sort();
+  // Run harnesses FIRST — they're slower per-file but pack many cases, so
+  // failing fast on a regression in a merged case beats waiting for 70 cold
+  // launches.
+  const allFiles = [...harnessFiles, ...probeFiles];
+
+  if (allFiles.length === 0) {
+    console.error('[run-all-e2e] no probes or harnesses found');
+    process.exit(1);
+  }
+
+  console.log(`[run-all-e2e] discovered ${harnessFiles.length} harness(es) + ${probeFiles.length} probe(s)`);
+  if (skipSet.size > 0) {
+    console.log(`[run-all-e2e] skipping (E2E_SKIP): ${[...skipSet].join(', ')}`);
+  }
+
+  /** @type {Array<{name: string, status: 'passed'|'failed'|'skipped'|'timeout', code: number, ms: number, stderrTail: string}>} */
+  const results = [];
+
+  for (const file of allFiles) {
+    const name = probeName(file);
+    const isHarness = file.startsWith(HARNESS_PREFIX);
+    if (skipSet.has(name)) {
+      results.push({ name, status: 'skipped', code: 0, ms: 0, stderrTail: '' });
+      console.log(`\n[run-all-e2e] SKIP  ${name}`);
+      continue;
+    }
+
+    const full = path.join(SCRIPTS_DIR, file);
+    console.log(`\n[run-all-e2e] RUN   ${name}`);
+
+    const started = Date.now();
+    const timeoutMs = isHarness ? HARNESS_TIMEOUT_MS : PROBE_TIMEOUT_MS;
+    const { code, timedOut, stderrTail } = await runOne(full, timeoutMs);
+    const ms = Date.now() - started;
+
+    let status;
+    if (timedOut) status = 'timeout';
+    else if (code === 0) status = 'passed';
+    else status = 'failed';
+
+    results.push({ name, status, code, ms, stderrTail });
+    console.log(`[run-all-e2e] ${status.toUpperCase().padEnd(6)} ${name} (${ms}ms, exit=${code})`);
+  }
+
+  // --- summary ---
+  const nameWidth = Math.max(...results.map((r) => r.name.length), 4);
+  const symbol = (s) => (s === 'passed' ? '[OK]' : s === 'skipped' ? '[--]' : '[XX]');
+
+  console.log('\n=== E2E summary ===');
+  for (const r of results) {
+    console.log(
+      `${symbol(r.status)} ${r.name.padEnd(nameWidth)}  ${r.status.padEnd(7)} ${String(r.ms).padStart(6)}ms  exit=${r.code}`
+    );
+  }
+
+  const failed = results.filter((r) => r.status === 'failed' || r.status === 'timeout');
+  if (failed.length > 0) {
+    console.log(`\n=== failures (${failed.length}) ===`);
+    for (const r of failed) {
+      console.log(`\n--- ${r.name} (${r.status}) ---`);
+      console.log(r.stderrTail || '<no stderr captured>');
+    }
+  }
+
+  const passed = results.filter((r) => r.status === 'passed').length;
+  const skipped = results.filter((r) => r.status === 'skipped').length;
+  console.log(
+    `\n=== totals: ${passed} passed, ${failed.length} failed, ${skipped} skipped, ${results.length} total ===`
+  );
+
+  const exit = results.reduce((acc, r) => {
+    if (r.status === 'skipped' || r.status === 'passed') return acc;
+    return Math.max(acc, r.code === 0 ? 1 : r.code);
+  }, 0);
+  process.exit(exit);
+}
+
+// Only run the suite when this file is executed directly (`node
+// scripts/run-all-e2e.mjs`), never on `import` — a unit test importing this
+// module to reach `buildChildEnv` must not accidentally kick off the entire
+// real-Claude E2E suite as an import side effect.
+const isMainModule = process.argv[1] != null && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isMainModule) {
+  await main();
 }

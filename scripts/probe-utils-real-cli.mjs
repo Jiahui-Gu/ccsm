@@ -69,6 +69,7 @@ import { homedir, tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { resolveAutoUpdaterEnv } from './probe-helpers/autoUpdaterGuard.mjs';
 
 // ============================================================================
 // Direct-xterm helpers
@@ -373,6 +374,34 @@ export async function createIsolatedClaudeDir({ keep = false } = {}) {
  * visible window (manual debugging, dnd-kit) opt out with
  * `env: { CCSM_E2E_HIDDEN: '0' }`.
  */
+export function buildIsolatedLaunchEnv({ tempDir, env = {} } = {}) {
+  return {
+    ...process.env,
+    ELECTRON_DISABLE_GPU: '1',
+    NODE_ENV: 'production',
+    CCSM_PROD_BUNDLE: '1',
+    // Default to hidden so dogfood scripts don't pop a visible window
+    // on the dev's desktop. Honor parent shell's CCSM_E2E_HIDDEN if set
+    // (e.g. dev exported '0' for manual debugging), and let the caller's
+    // explicit `env: { CCSM_E2E_HIDDEN: '0' }` win via the spread below.
+    CCSM_E2E_HIDDEN: process.env.CCSM_E2E_HIDDEN ?? '1',
+    // Guard the user's global `claude` CLI install from its own
+    // auto-updater firing mid-run (see probe-helpers/autoUpdaterGuard.mjs
+    // for the incident this closes). Same override precedent as
+    // CCSM_E2E_HIDDEN above: parent shell wins over our default, and the
+    // caller's explicit `env` wins over both via the spread below.
+    ...resolveAutoUpdaterEnv(),
+    // Main reads CCSM_CLAUDE_CONFIG_DIR; renderer's commands-loader reads
+    // bare CLAUDE_CONFIG_DIR; claude binary reads CLAUDE_CONFIG_DIR;
+    // ccsm.userHome is derived from HOME / USERPROFILE. Set them all.
+    CCSM_CLAUDE_CONFIG_DIR: tempDir,
+    CLAUDE_CONFIG_DIR: tempDir,
+    HOME: tempDir,
+    USERPROFILE: tempDir,
+    ...env,
+  };
+}
+
 export async function launchCcsmIsolated({ tempDir, userDataDir, env = {} } = {}) {
   if (!tempDir) throw new Error('launchCcsmIsolated: tempDir is required');
   const cwd = process.cwd();
@@ -405,25 +434,7 @@ export async function launchCcsmIsolated({ tempDir, userDataDir, env = {} } = {}
   const electronApp = await electron.launch({
     args: ['.', `--user-data-dir=${effectiveUserDataDir}`],
     cwd,
-    env: {
-      ...process.env,
-      ELECTRON_DISABLE_GPU: '1',
-      NODE_ENV: 'production',
-      CCSM_PROD_BUNDLE: '1',
-      // Default to hidden so dogfood scripts don't pop a visible window
-      // on the dev's desktop. Honor parent shell's CCSM_E2E_HIDDEN if set
-      // (e.g. dev exported '0' for manual debugging), and let the caller's
-      // explicit `env: { CCSM_E2E_HIDDEN: '0' }` win via the spread below.
-      CCSM_E2E_HIDDEN: process.env.CCSM_E2E_HIDDEN ?? '1',
-      // Main reads CCSM_CLAUDE_CONFIG_DIR; renderer's commands-loader reads
-      // bare CLAUDE_CONFIG_DIR; claude binary reads CLAUDE_CONFIG_DIR;
-      // ccsm.userHome is derived from HOME / USERPROFILE. Set them all.
-      CCSM_CLAUDE_CONFIG_DIR: tempDir,
-      CLAUDE_CONFIG_DIR: tempDir,
-      HOME: tempDir,
-      USERPROFILE: tempDir,
-      ...env,
-    },
+    env: buildIsolatedLaunchEnv({ tempDir, env }),
     timeout: 60000,
   });
 
