@@ -31,7 +31,47 @@ export function SessionDrawer({
   onClose,
   onSelectSession,
 }: SessionDrawerProps) {
-  const [collapsedGroups, setCollapsedGroups] = useState<ReadonlySet<string>>(() => new Set());
+  // Per-group disclosure overrides the phone user has explicitly toggled.
+  // Only holds an entry once a group has actually been clicked; every other
+  // group defers to its own persisted `group.collapsed` flag. This is the
+  // single source of truth this drawer owns — `SessionNavigator`'s
+  // `collapsedGroups` set is a *complete* effective set derived below, not
+  // a diff, so a persisted `collapsed: true` group can be explicitly
+  // re-expanded by one click without any size-based sentinel guessing
+  // whether the set "means" anything.
+  const [overrides, setOverrides] = useState<ReadonlyMap<string, boolean>>(() => new Map());
+
+  // Reconcile stale overrides when a group disappears from the model (e.g.
+  // deleted, or filtered out because it has no live sessions), so a group id
+  // reused later never inherits a stranger's override. This only ever
+  // *removes* entries for ids that are no longer present — an ordinary
+  // polling refresh that resends the same group ids (even as a brand-new
+  // `model` object) leaves every existing override untouched.
+  useEffect(() => {
+    const liveIds = new Set(model.groups.map((group) => group.id));
+    setOverrides((current) => {
+      let changed = false;
+      const next = new Map(current);
+      for (const id of current.keys()) {
+        if (!liveIds.has(id)) {
+          next.delete(id);
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [model]);
+
+  // The complete, authoritative collapsed-id set handed to `SessionNavigator`:
+  // a group's own override if it has one, else its persisted `collapsed` flag.
+  const collapsedGroups = useMemo<ReadonlySet<string>>(() => {
+    const result = new Set<string>();
+    for (const group of model.groups) {
+      const collapsed = overrides.has(group.id) ? overrides.get(group.id)! : group.collapsed;
+      if (collapsed) result.add(group.id);
+    }
+    return result;
+  }, [model, overrides]);
 
   // Reflect the phone's own selection, not a stale desktop `activeSessionId`
   // that may have been set by an unrelated tab switch on another client.
@@ -59,10 +99,11 @@ export function SessionDrawer({
   }, [open]);
 
   function handleToggleGroup(id: string): void {
-    setCollapsedGroups((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+    setOverrides((current) => {
+      const group = model.groups.find((candidate) => candidate.id === id);
+      const currentlyCollapsed = current.has(id) ? current.get(id)! : group?.collapsed ?? false;
+      const next = new Map(current);
+      next.set(id, !currentlyCollapsed);
       return next;
     });
   }

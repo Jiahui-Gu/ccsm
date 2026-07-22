@@ -228,6 +228,110 @@ describe('SessionDrawer', () => {
     expect(JSON.stringify(sharedModel.groups)).toBe(frozenGroups);
   });
 
+  it('expands a persisted collapsed:true group after a single click, revealing its session', async () => {
+    const user = userEvent.setup();
+    const collapsedModel = model({
+      groups: [
+        {
+          id: 'g1',
+          name: 'Group 1',
+          order: 0,
+          collapsed: true,
+          sessions: [{ id: 's1', name: 'Session One', cwd: '/repo/one', state: 'idle', order: 0 }],
+        },
+      ],
+    });
+    render(
+      <SessionDrawer
+        open
+        model={collapsedModel}
+        selectedSessionId={null}
+        onClose={vi.fn()}
+        onSelectSession={vi.fn()}
+      />,
+    );
+    // Starts collapsed, per the persisted `collapsed: true` flag.
+    expect(screen.queryByText('Session One')).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: /Group 1/ }));
+
+    // A single click must be enough to explicitly expand it.
+    expect(screen.getByText('Session One')).toBeInTheDocument();
+  });
+
+  it('does not expand an untouched persisted-collapsed group when a sibling group is toggled', async () => {
+    const user = userEvent.setup();
+    const twoGroupModel = model({
+      groups: [
+        {
+          id: 'g1',
+          name: 'Group 1',
+          order: 0,
+          collapsed: false,
+          sessions: [{ id: 's1', name: 'Session One', cwd: '/repo/one', state: 'idle', order: 0 }],
+        },
+        {
+          id: 'g2',
+          name: 'Group 2',
+          order: 1,
+          collapsed: true,
+          sessions: [{ id: 's2', name: 'Session Two', cwd: '/repo/two', state: 'idle', order: 0 }],
+        },
+      ],
+    });
+    render(
+      <SessionDrawer
+        open
+        model={twoGroupModel}
+        selectedSessionId={null}
+        onClose={vi.fn()}
+        onSelectSession={vi.fn()}
+      />,
+    );
+    // g1 starts expanded, g2 starts collapsed (its own persisted flag).
+    expect(screen.getByText('Session One')).toBeInTheDocument();
+    expect(screen.queryByText('Session Two')).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: /Group 1/ }));
+
+    // g1 collapses in response to the user's own click on it...
+    expect(screen.queryByText('Session One')).toBeNull();
+    // ...but the untouched, persisted-collapsed g2 must stay collapsed.
+    expect(screen.queryByText('Session Two')).toBeNull();
+  });
+
+  it('preserves a local collapsed-group toggle across an ordinary model object replacement (poll)', async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <SessionDrawer
+        open
+        model={model()}
+        selectedSessionId="s1"
+        onClose={vi.fn()}
+        onSelectSession={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('Session One')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /Group 1/ }));
+    expect(screen.queryByText('Session One')).toBeNull();
+
+    // Simulate an ordinary polling refresh: a brand-new model object (a
+    // fresh `model()` call, not the same reference) with the same group ids
+    // and the same persisted `collapsed` flags as before.
+    rerender(
+      <SessionDrawer
+        open
+        model={model()}
+        selectedSessionId="s1"
+        onClose={vi.fn()}
+        onSelectSession={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText('Session One')).toBeNull();
+  });
+
   it('never calls focus() or blur() itself while opening, navigating, or closing', () => {
     // Uses `fireEvent.click` rather than `userEvent.click` — a real user
     // tap naturally focuses the tapped element via the browser's own
