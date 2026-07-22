@@ -1170,7 +1170,9 @@ Record pass/fail for:
 
 1. `/status` submitted from the composer;
 2. a prompt requesting a response long enough to scroll several screens;
-3. a permission confirmation selected with discrete keys;
+3. permission confirmation: N/A under the current desktop policy because
+   `entryFactory.ts` unconditionally launches Claude with
+   `--dangerously-skip-permissions`;
 4. an `AskUserQuestion` option selected with arrows or digits and Enter;
 5. an `AskUserQuestion` free-text response sent through the composer;
 6. Ctrl+C from the key bar;

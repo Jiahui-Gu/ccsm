@@ -222,36 +222,45 @@ cols/rows changing in the expected direction. Prints
 `[mobile-remote-visual] PASS portrait, keyboard, landscape, drawer` only on
 full success.
 
-## Real CLI, public relay, and physical-phone acceptance (not run here)
+## Real CLI, public relay, and physical-phone acceptance
 
-The above three harnesses are simulated-desktop dogfood only — deterministic,
-fast, and safe to run in any environment. They do **not** by themselves
-satisfy the mobile composer/terminal-sync plan's release gate. Per that
-plan's Task 7, v0.3.0 additionally requires, before merge:
+The three harnesses above remain deterministic simulated-desktop dogfood.
+Public relay and real-browser acceptance were completed separately against
+`https://ccsm-mobile-remote.jiahuigu.workers.dev` from commit
+`85fcc0be715dc3b39a12d65299d0233fb5f30d1e`. Deployment workflow run
+`29902412040` succeeded from that SHA, followed by:
 
-1. the same three harnesses run against a **deployed public relay**
-   (`CCSM_RELAY_URL` pointing at it, not local Wrangler);
-2. a **real Claude CLI** session driven through the phone (composer
-   `/status`, a long scrolling response compared against the desktop's own
-   authoritative headless buffer, a permission confirmation, an
-   `AskUserQuestion` answered both by keys and by composer free text,
-   Ctrl+C from the key bar, and a reconnect-during-active-output recovery);
-3. **physical-phone acceptance** on a real device over the public
-   internet — QR pairing, drawer open/close and session switch, selecting
-   and copying terminal text without opening the keyboard, tapping
-   terminal whitespace with the keyboard staying closed, tapping the
-   composer with the keyboard opening, CJK/IME/multiline/paste entry,
-   portrait↔landscape rotation, native permission/Ask flows, a real
-   disconnect/reconnect with an unsent draft, and re-pairing in the
-   existing browser tab — with screenshots or a short recording of
-   keyboard-open, selection, Ask free text, and reconnect recovery.
+- public terminal synchronization: 5/5 exact buffer-parity fault cases;
+- public composer, controls, Ask, reconnect, and re-pair: 13/13 cases;
+- public visual geometry and touch targets: 5/5 cases;
+- real Electron + global Claude Code through the public relay: `/status`,
+  `AskUserQuestion` option and free-text answers, Ctrl+C during active work,
+  disconnect/reopen during active output, exact authoritative recovery, and
+  empty console, page-error, and WebSocket-error arrays.
 
-None of items 1–3 have been executed as part of this change: no
-`CCSM_RELAY_URL` was configured in this environment, and there is no
-physical device or real Claude CLI session available here. Do not treat a
-green `harness-e2e-mobile-terminal-sync.mjs` / `harness-e2e-mobile-remote-relay.mjs`
-run against local Wrangler as evidence that 1–3 passed — they are a
-different, additional gate.
+The long-output proof used repeated short real Claude responses because Claude
+collapses large Bash tool cards and treats a bracketed-pasted leading `!` as a
+normal prompt. PTY and relay sequences still converged with no transport loss.
+At 52×42, 96 unique response markers exceeded the two-screen threshold of 84.
+A fresh phone context then serialized exactly 19,521 bytes, matching the
+desktop authoritative buffer byte-for-byte with SHA-256
+`BEC1A8207E8E0D94D5BAEE6665437C4C5CC5080F94EDB77F9EA2C0F9DEB0BF15`;
+all markers appeared exactly once.
+
+An upstream Claude permission confirmation is N/A under the current desktop
+policy: `electron/ptyHost/entryFactory.ts` unconditionally appends
+`--dangerously-skip-permissions`. The acceptance run did not change that
+longstanding policy.
+
+Claude Code `2.1.141` and its global executable were healthy before and after
+the real-flow acceptance. Every launch set `DISABLE_AUTOUPDATER=1`.
+
+**Physical-device acceptance remains pending.** A real phone over the public
+internet must still cover QR pairing, drawer open/close and session switching,
+terminal selection/copy with the keyboard closed, composer-only keyboard
+entry, CJK/IME/multiline/paste input, portrait/landscape rotation, native Ask
+flows, disconnect/reconnect with an unsent draft, and re-pairing in the
+existing browser tab, with the required screenshots or recording.
 
 ## Claude CLI auto-updater isolation
 

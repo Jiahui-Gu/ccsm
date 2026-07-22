@@ -314,8 +314,10 @@ authoritative headless xterm buffer after each scenario:
    live output, drops a sequence, and disconnects during active output;
 3. the phone must recover to exact buffer parity with each sequence applied at
    most once, with no duplicate lines, stale repaint, or reconnect flashback;
-4. a real Claude CLI session runs a long response, `/status`, a permission
-   confirmation, and both selection and free-text `AskUserQuestion` flows;
+4. a real Claude CLI session runs a long response, `/status`, and both
+   selection and free-text `AskUserQuestion` flows; permission confirmation is
+   N/A while `entryFactory.ts` unconditionally launches Claude with
+   `--dangerously-skip-permissions`;
 5. a physical phone verifies long-output scrolling, selection and copy,
    portrait/landscape rotation, composer behavior, and software-keyboard
    occlusion.
