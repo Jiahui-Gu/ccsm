@@ -62,6 +62,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  readFileSync,
   rmSync,
   statSync,
 } from 'node:fs';
@@ -215,6 +216,90 @@ export async function waitForXtermBuffer(win, pattern, { timeout = 15000 } = {})
   throw new Error(
     `waitForXtermBuffer: pattern ${pattern} not found within ${timeout}ms. Last screen tail:\n${tail}`,
   );
+}
+
+/**
+ * Type `prompt` into claude's TUI, confirm it echoes into the input box, then
+ * press Enter until the turn is actually DISPATCHED and written to a session
+ * JSONL under `projectsRoot`. Returns the absolute path of the JSONL that now
+ * contains `prompt`, or null if it never persisted within `timeout`.
+ *
+ * Why press Enter in a retry loop instead of sending a single `'\r'` (the
+ * Task 7 persistence-resume flake): claude's Ink TUI intermittently swallows
+ * the FIRST Enter right after cold-start. The prompt lands in the input box
+ * and ECHOES (so a buffer-only wait like `waitForXtermBuffer(token)` is
+ * satisfied), but the turn is never dispatched — no `/v1/messages` request,
+ * no `<sid>.jsonl` written. A test that reopens the session and relies on
+ * `claude --resume <sid>` needs the run-1 transcript to EXIST on disk; if it
+ * quits after only confirming the echo, no JSONL is written, the reopen spawns
+ * `--session-id` (fresh) instead of `--resume`, and the prompt never replays.
+ *
+ * Re-sending Enter until the on-disk transcript contains the prompt is the
+ * authoritative "the turn actually went through" signal and mirrors what a
+ * human does when the first Enter "didn't take". Idempotent: the disk is
+ * polled before each additional Enter, so in the common first-try-succeeds
+ * case exactly one Enter is sent and no spurious empty turns are submitted.
+ *
+ * This does NOT paper over a product bug — ccsm forwards every keystroke
+ * faithfully (the token echoes; each `'\r'` reaches the pty). The race is in
+ * the upstream CLI's cold-start input handling, and the harness owns being
+ * robust to it.
+ */
+export async function sendPromptAndWaitForPersist(
+  win,
+  { projectsRoot, prompt, timeout = 60000, echoTimeout = 20000 } = {},
+) {
+  if (!projectsRoot) throw new Error('sendPromptAndWaitForPersist: projectsRoot is required');
+  if (!prompt) throw new Error('sendPromptAndWaitForPersist: prompt is required');
+
+  await sendToClaudeTui(win, prompt);
+  // Confirm the prompt reached claude's input box (keystrokes hit the pty)
+  // before we start pressing Enter.
+  const promptRe = new RegExp(prompt.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  await waitForXtermBuffer(win, promptRe, { timeout: echoTimeout });
+
+  const deadline = Date.now() + timeout;
+  let persisted = findJsonlContainingText(projectsRoot, prompt);
+  while (!persisted && Date.now() < deadline) {
+    await sendToClaudeTui(win, '\r');
+    // Poll the disk for a few seconds before re-pressing Enter — claude
+    // flushes the user frame to the JSONL within ~1s of dispatch.
+    for (let i = 0; i < 6 && !persisted && Date.now() < deadline; i++) {
+      await sleep(1000);
+      persisted = findJsonlContainingText(projectsRoot, prompt);
+    }
+  }
+  return persisted;
+}
+
+/** Walk `root` for `*.jsonl` files and return the path of the first whose
+ *  UTF-8 content includes `text`, or null. Used to prove a claude turn was
+ *  actually dispatched + persisted (not merely echoed in the TUI). */
+function findJsonlContainingText(root, text) {
+  const stack = [root];
+  while (stack.length) {
+    const dir = stack.pop();
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const ent of entries) {
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory()) {
+        stack.push(full);
+        continue;
+      }
+      if (!ent.name.endsWith('.jsonl')) continue;
+      try {
+        if (readFileSync(full, 'utf8').includes(text)) return full;
+      } catch {
+        /* transient read race / locked file — try again next poll */
+      }
+    }
+  }
+  return null;
 }
 
 // Internal: full + screen buffer dump.
