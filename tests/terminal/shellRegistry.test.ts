@@ -83,6 +83,7 @@ import {
   resetShellForReload,
   applyTerminalFontSize,
   applyTerminalScrollback,
+  scheduleVisibleDesktopResize,
   __resetShellRegistryForTests,
 } from '../../src/terminal/shellRegistry';
 
@@ -192,6 +193,29 @@ describe('shellRegistry', () => {
     expect((a.term.options as { fontSize?: number }).fontSize).toBe(18);
     expect(a.fit.fit).toHaveBeenCalled();
     expect(resizeSpy).toHaveBeenCalledWith('sid-a', 80, 24);
+  });
+
+  it('showShell cancels stale pending resize work from the previously visible shell', async () => {
+    vi.useFakeTimers();
+    try {
+      const a = createShell('sid-a', host);
+      const b = createShell('sid-b', host);
+      a.warmed = true;
+      b.warmed = true;
+
+      showShell('sid-a');
+      resizeSpy.mockClear();
+
+      scheduleVisibleDesktopResize('sid-a', 101, 29);
+      showShell('sid-b');
+      vi.advanceTimersByTime(200);
+      await Promise.resolve();
+
+      expect(resizeSpy).toHaveBeenCalledTimes(1);
+      expect(resizeSpy).toHaveBeenCalledWith('sid-b', 80, 24);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('setMask toggles the mask div display', () => {
@@ -324,6 +348,7 @@ describe('shellRegistry', () => {
     expect((b.term.options as { fontSize?: number }).fontSize).toBe(22);
     expect(b.fit.fit).toHaveBeenCalled();
     expect(resizeSpy).toHaveBeenCalledWith('sid-b', 80, 24);
+    expect(resizeSpy).toHaveBeenCalledTimes(1);
     // Hidden has a deferred pending value.
     expect(a.pendingFontSize).toBe(22);
     expect((a.term.options as { fontSize?: number }).fontSize).toBe(13);

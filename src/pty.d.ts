@@ -15,6 +15,12 @@ export interface PtySessionInfo {
   cwd: string;
 }
 
+export interface TerminalGeometry {
+  cols: number;
+  rows: number;
+  epoch: number;
+}
+
 export interface AttachResult {
   // #888 follow-up: `snapshot` removed — the visible-buffer paint pipeline
   // goes through `getBufferSnapshot` (PR-B). The attach handler used to
@@ -22,6 +28,7 @@ export interface AttachResult {
   // the result, so we were paying a multi-K-line serialize for nothing.
   cols: number;
   rows: number;
+  geometry: TerminalGeometry;
   pid: number;
 }
 
@@ -56,6 +63,7 @@ export interface BufferSnapshotResult {
    *  already represented in `snapshot` and must be dropped by the
    *  renderer. */
   seq: number;
+  geometry: TerminalGeometry;
 }
 
 export type CheckClaudeAvailableResult =

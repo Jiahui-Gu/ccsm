@@ -27,6 +27,7 @@ import { warn, log } from '../shared/log';
 import { readAppearance } from './shellAppearance';
 import { installInputListeners } from './shellInput';
 import type { Shell } from './shellTypes';
+import { createVisibleDesktopResizeScheduler } from './visibleDesktopResize';
 
 export type { Shell } from './shellTypes';
 export type { ShellAppearance } from './shellAppearance';
@@ -34,6 +35,43 @@ export { setShellAppearanceProvider } from './shellAppearance';
 
 const shells: Map<string, Shell> = new Map();
 let topSid: string | null = null;
+
+function hasVisibleMountedShell(sid: string): boolean {
+  if (topSid !== sid) return false;
+  const shell = shells.get(sid);
+  return !!shell && shell.wrapper.isConnected;
+}
+
+const visibleDesktopResizeScheduler = createVisibleDesktopResizeScheduler({
+  isVisible: (sid) => hasVisibleMountedShell(sid),
+  resize: (sid, cols, rows) => {
+    if (!window.ccsmPty) return Promise.reject(new Error('ccsmPty unavailable'));
+    return window.ccsmPty.resize(sid, cols, rows);
+  },
+  onError: (error, sid, cols, rows) => {
+    warn('shell', `visible resize failed (${sid} ${cols}x${rows})`, error);
+  },
+});
+
+export function scheduleVisibleDesktopResize(
+  sid: string,
+  cols: number,
+  rows: number,
+): void {
+  visibleDesktopResizeScheduler.schedule(sid, cols, rows);
+}
+
+export async function commitVisibleDesktopResizeNow(
+  sid: string,
+  cols: number,
+  rows: number,
+): Promise<void> {
+  await visibleDesktopResizeScheduler.commitNow(sid, cols, rows);
+}
+
+export function cancelVisibleDesktopResize(sid: string): void {
+  visibleDesktopResizeScheduler.cancel(sid);
+}
 
 // Bug #82: revealing a shell flips its wrapper `display:none → ''`. Webkit
 // silently zeroes `.xterm-viewport.scrollTop` on that reveal WITHOUT firing
@@ -237,6 +275,7 @@ export function createShell(sid: string, host: HTMLElement): Shell {
 export function showShell(sid: string): Shell | undefined {
   const shell = shells.get(sid);
   if (!shell) return undefined;
+  const previousTopSid = topSid;
 
   for (const [otherSid, other] of shells) {
     if (otherSid === sid) continue;
@@ -248,6 +287,7 @@ export function showShell(sid: string): Shell | undefined {
   shell.wrapper.style.display = '';
   shell.wrapper.style.zIndex = '2';
   topSid = sid;
+  if (previousTopSid && previousTopSid !== sid) cancelVisibleDesktopResize(previousTopSid);
 
   // Consume any deferred font size that landed while this shell was
   // hidden. Apply in place + refit; the PTY resize falls out of fit.
@@ -258,13 +298,6 @@ export function showShell(sid: string): Shell | undefined {
     if (cur !== px) {
       try {
         shell.term.options.fontSize = px;
-        shell.fit.fit();
-        const p = window.ccsmPty?.resize(sid, shell.term.cols, shell.term.rows);
-        if (p && typeof (p as Promise<void>).then === 'function') {
-          void (p as Promise<void>).catch((e) =>
-            warn('shell', 'lazy resize failed', e),
-          );
-        }
       } catch (e) {
         warn('shell', 'lazy font apply failed', e);
       }
@@ -276,6 +309,17 @@ export function showShell(sid: string): Shell | undefined {
   // paints. Without this the just-revealed wrapper paints with a webkit-
   // zeroed scrollTop and the scrollbar thumb desyncs from the buffer.
   reconcileView(shell);
+
+  if (shell.warmed) {
+    try {
+      shell.fit.fit();
+      void commitVisibleDesktopResizeNow(sid, shell.term.cols, shell.term.rows).catch((e) => {
+        warn('shell', 'visible reveal resize failed', e);
+      });
+    } catch (e) {
+      warn('shell', 'visible reveal fit failed', e);
+    }
+  }
 
   try {
     window.__ccsmTerm = shell.term;
@@ -353,6 +397,7 @@ export function subscribeShellData(sid: string): void {
 export function disposeShell(sid: string): void {
   const shell = shells.get(sid);
   if (!shell) return;
+  cancelVisibleDesktopResize(sid);
   shells.delete(sid);
   try {
     shell.dataUnsubscribe();
@@ -401,6 +446,7 @@ export function disposeShell(sid: string): void {
 
 export function disposeAll(): void {
   for (const sid of Array.from(shells.keys())) disposeShell(sid);
+  visibleDesktopResizeScheduler.dispose();
 }
 
 /**
@@ -447,10 +493,7 @@ export async function applyTerminalFontSize(px: number): Promise<void> {
   try {
     shell.term.options.fontSize = px;
     shell.fit.fit();
-    const p = window.ccsmPty?.resize(shell.sid, shell.term.cols, shell.term.rows);
-    if (p && typeof (p as Promise<void>).then === 'function') {
-      await (p as Promise<void>);
-    }
+    await commitVisibleDesktopResizeNow(shell.sid, shell.term.cols, shell.term.rows);
   } catch (e) {
     warn('shell', 'apply fontSize failed', e);
   }
@@ -497,6 +540,7 @@ export function __resetShellRegistryForTests(): void {
   }
   shells.clear();
   topSid = null;
+  visibleDesktopResizeScheduler.dispose();
   if (beforeUnloadHandler && typeof window !== 'undefined') {
     try {
       window.removeEventListener('beforeunload', beforeUnloadHandler);
