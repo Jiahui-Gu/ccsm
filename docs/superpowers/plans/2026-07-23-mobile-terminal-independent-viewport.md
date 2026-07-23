@@ -25,7 +25,7 @@
 - Renderer code under `src/` accesses main only through typed `window.ccsmPty`; it never imports from `electron/`.
 - Keep the last valid phone frame visible through malformed data, reconnect, gaps, and replacement snapshot waits.
 - Do not redesign or reimplement Send behavior in viewport tasks. Integrate the exact separate fix only in Task 10.
-- Reuse viewport ownership root fix commit `b730487c` in Task 2 and integrate separate Send fix commit `61af85f1` only in Task 10; do not reimplement either root cause.
+- Use only the ownership tests/evidence and resize-emission removals from `b730487c`; do not cherry-pick that commit because its phone-fit adapter/harness model conflicts with canonical-grid parity. Integrate separate Send fix commit `61af85f1` only in Task 10.
 - Do not deploy, merge, tag, or release while implementing these tasks.
 - Do not update user-owned snapshots or unrelated visual baselines.
 
@@ -293,15 +293,18 @@ git commit -m "feat(remote): define canonical terminal geometry protocol" -m "Co
 ### Task 2: Canonical Geometry State and Desktop-Only Ownership
 
 **Files:**
-- Evaluate/cherry-pick: commit `b730487c` (`fix: keep mobile terminal resize local`)
-- Modify after cherry-pick: `electron/ptyHost/entryFactory.ts:64-99, 302-336`
+- Inspect selectively, never cherry-pick: commit `b730487c` (`fix: keep mobile terminal resize local`)
+- Reuse ownership evidence: `electron/remote/__tests__/remoteMessages.test.ts` (`session.resize ownership`)
+- Create legacy emission test: `electron/remote/__tests__/mobilePage.test.ts`
+- Modify emission paths: `electron/remote/remoteMessages.ts:1-8, 138-152`, `electron/remote/mobilePage.ts:100-145, 186-202`, `src/mobile/components/PhoneShell.tsx:138-168`
+- Modify ownership tests: `tests/mobile/PhoneShell.test.tsx:713-753`
+- Modify compatibility comment only: `src/shared/mobileRemote/protocol.ts:49-54`
+- Modify canonical state: `electron/ptyHost/entryFactory.ts:64-99, 302-336`
 - Modify: `electron/ptyHost/lifecycle.ts:21-49, 51-125, 186-205`
 - Modify: `electron/ptyHost/index.ts:54-104`
-- Modify: `electron/remote/remoteMessages.ts:1-28, 66-84, 138-152`
-- Modify: `src/shared/mobileRemote/protocol.ts:37-54`
 - Modify: `electron/ptyHost/__tests__/entryFactory.test.ts`
 - Modify: `electron/ptyHost/__tests__/lifecycle.test.ts`
-- Modify/cherry-pick coverage: `electron/remote/__tests__/remoteMessages.test.ts`, `electron/remote/mobilePage.ts`, `scripts/fixtures/mobile-remote-pty-fixture.mjs`, `scripts/harness-e2e-mobile-remote-visual.mjs`, `scripts/harness-e2e-mobile-terminal-sync.mjs`, `scripts/probe-helpers/mobileRemoteHarness.mjs`, `src/mobile/components/PhoneShell.tsx`, `src/mobile/testBridge.d.ts`, `tests/mobile/PhoneShell.test.tsx`, `tests/mobile/bootstrap.test.tsx`, `tests/mobile/testBridge.test.tsx`
+- Explicitly reject from `b730487c`: `scripts/fixtures/mobile-remote-pty-fixture.mjs`, `scripts/harness-e2e-mobile-remote-visual.mjs`, `scripts/harness-e2e-mobile-terminal-sync.mjs`, `scripts/probe-helpers/mobileRemoteHarness.mjs`, `src/mobile/testBridge.d.ts`, `tests/mobile/bootstrap.test.tsx`, `tests/mobile/testBridge.test.tsx`, and the `PhoneShell.tsx` `dimensionsRef/getDimensions/fit(true)` hunks.
 
 **Interfaces:**
 - Consumes: `CanonicalTerminalGeometry`, `parseCanonicalTerminalGeometry` from Task 1.
@@ -311,7 +314,7 @@ git commit -m "feat(remote): define canonical terminal geometry protocol" -m "Co
   - `AttachResult.geometry: CanonicalTerminalGeometry`
   - `commitCanonicalGeometry(sessions, sid, cols, rows): Promise<CanonicalTerminalGeometry | null>` temporarily performs the current resize and returns the installed/current geometry; Task 3 replaces its internals with the coordinator without changing the signature.
 
-- [ ] **Step 1: Prove the isolated root-cause commit is based on the inspected parent**
+- [ ] **Step 1: Inspect and classify the root-cause commit without applying it**
 
 Run:
 
@@ -319,31 +322,108 @@ Run:
 git merge-base --is-ancestor 96cf4114 b730487c
 git diff --check 96cf4114 b730487c
 git show --stat --oneline b730487c
+git show --format= b730487c -- electron/remote/remoteMessages.ts electron/remote/__tests__/remoteMessages.test.ts electron/remote/mobilePage.ts src/mobile/components/PhoneShell.tsx tests/mobile/PhoneShell.test.tsx
+git show --format= b730487c -- scripts/harness-e2e-mobile-terminal-sync.mjs scripts/harness-e2e-mobile-remote-visual.mjs scripts/probe-helpers/mobileRemoteHarness.mjs src/mobile/testBridge.d.ts
 ```
 
-Expected: both checks exit 0; the stat lists 13 files and includes removal/no-op handling of phone `session.resize`.
+Expected: ancestry/whitespace checks exit 0 and the stat lists 13 files. The first focused diff contains reusable `session.resize` no-PTY tests and current/legacy emission removal. The second focused diff demonstrates the rejected model: phone-fit dimensions are surfaced through `getDimensions()` and used to size the parity reference terminal.
 
-- [ ] **Step 2: Cherry-pick the reusable fix instead of reproducing it**
+- [ ] **Step 2: Write failing desktop-authority and emission-removal tests from the reusable evidence**
+
+Reuse the root-cause assertion from `b730487c`:
+
+```ts
+it('keeps desktop PTY/headless dimensions authoritative when a legacy phone reports its viewport size', async () => {
+  const peer = makePeer();
+  await handleClientMessage(
+    peer,
+    JSON.stringify({ type: 'session.resize', sid: 's1', cols: 42, rows: 28 }),
+  );
+  expect(mockedPty.resizePtySession).not.toHaveBeenCalled();
+  expect(peer.send).not.toHaveBeenCalled();
+});
+
+it('still rejects malformed legacy resize messages', async () => {
+  const peer = makePeer();
+  await handleClientMessage(
+    peer,
+    JSON.stringify({ type: 'session.resize', sid: 's1', cols: 0.5, rows: 28 }),
+  );
+  expect(mockedPty.resizePtySession).not.toHaveBeenCalled();
+  expect(peer.send).toHaveBeenCalledWith({ type: 'error', message: 'invalid_resize' });
+});
+```
+
+Add a `PhoneShell` test that invokes the transitional adapter measurement callback and proves `client.sent` contains no `session.resize`. Add a legacy-page source contract:
+
+```ts
+it('does not emit session.resize from the legacy phone page', () => {
+  const html = renderMobilePage();
+  expect(html).not.toContain("send({ type: 'session.resize'");
+});
+```
+
+- [ ] **Step 3: Run ownership tests and verify RED**
 
 Run:
 
 ```bash
-git cherry-pick -x b730487c
+npm test -- electron/remote/__tests__/remoteMessages.test.ts electron/remote/__tests__/mobilePage.test.ts tests/mobile/PhoneShell.test.tsx
 ```
 
-Expected: clean cherry-pick. If a conflict appears because Task 1 changed `protocol.ts`, preserve Task 1's epoch-aware types and b730487c's compatibility rule: legacy `session.resize` remains accepted only for validation and is ignored.
+Expected: FAIL because remote `session.resize` still reaches `resizePtySession`, current `PhoneShell` still sends it, and the legacy inline page still emits it.
 
-- [ ] **Step 3: Run the cherry-picked ownership tests**
+- [ ] **Step 4: Apply only the ownership fix and emission removals**
+
+In `remoteMessages.ts`, remove the `resizePtySession` import. Keep legacy validation, then return without mutation:
+
+```ts
+if (message.type === 'session.resize') {
+  if (
+    typeof message.sid !== 'string' ||
+    !Number.isInteger(message.cols) ||
+    !Number.isInteger(message.rows)
+  ) {
+    client.send({ type: 'error', message: 'invalid_resize' });
+    return;
+  }
+  return;
+}
+```
+
+In `PhoneShell.tsx`, replace the send callback with a temporary physical-measurement compatibility callback that has no wire side effect:
+
+```ts
+const handleViewportMeasurement = useCallback(
+  (_dimensions: { cols: number; rows: number }) => undefined,
+  [],
+);
+```
+
+Pass it to the current `MobileTerminal` only until Task 6 removes FitAddon and Task 8 removes the callback surface. Do not add `dimensionsRef`, `getDimensions()`, or a forced `fit(true)` session-switch effect.
+
+In `mobilePage.ts`, remove `lastSentCols`, `lastSentRows`, and the `send({ type: 'session.resize', ... })` block. Leave legacy local drawing behavior unchanged in this task; canonical epoch/barrier and canonical phone-grid work land in Tasks 3-6.
+
+Add only a compatibility comment to the shared `session.resize` union: it exists for already-deployed clients and is validated/ignored by desktop.
+
+- [ ] **Step 5: Run selective ownership tests and verify GREEN**
 
 Run:
 
 ```bash
-npm test -- electron/remote/__tests__/remoteMessages.test.ts tests/mobile/PhoneShell.test.tsx tests/mobile/bootstrap.test.tsx tests/mobile/testBridge.test.tsx
+npm test -- electron/remote/__tests__/remoteMessages.test.ts electron/remote/__tests__/mobilePage.test.ts tests/mobile/PhoneShell.test.tsx
 ```
 
-Expected: PASS, including `keeps desktop PTY/headless dimensions authoritative when a legacy phone reports its viewport size` and `keeps phone viewport resize local`.
+Expected: PASS; current and legacy phone paths emit no resize, valid legacy resize input is ignored, and malformed legacy input remains observable as `invalid_resize`.
 
-- [ ] **Step 4: Write failing canonical-state tests**
+- [ ] **Step 6: Commit the selective root-cause ownership fix**
+
+```bash
+git add electron/remote/remoteMessages.ts electron/remote/__tests__/remoteMessages.test.ts electron/remote/mobilePage.ts electron/remote/__tests__/mobilePage.test.ts src/mobile/components/PhoneShell.tsx tests/mobile/PhoneShell.test.tsx src/shared/mobileRemote/protocol.ts
+git commit -m "fix(remote): reserve PTY resize for desktop" -m "Reuses ownership evidence from b730487c; intentionally excludes its phone-fit adapter and harness hunks." -m "Co-authored-by: Copilot App <223556219+Copilot@users.noreply.github.com>"
+```
+
+- [ ] **Step 7: Write failing canonical-state tests**
 
 ```ts
 it('stores one canonical geometry object and preserves it while detached', () => {
@@ -369,7 +449,7 @@ it('rejects invalid and no-op canonical geometry without mutating either termina
 });
 ```
 
-- [ ] **Step 5: Run the lifecycle test and verify RED**
+- [ ] **Step 8: Run the lifecycle test and verify RED**
 
 Run:
 
@@ -379,7 +459,7 @@ npm test -- electron/ptyHost/__tests__/lifecycle.test.ts electron/ptyHost/__test
 
 Expected: FAIL because `Entry.geometry`, geometry-bearing return types, and `commitCanonicalGeometry` are missing.
 
-- [ ] **Step 6: Replace duplicated `cols`/`rows` entry state with canonical geometry**
+- [ ] **Step 9: Replace duplicated `cols`/`rows` entry state with canonical geometry**
 
 In `Entry`, remove mutable `cols` and `rows` fields and add:
 
@@ -428,19 +508,19 @@ export async function commitCanonicalGeometry(
 }
 ```
 
-Only desktop IPC calls this seam. `remoteMessages.ts` must not import or call it. Keep the b730487c legacy resize branch as a validated no-op.
+Only desktop IPC calls this seam. `remoteMessages.ts` must not import or call it. Keep the selectively implemented legacy resize branch as a validated no-op.
 
-- [ ] **Step 7: Run focused tests and verify GREEN**
+- [ ] **Step 10: Run focused tests and verify GREEN**
 
 Run:
 
 ```bash
-npm test -- electron/ptyHost/__tests__/lifecycle.test.ts electron/ptyHost/__tests__/entryFactory.test.ts electron/remote/__tests__/remoteMessages.test.ts tests/mobile/PhoneShell.test.tsx
+npm test -- electron/ptyHost/__tests__/lifecycle.test.ts electron/ptyHost/__tests__/entryFactory.test.ts electron/remote/__tests__/remoteMessages.test.ts electron/remote/__tests__/mobilePage.test.ts tests/mobile/PhoneShell.test.tsx
 ```
 
 Expected: PASS; detach preserves canonical geometry and phone paths never call PTY resize.
 
-- [ ] **Step 8: Commit canonical-state additions**
+- [ ] **Step 11: Commit canonical-state additions**
 
 ```bash
 git add electron/ptyHost/entryFactory.ts electron/ptyHost/lifecycle.ts electron/ptyHost/index.ts electron/remote/remoteMessages.ts src/shared/mobileRemote/protocol.ts electron/ptyHost/__tests__/entryFactory.test.ts electron/ptyHost/__tests__/lifecycle.test.ts
@@ -1632,7 +1712,7 @@ git commit -m "test(mobile): prove geometry barrier parity" -m "Co-authored-by: 
 - Verify implementation diff across all files from Tasks 1-9
 
 **Interfaces:**
-- Consumes: all prior task contracts and deterministic harnesses; Task 2 viewport ownership root fix `b730487c`; separate Send FIFO-barrier fix `61af85f1`.
+- Consumes: all prior task contracts and deterministic harnesses; Task 2's selectively reused ownership evidence from `b730487c`; separate Send FIFO-barrier fix `61af85f1`.
 - Produces: an integrated branch retaining `submitPtySession(sid, draft): Promise<PtySubmitResult>`, documented ownership/recovery behavior, and release-blocking combined acceptance evidence.
 
 - [ ] **Step 1: Verify and cherry-pick the separate Send root fix**
@@ -1772,7 +1852,7 @@ git grep -n "from ['\"]\\.\\./.*electron\\|from ['\"]electron" -- src
 git grep -n "session\\.resize" -- src/mobile scripts/harness-e2e-mobile-terminal-sync.mjs scripts/harness-e2e-mobile-remote-visual.mjs
 git grep -n "\\.focus()\\|\\.blur()\\|onData(" -- src/mobile
 node -e "const p=require('./package.json'); if(p.version!=='0.2.20'||!/^>=22/.test(p.engines.node)) process.exit(1)"
-git log --format=%B -50 | grep -F "cherry picked from commit b730487cffd2784719a8ea7efcce9e209cfadc47"
+if git log --format=%B -50 | grep -Fq "cherry picked from commit b730487cffd2784719a8ea7efcce9e209cfadc47"; then exit 1; fi
 git log --format=%B -50 | grep -F "cherry picked from commit 61af85f11fcecc45b6c2a3aa68b825acefb9b59f"
 git diff --check
 ```
@@ -1783,7 +1863,7 @@ Expected:
 - no production phone `session.resize` send (legacy shared type/server compatibility branch may remain);
 - no phone terminal focus/blur/onData registration;
 - version is `0.2.20`, Node floor is at least 22;
-- integration history records `-x` source lines for viewport ownership fix `b730487c` and Send FIFO-barrier fix `61af85f1`;
+- integration history has no `-x` cherry-pick of `b730487c`, while Send FIFO-barrier fix `61af85f1` is recorded with its `-x` source line;
 - no whitespace errors.
 
 - [ ] **Step 8: Self-review exact behavioral acceptance**
