@@ -343,6 +343,71 @@ git commit -m "feat(mobile): version terminal geometry protocol"
   `getCanonicalGeometry(registry, sid): TerminalGeometry | null`, and
   origin-typed `input(registry, sid, data, origin): void`.
 
+- [ ] **Step 0: Inspect resize-ownership donor `b730487c` read-only**
+
+Do not cherry-pick `b730487c` wholesale. Inspect its exact patch and ownership
+evidence before writing Task 2 tests:
+
+```bash
+git show --stat --oneline --decorate --no-renames b730487c
+git diff --name-status b730487c^ b730487c
+git show --format=fuller --no-ext-diff b730487c -- electron/remote/remoteMessages.ts electron/remote/mobilePage.ts src/mobile/components/PhoneShell.tsx electron/remote/__tests__/remoteMessages.test.ts tests/mobile/PhoneShell.test.tsx scripts/harness-e2e-mobile-remote-visual.mjs scripts/harness-e2e-mobile-terminal-sync.mjs scripts/probe-helpers/mobileRemoteHarness.mjs
+git grep -n -E "FitAddon|getDimensions|setSessionDimensions|phoneDims|session\\.resize" b730487c -- electron/remote src/mobile tests/mobile scripts
+```
+
+Expected: all commands succeed; the name-status output lists the donor's 13
+changed files. The focused diff shows:
+
+- ownership RED tests proving a legacy `session.resize` never calls
+  `resizePtySession`;
+- `electron/remote/mobilePage.ts` and current React
+  `src/mobile/components/PhoneShell.tsx` removing outgoing phone resize;
+- the valid legacy `session.resize` compatibility path becoming a no-PTY no-op,
+  while malformed legacy payloads still return `invalid_resize`;
+- Chromium/browser harness evidence that records zero outgoing phone resize.
+
+The donor's simulated desktop is evidence for the ownership RED test, not the
+real-Electron result. Carry its before/after observation into a real production
+Electron reproduction with isolated user data:
+
+```powershell
+npm run build
+$env:CCSM_PROD_BUNDLE = '1'
+$env:NODE_ENV = 'production'
+npx electron . "--user-data-dir=$env:TEMP\ccsm-mobile-viewport-authority"
+```
+
+In the visible desktop session, run
+`node -p "process.stdout.columns + 'x' + process.stdout.rows"` before pairing
+the phone and again after portrait, keyboard-open, keyboard-close, and
+landscape transitions. Expected: every reading is identical until the visible
+desktop window itself is resized; the isolated profile leaves the user's
+existing snapshot untouched. Reuse this exact method in Task 10's public-relay
+physical acceptance.
+
+Selectively port only those ownership RED tests/evidence, the legacy remote
+no-PTY behavior, outgoing resize removal in both current React and legacy
+`mobilePage`, and the real Electron before/after reproduction procedure. Keep
+the Task 1 versioned protocol removal as the current-client path; the legacy
+branch exists only for already-deployed clients and must never mutate PTY state.
+Apply the remote compatibility slice in Task 2, the React and legacy sender
+removal in Task 8, and the deterministic/real-Electron evidence in Tasks 9 and
+10; do not create a donor-shaped parallel implementation.
+
+Explicitly do not port any of these donor behaviors:
+
+- phone-local `FitAddon` results calling `terminal.resize`;
+- `getDimensions()` treating phone fit as canonical geometry;
+- `setSessionDimensions(phoneDims)` or equivalent parity coercion in the
+  simulated desktop;
+- authoritative headless/reference terminals being resized to phone dimensions;
+- any assertion that permits canonical parity to differ across physical
+  viewports.
+
+The implementation must compare the phone serialization with the authoritative
+desktop headless terminal at desktop canonical dimensions. `git cherry-pick
+b730487c` is forbidden in this task.
+
 - [ ] **Step 1: Write failing lifecycle authority tests**
 
 ```ts
@@ -1482,10 +1547,12 @@ git commit -m "feat(mobile): add terminal scrollbar"
 - Modify: `src/mobile/components/PhoneShell.tsx:30-167,267-273`
 - Modify: `src/mobile/mobileRemoteStore.ts:27-31,469-492`
 - Modify: `src/mobile/mobile.css:205-219`
+- Modify: `electron/remote/mobilePage.ts:92-103,125-167`
 - Modify: `tests/mobile/MobileTerminal.test.tsx`
 - Modify: `tests/mobile/PhoneShell.test.tsx:751-829`
 - Modify: `tests/mobile/mobileRemoteStore.test.ts:1079-1137`
 - Modify: `tests/mobile/mobileCss.test.ts`
+- Create: `electron/remote/__tests__/mobilePage.test.ts`
 
 **Interfaces:**
 - Consumes: Task 5 session-tagged batches, Task 6 adapter viewport API, Task 7 scrollbar.
@@ -1599,6 +1666,23 @@ function createFakeAdapter(): FakeMobileTerminalAdapter {
 }
 ```
 
+Create `electron/remote/__tests__/mobilePage.test.ts` with the legacy sender
+contract:
+
+```ts
+import { describe, expect, it } from 'vitest';
+import { renderMobilePage } from '../mobilePage';
+
+describe('renderMobilePage terminal ownership', () => {
+  it('keeps viewport changes local and never emits session.resize', () => {
+    const html = renderMobilePage();
+    expect(html).not.toContain("type: 'session.resize'");
+    expect(html).not.toContain('lastSentCols');
+    expect(html).not.toContain('lastSentRows');
+  });
+});
+```
+
 Add wrapper cases for: one adapter across rerenders; at-bottom follows output;
 history distance survives live writes and barriers; reconnect same sid; no
 saved anchor starts bottom; horizontal offset preserved for equal column count;
@@ -1612,11 +1696,12 @@ apply; scrollbar metrics update on adapter subscription.
 Run:
 
 ```bash
-npx vitest run tests/mobile/MobileTerminal.test.tsx tests/mobile/PhoneShell.test.tsx tests/mobile/mobileRemoteStore.test.ts tests/mobile/mobileCss.test.ts
+npx vitest run tests/mobile/MobileTerminal.test.tsx tests/mobile/PhoneShell.test.tsx tests/mobile/mobileRemoteStore.test.ts tests/mobile/mobileCss.test.ts electron/remote/__tests__/mobilePage.test.ts
 ```
 
 Expected: FAIL because `onResize`/`fit(true)` still send phone geometry and the
-viewport/scrollbar/anchor composition does not exist.
+legacy page still emits `session.resize`; the viewport/scrollbar/anchor
+composition does not exist.
 
 - [ ] **Step 3: Compose the adapter inside an independent physical viewport**
 
@@ -1679,6 +1764,13 @@ Delete `handleResize`, the selected-session `adapter.fit(true)` effect, and
 Update all fake adapter factories to implement Task 6's API. Ensure test
 clients' recovery classification contains only `sessions.list` and
 `session.snapshot`.
+
+In `renderMobilePage`, delete `lastSentCols`, `lastSentRows`, and only the
+outgoing `send({ type: 'session.resize', ... })` branch. Keep
+`visualViewport`, orientation, and keyboard layout listeners as physical
+viewport concerns. Do not copy its local FitAddon dimensions into the React
+adapter, protocol snapshot, desktop/headless reference, or canonical session
+state.
 
 - [ ] **Step 5: Add final viewport/rail CSS**
 
@@ -1744,16 +1836,17 @@ target.
 Run:
 
 ```bash
-npx vitest run tests/mobile/MobileTerminal.test.tsx tests/mobile/PhoneShell.test.tsx tests/mobile/mobileRemoteStore.test.ts tests/mobile/mobileCss.test.ts
+npx vitest run tests/mobile/MobileTerminal.test.tsx tests/mobile/PhoneShell.test.tsx tests/mobile/mobileRemoteStore.test.ts tests/mobile/mobileCss.test.ts electron/remote/__tests__/mobilePage.test.ts
 ```
 
 Expected: PASS for session/reconnect anchors, horizontal clamping, persistent
-scrollbar, native selection/copy, no focus transfer, and zero phone PTY resize.
+scrollbar, native selection/copy, no focus transfer, and zero React or legacy
+phone PTY resize.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/mobile/components/MobileTerminal.tsx src/mobile/components/PhoneShell.tsx src/mobile/mobileRemoteStore.ts src/mobile/mobile.css tests/mobile/MobileTerminal.test.tsx tests/mobile/PhoneShell.test.tsx tests/mobile/mobileRemoteStore.test.ts tests/mobile/mobileCss.test.ts
+git add src/mobile/components/MobileTerminal.tsx src/mobile/components/PhoneShell.tsx src/mobile/mobileRemoteStore.ts src/mobile/mobile.css electron/remote/mobilePage.ts tests/mobile/MobileTerminal.test.tsx tests/mobile/PhoneShell.test.tsx tests/mobile/mobileRemoteStore.test.ts tests/mobile/mobileCss.test.ts electron/remote/__tests__/mobilePage.test.ts
 git commit -m "feat(mobile): integrate independent terminal viewport"
 ```
 
@@ -2010,12 +2103,127 @@ with no exact-parity, viewport, or process-cleanup failure.
 
 - [ ] **Step 5: Run the combined physical acceptance**
 
-Integrate the separately reviewed Send fix without copying its implementation
-into this feature, build the same candidate commit, and execute all ten
-physical checklist items in one public-relay phone session. Record only
-non-sensitive results in the acceptance document. If either Send requires an
-extra Enter or the phone shrinks the desktop, mark the candidate failed and do
-not deploy, tag, or release.
+The separately reviewed Send fix is exactly
+`61af85f11fcecc45b6c2a3aa68b825acefb9b59f`. The viewport implementation does
+not modify Send code or recreate any part of that fix. First verify the donor
+descends from the shared PR #1481 base and inspect all implementation/review
+evidence:
+
+```powershell
+$send = '61af85f11fcecc45b6c2a3aa68b825acefb9b59f'
+git merge-base --is-ancestor 96cf4114 $send
+if ($LASTEXITCODE -ne 0) { throw 'Send donor does not descend from 96cf4114' }
+git show --stat --oneline --decorate --no-renames $send
+git show --format=fuller --no-ext-diff $send -- electron/ptyHost/lifecycle.ts electron/ptyHost/index.ts electron/ptyHost/__tests__/lifecycle.test.ts electron/remote/remoteMessages.ts electron/remote/__tests__/remoteMessages.test.ts scripts/harness-e2e-mobile-remote-relay.mjs tests/mobile/mobileRemoteStore.test.ts
+git diff --check "$send^" $send
+```
+
+Expected: the ancestry command exits `0`; the diff contains exactly these
+seven files:
+
+```text
+electron/ptyHost/__tests__/lifecycle.test.ts
+electron/ptyHost/index.ts
+electron/ptyHost/lifecycle.ts
+electron/remote/__tests__/remoteMessages.test.ts
+electron/remote/remoteMessages.ts
+scripts/harness-e2e-mobile-remote-relay.mjs
+tests/mobile/mobileRemoteStore.test.ts
+```
+
+Review evidence must show the headless FIFO barrier before reading
+`bracketedPasteMode`, entry-identity recheck after the barrier, one combined
+payload-plus-Enter PTY write, awaited remote acknowledgement, explicit barrier
+failure mapping, no masking `session.input`, and relay-harness regression
+coverage. It must contain no terminal geometry, viewport, FitAddon, scrollbar,
+or resize-authority implementation.
+
+Integrate the donor once. Skip integration only when commit ancestry or stable
+patch-id equivalence proves it is already present:
+
+```powershell
+$send = '61af85f11fcecc45b6c2a3aa68b825acefb9b59f'
+git merge-base --is-ancestor $send HEAD
+if ($LASTEXITCODE -eq 0) {
+  Write-Output 'Send donor already present by ancestry; skip cherry-pick'
+} else {
+  $patchState = (git cherry HEAD $send "$send^" | Out-String).Trim()
+  if ($patchState -match '^- ') {
+    Write-Output 'Send donor already present by stable patch-id; skip cherry-pick'
+  } elseif ($patchState -match '^\\+ ') {
+    git cherry-pick --no-commit $send
+    if ($LASTEXITCODE -ne 0) {
+      git diff --name-only --diff-filter=U
+      throw 'Stop before commit and resolve only the listed Send/viewport overlaps using the rules below'
+    }
+  } else {
+    throw "Unable to prove Send donor presence or absence: $patchState"
+  }
+}
+```
+
+Expected: an ancestor/equivalent patch prints one explicit skip reason, or the
+`+ 61af85f...` result stages the donor or stops with the exact unmerged paths.
+For conflicts, resolve line-by-line:
+
+- in `lifecycle.ts` and `index.ts`, retain Task 2/3 canonical geometry and
+  ordered barrier code while applying the donor's async FIFO-barrier `submit`
+  signature and call;
+- in `remoteMessages.ts`, retain the Task 2 legacy resize no-PTY behavior and
+  await the donor submit before sending its result;
+- in lifecycle/remote tests, retain both geometry authority cases and donor
+  FIFO, replacement-entry, failure, acknowledgement-order, and no-extra-input
+  cases;
+- in the relay harness/store test, retain canonical geometry fixtures while
+  applying only the donor Send acknowledgement/input assertions.
+
+Do not use a broad ours/theirs checkout. For the `+` path only, stage the seven
+reviewed paths, verify there are no unresolved or unexpected files, and
+preserve the donor commit message:
+
+```powershell
+$send = '61af85f11fcecc45b6c2a3aa68b825acefb9b59f'
+$expected = @(
+  'electron/ptyHost/__tests__/lifecycle.test.ts',
+  'electron/ptyHost/index.ts',
+  'electron/ptyHost/lifecycle.ts',
+  'electron/remote/__tests__/remoteMessages.test.ts',
+  'electron/remote/remoteMessages.ts',
+  'scripts/harness-e2e-mobile-remote-relay.mjs',
+  'tests/mobile/mobileRemoteStore.test.ts'
+)
+git add -- $expected
+$unmerged = @(git diff --name-only --diff-filter=U)
+if ($unmerged.Count -ne 0) { throw "Unresolved Send conflicts: $($unmerged -join ', ')" }
+$staged = @(git diff --cached --name-only)
+$unexpected = @($staged | Where-Object { $_ -notin $expected })
+if ($unexpected.Count -ne 0) { throw "Unexpected staged paths: $($unexpected -join ', ')" }
+git diff --cached --check
+git diff --cached --stat
+git commit -C $send
+```
+
+Expected: one reviewed Send commit with only the seven-file list above. The
+combined diff preserves both independent behaviors without copying phone
+viewport dimensions into PTY state.
+
+Verify the integrated candidate before physical testing:
+
+```bash
+npx vitest run electron/ptyHost/__tests__/lifecycle.test.ts electron/remote/__tests__/remoteMessages.test.ts tests/mobile/mobileRemoteStore.test.ts
+npm run typecheck
+npm run build
+node scripts/harness-e2e-mobile-remote-relay.mjs
+```
+
+Expected: every command exits `0`, Send acknowledgement follows the FIFO
+barrier and PTY write, no follow-up `session.input` appears, and viewport
+geometry tests remain unchanged.
+
+Execute all ten physical checklist items in one public-relay phone session.
+Record only non-sensitive results in the acceptance document. If either Send
+requires an extra Enter or the phone shrinks the desktop, mark the candidate
+failed and do not deploy, tag, or release.
 
 - [ ] **Step 6: Commit documentation only after evidence is complete**
 
