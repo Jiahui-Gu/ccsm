@@ -13,6 +13,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockedPty = vi.hoisted(() => ({
+  listPtySessions: vi.fn(() => []),
+  resizePtySession: vi.fn(),
   submitPtySession: vi.fn(),
 }));
 
@@ -20,8 +22,8 @@ vi.mock('../../ptyHost', () => ({
   getBufferSnapshot: vi.fn(),
   getPtySession: vi.fn(),
   inputPtySession: vi.fn(),
-  listPtySessions: vi.fn(() => []),
-  resizePtySession: vi.fn(),
+  listPtySessions: mockedPty.listPtySessions,
+  resizePtySession: mockedPty.resizePtySession,
   submitPtySession: mockedPty.submitPtySession,
 }));
 
@@ -38,7 +40,51 @@ function makePeer(): RemotePeer {
 }
 
 beforeEach(() => {
+  mockedPty.listPtySessions.mockReset();
+  mockedPty.listPtySessions.mockReturnValue([]);
+  mockedPty.resizePtySession.mockReset();
   mockedPty.submitPtySession.mockReset();
+});
+
+describe('handleClientMessage — sessions.list geometry catalog', () => {
+  it('publishes canonical geometry entries without legacy cols/rows fields', async () => {
+    mockedPty.listPtySessions.mockReturnValue([
+      {
+        sid: 's1',
+        pid: 7,
+        cwd: '/work',
+        geometry: { cols: 120, rows: 30, epoch: 2 },
+      },
+    ]);
+    const peer = makePeer();
+
+    await handleClientMessage(peer, JSON.stringify({ type: 'sessions.list' }));
+
+    expect(peer.send).toHaveBeenCalledWith({
+      type: 'sessions.list',
+      sessions: [
+        {
+          sid: 's1',
+          cwd: '/work',
+          geometry: { cols: 120, rows: 30, epoch: 2 },
+        },
+      ],
+    });
+  });
+});
+
+describe('handleClientMessage — session.resize ownership', () => {
+  it('rejects legacy session.resize as invalid_message and never mutates PTY geometry', async () => {
+    const peer = makePeer();
+
+    await handleClientMessage(
+      peer,
+      JSON.stringify({ type: 'session.resize', sid: 's1', cols: 42, rows: 28 }),
+    );
+
+    expect(mockedPty.resizePtySession).not.toHaveBeenCalled();
+    expect(peer.send).toHaveBeenCalledWith({ type: 'error', message: 'invalid_message' });
+  });
 });
 
 describe('handleClientMessage — session.submit', () => {
@@ -88,21 +134,19 @@ describe('handleClientMessage — session.submit', () => {
   });
 
   it.each([
-    [{ sid: '', requestId: 'r', draft: 'x' }, 'invalid_submission'],
-    [{ sid: 's', requestId: '', draft: 'x' }, 'invalid_submission'],
-    [{ sid: 's', requestId: 'r', draft: '' }, 'invalid_submission'],
-  ])('rejects malformed submissions %j without calling the PTY', async (payload, error) => {
+    { sid: '', requestId: 'r', draft: 'x' },
+    { sid: 's', requestId: '', draft: 'x' },
+    { sid: 's', requestId: 'r', draft: '' },
+  ])('rejects malformed submissions %j as invalid_message without calling the PTY', async (payload) => {
     const peer = makePeer();
 
     await handleClientMessage(peer, JSON.stringify({ type: 'session.submit', ...payload }));
 
     expect(mockedPty.submitPtySession).not.toHaveBeenCalled();
-    expect(peer.send).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'session.submit.result', ok: false, error }),
-    );
+    expect(peer.send).toHaveBeenCalledWith({ type: 'error', message: 'invalid_message' });
   });
 
-  it('rejects a draft longer than MAX_MOBILE_SUBMIT_CHARS without calling the PTY', async () => {
+  it('rejects a draft longer than MAX_MOBILE_SUBMIT_CHARS as invalid_message', async () => {
     const peer = makePeer();
     const draft = 'x'.repeat(MAX_MOBILE_SUBMIT_CHARS + 1);
 
@@ -112,16 +156,10 @@ describe('handleClientMessage — session.submit', () => {
     );
 
     expect(mockedPty.submitPtySession).not.toHaveBeenCalled();
-    expect(peer.send).toHaveBeenCalledWith({
-      type: 'session.submit.result',
-      sid: 's1',
-      requestId: 'req-3',
-      ok: false,
-      error: 'invalid_submission',
-    });
+    expect(peer.send).toHaveBeenCalledWith({ type: 'error', message: 'invalid_message' });
   });
 
-  it('preserves a valid sid but empties a non-string requestId in the correlated failure', async () => {
+  it('rejects a non-string requestId as invalid_message', async () => {
     const peer = makePeer();
 
     await handleClientMessage(
@@ -130,16 +168,10 @@ describe('handleClientMessage — session.submit', () => {
     );
 
     expect(mockedPty.submitPtySession).not.toHaveBeenCalled();
-    expect(peer.send).toHaveBeenCalledWith({
-      type: 'session.submit.result',
-      sid: 's1',
-      requestId: '',
-      ok: false,
-      error: 'invalid_submission',
-    });
+    expect(peer.send).toHaveBeenCalledWith({ type: 'error', message: 'invalid_message' });
   });
 
-  it('empties a non-string sid while preserving a valid requestId in the correlated failure', async () => {
+  it('rejects a non-string sid as invalid_message', async () => {
     const peer = makePeer();
 
     await handleClientMessage(
@@ -148,12 +180,6 @@ describe('handleClientMessage — session.submit', () => {
     );
 
     expect(mockedPty.submitPtySession).not.toHaveBeenCalled();
-    expect(peer.send).toHaveBeenCalledWith({
-      type: 'session.submit.result',
-      sid: '',
-      requestId: 'req-4',
-      ok: false,
-      error: 'invalid_submission',
-    });
+    expect(peer.send).toHaveBeenCalledWith({ type: 'error', message: 'invalid_message' });
   });
 });

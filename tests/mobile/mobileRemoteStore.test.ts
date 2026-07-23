@@ -16,8 +16,7 @@ type FakeRelayClient = RelayClient & {
 function isRecoveryMessage(message: MobileClientMessage): boolean {
   return (
     message.type === 'sessions.list' ||
-    message.type === 'session.snapshot' ||
-    message.type === 'session.resize'
+    message.type === 'session.snapshot'
   );
 }
 

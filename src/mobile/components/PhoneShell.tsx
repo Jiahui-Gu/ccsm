@@ -135,19 +135,12 @@ export function PhoneShell({
     };
   }, [store]);
 
-  // Stable identity across re-renders: reads fresh state via `store.getState()`
-  // inside the callback body instead of depending on the reactive `state`
-  // value, so `MobileTerminal` never recreates the adapter just because the
-  // store emitted an unrelated update.
+  // The phone terminal fits to its own viewport for readability. These
+  // dimensions are local-only projection state and never resize the shared PTY.
   const handleResize = useCallback(
-    (dimensions: { cols: number; rows: number }) => {
-      const current = store.getState();
-      if (!current.selectedSessionId || !current.inputEnabled) return;
-      void client
-        .send({ type: 'session.resize', sid: current.selectedSessionId, cols: dimensions.cols, rows: dimensions.rows })
-        .catch(() => undefined);
+    (_dimensions: { cols: number; rows: number }) => {
     },
-    [client, store],
+    [],
   );
 
   const handleConsumed = useCallback(
@@ -157,10 +150,8 @@ export function PhoneShell({
     [store],
   );
 
-  // Force a resize emission at the new session's PTY, even if the terminal
-  // element's own on-screen dimensions happen not to have changed — a
-  // different session is a different backing PTY that needs its own
-  // dimensions applied, not just a cosmetic no-op.
+  // Refit the local projection on session changes without touching PTY
+  // authority.
   useEffect(() => {
     if (!state.selectedSessionId) return;
     adapterRef.current?.fit(true);

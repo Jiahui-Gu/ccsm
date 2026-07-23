@@ -783,15 +783,16 @@ describe('PhoneShell', () => {
     expect(callsAfterSwitch.at(-1)).toEqual([true]);
   });
 
-  it('sends session.resize through the client for the current session on adapter resize', () => {
+  it('keeps phone viewport resize local instead of sending shared PTY dimensions', () => {
     const client = createFakeClient();
     const { factory, onResizeHandlers } = createFakeAdapterFactory();
     render(<PhoneShell client={client} createAdapter={factory} />);
     client.emitMessage({ type: 'sessions.navigator', version: 1, model: navigatorModel() });
     client.emitStatus('connected');
 
+    const sentBeforeResize = client.sent.length;
     onResizeHandlers[0]?.({ cols: 90, rows: 32 });
-    expect(client.sent.at(-1)).toEqual({ type: 'session.resize', sid: 's1', cols: 90, rows: 32 });
+    expect(client.sent).toHaveLength(sentBeforeResize);
   });
 
   it('does not send a resize while disconnected', () => {
@@ -800,8 +801,9 @@ describe('PhoneShell', () => {
     render(<PhoneShell client={client} createAdapter={factory} />);
     client.emitMessage({ type: 'sessions.navigator', version: 1, model: navigatorModel() });
 
+    const sentBeforeResize = client.sent.length;
     onResizeHandlers[0]?.({ cols: 90, rows: 32 });
-    expect(client.sent.find((message) => message.type === 'session.resize')).toBeUndefined();
+    expect(client.sent).toHaveLength(sentBeforeResize);
   });
 
   it('consumes each terminal render batch exactly once', () => {

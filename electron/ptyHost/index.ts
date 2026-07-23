@@ -51,7 +51,14 @@ export {
 } from './jsonlResolver';
 export type { EnsureResumeJsonlResult } from './jsonlResolver';
 export { resolveSpawnCwd } from './cwdResolver';
-export type { PtySessionInfo, AttachResult, BufferSnapshot, PtySubmitResult } from './lifecycle';
+export type {
+  PtySessionInfo,
+  AttachResult,
+  BufferSnapshot,
+  PtySubmitResult,
+  PtyResizeOrigin,
+  PtyInputOrigin,
+} from './lifecycle';
 
 // --- Singleton registry ------------------------------------------------------
 
@@ -75,11 +82,15 @@ export const attachPtySession = (sid: string): L.AttachResult | null =>
 
 export const detachPtySession = (sid: string): void => L.detach(sessions, sid);
 
-export const inputPtySession = (sid: string, data: string): void =>
-  L.input(sessions, sid, data);
+export const inputPtySession = (sid: string, data: string, origin: L.PtyInputOrigin): void =>
+  L.input(sessions, sid, data, origin);
 
-export const resizePtySession = (sid: string, cols: number, rows: number): void =>
-  L.resize(sessions, sid, cols, rows);
+export const resizePtySession = (
+  sid: string,
+  cols: number,
+  rows: number,
+  origin: L.PtyResizeOrigin,
+) => L.resizeCanonicalGeometry(sessions, sid, cols, rows, origin);
 
 // Acknowledged complete-draft submission (mobile composer). Returns the
 // explicit `PtySubmitResult` — NOT a boolean — so the `session.submit`

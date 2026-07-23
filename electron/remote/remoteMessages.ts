@@ -3,17 +3,15 @@ import {
   getPtySession,
   inputPtySession,
   listPtySessions,
-  resizePtySession,
   submitPtySession,
 } from '../ptyHost';
 import {
-  MAX_MOBILE_SUBMIT_CHARS,
+  isMobileClientMessage,
   type MobileServerMessage as SharedMobileServerMessage,
   type SessionListEntry,
 } from '../../src/shared/mobileRemote';
 import { SESSION_NAVIGATOR_MESSAGE_VERSION } from '../../src/shared/sessionNavigator';
 import { readRemoteNavigationModel } from './navigationSource';
-import { isRecord } from './remoteHttp';
 import type { RemotePeer } from './remotePeer';
 
 /** The session-chip payload the mobile client renders: just the identity and
@@ -24,7 +22,7 @@ export type MobileServerMessage =
   | SharedMobileServerMessage;
 
 export function listEntries(): SessionListEntry[] {
-  return listPtySessions().map((s) => ({ sid: s.sid, cwd: s.cwd, cols: s.cols, rows: s.rows }));
+  return listPtySessions().map((s) => ({ sid: s.sid, cwd: s.cwd, geometry: s.geometry }));
 }
 
 /** A cheap fingerprint of the session list used by the server poll loop to
@@ -53,7 +51,7 @@ export async function handleClientMessage(client: RemotePeer, raw: string): Prom
     return;
   }
 
-  if (!isRecord(message) || typeof message.type !== 'string') {
+  if (!isMobileClientMessage(message)) {
     client.send({ type: 'error', message: 'invalid_message' });
     return;
   }
@@ -64,7 +62,8 @@ export async function handleClientMessage(client: RemotePeer, raw: string): Prom
   }
 
   if (message.type === 'session.snapshot') {
-    if (typeof message.sid !== 'string') {
+    const info = getPtySession(message.sid);
+    if (!info) {
       client.send({ type: 'error', message: 'missing_sid' });
       return;
     }
@@ -73,83 +72,38 @@ export async function handleClientMessage(client: RemotePeer, raw: string): Prom
     // client (see the onPtyData gate above).
     client.subscribedSid = message.sid;
     const snapshot = await getBufferSnapshot(message.sid);
-    const info = getPtySession(message.sid);
     client.send({
       type: 'session.snapshot',
       sid: message.sid,
-      cols: info?.cols ?? null,
-      rows: info?.rows ?? null,
+      geometry: info.geometry,
       ...snapshot,
     });
     return;
   }
 
   if (message.type === 'session.input') {
-    if (typeof message.sid !== 'string' || typeof message.data !== 'string') {
-      client.send({ type: 'error', message: 'invalid_input' });
-      return;
-    }
-    inputPtySession(message.sid, message.data);
+    inputPtySession(message.sid, message.data, { kind: 'mobile-control' });
     return;
   }
 
-  // Acknowledged complete-draft submission (mobile composer). Unlike
-  // `session.input` (fire-and-forget keystroke relay, best-effort `error`
-  // on malformed shape), a submission is correlated by `requestId` so the
-  // phone can resolve/reject its pending Send button. Malformed fields get
-  // exactly ONE `session.submit.result` failure and the PTY is never
-  // touched; valid fields call `submitPtySession` exactly once and map its
-  // explicit `PtySubmitResult` 1:1 onto the response — no broad catch, no
-  // silent success fallback.
+  // Acknowledged complete-draft submission (mobile composer). Message shape is
+  // already protocol-validated; we only map the PTY lifecycle result to one
+  // correlated `session.submit.result`.
   if (message.type === 'session.submit') {
-    // Preserve whatever valid string sid/requestId exists so the failure
-    // response stays typed and serializable even when the OTHER field (or
-    // the draft) is what failed validation; empty string when the field
-    // itself isn't a valid non-empty string.
-    const sid = typeof message.sid === 'string' ? message.sid : '';
-    const requestId = typeof message.requestId === 'string' ? message.requestId : '';
-    const sidValid = typeof message.sid === 'string' && message.sid.length > 0;
-    const requestIdValid = typeof message.requestId === 'string' && message.requestId.length > 0;
-    const draftValid =
-      typeof message.draft === 'string' &&
-      message.draft.length > 0 &&
-      message.draft.length <= MAX_MOBILE_SUBMIT_CHARS;
-
-    if (!sidValid || !requestIdValid || !draftValid) {
-      client.send({
-        type: 'session.submit.result',
-        sid,
-        requestId,
-        ok: false,
-        error: 'invalid_submission',
-      });
-      return;
-    }
-
-    const result = submitPtySession(message.sid as string, message.draft as string);
+    const result = submitPtySession(message.sid, message.draft);
     if (result === 'ok') {
-      client.send({ type: 'session.submit.result', sid, requestId, ok: true });
+      client.send({ type: 'session.submit.result', sid: message.sid, requestId: message.requestId, ok: true });
       return;
     }
-    client.send({ type: 'session.submit.result', sid, requestId, ok: false, error: result });
+    client.send({
+      type: 'session.submit.result',
+      sid: message.sid,
+      requestId: message.requestId,
+      ok: false,
+      error: result,
+    });
     return;
   }
 
-  if (message.type === 'session.resize') {
-    if (
-      typeof message.sid !== 'string' ||
-      !Number.isInteger(message.cols) ||
-      !Number.isInteger(message.rows)
-    ) {
-      client.send({ type: 'error', message: 'invalid_resize' });
-      return;
-    }
-    // Clamp to a sane floor; a 0/1-column PTY breaks line wrapping in the CLI.
-    const cols = Math.max(2, message.cols as number);
-    const rows = Math.max(2, message.rows as number);
-    resizePtySession(message.sid, cols, rows);
-    return;
-  }
-
-  client.send({ type: 'error', message: 'unknown_type' });
+  client.send({ type: 'error', message: 'invalid_message' });
 }

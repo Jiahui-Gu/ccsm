@@ -30,6 +30,7 @@ interface FakeEntry {
   attached: Map<number, unknown>;
   cols: number;
   rows: number;
+  geometryEpoch: number;
   cwd: string;
 }
 
@@ -109,6 +110,7 @@ function makeFakeEntry(over: Partial<FakeEntry> = {}): FakeEntry {
     attached: new Map(),
     cols: 80,
     rows: 24,
+    geometryEpoch: 0,
     cwd: '/work',
     ...over,
   };
@@ -140,7 +142,14 @@ describe('lifecycle.spawn', () => {
     const info = L.spawn(sessions as any, 'sid-A', '/work', '/bin/claude');
 
     expect(sessions.get('sid-A')).toBe(entry);
-    expect(info).toEqual({ sid: 'sid-A', pid: 9, cols: 80, rows: 24, cwd: '/picked' });
+    expect(info).toEqual({
+      sid: 'sid-A',
+      pid: 9,
+      geometry: { cols: 80, rows: 24, epoch: 0 },
+      cols: 80,
+      rows: 24,
+      cwd: '/picked',
+    });
   });
 
   it('uses DEFAULT_COLS/ROWS when opts is omitted', () => {
@@ -311,7 +320,14 @@ describe('lifecycle.list and get', () => {
     expect(out).toHaveLength(2);
     expect(out.map((i) => i.sid).sort()).toEqual(['a', 'b']);
     const a = out.find((i) => i.sid === 'a')!;
-    expect(a).toEqual({ sid: 'a', pid: 1, cols: 80, rows: 24, cwd: '/a' });
+    expect(a).toEqual({
+      sid: 'a',
+      pid: 1,
+      geometry: { cols: 80, rows: 24, epoch: 0 },
+      cols: 80,
+      rows: 24,
+      cwd: '/a',
+    });
   });
 
   it('get returns null when sid is not in the map', () => {
@@ -321,7 +337,14 @@ describe('lifecycle.list and get', () => {
   it('get returns the info for an existing entry', () => {
     const sessions = new Map<string, FakeEntry>();
     sessions.set('s', makeFakeEntry({ cwd: '/c', pty: makeFakePty({ pid: 7 }) }));
-    expect(L.get(sessions as any, 's')).toEqual({ sid: 's', pid: 7, cols: 80, rows: 24, cwd: '/c' });
+    expect(L.get(sessions as any, 's')).toEqual({
+      sid: 's',
+      pid: 7,
+      geometry: { cols: 80, rows: 24, epoch: 0 },
+      cols: 80,
+      rows: 24,
+      cwd: '/c',
+    });
   });
 });
 
@@ -344,6 +367,7 @@ describe('lifecycle.attach and detach', () => {
     expect(L.attach(sessions as any, 's')).toEqual({
       cols: 99,
       rows: 33,
+      geometry: { cols: 99, rows: 33, epoch: 0 },
       pid: 55,
     });
     // #888 follow-up: attach MUST NOT serialize the headless buffer —
@@ -367,12 +391,14 @@ describe('lifecycle.input', () => {
     const sessions = new Map<string, FakeEntry>();
     const entry = makeFakeEntry();
     sessions.set('s', entry);
-    L.input(sessions as any, 's', 'echo hi\n');
+    L.input(sessions as any, 's', 'echo hi\n', { kind: 'desktop-renderer', webContentsId: 3 });
     expect(entry.pty.write).toHaveBeenCalledWith('echo hi\n');
   });
 
   it('is a silent no-op when sid is unknown', () => {
-    expect(() => L.input(new Map() as any, 'ghost', 'x')).not.toThrow();
+    expect(() =>
+      L.input(new Map() as any, 'ghost', 'x', { kind: 'desktop-renderer', webContentsId: 3 }))
+      .not.toThrow();
   });
 
   it('swallows pty.write throws (already-exited race)', () => {
@@ -380,13 +406,39 @@ describe('lifecycle.input', () => {
     const entry = makeFakeEntry();
     entry.pty.write = vi.fn(() => { throw new Error('EPIPE'); });
     sessions.set('s', entry);
-    expect(() => L.input(sessions as any, 's', 'x')).not.toThrow();
+    expect(() =>
+      L.input(sessions as any, 's', 'x', { kind: 'desktop-renderer', webContentsId: 3 }))
+      .not.toThrow();
   });
 });
 
 // ─── resize ───────────────────────────────────────────────────────────────
 
 describe('lifecycle.resize', () => {
+  it('retains canonical geometry and increments epoch only for a changed desktop size', () => {
+    const entry = makeFakeEntry({ cols: 120, rows: 30, geometryEpoch: 0 });
+    const sessions = new Map<string, FakeEntry>([['s1', entry]]);
+    const origin = { kind: 'visible-desktop', webContentsId: 7 } as const;
+
+    expect(L.resizeCanonicalGeometry(sessions as any, 's1', 120, 30, origin)).toBeNull();
+    expect(entry.geometryEpoch).toBe(0);
+
+    expect(L.resizeCanonicalGeometry(sessions as any, 's1', 150, 42, origin)).toEqual({
+      cols: 150,
+      rows: 42,
+      epoch: 1,
+    });
+    expect(entry.pty.resize).toHaveBeenCalledWith(150, 42);
+    expect(entry.headless.resize).toHaveBeenCalledWith(150, 42);
+  });
+
+  it('types input origin without changing PTY bytes', () => {
+    const entry = makeFakeEntry({ geometryEpoch: 0 });
+    const sessions = new Map<string, FakeEntry>([['s1', entry]]);
+    L.input(sessions as any, 's1', '\u0003', { kind: 'mobile-control' });
+    expect(entry.pty.write).toHaveBeenCalledWith('\u0003');
+  });
+
   it('resizes pty + headless and updates cached cols/rows', () => {
     const sessions = new Map<string, FakeEntry>();
     const entry = makeFakeEntry();

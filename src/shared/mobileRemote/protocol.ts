@@ -58,8 +58,7 @@ export type MobileClientMessage =
   | { type: 'sessions.list' }
   | { type: 'session.snapshot'; sid: string }
   | { type: 'session.input'; sid: string; data: string }
-  | { type: 'session.submit'; sid: string; requestId: string; draft: string }
-  | { type: 'session.resize'; sid: string; cols: number; rows: number };
+  | { type: 'session.submit'; sid: string; requestId: string; draft: string };
 
 export type SessionSubmitResult = {
   type: 'session.submit.result';
@@ -198,8 +197,6 @@ export function isMobileClientMessage(value: unknown): value is MobileClientMess
         value.draft.length > 0 &&
         value.draft.length <= MAX_MOBILE_SUBMIT_CHARS
       );
-    case 'session.resize':
-      return false;
     default:
       return false;
   }

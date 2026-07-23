@@ -286,10 +286,24 @@ beforeEach(() => {
   getPtySession.mockReset();
   loadState.mockImplementation((key: string) => (key === 'main' ? defaultNavigationState() : null));
   listPtySessions.mockImplementation(() => [
-    { sid: 'mock-sid', cwd: '/tmp/mock', cols: 80, rows: 24 },
+    {
+      sid: 'mock-sid',
+      pid: 1,
+      cwd: '/tmp/mock',
+      geometry: { cols: 80, rows: 24, epoch: 0 },
+      cols: 80,
+      rows: 24,
+    },
   ]);
   getPtySession.mockImplementation((sid: string) =>
-    sid === 'mock-sid' ? { sid, cwd: '/tmp/mock', cols: 80, rows: 24 } : null,
+    ({
+      sid,
+      pid: 1,
+      cwd: '/tmp/mock',
+      geometry: { cols: 80, rows: 24, epoch: 0 },
+      cols: 80,
+      rows: 24,
+    }),
   );
 });
 afterEach(async () => {
@@ -474,7 +488,13 @@ describe('mobileRemoteServer: message handling', () => {
         { type: 'auth.ok' },
         {
           type: 'sessions.list',
-          sessions: [{ sid: 'mock-sid', cwd: '/tmp/mock', cols: 80, rows: 24 }],
+          sessions: [
+            {
+              sid: 'mock-sid',
+              cwd: '/tmp/mock',
+              geometry: { cols: 80, rows: 24, epoch: 0 },
+            },
+          ],
         },
         {
           type: 'sessions.navigator',
@@ -510,7 +530,13 @@ describe('mobileRemoteServer: message handling', () => {
 
       expect(JSON.parse(await ws.nextMessage())).toEqual({
         type: 'sessions.list',
-        sessions: [{ sid: 'mock-sid', cwd: '/tmp/mock', cols: 80, rows: 24 }],
+        sessions: [
+          {
+            sid: 'mock-sid',
+            cwd: '/tmp/mock',
+            geometry: { cols: 80, rows: 24, epoch: 0 },
+          },
+        ],
       });
       expect(JSON.parse(await ws.nextMessage())).toEqual({
         type: 'sessions.navigator',
@@ -562,7 +588,7 @@ describe('mobileRemoteServer: message handling', () => {
 
     ws.socket.write(encodeClientText(JSON.stringify({ type: 'totally.unknown' })));
     const parsed = JSON.parse(await ws.nextMessage());
-    expect(parsed).toEqual({ type: 'error', message: 'unknown_type' });
+    expect(parsed).toEqual({ type: 'error', message: 'invalid_message' });
     ws.socket.destroy();
   });
 

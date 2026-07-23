@@ -99,8 +99,6 @@ export function renderMobilePage(): string {
     let manualClose = false;
     let ws = null;
     let reconnectDelay = 500;
-    let lastSentCols = 0;
-    let lastSentRows = 0;
 
     function basename(p) {
       if (!p) return '';
@@ -133,11 +131,6 @@ export function renderMobilePage(): string {
       if (!dims || !dims.cols || !dims.rows) return;
       if (!Number.isFinite(dims.cols) || !Number.isFinite(dims.rows)) return;
       try { term.resize(dims.cols, dims.rows); } catch {}
-      if (!activeSid) return;
-      if (dims.cols === lastSentCols && dims.rows === lastSentRows) return;
-      lastSentCols = dims.cols;
-      lastSentRows = dims.rows;
-      send({ type: 'session.resize', sid: activeSid, cols: dims.cols, rows: dims.rows });
     }
     window.addEventListener('resize', scheduleFit);
 
@@ -178,8 +171,6 @@ export function renderMobilePage(): string {
     function selectSession(sid) {
       activeSid = sid;
       snapSeq = -1;
-      lastSentCols = 0;
-      lastSentRows = 0;
       renderSessions();
       term.reset();
       send({ type: 'session.snapshot', sid });

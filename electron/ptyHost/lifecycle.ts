@@ -17,10 +17,21 @@ import { DEFAULT_COLS, DEFAULT_ROWS, makeEntry } from './entryFactory';
 import type { Entry } from './entryFactory';
 import { loadScrollbackLines } from '../prefs/scrollback';
 import { preparePastePayload } from '../../src/shared/terminal/preparePastePayload';
+import type { TerminalGeometry } from '../../src/shared/mobileRemote/protocol';
+
+export type PtyResizeOrigin = {
+  kind: 'visible-desktop';
+  webContentsId: number;
+};
+
+export type PtyInputOrigin =
+  | { kind: 'desktop-renderer'; webContentsId: number }
+  | { kind: 'mobile-control' };
 
 export interface PtySessionInfo {
   sid: string;
   pid: number;
+  geometry: TerminalGeometry;
   cols: number;
   rows: number;
   /** Working directory the PTY was actually spawned with (post-`resolveSpawnCwd`
@@ -41,11 +52,23 @@ export interface AttachResult {
   // listener + getBufferSnapshot + drain sequence.
   cols: number;
   rows: number;
+  geometry: TerminalGeometry;
   pid: number;
 }
 
+function geometryFromEntry(entry: Entry): TerminalGeometry {
+  return { cols: entry.cols, rows: entry.rows, epoch: entry.geometryEpoch };
+}
+
 function infoFromEntry(sid: string, e: Entry): PtySessionInfo {
-  return { sid, pid: e.pty.pid, cols: e.cols, rows: e.rows, cwd: e.cwd };
+  return {
+    sid,
+    pid: e.pty.pid,
+    geometry: geometryFromEntry(e),
+    cols: e.cols,
+    rows: e.rows,
+    cwd: e.cwd,
+  };
 }
 
 export function spawn(
@@ -120,6 +143,7 @@ export function attach(sessions: Map<string, Entry>, sid: string): AttachResult 
   return {
     cols: entry.cols,
     rows: entry.rows,
+    geometry: geometryFromEntry(entry),
     pid: entry.pty.pid,
   };
 }
@@ -131,7 +155,12 @@ export function detach(_sessions: Map<string, Entry>, sid: string): void {
   void sid;
 }
 
-export function input(sessions: Map<string, Entry>, sid: string, data: string): void {
+export function input(
+  sessions: Map<string, Entry>,
+  sid: string,
+  data: string,
+  _origin: PtyInputOrigin,
+): void {
   const entry = sessions.get(sid);
   if (!entry) return;
   try {
@@ -189,19 +218,54 @@ export function resize(
   cols: number,
   rows: number,
 ): void {
+  const origin: PtyResizeOrigin = { kind: 'visible-desktop', webContentsId: -1 };
   const entry = sessions.get(sid);
   if (!entry) return;
   if (cols < 2 || rows < 2) return;
   try {
-    entry.pty.resize(cols, rows);
-    entry.headless.resize(cols, rows);
-    entry.cols = cols;
-    entry.rows = rows;
+    resizeCanonicalGeometry(sessions, sid, cols, rows, origin);
   } catch (e) {
     console.warn(
       `[ptyHost] resize ${sid} failed: ${e instanceof Error ? e.message : String(e)}`,
     );
   }
+}
+
+export function getCanonicalGeometry(
+  registry: Map<string, Entry>,
+  sid: string,
+): TerminalGeometry | null {
+  const entry = registry.get(sid);
+  return entry ? geometryFromEntry(entry) : null;
+}
+
+export function resizeCanonicalGeometry(
+  registry: Map<string, Entry>,
+  sid: string,
+  cols: number,
+  rows: number,
+  _origin: PtyResizeOrigin,
+): TerminalGeometry | null {
+  const entry = registry.get(sid);
+  if (!entry || (entry.cols === cols && entry.rows === rows)) return null;
+  const epoch = entry.geometryEpoch + 1;
+  const previous = { cols: entry.cols, rows: entry.rows };
+  try {
+    entry.pty.resize(cols, rows);
+    entry.headless.resize(cols, rows);
+  } catch (error) {
+    try {
+      entry.pty.resize(previous.cols, previous.rows);
+      entry.headless.resize(previous.cols, previous.rows);
+    } catch (rollbackError) {
+      console.error('[ptyHost] canonical resize rollback failed', rollbackError);
+    }
+    throw error;
+  }
+  entry.cols = cols;
+  entry.rows = rows;
+  entry.geometryEpoch = epoch;
+  return { cols, rows, epoch };
 }
 
 // Graceful-flush + teardown budget. Reload sends a soft signal (Ctrl+C via

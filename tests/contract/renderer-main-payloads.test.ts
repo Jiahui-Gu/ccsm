@@ -138,7 +138,7 @@ let registrarHandlers: Map<string, (event: unknown, ...args: unknown[]) => unkno
     listPtySessions: () => [],
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     spawnPtySession: vi.fn() as any,
-    inputPtySession: (sid: string, data: string) => currentInputSpy(sid, data),
+    inputPtySession: (sid: string, data: string, origin) => currentInputSpy(sid, data, origin),
     resizePtySession: vi.fn(),
     killPtySession: vi.fn(async () => true),
     getPtySession: () => null,
@@ -223,16 +223,17 @@ describe('db:save / db:load (real handler chain)', () => {
 // pty:input — drive the REAL registrar
 // ─────────────────────────────────────────────────────────────────────
 describe('pty:input handler (real registrar)', () => {
-  it('forwards (sid, data) to deps.inputPtySession in that order', () => {
+  it('forwards (sid, data, desktop origin) to deps.inputPtySession', () => {
     const handler = registrarHandlers.get(PTY_CHANNELS.input);
     expect(handler, 'pty:input handler must be registered').toBeDefined();
 
     const sid = '5e8b1c2a-1234-4abc-89ef-0123456789ab';
     const data = 'echo hello\n';
-    // Real registrar's signature: `(event, sid, data) => deps.inputPtySession(sid, data)`.
-    // If a future change swaps the arg order this expectation fails.
-    handler!({}, sid, data);
-    expect(currentInputSpy).toHaveBeenCalledExactlyOnceWith(sid, data);
+    handler!({ sender: { id: 44 } }, sid, data);
+    expect(currentInputSpy).toHaveBeenCalledExactlyOnceWith(sid, data, {
+      kind: 'desktop-renderer',
+      webContentsId: 44,
+    });
   });
 });
 
@@ -258,6 +259,7 @@ describe('pty:data event payload (real dispatchPtyChunk)', () => {
       attached: new Map<number, WebContents>([[wc.id, wc as unknown as WebContents]]),
       cols: 80,
       rows: 24,
+      geometryEpoch: 0,
       cwd: '/tmp',
       seq: 6,
       pendingHeadlessWrites: 0,

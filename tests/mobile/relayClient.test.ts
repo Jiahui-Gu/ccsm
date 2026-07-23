@@ -557,36 +557,6 @@ describe('phone relay client', () => {
     client.close();
   });
 
-  it('rejects offline session.resize instead of queueing it', async () => {
-    const socket = new FakeWebSocket();
-    const client = createRelayClient({
-      relayUrl: 'https://relay.example',
-      pairing: { roomId: ROOM_ID, secret: SECRET },
-      createWebSocket: () => socket,
-    });
-    client.connect();
-    socket.open();
-
-    await expect(
-      client.send({
-        type: 'session.resize',
-        sid: 'mobile-e2e',
-        cols: 80,
-        rows: 24,
-      }),
-    ).rejects.toThrow('not_authenticated');
-    await expect(
-      client.send({
-        type: 'session.resize',
-        sid: 'mobile-e2e',
-        cols: 120,
-        rows: 40,
-      }),
-    ).rejects.toThrow('not_authenticated');
-
-    client.close();
-  });
-
   it('requeues recovery encrypted for an obsolete connection onto the authenticated socket', async () => {
     const sockets: FakeWebSocket[] = [];
     let releaseEncryption!: () => void;
@@ -668,18 +638,16 @@ describe('phone relay client', () => {
     await authenticate(client, sockets[0]!, 'S'.repeat(22));
 
     const stale = client.send({
-      type: 'session.resize',
+      type: 'session.input',
       sid: 'mobile-e2e',
-      cols: 80,
-      rows: 24,
+      data: 'first',
     });
     await encryptionStarted;
     sockets[0]!.close();
     const latest = client.send({
-      type: 'session.resize',
+      type: 'session.input',
       sid: 'mobile-e2e',
-      cols: 120,
-      rows: 40,
+      data: 'latest',
     });
 
     const staleResult = stale.then(
@@ -697,10 +665,9 @@ describe('phone relay client', () => {
 
     expect(plaintexts).toEqual([
       JSON.stringify({
-        type: 'session.resize',
+        type: 'session.input',
         sid: 'mobile-e2e',
-        cols: 80,
-        rows: 24,
+        data: 'first',
       }),
     ]);
   });

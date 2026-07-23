@@ -71,6 +71,7 @@ export interface Entry {
   attached: Map<number, WebContents>;
   cols: number;
   rows: number;
+  geometryEpoch: number;
   /** Resolved spawn cwd (after `resolveSpawnCwd` fallback). Captured here
    *  so `listPtySessions` / `getPtySession` can return it without re-deriving. */
   cwd: string;
@@ -327,6 +328,7 @@ export function makeEntry(
     attached: new Map(),
     cols,
     rows,
+    geometryEpoch: 0,
     cwd: spawnCwd,
     seq: 0,
     pendingHeadlessWrites: 0,
