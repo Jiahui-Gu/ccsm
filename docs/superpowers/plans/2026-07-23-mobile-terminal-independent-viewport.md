@@ -24,7 +24,8 @@
 - Keep phone xterm read-only. Do not register `terminal.onData`; do not call terminal/helper-textarea `focus()` or `blur()`; the composer remains the sole keyboard entry surface.
 - Renderer code under `src/` accesses main only through typed `window.ccsmPty`; it never imports from `electron/`.
 - Keep the last valid phone frame visible through malformed data, reconnect, gaps, and replacement snapshot waits.
-- Do not modify the separately tracked Send behavior. It joins this work only in the final physical-phone acceptance gate.
+- Do not redesign or reimplement Send behavior in viewport tasks. Integrate the exact separate fix only in Task 10.
+- Reuse viewport ownership root fix commit `b730487c` in Task 2 and integrate separate Send fix commit `61af85f1` only in Task 10; do not reimplement either root cause.
 - Do not deploy, merge, tag, or release while implementing these tasks.
 - Do not update user-owned snapshots or unrelated visual baselines.
 
@@ -327,7 +328,7 @@ Expected: both checks exit 0; the stat lists 13 files and includes removal/no-op
 Run:
 
 ```bash
-git cherry-pick b730487c
+git cherry-pick -x b730487c
 ```
 
 Expected: clean cherry-pick. If a conflict appears because Task 1 changed `protocol.ts`, preserve Task 1's epoch-aware types and b730487c's compatibility rule: legacy `session.resize` remains accepted only for validation and is ignored.
@@ -1621,6 +1622,9 @@ git commit -m "test(mobile): prove geometry barrier parity" -m "Co-authored-by: 
 ### Task 10: Documentation, Integration, Final Gates, and Physical Phone
 
 **Files:**
+- Cherry-pick/integrate: commit `61af85f1` from branch `jiahui-gu-fix-mobile-send-submit`
+- Integration overlap: `electron/ptyHost/lifecycle.ts:144-205` (`submit`, adjacent canonical resize), `electron/ptyHost/index.ts:84-90` (`submitPtySession`), `electron/remote/remoteMessages.ts:104-135` (`session.submit`)
+- Send regression tests: `electron/ptyHost/__tests__/lifecycle.test.ts` (`describe('submit')`), `electron/remote/__tests__/remoteMessages.test.ts` (`session.submit` acknowledgment ordering), `tests/mobile/mobileRemoteStore.test.ts` (acknowledged Send input isolation), `scripts/harness-e2e-mobile-remote-relay.mjs` (Send without follow-up `session.input`)
 - Modify: `README.md:75-86`
 - Modify: `docs/README.md:1-20`
 - Modify only if implementation exposes a new tracked debt: `DEBT.md`
@@ -1628,10 +1632,97 @@ git commit -m "test(mobile): prove geometry barrier parity" -m "Co-authored-by: 
 - Verify implementation diff across all files from Tasks 1-9
 
 **Interfaces:**
-- Consumes: all prior task contracts and deterministic harnesses.
-- Produces: documented ownership/recovery behavior and release-blocking acceptance evidence. No production API is introduced here.
+- Consumes: all prior task contracts and deterministic harnesses; Task 2 viewport ownership root fix `b730487c`; separate Send FIFO-barrier fix `61af85f1`.
+- Produces: an integrated branch retaining `submitPtySession(sid, draft): Promise<PtySubmitResult>`, documented ownership/recovery behavior, and release-blocking combined acceptance evidence.
 
-- [ ] **Step 1: Document the implemented user-visible behavior**
+- [ ] **Step 1: Verify and cherry-pick the separate Send root fix**
+
+Run:
+
+```bash
+git merge-base --is-ancestor 96cf4114 61af85f1
+git diff --check 96cf4114 61af85f1
+git show --stat --oneline 61af85f1
+git cherry-pick -x 61af85f1
+```
+
+Expected: the ancestry and whitespace checks exit 0; the stat lists exactly the seven Send-fix files above. The cherry-pick may report conflicts in `lifecycle.ts`, `index.ts`, `remoteMessages.ts`, or their tests because Tasks 2-5 deliberately refactor the same PTY/snapshot surfaces.
+
+- [ ] **Step 2: Resolve any integration conflicts while preserving both root-cause contracts**
+
+Keep the viewport coordinator and epoch-barrier code from Tasks 2-5. Preserve these exact Send semantics from `61af85f1`:
+
+```ts
+export async function submit(
+  sessions: Map<string, Entry>,
+  sid: string,
+  draft: string,
+): Promise<PtySubmitResult> {
+  if (draft.length === 0) return 'invalid_submission';
+  const entry = sessions.get(sid);
+  if (!entry) return 'session_not_found';
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      try {
+        entry.headless.write('', () => resolve());
+      } catch (error) {
+        reject(error);
+      }
+    });
+  } catch {
+    return 'pty_write_failed';
+  }
+  if (sessions.get(sid) !== entry) return 'session_not_found';
+
+  const payload = preparePastePayload(
+    draft,
+    entry.headless.modes?.bracketedPasteMode === true,
+  );
+  try {
+    entry.pty.write(`${payload}\r`);
+    return 'ok';
+  } catch {
+    return 'pty_write_failed';
+  }
+}
+```
+
+There is no timeout fallback on this Send parser barrier: acknowledgment waits for the FIFO callback or an explicit write failure. Keep the post-await session identity check so reload/kill cannot submit to a stale or replacement PTY. Keep the prepared draft and Enter in one `pty.write` call.
+
+The public surfaces remain async:
+
+```ts
+export const submitPtySession = (
+  sid: string,
+  draft: string,
+): Promise<L.PtySubmitResult> => L.submit(sessions, sid, draft);
+
+const result = await submitPtySession(message.sid as string, message.draft as string);
+```
+
+After resolving, run:
+
+```bash
+git add electron/ptyHost/lifecycle.ts electron/ptyHost/index.ts electron/ptyHost/__tests__/lifecycle.test.ts electron/remote/remoteMessages.ts electron/remote/__tests__/remoteMessages.test.ts tests/mobile/mobileRemoteStore.test.ts scripts/harness-e2e-mobile-remote-relay.mjs
+git cherry-pick --continue
+```
+
+Expected: commit `61af85f1` is integrated after the viewport commits, with both async Send acknowledgment and geometry ownership intact.
+
+- [ ] **Step 3: Run focused combined Send and viewport regression tests**
+
+Run:
+
+```bash
+npm test -- electron/ptyHost/__tests__/lifecycle.test.ts electron/remote/__tests__/remoteMessages.test.ts tests/mobile/mobileRemoteStore.test.ts tests/mobile/terminalSync.test.ts tests/mobile/PhoneShell.test.tsx
+npm run build
+node scripts/harness-e2e-mobile-remote-relay.mjs
+```
+
+Expected: tests pass for FIFO parser ordering, barrier-write failure, removed/replaced entry races, awaited acknowledgment, no masking `session.input`, no phone PTY resize, and epoch-aware terminal sync. The relay harness reports that Send never requires a follow-up `session.input`.
+
+- [ ] **Step 4: Document the implemented user-visible behavior**
 
 Update the Mobile Remote README section to state:
 
@@ -1643,7 +1734,7 @@ Update the Mobile Remote README section to state:
 
 Add the approved design and this plan to `docs/README.md`. Do not rewrite the approved spec.
 
-- [ ] **Step 2: Run the complete static and unit gates**
+- [ ] **Step 5: Run the complete static and unit gates**
 
 Run:
 
@@ -1661,7 +1752,7 @@ Expected:
 - ESLint exits 0 with zero warnings.
 - Vitest reports all tests passed.
 
-- [ ] **Step 3: Run focused build and E2E gates**
+- [ ] **Step 6: Run focused build and E2E gates**
 
 Run:
 
@@ -1672,7 +1763,7 @@ npm run probe:e2e
 
 Expected: production renderer/main/mobile bundles build; all discovered harnesses and probes pass, including the three mobile harnesses.
 
-- [ ] **Step 4: Verify boundaries, version, and absence of forbidden behavior**
+- [ ] **Step 7: Verify boundaries, version, commit integration, and absence of forbidden behavior**
 
 Run:
 
@@ -1681,6 +1772,8 @@ git grep -n "from ['\"]\\.\\./.*electron\\|from ['\"]electron" -- src
 git grep -n "session\\.resize" -- src/mobile scripts/harness-e2e-mobile-terminal-sync.mjs scripts/harness-e2e-mobile-remote-visual.mjs
 git grep -n "\\.focus()\\|\\.blur()\\|onData(" -- src/mobile
 node -e "const p=require('./package.json'); if(p.version!=='0.2.20'||!/^>=22/.test(p.engines.node)) process.exit(1)"
+git log --format=%B -50 | grep -F "cherry picked from commit b730487cffd2784719a8ea7efcce9e209cfadc47"
+git log --format=%B -50 | grep -F "cherry picked from commit 61af85f11fcecc45b6c2a3aa68b825acefb9b59f"
 git diff --check
 ```
 
@@ -1690,9 +1783,10 @@ Expected:
 - no production phone `session.resize` send (legacy shared type/server compatibility branch may remain);
 - no phone terminal focus/blur/onData registration;
 - version is `0.2.20`, Node floor is at least 22;
+- integration history records `-x` source lines for viewport ownership fix `b730487c` and Send FIFO-barrier fix `61af85f1`;
 - no whitespace errors.
 
-- [ ] **Step 5: Self-review exact behavioral acceptance**
+- [ ] **Step 8: Self-review exact behavioral acceptance**
 
 Use a real Claude session locally and confirm:
 
@@ -1704,9 +1798,9 @@ Use a real Claude session locally and confirm:
 6. history distance from bottom survives output, barrier, reconnect, and switch;
 7. selection/copy works and terminal/scrollbar actions do not focus helper textarea or move the composer.
 
-- [ ] **Step 6: Run the final physical-phone public-relay gate with the separately fixed Send bug**
+- [ ] **Step 9: Run the final physical-phone public-relay gate with the integrated Send fix**
 
-Precondition: the separately tracked Send fix is present and independently tested. Do not implement or alter it in this task.
+Precondition: exact Send fix commit `61af85f1` has been cherry-picked after the viewport work, its conflicts were resolved using Step 2's FIFO/identity/awaited-ack contract, and the focused combined tests pass.
 
 On a physical phone connected through the public relay, run one combined session and verify:
 
@@ -1718,7 +1812,7 @@ On a physical phone connected through the public relay, run one combined session
 
 Record evidence in the PR description or issue tracker. Do not deploy, merge, tag, or release from this task.
 
-- [ ] **Step 7: Commit documentation and acceptance notes**
+- [ ] **Step 10: Commit documentation and acceptance notes**
 
 ```bash
 git add README.md docs/README.md DEBT.md
