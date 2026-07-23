@@ -251,6 +251,137 @@ async function assertScrollbarGeometry(page, label) {
   assert.ok(thumbRect.height >= MIN_TOUCH_TARGET - 0.5, `${label}: scrollbar thumb height must be >= 44px`);
 }
 
+async function assertTerminalOverflowGeometry(page, label) {
+  const metrics = await readTerminalViewportMetrics(page);
+  assert.ok(metrics, `${label}: terminal viewport must exist`);
+  assert.ok(metrics.maxHorizontalOffset > 0, `${label}: horizontal extent must be positive`);
+  assert.ok(
+    metrics.gridWidth > metrics.viewportWidth,
+    `${label}: canonical pixel grid width must exceed physical viewport width`,
+  );
+  return metrics;
+}
+
+async function assertPanToRightEdge(page, label) {
+  const beforePan = await assertTerminalOverflowGeometry(page, `${label} pre-pan`);
+  await setHorizontalOffset(page, beforePan.maxHorizontalOffset);
+  await waitFor(
+    `${label}: horizontal pan reaches right edge`,
+    async () => {
+      const metrics = await readTerminalViewportMetrics(page);
+      if (!metrics) return false;
+      const clampedMax = Math.max(0, metrics.maxHorizontalOffset);
+      return metrics.scrollLeft >= Math.max(0, clampedMax - 2);
+    },
+    10_000,
+  );
+  const afterPan = await readTerminalViewportMetrics(page);
+  assert.ok(afterPan, `${label}: terminal viewport must still exist after pan`);
+  const clampedMax = Math.max(0, afterPan.maxHorizontalOffset);
+  assert.ok(
+    afterPan.scrollLeft >= Math.max(0, clampedMax - 2),
+    `${label}: scrollLeft must reach clamped horizontal max`,
+  );
+  assert.ok(
+    afterPan.hasLeftEdgeAffordanceClass,
+    `${label}: right-edge pan must show noninteractive left-edge affordance`,
+  );
+}
+
+async function resetSetPointerCaptureProbe(page, label) {
+  const armed = await page.evaluate(() => {
+    const rail = document.querySelector('.mobile-terminal-scrollbar__rail');
+    if (!rail || typeof rail.setPointerCapture !== 'function') return false;
+    const key = '__ccsmPointerCaptureProbe';
+    if (!rail[key]) {
+      const original = rail.setPointerCapture.bind(rail);
+      rail[key] = { count: 0 };
+      rail.setPointerCapture = (pointerId) => {
+        rail[key].count += 1;
+        rail[key].lastPointerId = pointerId;
+        return original(pointerId);
+      };
+    }
+    rail[key].count = 0;
+    rail[key].lastPointerId = null;
+    return true;
+  });
+  assert.equal(armed, true, `${label}: scrollbar rail setPointerCapture probe must arm`);
+}
+
+async function readSetPointerCaptureProbe(page) {
+  return page.evaluate(() => {
+    const rail = document.querySelector('.mobile-terminal-scrollbar__rail');
+    if (!rail) return { count: 0, lastPointerId: null };
+    const probe = rail.__ccsmPointerCaptureProbe;
+    if (!probe) return { count: 0, lastPointerId: null };
+    return { count: probe.count ?? 0, lastPointerId: probe.lastPointerId ?? null };
+  });
+}
+
+async function assertFocusPreserved(page, label, focusedDescriptor) {
+  const active = await activeElementDescriptor(page);
+  assert.equal(active, focusedDescriptor, `${label}: focus must remain on allowed target`);
+  assert.doesNotMatch(active, /xterm-helper-textarea/, `${label}: helper textarea must not receive focus`);
+}
+
+async function assertScrollbarTrackJumpAndThumbDrag(page, label, options = {}) {
+  const expectedFocus = options.expectedFocus ?? null;
+  const expectedGeometry = options.expectedGeometry ?? null;
+  const provePointerCapture = options.provePointerCapture ?? false;
+  const scrollbar = page.getByRole('scrollbar', { name: 'Terminal output scroll position' });
+  const initialValMax = Number(await scrollbar.getAttribute('aria-valuemax'));
+  assert.ok(initialValMax > 0, `${label}: vertical range must be scrollable`);
+  const initialValNow = Number(await scrollbar.getAttribute('aria-valuenow'));
+
+  const railBox = await page.locator('.mobile-terminal-scrollbar__rail').boundingBox();
+  assert.ok(railBox, `${label}: scrollbar rail must have a bounding box`);
+  await page.mouse.click(
+    railBox.x + railBox.width / 2,
+    railBox.y + railBox.height * 0.15,
+  );
+  await waitFor(
+    `${label}: track jump updates aria-valuenow`,
+    async () => Number(await scrollbar.getAttribute('aria-valuenow')) !== initialValNow,
+    10_000,
+  );
+  const afterJump = Number(await scrollbar.getAttribute('aria-valuenow'));
+  assert.notEqual(afterJump, initialValNow, `${label}: track jump should change logical viewport position`);
+
+  if (provePointerCapture) {
+    await resetSetPointerCaptureProbe(page, label);
+  }
+
+  const thumbBox = await page.locator('.mobile-terminal-scrollbar__thumb').boundingBox();
+  assert.ok(thumbBox, `${label}: scrollbar thumb must have a bounding box`);
+  await page.mouse.move(thumbBox.x + thumbBox.width / 2, thumbBox.y + thumbBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(
+    thumbBox.x + thumbBox.width / 2,
+    Math.max(railBox.y + 8, thumbBox.y - 80),
+    { steps: 8 },
+  );
+  await page.mouse.up();
+  await waitFor(
+    `${label}: thumb drag updates aria-valuenow`,
+    async () => Number(await scrollbar.getAttribute('aria-valuenow')) !== afterJump,
+    10_000,
+  );
+  const afterDrag = Number(await scrollbar.getAttribute('aria-valuenow'));
+  assert.notEqual(afterDrag, afterJump, `${label}: thumb drag should change logical viewport position`);
+
+  if (provePointerCapture) {
+    const pointerCapture = await readSetPointerCaptureProbe(page);
+    assert.ok(pointerCapture.count > 0, `${label}: thumb drag must invoke setPointerCapture`);
+  }
+  if (expectedGeometry) {
+    await assertGeometry(page, `${label} geometry`, expectedGeometry);
+  }
+  if (expectedFocus) {
+    await assertFocusPreserved(page, label, expectedFocus);
+  }
+}
+
 async function activeElementDescriptor(page) {
   return page.evaluate(() => {
     const el = document.activeElement;
@@ -329,66 +460,19 @@ async function main() {
   await assertCoreLayout(page, 'portrait');
   await assertScrollbarGeometry(page, 'portrait');
   await assertGeometry(page, 'portrait geometry', CANONICAL_GEOMETRY);
-  const portraitMetrics = await readTerminalViewportMetrics(page);
-  assert.ok(portraitMetrics, 'portrait: terminal viewport must exist');
-  assert.ok(
-    portraitMetrics.maxHorizontalOffset > 0 && portraitMetrics.gridWidth > portraitMetrics.viewportWidth,
-    'portrait: canonical grid must be wider than physical viewport',
-  );
+  await assertTerminalOverflowGeometry(page, 'portrait');
   await page.screenshot({ path: path.join(ARTIFACT_DIR, 'portrait.png') });
   log('PASS portrait canonical width + controls');
 
   // Horizontal right-edge pan shows left-edge affordance.
-  await setHorizontalOffset(page, portraitMetrics.maxHorizontalOffset);
-  await waitFor(
-    'horizontal pan reaches right edge',
-    async () => {
-      const metrics = await readTerminalViewportMetrics(page);
-      return metrics && metrics.scrollLeft >= Math.max(0, metrics.maxHorizontalOffset - 2);
-    },
-    10_000,
-  );
-  const pannedMetrics = await readTerminalViewportMetrics(page);
-  assert.ok(pannedMetrics.hasLeftEdgeAffordanceClass, 'right-edge pan must show left-edge affordance');
+  await assertPanToRightEdge(page, 'portrait');
   await assertGeometry(page, 'post-pan geometry', CANONICAL_GEOMETRY);
   log('PASS horizontal right-edge pan + affordance');
 
   // Scrollbar jump + thumb drag alter logical viewport.
-  const scrollbar = page.getByRole('scrollbar', { name: 'Terminal output scroll position' });
-  const initialValMax = Number(await scrollbar.getAttribute('aria-valuemax'));
-  assert.ok(initialValMax > 0, 'scrollbar: vertical range must be scrollable');
-  const initialValNow = Number(await scrollbar.getAttribute('aria-valuenow'));
-
-  const railBox = await page.locator('.mobile-terminal-scrollbar__rail').boundingBox();
-  assert.ok(railBox, 'scrollbar rail must have a bounding box');
-  await page.mouse.click(
-    railBox.x + railBox.width / 2,
-    railBox.y + railBox.height * 0.15,
-  );
-  await waitFor(
-    'scrollbar track jump updates aria-valuenow',
-    async () => Number(await scrollbar.getAttribute('aria-valuenow')) !== initialValNow,
-    10_000,
-  );
-  const afterJump = Number(await scrollbar.getAttribute('aria-valuenow'));
-  assert.notEqual(afterJump, initialValNow, 'track jump should change logical viewport position');
-
-  const thumbBox = await page.locator('.mobile-terminal-scrollbar__thumb').boundingBox();
-  assert.ok(thumbBox, 'scrollbar thumb must have a bounding box');
-  await page.mouse.move(thumbBox.x + thumbBox.width / 2, thumbBox.y + thumbBox.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(
-    thumbBox.x + thumbBox.width / 2,
-    Math.max(railBox.y + 8, thumbBox.y - 80),
-    { steps: 8 },
-  );
-  await page.mouse.up();
-  await waitFor(
-    'thumb drag updates aria-valuenow',
-    async () => Number(await scrollbar.getAttribute('aria-valuenow')) !== afterJump,
-    10_000,
-  );
-  await assertGeometry(page, 'post-scrollbar geometry', CANONICAL_GEOMETRY);
+  await assertScrollbarTrackJumpAndThumbDrag(page, 'pre-barrier scrollbar', {
+    expectedGeometry: CANONICAL_GEOMETRY,
+  });
   log('PASS scrollbar track jump + thumb drag');
 
   // Helper focus survives keyboard shrink + restore.
@@ -461,6 +545,14 @@ async function main() {
   await page.screenshot({ path: path.join(ARTIFACT_DIR, 'zoom.png') });
   log('PASS zoom viewport');
 
+  await setVisualViewportOverride(page, null);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await waitFor('post-zoom portrait app-height', async () => (await appHeightPx(page)) === 844, 10_000);
+  await assertCoreLayout(page, 'post-zoom portrait');
+  await assertScrollbarGeometry(page, 'post-zoom portrait');
+  await assertGeometry(page, 'post-zoom portrait geometry', CANONICAL_GEOMETRY);
+  await assertFocusPreserved(page, 'post-zoom portrait', composerFocused);
+
   assertNoSessionResizeMessages(desktop, 'pre-barrier');
 
   // Desktop-authoritative barrier: geometry changes only after snapshot barrier.
@@ -478,6 +570,25 @@ async function main() {
     preBarrierState.terminalResetCount + 1,
     'desktop barrier must trigger exactly one extra reset',
   );
+  assert.deepEqual(postBarrierState.geometry, BARRIER_GEOMETRY, 'desktop barrier geometry must be exactly 160x36 epoch 1');
+
+  const postBarrierViewport = page.viewportSize();
+  assert.deepEqual(postBarrierViewport, { width: 390, height: 844 }, 'post-barrier: physical viewport must remain portrait 390x844');
+  await waitFor('post-barrier portrait app-height', async () => (await appHeightPx(page)) === 844, 10_000);
+  await assertCoreLayout(page, 'post-barrier');
+  await assertScrollbarGeometry(page, 'post-barrier');
+  await assertGeometry(page, 'post-barrier geometry', BARRIER_GEOMETRY);
+  await assertFocusPreserved(page, 'post-barrier', composerFocused);
+  await assertTerminalOverflowGeometry(page, 'post-barrier');
+  await assertPanToRightEdge(page, 'post-barrier');
+  await assertGeometry(page, 'post-barrier post-pan geometry', BARRIER_GEOMETRY);
+  await assertFocusPreserved(page, 'post-barrier post-pan', composerFocused);
+  await assertScrollbarTrackJumpAndThumbDrag(page, 'post-barrier scrollbar', {
+    expectedGeometry: BARRIER_GEOMETRY,
+    expectedFocus: composerFocused,
+    provePointerCapture: true,
+  });
+  assertNoSessionResizeMessages(desktop, 'post-barrier interactions');
 
   seq += 1;
   const tailChunk = `POST-BARRIER-LINE ${'Z'.repeat(120)}\r\n`;
