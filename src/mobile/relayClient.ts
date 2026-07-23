@@ -4,16 +4,18 @@ import {
   MOBILE_REMOTE_PROTOCOL_VERSION,
   createHandshakeProof,
   deriveSessionKeys,
+  isMobileServerMessage,
   openEnvelope,
   sealEnvelope,
   type EncryptedEnvelope,
   type HandshakeHello,
   type HandshakeProof,
+  type MobileClientMessage,
+  type MobileServerMessage,
   type PairingIdentity,
   type RandomValues,
   type SessionKeys,
 } from '../shared/mobileRemote';
-import type { MobileClientMessage, MobileServerMessage } from './phoneApp';
 
 export type PhoneConnectionStatus =
   | 'connecting'
@@ -54,7 +56,7 @@ type PendingMessage = {
 
 type RecoveryMessage = Extract<
   MobileClientMessage,
-  { type: 'sessions.list' | 'session.snapshot' | 'session.resize' }
+  { type: 'sessions.list' | 'session.snapshot' }
 >;
 
 export type RelayClientOptions = {
@@ -196,11 +198,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
   function isRecoveryMessage(
     message: MobileClientMessage,
   ): message is RecoveryMessage {
-    return (
-      message.type === 'sessions.list' ||
-      message.type === 'session.snapshot' ||
-      message.type === 'session.resize'
-    );
+    return message.type === 'sessions.list' || message.type === 'session.snapshot';
   }
 
   function recoveryKey(message: RecoveryMessage): string {
@@ -415,7 +413,17 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
         const currentKeys = keys;
         const plaintext = await openEnvelope(currentKeys.receive, message);
         if (!isCurrent() || keys !== currentKeys) return;
-        const applicationMessage = JSON.parse(textDecoder.decode(plaintext)) as MobileServerMessage;
+        let applicationMessage: unknown;
+        try {
+          applicationMessage = JSON.parse(textDecoder.decode(plaintext));
+        } catch {
+          failConnection(current, 'authentication_failed', 4003, 'invalid_message');
+          return;
+        }
+        if (!isMobileServerMessage(applicationMessage)) {
+          failConnection(current, 'authentication_failed', 4003, 'invalid_message');
+          return;
+        }
         for (const handler of messageHandlers) handler(applicationMessage);
       } catch {
         failConnection(current, 'authentication_failed', 4003, 'invalid_frame');

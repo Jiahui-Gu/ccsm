@@ -346,11 +346,78 @@ describe('phone relay client', () => {
     });
     const envelope = await sealEnvelope(
       desktopKeys.send,
-      new TextEncoder().encode('{"type":"sessions.list","sessions":[]}'),
+      new TextEncoder().encode('{"type":"pty.data","sid":"s1","seq":1,"chunk":"tail","geometryEpoch":4}'),
     );
     socket.receive(envelope);
-    await vi.waitFor(() => expect(messages).toEqual([{ type: 'sessions.list', sessions: [] }]));
+    await vi.waitFor(() => expect(messages).toEqual([{ type: 'pty.data', sid: 's1', seq: 1, chunk: 'tail', geometryEpoch: 4 }]));
   });
+
+  it('rejects an authenticated malformed geometry message before delivery', async () => {
+    const socket = new FakeWebSocket();
+    const messages: unknown[] = [];
+    const client = createRelayClient({
+      relayUrl: 'https://relay.example',
+      pairing: { roomId: ROOM_ID, secret: SECRET },
+      createWebSocket: () => socket,
+      randomValues: (bytes) => {
+        bytes.fill(17);
+        return bytes;
+      },
+    });
+    client.onMessage((message) => messages.push(message));
+    client.connect();
+    socket.open();
+    const phoneHello = parseSent(socket)[0]!;
+    const desktopNonce = 'M'.repeat(22);
+    const desktopHello = {
+      type: 'handshake.hello',
+      version: MOBILE_REMOTE_PROTOCOL_VERSION,
+      role: 'desktop',
+      connectionId: ROOM_ID,
+      nonce: desktopNonce,
+    } as const;
+    socket.receive(desktopHello);
+    await vi.waitFor(() =>
+      expect(parseSent(socket).some((message) => message.type === 'handshake.proof')).toBe(true),
+    );
+    socket.receive({
+      type: 'handshake.proof',
+      connectionId: ROOM_ID,
+      proof: await createHandshakeProof(
+        SECRET,
+        handshakeTranscript(desktopHello, {
+          type: 'handshake.hello',
+          version: MOBILE_REMOTE_PROTOCOL_VERSION,
+          role: 'phone',
+          connectionId: ROOM_ID,
+          nonce: String(phoneHello.nonce),
+        }, 'desktop'),
+      ),
+    });
+    await vi.waitFor(() => expect(parseSent(socket).some((message) => message.type === 'relay.authenticated')).toBe(true));
+    const desktopKeys = await deriveSessionKeys({
+      secret: SECRET,
+      roomId: ROOM_ID,
+      desktopNonce,
+      phoneNonce: String(phoneHello.nonce),
+      role: 'desktop',
+    });
+    const envelope = await sealEnvelope(
+      desktopKeys.send,
+      new TextEncoder().encode(JSON.stringify({
+        type: 'pty.data',
+        sid: 's1',
+        seq: 1,
+        chunk: 'bad',
+        geometryEpoch: -1,
+      })),
+    );
+    socket.receive(envelope);
+    await vi.waitFor(() => expect(socket.readyState).toBe(3));
+    expect(messages).toEqual([]);
+    client.close();
+  });
+
 
   it('rejects terminal input while unauthenticated instead of replaying it later', async () => {
     const socket = new FakeWebSocket();
@@ -394,44 +461,33 @@ describe('phone relay client', () => {
     client.close();
   });
 
-  it('coalesces offline resize recovery to the latest dimensions', async () => {
+  it('rejects offline session.resize instead of queueing it', async () => {
     const socket = new FakeWebSocket();
-    const plaintexts: string[] = [];
     const client = createRelayClient({
       relayUrl: 'https://relay.example',
       pairing: { roomId: ROOM_ID, secret: SECRET },
       createWebSocket: () => socket,
-      seal: (key, plaintext) => {
-        plaintexts.push(new TextDecoder().decode(plaintext));
-        return sealEnvelope(key, plaintext);
-      },
     });
     client.connect();
     socket.open();
 
-    const first = client.send({
-      type: 'session.resize',
-      sid: 'mobile-e2e',
-      cols: 80,
-      rows: 24,
-    });
-    const second = client.send({
-      type: 'session.resize',
-      sid: 'mobile-e2e',
-      cols: 120,
-      rows: 40,
-    });
-    await authenticate(client, socket, 'N'.repeat(22));
-    await Promise.all([first, second]);
-
-    expect(plaintexts).toEqual([
-      JSON.stringify({
+    await expect(
+      client.send({
+        type: 'session.resize',
+        sid: 'mobile-e2e',
+        cols: 80,
+        rows: 24,
+      }),
+    ).rejects.toThrow('not_authenticated');
+    await expect(
+      client.send({
         type: 'session.resize',
         sid: 'mobile-e2e',
         cols: 120,
         rows: 40,
       }),
-    ]);
+    ).rejects.toThrow('not_authenticated');
+
     client.close();
   });
 
@@ -481,7 +537,7 @@ describe('phone relay client', () => {
     client.close();
   });
 
-  it('keeps a newer queued resize when stale encryption finishes after reconnect', async () => {
+  it('rejects a resize queued before reconnect and does not replay it after reconnect', async () => {
     const sockets: FakeWebSocket[] = [];
     const plaintexts: string[] = [];
     let unblockFirstEncryption!: () => void;
@@ -529,19 +585,28 @@ describe('phone relay client', () => {
       cols: 120,
       rows: 40,
     });
-    await vi.advanceTimersByTimeAsync(500);
-    sockets[1]!.open();
-    await authenticate(client, sockets[1]!, 'T'.repeat(22));
-    unblockFirstEncryption();
-    await Promise.all([stale, latest]);
 
-    expect(plaintexts.at(-1)).toBe(JSON.stringify({
-      type: 'session.resize',
-      sid: 'mobile-e2e',
-      cols: 120,
-      rows: 40,
-    }));
+    const staleResult = stale.then(
+      () => null,
+      (error: unknown) => error,
+    );
+    const latestResult = latest.then(
+      () => null,
+      (error: unknown) => error,
+    );
+    unblockFirstEncryption();
+    await expect(staleResult).resolves.toMatchObject({ message: 'connection_changed' });
+    await expect(latestResult).resolves.toMatchObject({ message: 'not_authenticated' });
     client.close();
+
+    expect(plaintexts).toEqual([
+      JSON.stringify({
+        type: 'session.resize',
+        sid: 'mobile-e2e',
+        cols: 80,
+        rows: 24,
+      }),
+    ]);
   });
 
   it('rejects terminal input if its connection changes during encryption', async () => {
