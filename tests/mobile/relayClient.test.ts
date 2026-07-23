@@ -418,6 +418,102 @@ describe('phone relay client', () => {
     client.close();
   });
 
+  it.each([
+    {
+      description: 'legacy sessions.list cols/rows',
+      payload: {
+        type: 'sessions.list',
+        sessions: [{ sid: 's1', cwd: 'C:\\work', cols: 120, rows: 30 }],
+      },
+    },
+    {
+      description: 'legacy session.snapshot data and legacy dimensions',
+      payload: {
+        type: 'session.snapshot',
+        sid: 's1',
+        seq: 1,
+        data: 'snapshot',
+        cols: 120,
+        rows: 30,
+      },
+    },
+    {
+      description: 'session.snapshot missing geometry',
+      payload: {
+        type: 'session.snapshot',
+        sid: 's1',
+        seq: 1,
+        snapshot: 'snapshot',
+      },
+    },
+    {
+      description: 'pty.data missing geometryEpoch',
+      payload: {
+        type: 'pty.data',
+        sid: 's1',
+        seq: 1,
+        chunk: 'tail',
+      },
+    },
+  ])('rejects legacy decrypted server messages before delivery: $description', async ({ payload }) => {
+    const socket = new FakeWebSocket();
+    const messages: unknown[] = [];
+    const client = createRelayClient({
+      relayUrl: 'https://relay.example',
+      pairing: { roomId: ROOM_ID, secret: SECRET },
+      createWebSocket: () => socket,
+      randomValues: (bytes) => {
+        bytes.fill(19);
+        return bytes;
+      },
+    });
+    client.onMessage((message) => messages.push(message));
+    client.connect();
+    socket.open();
+    const phoneHello = parseSent(socket)[0]!;
+    const desktopNonce = 'N'.repeat(22);
+    const desktopHello = {
+      type: 'handshake.hello',
+      version: MOBILE_REMOTE_PROTOCOL_VERSION,
+      role: 'desktop',
+      connectionId: ROOM_ID,
+      nonce: desktopNonce,
+    } as const;
+    socket.receive(desktopHello);
+    await vi.waitFor(() =>
+      expect(parseSent(socket).some((message) => message.type === 'handshake.proof')).toBe(true),
+    );
+    socket.receive({
+      type: 'handshake.proof',
+      connectionId: ROOM_ID,
+      proof: await createHandshakeProof(
+        SECRET,
+        handshakeTranscript(desktopHello, {
+          type: 'handshake.hello',
+          version: MOBILE_REMOTE_PROTOCOL_VERSION,
+          role: 'phone',
+          connectionId: ROOM_ID,
+          nonce: String(phoneHello.nonce),
+        }, 'desktop'),
+      ),
+    });
+    await vi.waitFor(() => expect(parseSent(socket).some((message) => message.type === 'relay.authenticated')).toBe(true));
+    const desktopKeys = await deriveSessionKeys({
+      secret: SECRET,
+      roomId: ROOM_ID,
+      desktopNonce,
+      phoneNonce: String(phoneHello.nonce),
+      role: 'desktop',
+    });
+    const envelope = await sealEnvelope(
+      desktopKeys.send,
+      new TextEncoder().encode(JSON.stringify(payload)),
+    );
+    socket.receive(envelope);
+    await vi.waitFor(() => expect(socket.readyState).toBe(3));
+    expect(messages).toEqual([]);
+    client.close();
+  });
 
   it('rejects terminal input while unauthenticated instead of replaying it later', async () => {
     const socket = new FakeWebSocket();

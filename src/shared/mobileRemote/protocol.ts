@@ -126,17 +126,13 @@ function isTerminalGeometry(value: unknown): value is TerminalGeometry {
   );
 }
 
-function isLegacyDimensions(value: unknown): value is { cols: number; rows: number } {
-  if (!isRecord(value)) return false;
-  return (
-    isSafeInteger(value.cols, 1, MAX_TERMINAL_DIMENSION) &&
-    isSafeInteger(value.rows, 1, MAX_TERMINAL_DIMENSION)
-  );
-}
-
 function isSessionListEntry(value: unknown): value is SessionListEntry {
   if (!isRecord(value) || !isNonEmptyString(value.sid) || !isNonEmptyString(value.cwd)) return false;
-  return isTerminalGeometry(value.geometry) || isLegacyDimensions(value);
+  return (
+    isTerminalGeometry(value.geometry) &&
+    value.cols === undefined &&
+    value.rows === undefined
+  );
 }
 
 function isSessionNavigatorModel(value: unknown): value is SessionNavigatorModel {
@@ -149,11 +145,12 @@ function isSessionSnapshotMessage(value: unknown): value is SessionSnapshotMessa
   if (!isNonEmptyString(value.sid) || !isSafeInteger(value.seq, 0, Number.MAX_SAFE_INTEGER)) {
     return false;
   }
-  const snapshot = typeof value.snapshot === 'string' ? value.snapshot : value.data;
-  if (typeof snapshot !== 'string') return false;
   return (
-    (value.geometry === undefined || isTerminalGeometry(value.geometry)) &&
-    (value.geometry !== undefined || value.cols === undefined || value.rows === undefined || isLegacyDimensions(value))
+    typeof value.snapshot === 'string' &&
+    value.data === undefined &&
+    isTerminalGeometry(value.geometry) &&
+    value.cols === undefined &&
+    value.rows === undefined
   );
 }
 
@@ -163,7 +160,7 @@ function isPtyDataMessage(value: unknown): value is PtyDataMessage {
     return false;
   }
   if (typeof value.chunk !== 'string') return false;
-  return value.geometryEpoch === undefined || isSafeInteger(value.geometryEpoch, 0, Number.MAX_SAFE_INTEGER);
+  return isSafeInteger(value.geometryEpoch, 0, Number.MAX_SAFE_INTEGER);
 }
 
 function isSessionSubmitResult(value: unknown): value is SessionSubmitResult {
