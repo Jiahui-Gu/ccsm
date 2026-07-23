@@ -292,6 +292,8 @@ git commit -m "feat(remote): define canonical terminal geometry protocol" -m "Co
 
 ### Task 2: Canonical Geometry State and Desktop-Only Ownership
 
+**Selective donor rule (blocking):** `b730487c` is read-only evidence. Never run `git cherry-pick b730487c`, never apply the commit as a whole, and never treat a phone FitAddon measurement as canonical geometry.
+
 **Files:**
 - Inspect selectively, never cherry-pick: commit `b730487c` (`fix: keep mobile terminal resize local`)
 - Reuse ownership evidence: `electron/remote/__tests__/remoteMessages.test.ts` (`session.resize ownership`)
@@ -322,11 +324,19 @@ Run:
 git merge-base --is-ancestor 96cf4114 b730487c
 git diff --check 96cf4114 b730487c
 git show --stat --oneline b730487c
-git show --format= b730487c -- electron/remote/remoteMessages.ts electron/remote/__tests__/remoteMessages.test.ts electron/remote/mobilePage.ts src/mobile/components/PhoneShell.tsx tests/mobile/PhoneShell.test.tsx
-git show --format= b730487c -- scripts/harness-e2e-mobile-terminal-sync.mjs scripts/harness-e2e-mobile-remote-visual.mjs scripts/probe-helpers/mobileRemoteHarness.mjs src/mobile/testBridge.d.ts
+git show --format= b730487c -- electron/remote/remoteMessages.ts electron/remote/__tests__/remoteMessages.test.ts
+git diff b730487c^ b730487c -- electron/remote/mobilePage.ts src/mobile/components/PhoneShell.tsx tests/mobile/PhoneShell.test.tsx
+git diff b730487c^ b730487c -- scripts/harness-e2e-mobile-terminal-sync.mjs scripts/harness-e2e-mobile-remote-visual.mjs scripts/probe-helpers/mobileRemoteHarness.mjs src/mobile/testBridge.d.ts
 ```
 
-Expected: ancestry/whitespace checks exit 0 and the stat lists 13 files. The first focused diff contains reusable `session.resize` no-PTY tests and current/legacy emission removal. The second focused diff demonstrates the rejected model: phone-fit dimensions are surfaced through `getDimensions()` and used to size the parity reference terminal.
+Expected: ancestry/whitespace checks exit 0 and the stat lists 13 files. The focused donor views establish four selectively reusable items:
+
+1. ownership RED tests proving phone `session.resize` reaches no PTY resize;
+2. remote legacy `session.resize` validation plus valid-message no-op behavior;
+3. outgoing `session.resize` removal from current React phone and legacy `mobilePage`;
+4. reproduction methodology: record real Electron PTY geometry before phone connection, connect a narrow phone, exercise rotation/keyboard/viewport changes, then compare the same live PTY geometry afterward.
+
+The final focused diff is rejection evidence. Do not port any hunk that resizes phone xterm to physical FitAddon dimensions, reports phone-fit `getDimensions()` as canonical, calls `setSessionDimensions(phoneDims)` in a parity harness, or changes the reference terminal to phone dimensions. Those changes weaken cross-viewport canonical parity and are superseded by Tasks 3, 6, and 9.
 
 - [ ] **Step 2: Write failing desktop-authority and emission-removal tests from the reusable evidence**
 
@@ -405,6 +415,49 @@ Pass it to the current `MobileTerminal` only until Task 6 removes FitAddon and T
 In `mobilePage.ts`, remove `lastSentCols`, `lastSentRows`, and the `send({ type: 'session.resize', ... })` block. Leave legacy local drawing behavior unchanged in this task; canonical epoch/barrier and canonical phone-grid work land in Tasks 3-6.
 
 Add only a compatibility comment to the shared `session.resize` union: it exists for already-deployed clients and is validated/ignored by desktop.
+
+Apply these edits manually as the explicit selective patch; do not invoke Git's cherry-pick machinery:
+
+```diff
+diff --git a/src/mobile/components/PhoneShell.tsx b/src/mobile/components/PhoneShell.tsx
+@@
+-  const handleResize = useCallback(
+-    (dimensions: { cols: number; rows: number }) => {
+-      const current = store.getState();
+-      if (!current.selectedSessionId || !current.inputEnabled) return;
+-      void client.send({
+-        type: 'session.resize',
+-        sid: current.selectedSessionId,
+-        cols: dimensions.cols,
+-        rows: dimensions.rows,
+-      }).catch(() => undefined);
+-    },
+-    [client, store],
+-  );
++  const handleViewportMeasurement = useCallback(
++    (_dimensions: { cols: number; rows: number }) => undefined,
++    [],
++  );
+@@
+-        onResize={handleResize}
++        onResize={handleViewportMeasurement}
+
+diff --git a/electron/remote/mobilePage.ts b/electron/remote/mobilePage.ts
+@@
+-    let lastSentCols = 0;
+-    let lastSentRows = 0;
+@@
+-      if (!activeSid) return;
+-      if (dims.cols === lastSentCols && dims.rows === lastSentRows) return;
+-      lastSentCols = dims.cols;
+-      lastSentRows = dims.rows;
+-      send({ type: 'session.resize', sid: activeSid, cols: dims.cols, rows: dims.rows });
+@@
+-      lastSentCols = 0;
+-      lastSentRows = 0;
+```
+
+After this selective patch, no Task 2 state, test bridge, or harness may contain `phoneDims` or `setSessionDimensions(phoneDims)`.
 
 - [ ] **Step 5: Run selective ownership tests and verify GREEN**
 
@@ -1591,6 +1644,7 @@ git commit -m "feat(mobile): integrate independent terminal viewport" -m "Co-aut
 - Modify: `scripts/harness-e2e-mobile-terminal-sync.mjs:1-520`
 - Modify: `scripts/harness-e2e-mobile-remote-visual.mjs:1-360`
 - Modify: `scripts/harness-e2e-mobile-remote-relay.mjs`
+- Create: `scripts/harness-e2e-mobile-desktop-ownership.mjs`
 - Modify: `scripts/run-all-e2e.mjs:1-18` only if comments need the new cases; discovery already includes all harnesses.
 
 **Interfaces:**
@@ -1651,6 +1705,31 @@ Cover:
 - desktop geometry remains 132x41 across phone portrait, landscape, keyboard open/close, and browser zoom;
 - phone sent-message log contains zero `session.resize`.
 
+Create `harness-e2e-mobile-desktop-ownership.mjs` to automate the real-Electron donor reproduction methodology. Launch CCSM with `launchCcsmIsolated`, prepend a platform-specific wrapper for `scripts/fixtures/stub-claude.mjs` to `PATH`, set `CCSM_MOBILE_REMOTE_RELAY_URL` to the local Wrangler URL, create and show one real desktop session, then obtain the pairing URL through `window.ccsmMobileRemote.getPairingUrl()`. Insert `?ccsmTest=1` before the pairing URL's `#pair=` fragment so the phone geometry bridge is available without changing the pairing identity.
+
+Use this exact cross-viewport assertion after setup:
+
+```js
+async function assertPhoneDoesNotOwnPty({ win, phone, sid }) {
+  const before = await win.evaluate((sessionId) => window.ccsmPty.get(sessionId), sid);
+  assert.deepEqual(before.geometry, { cols: 132, rows: 41, epoch: 1 });
+
+  await phone.setViewportSize({ width: 390, height: 844 });
+  await phone.evaluate(() => window.visualViewport?.dispatchEvent(new Event('resize')));
+  await phone.setViewportSize({ width: 844, height: 390 });
+  await phone.evaluate(() => window.dispatchEvent(new Event('orientationchange')));
+
+  const [after, phoneGeometry] = await Promise.all([
+    win.evaluate((sessionId) => window.ccsmPty.get(sessionId), sid),
+    phone.evaluate(() => window.__ccsmMobileTest.getGeometry()),
+  ]);
+  assert.deepEqual(after.geometry, before.geometry);
+  assert.deepEqual(phoneGeometry, before.geometry);
+}
+```
+
+The phone physical viewport deliberately differs from the 132x41 canonical grid. The harness must not define `phoneDims`, call `setSessionDimensions`, or initialize its authoritative headless terminal from any phone FitAddon measurement.
+
 - [ ] **Step 4: Add pan and scrollbar Playwright assertions**
 
 In the visual harness, assert:
@@ -1676,6 +1755,7 @@ npm run build
 node scripts/harness-e2e-mobile-terminal-sync.mjs
 node scripts/harness-e2e-mobile-remote-visual.mjs
 node scripts/harness-e2e-mobile-remote-relay.mjs
+node scripts/harness-e2e-mobile-desktop-ownership.mjs
 ```
 
 Expected: each harness prints PASS for every case and exits 0; exact parity is byte/ANSI serialization equality, not substring equality.
@@ -1695,7 +1775,7 @@ Expected: same PASS results. This uses an already approved relay URL; it does no
 - [ ] **Step 7: Commit Task 9**
 
 ```bash
-git add scripts/fixtures/mobile-remote-pty-fixture.mjs scripts/probe-helpers/mobileRemoteHarness.mjs scripts/harness-e2e-mobile-terminal-sync.mjs scripts/harness-e2e-mobile-remote-visual.mjs scripts/harness-e2e-mobile-remote-relay.mjs scripts/run-all-e2e.mjs
+git add scripts/fixtures/mobile-remote-pty-fixture.mjs scripts/probe-helpers/mobileRemoteHarness.mjs scripts/harness-e2e-mobile-terminal-sync.mjs scripts/harness-e2e-mobile-remote-visual.mjs scripts/harness-e2e-mobile-remote-relay.mjs scripts/harness-e2e-mobile-desktop-ownership.mjs scripts/run-all-e2e.mjs
 git commit -m "test(mobile): prove geometry barrier parity" -m "Co-authored-by: Copilot App <223556219+Copilot@users.noreply.github.com>"
 ```
 
