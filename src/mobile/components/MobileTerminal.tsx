@@ -3,9 +3,9 @@
 // adapter's create/apply/dispose lifecycle; it never manages keyboard focus
 // itself — the terminal stays read/scroll/select/copy only.
 //
-// The adapter is created exactly once per mount (keyed only by the stable
-// `onResize` callback identity, not by `batch` or any other prop), and
-// disposed exactly once on unmount. Each numbered `TerminalRenderBatch` is
+// The adapter is created exactly once per mount (keyed only by stable adapter
+// dependencies, never by `batch`), and disposed exactly once on unmount.
+// Each numbered `TerminalRenderBatch` is
 // applied at most once, in `useLayoutEffect` so the DOM reflects new PTY
 // output before the browser paints, and `onConsumed` is only called after a
 // successful `apply`.
@@ -26,18 +26,15 @@ import { useLayoutEffect, useRef, type MutableRefObject } from 'react';
 import {
   createMobileTerminalAdapter,
   type MobileTerminalAdapter,
-  type MobileTerminalDimensions,
 } from '../mobileTerminalAdapter';
 import type { TerminalRenderBatch } from '../mobileRemoteStore';
 
 export type MobileTerminalAdapterFactory = (
   element: HTMLElement,
-  options: { onResize: (dimensions: MobileTerminalDimensions) => void },
 ) => MobileTerminalAdapter;
 
 export type MobileTerminalProps = {
   batch: TerminalRenderBatch | null;
-  onResize: (dimensions: MobileTerminalDimensions) => void;
   onConsumed: (id: number) => void;
   adapterRef: MutableRefObject<MobileTerminalAdapter | null>;
   // Test seam: inject a fake adapter factory for component tests instead of
@@ -48,7 +45,6 @@ export type MobileTerminalProps = {
 
 export function MobileTerminal({
   batch,
-  onResize,
   onConsumed,
   adapterRef,
   createAdapter = createMobileTerminalAdapter,
@@ -61,13 +57,13 @@ export function MobileTerminal({
   // same commit (see the module doc above) — order matters here.
   useLayoutEffect(() => {
     if (!hostRef.current) return;
-    const adapter = createAdapter(hostRef.current, { onResize });
+    const adapter = createAdapter(hostRef.current);
     adapterRef.current = adapter;
     return () => {
       adapterRef.current = null;
       adapter.dispose();
     };
-  }, [adapterRef, createAdapter, onResize]);
+  }, [adapterRef, createAdapter]);
 
   useLayoutEffect(() => {
     if (!batch || batch.id <= lastAppliedBatch.current || !adapterRef.current) return;

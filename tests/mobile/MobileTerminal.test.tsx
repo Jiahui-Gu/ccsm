@@ -1,9 +1,3 @@
-// TDD tests for the `MobileTerminal` React wrapper. Uses an injected fake
-// adapter factory (the `createAdapter` prop) rather than unsafely mocking
-// `@xterm/xterm` — the component itself is oblivious to what the adapter
-// actually does, so a lightweight fake stands in for
-// `createMobileTerminalAdapter`.
-
 import { describe, expect, it, vi } from 'vitest';
 import { render } from '@testing-library/react';
 import type { MutableRefObject } from 'react';
@@ -15,7 +9,15 @@ import type { TerminalRenderBatch } from '../../src/mobile/mobileRemoteStore';
 function createFakeAdapter(): MobileTerminalAdapter {
   return {
     apply: vi.fn(),
-    fit: vi.fn(),
+    captureAnchor: vi.fn(() => ({ mode: 'bottom', horizontalOffsetPx: 0, canonicalCols: 80 })),
+    getViewportState: vi.fn(() => ({
+      geometry: null,
+      contentWidthPx: 0,
+      scroll: { maximumTop: 0, currentTop: 0, visibleRows: 24 },
+    })),
+    subscribeViewport: vi.fn(() => vi.fn()),
+    scrollToLine: vi.fn(),
+    scrollLines: vi.fn(),
     copySelection: vi.fn().mockResolvedValue(undefined),
     serialize: vi.fn(() => ''),
     dispose: vi.fn(),
@@ -31,16 +33,14 @@ function batch(id: number, data: string): TerminalRenderBatch {
 }
 
 describe('MobileTerminal', () => {
-  it('creates exactly one adapter on mount, passing the host element and onResize', () => {
+  it('creates exactly one adapter on mount and passes only the host element', () => {
     const adapter = createFakeAdapter();
     const createAdapter: MobileTerminalAdapterFactory = vi.fn(() => adapter);
-    const onResize = vi.fn();
     const adapterRef = createRef();
 
     const { container } = render(
       <MobileTerminal
         batch={null}
-        onResize={onResize}
         onConsumed={vi.fn()}
         adapterRef={adapterRef}
         createAdapter={createAdapter}
@@ -51,18 +51,10 @@ describe('MobileTerminal', () => {
     const host = container.querySelector('.mobile-terminal');
     expect(host).not.toBeNull();
     expect((createAdapter as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toBe(host);
-    expect((createAdapter as ReturnType<typeof vi.fn>).mock.calls[0]?.[1]).toMatchObject({
-      onResize,
-    });
+    expect((createAdapter as ReturnType<typeof vi.fn>).mock.calls[0]).toHaveLength(1);
     expect(adapterRef.current).toBe(adapter);
   });
 
-  // Task 4 review finding I1: a non-null `batch` present on the VERY FIRST
-  // mount (e.g. a snapshot batch already queued by the store before
-  // `MobileTerminal` renders) must still be applied in that same mount —
-  // not silently dropped because the adapter hadn't been created yet when
-  // the batch-application effect ran. Both effects must fire in the same
-  // commit, in an order where the adapter exists before it's needed.
   it('applies a batch that is already non-null on the very first mount (no drop)', () => {
     const adapter = createFakeAdapter();
     const createAdapter: MobileTerminalAdapterFactory = vi.fn(() => adapter);
@@ -73,7 +65,6 @@ describe('MobileTerminal', () => {
     render(
       <MobileTerminal
         batch={firstBatch}
-        onResize={vi.fn()}
         onConsumed={onConsumed}
         adapterRef={adapterRef}
         createAdapter={createAdapter}
@@ -89,14 +80,12 @@ describe('MobileTerminal', () => {
   it('does not recreate the adapter when unrelated props (e.g. batch) change', () => {
     const adapter = createFakeAdapter();
     const createAdapter: MobileTerminalAdapterFactory = vi.fn(() => adapter);
-    const onResize = vi.fn();
     const onConsumed = vi.fn();
     const adapterRef = createRef();
 
     const { rerender } = render(
       <MobileTerminal
         batch={null}
-        onResize={onResize}
         onConsumed={onConsumed}
         adapterRef={adapterRef}
         createAdapter={createAdapter}
@@ -106,7 +95,6 @@ describe('MobileTerminal', () => {
     rerender(
       <MobileTerminal
         batch={batch(1, 'a')}
-        onResize={onResize}
         onConsumed={onConsumed}
         adapterRef={adapterRef}
         createAdapter={createAdapter}
@@ -115,7 +103,6 @@ describe('MobileTerminal', () => {
     rerender(
       <MobileTerminal
         batch={batch(2, 'b')}
-        onResize={onResize}
         onConsumed={onConsumed}
         adapterRef={adapterRef}
         createAdapter={createAdapter}
@@ -135,7 +122,6 @@ describe('MobileTerminal', () => {
     const { rerender } = render(
       <MobileTerminal
         batch={null}
-        onResize={vi.fn()}
         onConsumed={onConsumed}
         adapterRef={adapterRef}
         createAdapter={createAdapter}
@@ -145,7 +131,6 @@ describe('MobileTerminal', () => {
     rerender(
       <MobileTerminal
         batch={batch(1, 'first')}
-        onResize={vi.fn()}
         onConsumed={onConsumed}
         adapterRef={adapterRef}
         createAdapter={createAdapter}
@@ -155,13 +140,9 @@ describe('MobileTerminal', () => {
     expect(adapter.apply).toHaveBeenLastCalledWith([{ type: 'write', data: 'first' }]);
     expect(onConsumed).toHaveBeenLastCalledWith(1);
 
-    // A new batch arriving before the previous one's consumption callback
-    // takes effect (id 2 replaces id 1 directly) is still applied exactly
-    // once, in order.
     rerender(
       <MobileTerminal
         batch={batch(2, 'second')}
-        onResize={vi.fn()}
         onConsumed={onConsumed}
         adapterRef={adapterRef}
         createAdapter={createAdapter}
@@ -182,7 +163,6 @@ describe('MobileTerminal', () => {
     const { rerender } = render(
       <MobileTerminal
         batch={null}
-        onResize={vi.fn()}
         onConsumed={onConsumed}
         adapterRef={adapterRef}
         createAdapter={createAdapter}
@@ -192,7 +172,6 @@ describe('MobileTerminal', () => {
     rerender(
       <MobileTerminal
         batch={firstBatch}
-        onResize={vi.fn()}
         onConsumed={onConsumed}
         adapterRef={adapterRef}
         createAdapter={createAdapter}
@@ -200,13 +179,9 @@ describe('MobileTerminal', () => {
     );
     expect(adapter.apply).toHaveBeenCalledTimes(1);
 
-    // Same id delivered again in a distinct object (defensive: the real
-    // store never does this, but the wrapper's own dedup guard — not just
-    // React's prop-reference bailout — must hold).
     rerender(
       <MobileTerminal
         batch={{ id: 1, effects: firstBatch.effects }}
-        onResize={vi.fn()}
         onConsumed={onConsumed}
         adapterRef={adapterRef}
         createAdapter={createAdapter}
@@ -224,7 +199,6 @@ describe('MobileTerminal', () => {
     const { unmount } = render(
       <MobileTerminal
         batch={null}
-        onResize={vi.fn()}
         onConsumed={vi.fn()}
         adapterRef={adapterRef}
         createAdapter={createAdapter}
@@ -247,7 +221,6 @@ describe('MobileTerminal', () => {
     const { container } = render(
       <MobileTerminal
         batch={null}
-        onResize={vi.fn()}
         onConsumed={vi.fn()}
         adapterRef={adapterRef}
         createAdapter={createAdapter}

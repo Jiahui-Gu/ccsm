@@ -49,6 +49,8 @@ function createFakeTerminal(seed?: {
 }) {
   const element = document.createElement('div');
   const textarea = document.createElement('textarea');
+  const helperTextareaOriginalFocus = vi.fn();
+  textarea.focus = helperTextareaOriginalFocus as unknown as typeof textarea.focus;
   element.appendChild(textarea);
   const screen = document.createElement('div');
   screen.className = 'xterm-screen';
@@ -136,6 +138,7 @@ function createFakeTerminal(seed?: {
     },
     getPendingWriteCount: () => pendingWriteCallbacks.length,
     scrollDisposers,
+    helperTextareaOriginalFocus,
   };
 }
 
@@ -275,6 +278,19 @@ describe('createMobileTerminalAdapter', () => {
     expect(terminal.loadAddon).toHaveBeenNthCalledWith(2, unicodeAddon);
     expect(terminal.loadAddon).toHaveBeenNthCalledWith(3, webLinksAddon);
     expect(terminal.unicode.activeVersion).toBe('11');
+  });
+
+  it('hardens the helper textarea after open so xterm mousedown focus cannot summon keyboards', () => {
+    const { terminal, terminalProbe } = createHarness();
+    const textarea = terminal.textarea;
+    expect(textarea).toBeDefined();
+    expect(textarea?.readOnly).toBe(true);
+    expect(textarea?.tabIndex).toBe(-1);
+    expect(textarea?.getAttribute('inputmode')).toBe('none');
+    expect(textarea?.getAttribute('aria-hidden')).toBe('true');
+    expect(textarea?.focus).not.toBe(terminalProbe.helperTextareaOriginalFocus);
+    textarea?.focus();
+    expect(terminalProbe.helperTextareaOriginalFocus).not.toHaveBeenCalled();
   });
 
   it('resizes only from installSnapshot and performs one reset plus snapshot write', () => {

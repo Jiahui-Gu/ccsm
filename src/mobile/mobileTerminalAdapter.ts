@@ -9,8 +9,6 @@ import type { TerminalSyncEffect } from './terminalSync';
 const RESIZE_DEBOUNCE_MS = 120;
 const ORIENTATION_FOLLOWUP_MS = 250;
 
-export type MobileTerminalDimensions = { cols: number; rows: number };
-
 export type TerminalViewportAnchor =
   | { mode: 'bottom'; horizontalOffsetPx: number; canonicalCols: number }
   | {
@@ -70,7 +68,6 @@ export type MobileTerminalAdapterOptions = {
   createSerializeAddon?: () => MobileSerializeAddon;
   createUnicode11Addon?: () => MobileXtermAddon;
   createWebLinksAddon?: () => MobileXtermAddon;
-  [key: string]: unknown;
 };
 
 export type MobileTerminalAdapter = {
@@ -86,7 +83,6 @@ export type MobileTerminalAdapter = {
   copySelection(): Promise<void>;
   serialize(): string;
   dispose(): void;
-  [key: string]: any;
 };
 
 const FONT_FAMILY =
@@ -108,6 +104,18 @@ function defaultCreateUnicode11Addon(): MobileXtermAddon {
 
 function defaultCreateWebLinksAddon(): MobileXtermAddon {
   return new WebLinksAddon();
+}
+
+function hardenMobileTerminalTextarea(textarea: HTMLTextAreaElement | undefined): void {
+  if (!textarea) return;
+  textarea.readOnly = true;
+  textarea.tabIndex = -1;
+  textarea.setAttribute('inputmode', 'none');
+  textarea.setAttribute('aria-hidden', 'true');
+  textarea.focus = () => {
+    // Preserve native pointer selection while suppressing xterm's private
+    // mousedown -> helper textarea focus path that summons software keyboards.
+  };
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -146,6 +154,7 @@ export function createMobileTerminalAdapter(
   terminal.loadAddon(webLinksAddon);
   terminal.unicode.activeVersion = '11';
   terminal.open(element);
+  hardenMobileTerminalTextarea(terminal.textarea);
 
   let geometry: TerminalGeometry | null = null;
   let viewportState: TerminalViewportState = {
@@ -407,9 +416,6 @@ export function createMobileTerminalAdapter(
     serialize,
     dispose,
   };
-
-  const oldMethodName = `f${'it'}`;
-  adapter[oldMethodName] = () => {};
 
   return adapter;
 }

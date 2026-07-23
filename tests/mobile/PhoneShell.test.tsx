@@ -6,7 +6,6 @@
 // button; connection/output/Ask/permission/reconnect handling never parses
 // terminal output or infers question state.
 
-import { useRef } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -16,10 +15,7 @@ import { createMobileRemoteStore } from '../../src/mobile/mobileRemoteStore';
 import type { PhoneConnectionStatus, RelayClient } from '../../src/mobile/relayClient';
 import type { MobileClientMessage, MobileServerMessage } from '../../src/shared/mobileRemote';
 import type { SessionNavigatorModel } from '../../src/shared/sessionNavigator';
-import type {
-  MobileTerminalAdapter,
-  MobileTerminalDimensions,
-} from '../../src/mobile/mobileTerminalAdapter';
+import type { MobileTerminalAdapter } from '../../src/mobile/mobileTerminalAdapter';
 import type { MobileTerminalAdapterFactory } from '../../src/mobile/components/MobileTerminal';
 
 type FakeRelayClient = RelayClient & {
@@ -84,15 +80,20 @@ function navigatorModel(overrides: Partial<SessionNavigatorModel> = {}): Session
 function createFakeAdapterFactory(): {
   factory: MobileTerminalAdapterFactory;
   adapters: MobileTerminalAdapter[];
-  onResizeHandlers: Array<(dimensions: MobileTerminalDimensions) => void>;
 } {
   const adapters: MobileTerminalAdapter[] = [];
-  const onResizeHandlers: Array<(dimensions: MobileTerminalDimensions) => void> = [];
-  const factory: MobileTerminalAdapterFactory = (_element, options) => {
-    onResizeHandlers.push(options.onResize);
+  const factory: MobileTerminalAdapterFactory = (_element) => {
     const adapter: MobileTerminalAdapter = {
       apply: vi.fn(),
-      fit: vi.fn(),
+      captureAnchor: vi.fn(() => ({ mode: 'bottom', horizontalOffsetPx: 0, canonicalCols: 80 })),
+      getViewportState: vi.fn(() => ({
+        geometry: null,
+        contentWidthPx: 0,
+        scroll: { maximumTop: 0, currentTop: 0, visibleRows: 24 },
+      })),
+      subscribeViewport: vi.fn(() => vi.fn()),
+      scrollToLine: vi.fn(),
+      scrollLines: vi.fn(),
       copySelection: vi.fn().mockResolvedValue(undefined),
       serialize: vi.fn(() => ''),
       dispose: vi.fn(),
@@ -100,7 +101,7 @@ function createFakeAdapterFactory(): {
     adapters.push(adapter);
     return adapter;
   };
-  return { factory, adapters, onResizeHandlers };
+  return { factory, adapters };
 }
 
 function makeStoreFactory(requestId: () => string) {
@@ -782,47 +783,6 @@ describe('PhoneShell', () => {
     expect(adapters[0]?.dispose).not.toHaveBeenCalled();
   });
 
-  it('forces adapter.fit(true) when the selected session changes, even at the same dimensions', async () => {
-    const user = userEvent.setup();
-    const client = createFakeClient();
-    const { factory, adapters } = createFakeAdapterFactory();
-    render(<PhoneShell client={client} createAdapter={factory} />);
-    client.emitMessage({ type: 'sessions.navigator', version: 1, model: navigatorModel() });
-    client.emitStatus('connected');
-
-    const adapter = adapters[0]!;
-    const callsBeforeSwitch = (adapter.fit as ReturnType<typeof vi.fn>).mock.calls.length;
-
-    await user.click(screen.getByRole('button', { name: /sessions menu/i }));
-    await user.click(screen.getByText('Beta'));
-
-    const callsAfterSwitch = (adapter.fit as ReturnType<typeof vi.fn>).mock.calls;
-    expect(callsAfterSwitch.length).toBeGreaterThan(callsBeforeSwitch);
-    expect(callsAfterSwitch.at(-1)).toEqual([true]);
-  });
-
-  it('keeps phone viewport resize local instead of sending shared PTY dimensions', () => {
-    const client = createFakeClient();
-    const { factory, onResizeHandlers } = createFakeAdapterFactory();
-    render(<PhoneShell client={client} createAdapter={factory} />);
-    client.emitMessage({ type: 'sessions.navigator', version: 1, model: navigatorModel() });
-    client.emitStatus('connected');
-
-    const sentBeforeResize = client.sent.length;
-    onResizeHandlers[0]?.({ cols: 90, rows: 32 });
-    expect(client.sent).toHaveLength(sentBeforeResize);
-  });
-
-  it('does not send a resize while disconnected', () => {
-    const client = createFakeClient();
-    const { factory, onResizeHandlers } = createFakeAdapterFactory();
-    render(<PhoneShell client={client} createAdapter={factory} />);
-    client.emitMessage({ type: 'sessions.navigator', version: 1, model: navigatorModel() });
-
-    const sentBeforeResize = client.sent.length;
-    onResizeHandlers[0]?.({ cols: 90, rows: 32 });
-    expect(client.sent).toHaveLength(sentBeforeResize);
-  });
 
   it('consumes each terminal render batch exactly once', () => {
     const client = createFakeClient();
@@ -892,23 +852,4 @@ describe('PhoneShell', () => {
     expect(disposeSpy).not.toHaveBeenCalled();
   });
 
-  it('exposes a stable onResize identity so an unrelated ref prop does not defeat memoization', () => {
-    // Regression guard for "stable onResize callback": render twice with the
-    // same client/createStore/createAdapter and confirm the adapter is
-    // still created only once even though React re-renders on every state
-    // change coming from the store (already covered above); this test pins
-    // the requirement that PhoneShell itself must not pass an inline arrow
-    // literal recomputed from unrelated hook state as `onResize`.
-    function Wrapper() {
-      const client = useRef(createFakeClient()).current;
-      const { factory } = useRef(createFakeAdapterFactory()).current;
-      return <PhoneShell client={client} createAdapter={factory} />;
-    }
-    const { rerender } = render(<Wrapper />);
-    rerender(<Wrapper />);
-    // No assertion beyond "did not throw" — the dedicated adapter-identity
-    // test above is the behavioral proof; this just guards the wrapper
-    // pattern compiles and rerenders safely.
-    expect(screen.getByRole('textbox', { name: 'Message' })).toBeInTheDocument();
-  });
 });

@@ -137,27 +137,12 @@ export function PhoneShell({
     };
   }, [store]);
 
-  // The phone terminal fits to its own viewport for readability. These
-  // dimensions are local-only projection state and never resize the shared PTY.
-  const handleResize = useCallback(
-    (_dimensions: { cols: number; rows: number }) => {
-    },
-    [],
-  );
-
   const handleConsumed = useCallback(
     (id: number) => {
       store.getState().consumeTerminalBatch(id);
     },
     [store],
   );
-
-  // Refit the local projection on session changes without touching PTY
-  // authority.
-  useEffect(() => {
-    if (!state.selectedSessionId) return;
-    adapterRef.current?.fit(true);
-  }, [state.selectedSessionId]);
 
   const sessionInfo = findSessionInfo(state.navigator, state.selectedSessionId);
   const draft = state.selectedSessionId ? state.drafts[state.selectedSessionId] ?? '' : '';
@@ -259,7 +244,6 @@ export function PhoneShell({
 
       <MobileTerminal
         batch={state.terminalBatch}
-        onResize={handleResize}
         onConsumed={handleConsumed}
         adapterRef={adapterRef}
         createAdapter={createAdapter}
