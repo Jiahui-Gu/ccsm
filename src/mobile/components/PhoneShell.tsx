@@ -121,14 +121,18 @@ export function PhoneShell({
       serializeTerminal: () => adapterRef.current?.serialize() ?? '',
       getSyncState: () => {
         const sync = store.getState().terminalSync;
+        const renderStats = adapterRef.current?.getRenderStats?.();
         return {
           sid: sync.sid,
           phase: sync.phase,
+          geometry: sync.geometry,
           geometryEpoch: sync.geometry?.epoch ?? null,
           lastSeq: sync.lastSeq,
           snapshotRequested: sync.snapshotRequested,
           recoveryReason: sync.recoveryReason,
           bufferedSeqs: [...sync.buffered.keys()].sort((a, b) => a - b),
+          installSnapshotCount: renderStats?.installSnapshotCount ?? 0,
+          terminalResetCount: renderStats?.terminalResetCount ?? 0,
         };
       },
     };

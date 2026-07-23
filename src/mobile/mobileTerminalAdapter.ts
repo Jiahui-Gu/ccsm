@@ -30,6 +30,11 @@ export type TerminalViewportState = {
   scroll: TerminalScrollMetrics;
 };
 
+export type MobileTerminalRenderStats = {
+  installSnapshotCount: number;
+  terminalResetCount: number;
+};
+
 export type RenderTerminalEffect = Extract<
   TerminalSyncEffect,
   { type: 'installSnapshot' | 'write' }
@@ -82,6 +87,7 @@ export type MobileTerminalAdapter = {
   scrollLines(lines: number): void;
   copySelection(): Promise<void>;
   serialize(): string;
+  getRenderStats?(): MobileTerminalRenderStats;
   dispose(): void;
 };
 
@@ -175,6 +181,8 @@ export function createMobileTerminalAdapter(
   let disposed = false;
   const viewportListeners = new Set<(state: TerminalViewportState) => void>();
   const pendingRenderCompletions: PendingRenderCompletion[] = [];
+  let installSnapshotCount = 0;
+  let terminalResetCount = 0;
 
   function readScrollMetrics(): TerminalScrollMetrics {
     const maximumTop = clamp(terminal.buffer.active.baseY, 0, Number.MAX_SAFE_INTEGER);
@@ -267,9 +275,11 @@ export function createMobileTerminalAdapter(
     const anchor = suppliedAnchor ?? captureAnchor(0);
     for (const effect of effects) {
       if (effect.type === 'installSnapshot') {
+        installSnapshotCount += 1;
         geometry = effect.geometry;
         terminal.resize(effect.geometry.cols, effect.geometry.rows);
         terminal.reset();
+        terminalResetCount += 1;
         enqueueRenderCompletion(
           (done) => terminal.write(effect.snapshot, done),
           () => {
@@ -363,6 +373,13 @@ export function createMobileTerminalAdapter(
     return serializeAddon.serialize();
   }
 
+  function getRenderStats(): MobileTerminalRenderStats {
+    return {
+      installSnapshotCount,
+      terminalResetCount,
+    };
+  }
+
   const scrollSubscription = terminal.onScroll(() => {
     publishViewport();
   });
@@ -414,6 +431,7 @@ export function createMobileTerminalAdapter(
     scrollLines,
     copySelection,
     serialize,
+    getRenderStats,
     dispose,
   };
 

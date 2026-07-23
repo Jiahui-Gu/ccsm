@@ -1,29 +1,13 @@
-// Deterministic buffer-parity + fault-injection dogfood for the mobile
-// remote terminal sync pipeline (composer/terminal-sync plan, Task 6).
+// Deterministic geometry-authority + buffer-parity fault harness for the
+// mobile remote terminal sync pipeline.
 //
 // Pre-req: `npm run build`.
 // Run:    node scripts/harness-e2e-mobile-terminal-sync.mjs
 //
-// For each of 5 independent fault-injection cases, this harness:
-//   1. starts (or reuses, via CCSM_RELAY_URL) a local Wrangler relay and an
-//      encrypted simulated desktop peer speaking the real wire protocol;
-//   2. opens the REAL built phone PWA in Playwright at
-//      `?ccsmTest=1#pair=...` (never a page-injected reducer call — every
-//      PTY byte and snapshot travels as a real encrypted wire message);
-//   3. learns the browser's own negotiated terminal dimensions from its
-//      first `session.resize`, THEN builds an authoritative
-//      `@xterm/headless` + `@xterm/addon-serialize` terminal at those exact
-//      dimensions;
-//   4. feeds the deterministic fixture (`scripts/fixtures/
-//      mobile-remote-pty-fixture.mjs`) to that authoritative terminal in
-//      perfect order (the "ground truth PTY"), while deliberately
-//      perturbing what actually goes out over the wire to the phone
-//      (duplicated, stale, gapped, disconnected, or sent for the wrong
-//      session id);
-//   5. waits for the phone's test bridge to report the sync reducer back
-//      at `phase: 'live'`, then polls `serializeTerminal()` until the
-//      browser's real `SerializeAddon.serialize()` output exactly equals
-//      the authoritative terminal's — no substring/plain-text shortcuts.
+// This harness locks the simulated desktop authority to canonical 120x30
+// (epoch 0), proves phone viewport changes never send `session.resize`, and
+// validates exact SerializeAddon parity against an authoritative
+// @xterm/headless terminal across nine fault cases.
 
 import assert from 'node:assert/strict';
 
@@ -45,7 +29,6 @@ import {
   FIXTURE_ALT_SCREEN_MARKER,
   FIXTURE_ERASED_MARKERS,
   FIXTURE_SURVIVING_MARKERS,
-  fixtureLineMarker,
   sequencedFixture,
 } from './fixtures/mobile-remote-pty-fixture.mjs';
 
@@ -54,16 +37,25 @@ const { SerializeAddon } = serializeAddonPkg;
 
 const SID = 'sync-e2e';
 const SID_B = 'sync-e2e-b';
-const FIXTURE = sequencedFixture(1); // [{ seq: 1..127, chunk }] — shared, immutable across cases.
+const FIXTURE = sequencedFixture(1);
 const FINAL_SEQ = FIXTURE[FIXTURE.length - 1].seq;
+const CANONICAL_GEOMETRY = Object.freeze({ cols: 120, rows: 30, epoch: 0 });
+const RESIZE_GEOMETRY_A = Object.freeze({ cols: 156, rows: 36, epoch: 1 });
+const RESIZE_GEOMETRY_B = Object.freeze({ cols: 168, rows: 40, epoch: 2 });
+const OVERFLOW_GEOMETRY = Object.freeze({ cols: 170, rows: 40, epoch: 1 });
+
+const OVERFLOW_FINAL_SEQ = 257;
+const OVERFLOW_FIXTURE = [
+  ...FIXTURE,
+  ...Array.from({ length: OVERFLOW_FINAL_SEQ - FIXTURE.length }, (_, index) => ({
+    seq: FIXTURE.length + index + 1,
+    chunk: `OVERFLOW-FILL-${String(index + 1).padStart(3, '0')} ${'y'.repeat(64)}\r\n`,
+  })),
+];
 
 let wrangler = null;
 let browser = null;
-const openHandles = new Set(); // tracks {context} objects so a thrown case still gets cleaned up centrally.
-
-// ---------------------------------------------------------------------------
-// Authoritative reference terminal
-// ---------------------------------------------------------------------------
+const openHandles = new Set();
 
 function createReferenceTerminal(cols, rows) {
   const terminal = new HeadlessTerminal({
@@ -79,6 +71,9 @@ function createReferenceTerminal(cols, rows) {
     write(data) {
       return new Promise((resolve) => terminal.write(data, resolve));
     },
+    resize(nextCols, nextRows) {
+      terminal.resize(nextCols, nextRows);
+    },
     serialize() {
       return serializeAddon.serialize();
     },
@@ -88,14 +83,7 @@ function createReferenceTerminal(cols, rows) {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Phone page + bridge helpers
-// ---------------------------------------------------------------------------
-
 async function openPhonePage(relayUrl, pairing) {
-  // A phone-representative viewport — functionally the fixture/reducer are
-  // dimension-independent (verified separately), but this keeps the
-  // harness honest about what it's actually proving parity for.
   const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
   openHandles.add(context);
   const page = await context.newPage();
@@ -142,6 +130,19 @@ async function waitForSyncState(page, description, predicate, timeout = 20_000) 
   );
 }
 
+async function waitForCanonicalLive(page, label) {
+  return waitForSyncState(
+    page,
+    `${label}: canonical geometry installed`,
+    (state) =>
+      state.phase === 'live' &&
+      state.geometry?.cols === CANONICAL_GEOMETRY.cols &&
+      state.geometry?.rows === CANONICAL_GEOMETRY.rows &&
+      state.geometry?.epoch === CANONICAL_GEOMETRY.epoch,
+    20_000,
+  );
+}
+
 async function waitForExactSerialize(page, expected, timeout = 15_000) {
   let last = null;
   await waitFor(
@@ -157,53 +158,62 @@ async function waitForExactSerialize(page, expected, timeout = 15_000) {
   return last;
 }
 
-async function waitForNewResize(desktop, sinceCount, timeout = 15_000) {
-  await waitFor('phone session.resize reflecting real browser dimensions', () => desktop.resizes.length > sinceCount, timeout);
-  const resize = desktop.resizes[desktop.resizes.length - 1];
-  return { cols: resize.cols, rows: resize.rows };
-}
-
 function countOccurrences(haystack, needle) {
   return haystack.split(needle).length - 1;
 }
 
-// ---------------------------------------------------------------------------
-// Shared final-parity assertion
-// ---------------------------------------------------------------------------
+function assertNoSessionResizeMessages(desktop, label) {
+  assert.equal(
+    desktop.receivedMessages.some((message) => message?.type === 'session.resize'),
+    false,
+    `${label}: phone must not send session.resize`,
+  );
+}
 
-async function assertExactParity(label, page, expectedSerialize, extraAbsentMarkers = []) {
+async function assertExactParity(
+  label,
+  page,
+  expectedSerialize,
+  {
+    expectedLastSeq = FINAL_SEQ,
+    expectedGeometry = null,
+    verifyFixtureMarkers = true,
+    extraAbsentMarkers = [],
+  } = {},
+) {
   const actual = await waitForExactSerialize(page, expectedSerialize);
   assert.equal(actual, expectedSerialize, `${label}: exact buffer parity`);
 
-  for (const marker of FIXTURE_SURVIVING_MARKERS) {
-    const count = countOccurrences(actual, marker);
-    assert.equal(count, 1, `${label}: marker "${marker}" must appear exactly once (got ${count})`);
+  if (verifyFixtureMarkers) {
+    for (const marker of FIXTURE_SURVIVING_MARKERS) {
+      const count = countOccurrences(actual, marker);
+      assert.equal(count, 1, `${label}: marker "${marker}" must appear exactly once (got ${count})`);
+    }
+    for (const marker of FIXTURE_ERASED_MARKERS) {
+      assert.equal(actual.includes(marker), false, `${label}: erased marker "${marker}" must be absent`);
+    }
+    assert.equal(
+      actual.includes(FIXTURE_ALT_SCREEN_MARKER),
+      false,
+      `${label}: alternate-screen-only marker must be absent from the normal buffer`,
+    );
   }
-  for (const marker of FIXTURE_ERASED_MARKERS) {
-    assert.equal(actual.includes(marker), false, `${label}: erased marker "${marker}" must be absent`);
-  }
-  assert.equal(
-    actual.includes(FIXTURE_ALT_SCREEN_MARKER),
-    false,
-    `${label}: alternate-screen-only marker must be absent from the normal buffer`,
-  );
   for (const marker of extraAbsentMarkers) {
-    assert.equal(actual.includes(marker), false, `${label}: poison/stale marker "${marker}" must be absent`);
+    assert.equal(actual.includes(marker), false, `${label}: marker "${marker}" must be absent`);
   }
 
   const state = await getSyncState(page);
   assert.equal(state.phase, 'live', `${label}: sync phase must return to live`);
-  assert.equal(state.lastSeq, FINAL_SEQ, `${label}: lastSeq must reach the final fixture seq`);
+  assert.equal(state.lastSeq, expectedLastSeq, `${label}: lastSeq must reach ${expectedLastSeq}`);
+  if (expectedGeometry) {
+    assert.deepEqual(state.geometry, expectedGeometry, `${label}: installed geometry must match barrier geometry`);
+  }
 }
 
 function assertNoBrowserErrors(label, handle) {
   assert.deepEqual(handle.consoleErrors, [], `${label}: no browser console errors`);
   assert.deepEqual(handle.pageErrors, [], `${label}: no browser pageerror events`);
 }
-
-// ---------------------------------------------------------------------------
-// Case 1: duplicate + stale
-// ---------------------------------------------------------------------------
 
 async function caseDuplicateAndStale(relayUrl) {
   const label = 'duplicate-and-stale';
@@ -215,36 +225,33 @@ async function caseDuplicateAndStale(relayUrl) {
   try {
     await waitForBridge(handle.page);
     await waitFor(`${label}: initial session.snapshot request`, () => desktop.snapshotRequests.length >= 1, 15_000);
-    const dims = await waitForNewResize(desktop, 0);
-    const reference = createReferenceTerminal(dims.cols, dims.rows);
-    let referenceSeq = 0;
-    desktop.setSnapshotProvider(SID, () => ({ seq: referenceSeq, data: reference.serialize() }));
+    await waitForCanonicalLive(handle.page, label);
 
-    const DUPLICATE_SEQ = 60; // comfortably inside the "safe, exactly-once" numbered-line range.
+    const reference = createReferenceTerminal(CANONICAL_GEOMETRY.cols, CANONICAL_GEOMETRY.rows);
+    let referenceSeq = 0;
+    desktop.setSnapshotProvider(SID, () => ({ seq: referenceSeq, snapshot: reference.serialize() }));
+
+    const DUPLICATE_SEQ = 60;
     for (const { seq, chunk } of FIXTURE) {
       await reference.write(chunk);
       referenceSeq = seq;
-      desktop.sendRawPty(SID, seq, chunk);
+      desktop.sendRawPty(SID, seq, chunk, CANONICAL_GEOMETRY.epoch);
       if (seq === DUPLICATE_SEQ) {
-        // Re-send the SAME seq with deliberately different ("poisoned")
-        // text — its absence is unambiguous, unlike re-sending the exact
-        // original bytes (which would be indistinguishable from a correct
-        // no-op on a lossless-duplicate check alone).
-        desktop.sendRawPty(SID, DUPLICATE_SEQ, 'POISON-DUPLICATE-MUST-NOT-APPEAR\r\n');
-        // Stale: an older seq re-arriving after the fact.
-        desktop.sendRawPty(SID, DUPLICATE_SEQ - 1, 'POISON-STALE-MUST-NOT-APPEAR\r\n');
+        desktop.sendRawPty(SID, DUPLICATE_SEQ, 'POISON-DUPLICATE-MUST-NOT-APPEAR\r\n', CANONICAL_GEOMETRY.epoch);
+        desktop.sendRawPty(SID, DUPLICATE_SEQ - 1, 'POISON-STALE-MUST-NOT-APPEAR\r\n', CANONICAL_GEOMETRY.epoch);
       }
     }
 
-    await assertExactParity(label, handle.page, reference.serialize(), [
-      'POISON-DUPLICATE-MUST-NOT-APPEAR',
-      'POISON-STALE-MUST-NOT-APPEAR',
-    ]);
+    await assertExactParity(label, handle.page, reference.serialize(), {
+      extraAbsentMarkers: ['POISON-DUPLICATE-MUST-NOT-APPEAR', 'POISON-STALE-MUST-NOT-APPEAR'],
+      expectedGeometry: CANONICAL_GEOMETRY,
+    });
     assert.equal(
       desktop.snapshotRequests.length,
       1,
-      `${label}: a duplicate/stale chunk must never trigger a snapshot request (only the initial selection request)`,
+      `${label}: duplicate/stale chunks must not trigger an extra snapshot request`,
     );
+    assertNoSessionResizeMessages(desktop, label);
     assertNoBrowserErrors(label, handle);
     reference.dispose();
   } finally {
@@ -252,10 +259,6 @@ async function caseDuplicateAndStale(relayUrl) {
     desktop.close();
   }
 }
-
-// ---------------------------------------------------------------------------
-// Case 2: snapshot / live overlap
-// ---------------------------------------------------------------------------
 
 async function caseSnapshotLiveOverlap(relayUrl) {
   const label = 'snapshot-live-overlap';
@@ -267,19 +270,14 @@ async function caseSnapshotLiveOverlap(relayUrl) {
   try {
     await waitForBridge(handle.page);
     await waitFor(`${label}: initial session.snapshot request`, () => desktop.snapshotRequests.length >= 1, 15_000);
-    const dims = await waitForNewResize(desktop, 0);
-    const reference = createReferenceTerminal(dims.cols, dims.rows);
-    let referenceSeq = 0;
-    // Every snapshot request for this session is now answered entirely
-    // manually via `sendSnapshotNow` below — returning `null` here means
-    // the desktop's automatic responder must never race ahead and answer
-    // the gap-recovery request the instant it arrives, which is exactly
-    // what "deliberately delay the snapshot response" requires.
-    desktop.setSnapshotProvider(SID, () => null);
-    let snapshotAnswer = null; // frozen once, "through N" (N = GAP_AT), below.
+    await waitForCanonicalLive(handle.page, label);
 
-    const GAP_AT = 51; // never sent on the wire — the missing chunk.
-    const BUFFERED_TAIL = [GAP_AT + 1, GAP_AT + 2]; // both actually sent, both must be buffered.
+    const reference = createReferenceTerminal(CANONICAL_GEOMETRY.cols, CANONICAL_GEOMETRY.rows);
+    let referenceSeq = 0;
+    desktop.setSnapshotProvider(SID, () => null);
+
+    const GAP_AT = 51;
+    const BUFFERED_TAIL = [GAP_AT + 1, GAP_AT + 2];
     const upToGap = FIXTURE.filter((entry) => entry.seq < GAP_AT);
     const gapChunk = FIXTURE.find((entry) => entry.seq === GAP_AT);
     const bufferedChunks = FIXTURE.filter((entry) => BUFFERED_TAIL.includes(entry.seq));
@@ -288,55 +286,49 @@ async function caseSnapshotLiveOverlap(relayUrl) {
     for (const { seq, chunk } of upToGap) {
       await reference.write(chunk);
       referenceSeq = seq;
-      desktop.sendRawPty(SID, seq, chunk);
+      desktop.sendRawPty(SID, seq, chunk, CANONICAL_GEOMETRY.epoch);
     }
     await waitForSyncState(handle.page, `${label}: live before the gap`, (s) => s.phase === 'live' && s.lastSeq === GAP_AT - 1);
 
-    // Advance the reference through the gap seq ITSELF (but never send it
-    // on the wire) and freeze a snapshot answer "through N" (N = GAP_AT)
-    // right now, before anything below is written — deliberately older
-    // than the chunks about to arrive, which is the whole point of the
-    // overlap.
     await reference.write(gapChunk.chunk);
     referenceSeq = GAP_AT;
-    snapshotAnswer = { seq: GAP_AT, data: reference.serialize() };
+    const snapshotAnswer = { seq: GAP_AT, snapshot: reference.serialize() };
 
-    // Both of these DO reach the wire while that frozen snapshot answer is
-    // still being withheld — the client must buffer both rather than
-    // write or discard them.
     for (const { seq, chunk } of bufferedChunks) {
       await reference.write(chunk);
       referenceSeq = seq;
-      desktop.sendRawPty(SID, seq, chunk);
+      desktop.sendRawPty(SID, seq, chunk, CANONICAL_GEOMETRY.epoch);
     }
 
     const overlapping = await waitForSyncState(
       handle.page,
-      `${label}: buffered tail present while the snapshot is withheld`,
+      `${label}: buffered tail present while snapshot withheld`,
       (s) => s.phase === 'syncing' && s.snapshotRequested === true && s.bufferedSeqs.length >= BUFFERED_TAIL.length,
     );
     assert.deepEqual(
       [...overlapping.bufferedSeqs].sort((a, b) => a - b),
       BUFFERED_TAIL,
-      `${label}: both post-gap chunks must be buffered during the overlap window`,
+      `${label}: both post-gap chunks must buffer during overlap`,
     );
 
-    // Deliberate delay before finally answering — the overlap window.
     await new Promise((resolve) => setTimeout(resolve, 300));
-    desktop.sendSnapshotNow(SID, snapshotAnswer.seq, snapshotAnswer.data, dims.cols, dims.rows);
+    desktop.sendSnapshotNow(SID, snapshotAnswer.seq, snapshotAnswer.snapshot, CANONICAL_GEOMETRY);
 
     for (const { seq, chunk } of rest) {
       await reference.write(chunk);
       referenceSeq = seq;
-      desktop.sendRawPty(SID, seq, chunk);
+      desktop.sendRawPty(SID, seq, chunk, CANONICAL_GEOMETRY.epoch);
     }
 
-    await assertExactParity(label, handle.page, reference.serialize());
+    await assertExactParity(label, handle.page, reference.serialize(), {
+      expectedGeometry: CANONICAL_GEOMETRY,
+    });
     assert.equal(
       desktop.snapshotRequests.length,
       2,
-      `${label}: exactly one snapshot request for this one gap (plus the initial selection request)`,
+      `${label}: one overlap gap must trigger exactly one recovery snapshot request`,
     );
+    assertNoSessionResizeMessages(desktop, label);
     assertNoBrowserErrors(label, handle);
     reference.dispose();
   } finally {
@@ -344,10 +336,6 @@ async function caseSnapshotLiveOverlap(relayUrl) {
     desktop.close();
   }
 }
-
-// ---------------------------------------------------------------------------
-// Case 3: gap recovery (clean, immediate — answers exactly one request)
-// ---------------------------------------------------------------------------
 
 async function caseGapRecovery(relayUrl) {
   const label = 'gap-recovery';
@@ -359,25 +347,29 @@ async function caseGapRecovery(relayUrl) {
   try {
     await waitForBridge(handle.page);
     await waitFor(`${label}: initial session.snapshot request`, () => desktop.snapshotRequests.length >= 1, 15_000);
-    const dims = await waitForNewResize(desktop, 0);
-    const reference = createReferenceTerminal(dims.cols, dims.rows);
-    let referenceSeq = 0;
-    desktop.setSnapshotProvider(SID, () => ({ seq: referenceSeq, data: reference.serialize() }));
+    await waitForCanonicalLive(handle.page, label);
 
-    const OMITTED_SEQ = 71; // N+1 — never sent on the wire.
+    const reference = createReferenceTerminal(CANONICAL_GEOMETRY.cols, CANONICAL_GEOMETRY.rows);
+    let referenceSeq = 0;
+    desktop.setSnapshotProvider(SID, () => ({ seq: referenceSeq, snapshot: reference.serialize() }));
+
+    const OMITTED_SEQ = 71;
     for (const { seq, chunk } of FIXTURE) {
       await reference.write(chunk);
       referenceSeq = seq;
-      if (seq === OMITTED_SEQ) continue; // the gap.
-      desktop.sendRawPty(SID, seq, chunk); // N+2 (and everything else) is sent normally.
+      if (seq === OMITTED_SEQ) continue;
+      desktop.sendRawPty(SID, seq, chunk, CANONICAL_GEOMETRY.epoch);
     }
 
-    await assertExactParity(label, handle.page, reference.serialize());
+    await assertExactParity(label, handle.page, reference.serialize(), {
+      expectedGeometry: CANONICAL_GEOMETRY,
+    });
     assert.equal(
       desktop.snapshotRequests.length,
       2,
-      `${label}: exactly one snapshot request answers this one gap (plus the initial selection request)`,
+      `${label}: one sequence gap must trigger exactly one recovery snapshot request`,
     );
+    assertNoSessionResizeMessages(desktop, label);
     assertNoBrowserErrors(label, handle);
     reference.dispose();
   } finally {
@@ -386,9 +378,285 @@ async function caseGapRecovery(relayUrl) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Case 4: disconnect during a burst, reconnect, snapshot, drain the tail
-// ---------------------------------------------------------------------------
+async function caseFutureEpochBeforeBarrier(relayUrl) {
+  const label = 'future-epoch-before-barrier';
+  const pairing = generatePairingIdentity();
+  const desktop = createSimulatedDesktop(relayUrl, pairing, {
+    sessions: [{ sid: SID, cwd: 'C:\\work\\sync-e2e' }],
+  });
+  const handle = await openPhonePage(relayUrl, pairing);
+  try {
+    await waitForBridge(handle.page);
+    await waitFor(`${label}: initial session.snapshot request`, () => desktop.snapshotRequests.length >= 1, 15_000);
+    await waitForCanonicalLive(handle.page, label);
+
+    const reference = createReferenceTerminal(CANONICAL_GEOMETRY.cols, CANONICAL_GEOMETRY.rows);
+    let referenceSeq = 0;
+    desktop.setSnapshotProvider(SID, () => ({ seq: referenceSeq, snapshot: reference.serialize() }));
+
+    const FUTURE_SEQ = 51;
+    const prefix = FIXTURE.filter((entry) => entry.seq < FUTURE_SEQ);
+    const futureChunk = FIXTURE.find((entry) => entry.seq === FUTURE_SEQ);
+    const rest = FIXTURE.filter((entry) => entry.seq > FUTURE_SEQ);
+
+    for (const { seq, chunk } of prefix) {
+      await reference.write(chunk);
+      referenceSeq = seq;
+      desktop.sendRawPty(SID, seq, chunk, CANONICAL_GEOMETRY.epoch);
+    }
+    await waitForSyncState(handle.page, `${label}: live at epoch 0 prefix`, (s) => s.phase === 'live' && s.lastSeq === FUTURE_SEQ - 1);
+
+    reference.resize(RESIZE_GEOMETRY_A.cols, RESIZE_GEOMETRY_A.rows);
+    const barrierSeq = FUTURE_SEQ - 1;
+    const barrierSnapshot = reference.serialize();
+
+    await reference.write(futureChunk.chunk);
+    referenceSeq = futureChunk.seq;
+    desktop.sendRawPty(SID, futureChunk.seq, futureChunk.chunk, RESIZE_GEOMETRY_A.epoch);
+
+    const waitingForBarrier = await waitForSyncState(
+      handle.page,
+      `${label}: waiting for epoch barrier`,
+      (s) => s.phase === 'syncing' && s.snapshotRequested === true && s.recoveryReason === 'future-geometry',
+    );
+    assert.deepEqual(waitingForBarrier.bufferedSeqs, [FUTURE_SEQ], `${label}: future-epoch chunk must buffer`);
+
+    desktop.sendResizeBarrier(SID, barrierSeq, barrierSnapshot, RESIZE_GEOMETRY_A);
+
+    for (const { seq, chunk } of rest) {
+      await reference.write(chunk);
+      referenceSeq = seq;
+      desktop.sendRawPty(SID, seq, chunk, RESIZE_GEOMETRY_A.epoch);
+    }
+
+    await assertExactParity(label, handle.page, reference.serialize(), {
+      expectedGeometry: RESIZE_GEOMETRY_A,
+    });
+    assert.equal(
+      desktop.snapshotRequests.length,
+      2,
+      `${label}: future-epoch chunk must trigger one recovery snapshot request`,
+    );
+    assertNoSessionResizeMessages(desktop, label);
+    assertNoBrowserErrors(label, handle);
+    reference.dispose();
+  } finally {
+    await handle.close();
+    desktop.close();
+  }
+}
+
+async function caseActiveOutputDuringResize(relayUrl) {
+  const label = 'active-output-during-resize';
+  const pairing = generatePairingIdentity();
+  const desktop = createSimulatedDesktop(relayUrl, pairing, {
+    sessions: [{ sid: SID, cwd: 'C:\\work\\sync-e2e' }],
+  });
+  const handle = await openPhonePage(relayUrl, pairing);
+  try {
+    await waitForBridge(handle.page);
+    await waitFor(`${label}: initial session.snapshot request`, () => desktop.snapshotRequests.length >= 1, 15_000);
+    await waitForCanonicalLive(handle.page, label);
+
+    const reference = createReferenceTerminal(CANONICAL_GEOMETRY.cols, CANONICAL_GEOMETRY.rows);
+    let referenceSeq = 0;
+    desktop.setSnapshotProvider(SID, () => null);
+
+    const PREFIX_SEQ = 4;
+    const prefix = FIXTURE.filter((entry) => entry.seq <= PREFIX_SEQ);
+    const epochOnePrefix = FIXTURE.filter((entry) => entry.seq > PREFIX_SEQ && entry.seq <= PREFIX_SEQ + 2);
+    const epochOneTail = FIXTURE.filter((entry) => entry.seq > PREFIX_SEQ + 2);
+
+    for (const { seq, chunk } of prefix) {
+      await reference.write(chunk);
+      referenceSeq = seq;
+      desktop.sendRawPty(SID, seq, chunk, CANONICAL_GEOMETRY.epoch);
+    }
+    await waitForSyncState(handle.page, `${label}: live old-epoch prefix`, (s) => s.phase === 'live' && s.lastSeq === PREFIX_SEQ);
+
+    const beforeResizeState = await getSyncState(handle.page);
+
+    reference.resize(RESIZE_GEOMETRY_A.cols, RESIZE_GEOMETRY_A.rows);
+    const barrierSeq = PREFIX_SEQ;
+    const barrierSnapshot = reference.serialize();
+
+    for (const { seq, chunk } of epochOnePrefix) {
+      await reference.write(chunk);
+      referenceSeq = seq;
+      desktop.sendRawPty(SID, seq, chunk, RESIZE_GEOMETRY_A.epoch);
+    }
+
+    const waitingForBarrier = await waitForSyncState(
+      handle.page,
+      `${label}: epoch-1 chunks buffered until barrier`,
+      (s) => s.phase === 'syncing' && s.snapshotRequested === true && s.recoveryReason === 'future-geometry' && s.bufferedSeqs.length >= 2,
+    );
+    assert.deepEqual(waitingForBarrier.bufferedSeqs, [PREFIX_SEQ + 1, PREFIX_SEQ + 2], `${label}: exactly two epoch-1 chunks must buffer before barrier`);
+
+    desktop.sendResizeBarrier(SID, barrierSeq, barrierSnapshot, RESIZE_GEOMETRY_A);
+
+    for (const { seq, chunk } of epochOneTail) {
+      await reference.write(chunk);
+      referenceSeq = seq;
+      desktop.sendRawPty(SID, seq, chunk, RESIZE_GEOMETRY_A.epoch);
+    }
+
+    await assertExactParity(label, handle.page, reference.serialize(), {
+      expectedGeometry: RESIZE_GEOMETRY_A,
+    });
+
+    const afterResizeState = await getSyncState(handle.page);
+    assert.equal(
+      afterResizeState.installSnapshotCount,
+      beforeResizeState.installSnapshotCount + 1,
+      `${label}: one authoritative resize barrier must install exactly one additional snapshot`,
+    );
+    assert.equal(
+      afterResizeState.terminalResetCount,
+      beforeResizeState.terminalResetCount + 1,
+      `${label}: one authoritative resize barrier must trigger exactly one additional reset`,
+    );
+    assert.equal(afterResizeState.lastSeq, FINAL_SEQ, `${label}: contiguous epoch-1 tail must reach FINAL_SEQ`);
+
+    assert.equal(
+      desktop.snapshotRequests.length,
+      2,
+      `${label}: future-geometry buffering during active output must trigger one recovery snapshot request`,
+    );
+    assertNoSessionResizeMessages(desktop, label);
+    assertNoBrowserErrors(label, handle);
+    reference.dispose();
+  } finally {
+    await handle.close();
+    desktop.close();
+  }
+}
+
+async function caseStaleAndSupersededBarriers(relayUrl) {
+  const label = 'stale-and-superseded-barriers';
+  const pairing = generatePairingIdentity();
+  const desktop = createSimulatedDesktop(relayUrl, pairing, {
+    sessions: [{ sid: SID, cwd: 'C:\\work\\sync-e2e' }],
+  });
+  const handle = await openPhonePage(relayUrl, pairing);
+  try {
+    await waitForBridge(handle.page);
+    await waitFor(`${label}: initial session.snapshot request`, () => desktop.snapshotRequests.length >= 1, 15_000);
+    await waitForCanonicalLive(handle.page, label);
+
+    const reference = createReferenceTerminal(CANONICAL_GEOMETRY.cols, CANONICAL_GEOMETRY.rows);
+    let referenceSeq = 0;
+    desktop.setSnapshotProvider(SID, () => null);
+
+    const EPOCH_ONE_START = 51;
+    const EPOCH_ONE_END = 80;
+    const prefix = FIXTURE.filter((entry) => entry.seq < EPOCH_ONE_START);
+    const epochOneWindow = FIXTURE.filter((entry) => entry.seq >= EPOCH_ONE_START && entry.seq <= EPOCH_ONE_END);
+    const epochTwoTail = FIXTURE.filter((entry) => entry.seq > EPOCH_ONE_END);
+
+    for (const { seq, chunk } of prefix) {
+      await reference.write(chunk);
+      referenceSeq = seq;
+      desktop.sendRawPty(SID, seq, chunk, CANONICAL_GEOMETRY.epoch);
+    }
+    await waitForSyncState(handle.page, `${label}: live old geometry before epoch transition`, (s) => s.phase === 'live' && s.lastSeq === EPOCH_ONE_START - 1);
+
+    reference.resize(RESIZE_GEOMETRY_A.cols, RESIZE_GEOMETRY_A.rows);
+    for (const { seq, chunk } of epochOneWindow) {
+      await reference.write(chunk);
+      referenceSeq = seq;
+      if (seq <= EPOCH_ONE_START + 1) {
+        desktop.sendRawPty(SID, seq, chunk, RESIZE_GEOMETRY_A.epoch);
+      }
+    }
+
+    await waitForSyncState(
+      handle.page,
+      `${label}: epoch-1 chunks buffered pending barrier`,
+      (s) => s.phase === 'syncing' && s.snapshotRequested === true && s.recoveryReason === 'future-geometry',
+    );
+
+    const staleBarrierSnapshot = reference.serialize();
+    const staleBarrierSeq = EPOCH_ONE_END;
+
+    reference.resize(RESIZE_GEOMETRY_B.cols, RESIZE_GEOMETRY_B.rows);
+    const supersedingBarrierSnapshot = reference.serialize();
+    const supersedingBarrierSeq = EPOCH_ONE_END;
+
+    desktop.sendResizeBarrier(SID, supersedingBarrierSeq, supersedingBarrierSnapshot, RESIZE_GEOMETRY_B);
+    desktop.sendSnapshotNow(SID, staleBarrierSeq, staleBarrierSnapshot, RESIZE_GEOMETRY_A);
+
+    for (const { seq, chunk } of epochTwoTail) {
+      await reference.write(chunk);
+      referenceSeq = seq;
+      desktop.sendRawPty(SID, seq, chunk, RESIZE_GEOMETRY_B.epoch);
+    }
+
+    await assertExactParity(label, handle.page, reference.serialize(), {
+      expectedGeometry: RESIZE_GEOMETRY_B,
+    });
+    assert.equal(
+      desktop.snapshotRequests.length,
+      2,
+      `${label}: stale/superseded barrier flow must trigger one recovery snapshot request`,
+    );
+    assertNoSessionResizeMessages(desktop, label);
+    assertNoBrowserErrors(label, handle);
+    reference.dispose();
+  } finally {
+    await handle.close();
+    desktop.close();
+  }
+}
+
+async function caseBufferOverflowRecovery(relayUrl) {
+  const label = 'buffer-overflow-recovery';
+  const pairing = generatePairingIdentity();
+  const desktop = createSimulatedDesktop(relayUrl, pairing, {
+    sessions: [{ sid: SID, cwd: 'C:\\work\\sync-e2e' }],
+  });
+  const handle = await openPhonePage(relayUrl, pairing);
+  try {
+    await waitForBridge(handle.page);
+    await waitFor(`${label}: initial session.snapshot request`, () => desktop.snapshotRequests.length >= 1, 15_000);
+    await waitForCanonicalLive(handle.page, label);
+
+    const reference = createReferenceTerminal(CANONICAL_GEOMETRY.cols, CANONICAL_GEOMETRY.rows);
+    reference.resize(OVERFLOW_GEOMETRY.cols, OVERFLOW_GEOMETRY.rows);
+    let referenceSeq = 0;
+
+    for (const { seq, chunk } of OVERFLOW_FIXTURE) {
+      await reference.write(chunk);
+      referenceSeq = seq;
+      desktop.sendRawPty(SID, seq, chunk, OVERFLOW_GEOMETRY.epoch);
+    }
+
+    await waitForSyncState(
+      handle.page,
+      `${label}: 257th future-epoch chunk triggers overflow recovery`,
+      (s) => s.phase === 'syncing' && s.snapshotRequested === true && s.recoveryReason === 'buffer-overflow',
+    );
+
+    desktop.sendResizeBarrier(SID, referenceSeq, reference.serialize(), OVERFLOW_GEOMETRY);
+
+    await assertExactParity(label, handle.page, reference.serialize(), {
+      expectedLastSeq: OVERFLOW_FINAL_SEQ,
+      expectedGeometry: OVERFLOW_GEOMETRY,
+      verifyFixtureMarkers: true,
+    });
+    assert.equal(
+      desktop.snapshotRequests.length,
+      2,
+      `${label}: overflow recovery must trigger exactly one additional snapshot request`,
+    );
+    assertNoSessionResizeMessages(desktop, label);
+    assertNoBrowserErrors(label, handle);
+    reference.dispose();
+  } finally {
+    await handle.close();
+    desktop.close();
+  }
+}
 
 async function caseDisconnectDuringBurst(relayUrl) {
   const label = 'disconnect-during-burst';
@@ -400,10 +668,11 @@ async function caseDisconnectDuringBurst(relayUrl) {
   try {
     await waitForBridge(handle.page);
     await waitFor(`${label}: initial session.snapshot request`, () => desktop.snapshotRequests.length >= 1, 15_000);
-    const dims = await waitForNewResize(desktop, 0);
-    const reference = createReferenceTerminal(dims.cols, dims.rows);
+    await waitForCanonicalLive(handle.page, label);
+
+    const reference = createReferenceTerminal(CANONICAL_GEOMETRY.cols, CANONICAL_GEOMETRY.rows);
     let referenceSeq = 0;
-    desktop.setSnapshotProvider(SID, () => ({ seq: referenceSeq, data: reference.serialize() }));
+    desktop.setSnapshotProvider(SID, () => ({ seq: referenceSeq, snapshot: reference.serialize() }));
 
     const DISCONNECT_AFTER = 40;
     const beforeDisconnect = FIXTURE.filter((entry) => entry.seq <= DISCONNECT_AFTER);
@@ -413,43 +682,37 @@ async function caseDisconnectDuringBurst(relayUrl) {
     for (const { seq, chunk } of beforeDisconnect) {
       await reference.write(chunk);
       referenceSeq = seq;
-      desktop.sendRawPty(SID, seq, chunk);
+      desktop.sendRawPty(SID, seq, chunk, CANONICAL_GEOMETRY.epoch);
     }
     await waitForSyncState(handle.page, `${label}: live before disconnect`, (s) => s.phase === 'live' && s.lastSeq === DISCONNECT_AFTER);
 
-    // Actually close the relay socket — per the relay Durable Object, a
-    // desktop socket closing (without a role successor already present)
-    // proactively closes the phone's socket too, driving it into its own
-    // reconnect/backoff loop exactly as a real network drop would.
     const oldDesktop = desktop;
     oldDesktop.close();
 
-    // The "PTY" keeps producing output the phone never receives while the
-    // desktop is gone — advance the ground-truth reference only.
     for (const { seq, chunk } of missedDuringOutage) {
       await reference.write(chunk);
       referenceSeq = seq;
     }
 
-    // Reconnect: a fresh encrypted desktop peer for the SAME pairing/room.
     desktop = createSimulatedDesktop(relayUrl, pairing, {
       sessions: [{ sid: SID, cwd: 'C:\\work\\sync-e2e' }],
     });
-    desktop.setSnapshotProvider(SID, () => ({ seq: referenceSeq, data: reference.serialize() }));
-    await waitFor(`${label}: phone re-authenticates with the reconnected desktop`, () => desktop.authenticatedCount >= 1, 30_000);
+    desktop.setSnapshotProvider(SID, () => ({ seq: referenceSeq, snapshot: reference.serialize() }));
+    await waitFor(`${label}: phone re-authenticates`, () => desktop.authenticatedCount >= 1, 30_000);
 
-    // Resume the live stream — the first post-reconnect chunk is far ahead
-    // of the phone's last known seq, so this is what actually triggers the
-    // (automatic) gap-recovery snapshot request.
     for (const { seq, chunk } of afterReconnect) {
       await reference.write(chunk);
       referenceSeq = seq;
-      desktop.sendRawPty(SID, seq, chunk);
+      desktop.sendRawPty(SID, seq, chunk, CANONICAL_GEOMETRY.epoch);
     }
 
-    await assertExactParity(label, handle.page, reference.serialize());
-    assert.equal(oldDesktop.snapshotRequests.length, 1, `${label}: only the initial snapshot request before the outage`);
-    assert.equal(desktop.snapshotRequests.length, 1, `${label}: exactly one gap-recovery snapshot request after reconnecting`);
+    await assertExactParity(label, handle.page, reference.serialize(), {
+      expectedGeometry: CANONICAL_GEOMETRY,
+    });
+    assert.equal(oldDesktop.snapshotRequests.length, 1, `${label}: old desktop sees only initial snapshot request`);
+    assert.equal(desktop.snapshotRequests.length, 1, `${label}: reconnected desktop sees one recovery snapshot request`);
+    assertNoSessionResizeMessages(oldDesktop, `${label} (before outage)`);
+    assertNoSessionResizeMessages(desktop, `${label} (after reconnect)`);
     assertNoBrowserErrors(label, handle);
     reference.dispose();
   } finally {
@@ -457,11 +720,6 @@ async function caseDisconnectDuringBurst(relayUrl) {
     desktop.close();
   }
 }
-
-// ---------------------------------------------------------------------------
-// Case 5: session-switch race — an old sid's tail arrives after selecting
-// the new sid and must be dropped without affecting the new session.
-// ---------------------------------------------------------------------------
 
 async function caseSessionSwitchRace(relayUrl) {
   const label = 'session-switch-race';
@@ -477,60 +735,44 @@ async function caseSessionSwitchRace(relayUrl) {
     await waitForBridge(handle.page);
     await waitForSyncState(handle.page, `${label}: session A auto-selected`, (s) => s.sid === SID);
     await waitFor(`${label}: initial session.snapshot request for A`, () => desktop.snapshotRequests.length >= 1, 15_000);
-    const dims = await waitForNewResize(desktop, 0);
+    await waitForCanonicalLive(handle.page, label);
 
-    const referenceA = createReferenceTerminal(dims.cols, dims.rows);
-    const referenceB = createReferenceTerminal(dims.cols, dims.rows);
+    const referenceA = createReferenceTerminal(CANONICAL_GEOMETRY.cols, CANONICAL_GEOMETRY.rows);
+    const referenceB = createReferenceTerminal(CANONICAL_GEOMETRY.cols, CANONICAL_GEOMETRY.rows);
     let seqA = 0;
     let seqB = 0;
-    desktop.setSnapshotProvider(SID, () => ({ seq: seqA, data: referenceA.serialize() }));
-    desktop.setSnapshotProvider(SID_B, () => ({ seq: seqB, data: referenceB.serialize() }));
+    desktop.setSnapshotProvider(SID, () => ({ seq: seqA, snapshot: referenceA.serialize() }));
+    desktop.setSnapshotProvider(SID_B, () => ({ seq: seqB, snapshot: referenceB.serialize() }));
 
     const A_LIVE_UPTO = 40;
-    const aLive = FIXTURE.filter((entry) => entry.seq <= A_LIVE_UPTO);
-    for (const { seq, chunk } of aLive) {
+    for (const { seq, chunk } of FIXTURE.filter((entry) => entry.seq <= A_LIVE_UPTO)) {
       await referenceA.write(chunk);
       seqA = seq;
-      desktop.sendRawPty(SID, seq, chunk);
+      desktop.sendRawPty(SID, seq, chunk, CANONICAL_GEOMETRY.epoch);
     }
     await waitForSyncState(handle.page, `${label}: A live before switching`, (s) => s.sid === SID && s.phase === 'live' && s.lastSeq === A_LIVE_UPTO);
 
-    // Drive the switch through the REAL UI (no page-injected store calls):
-    // open the drawer, then select session B.
     await handle.page.getByRole('button', { name: 'Sessions menu' }).click();
     await handle.page.locator(`[data-session-id="${SID_B}"]`).click();
 
     const afterSwitch = await getSyncState(handle.page);
-    assert.equal(afterSwitch.sid, SID_B, `${label}: selecting B must switch sync state to B synchronously`);
+    assert.equal(afterSwitch.sid, SID_B, `${label}: selecting B must switch sync state to B`);
 
-    // The race: an old-sid (A) tail arrives AFTER B was selected, while
-    // B's own snapshot may still be in flight. It carries text that is
-    // NOT part of any fixture chunk, so its (correct) absence is
-    // unambiguous — it can never be confused with B's own legitimate
-    // content.
-    //
-    // Deliberately uses the ungated `sendInFlightPty` here, NOT the
-    // production-gated `sendRawPty`: this frame models one already having
-    // been handed to the transport for A in the instant before this
-    // peer's `subscribedSid` actually flips to B (a real race the gate
-    // itself cannot reproduce, since by the time this line runs the
-    // desktop may or may not have processed the phone's new
-    // `session.snapshot: B` request yet). Using the gated send here would
-    // make the "must not appear" assertion below pass vacuously whenever
-    // that race already flipped `subscribedSid` to B — never actually
-    // exercising the client's own old-sid discard — instead of proving it.
-    desktop.sendInFlightPty(SID, A_LIVE_UPTO + 1, 'STALE-SID-A-TAIL-MUST-NOT-APPEAR\r\n');
+    desktop.sendInFlightPty(SID, A_LIVE_UPTO + 1, 'STALE-SID-A-TAIL-MUST-NOT-APPEAR\r\n', CANONICAL_GEOMETRY.epoch);
 
-    const bFull = FIXTURE; // full, independent fixture playback for B.
-    for (const { seq, chunk } of bFull) {
+    for (const { seq, chunk } of FIXTURE) {
       await referenceB.write(chunk);
       seqB = seq;
-      desktop.sendRawPty(SID_B, seq, chunk);
+      desktop.sendRawPty(SID_B, seq, chunk, CANONICAL_GEOMETRY.epoch);
     }
 
-    await assertExactParity(label, handle.page, referenceB.serialize(), ['STALE-SID-A-TAIL-MUST-NOT-APPEAR']);
+    await assertExactParity(label, handle.page, referenceB.serialize(), {
+      extraAbsentMarkers: ['STALE-SID-A-TAIL-MUST-NOT-APPEAR'],
+      expectedGeometry: CANONICAL_GEOMETRY,
+    });
     const finalState = await getSyncState(handle.page);
     assert.equal(finalState.sid, SID_B, `${label}: final sid must still be B`);
+    assertNoSessionResizeMessages(desktop, label);
     assertNoBrowserErrors(label, handle);
     referenceA.dispose();
     referenceB.dispose();
@@ -540,21 +782,16 @@ async function caseSessionSwitchRace(relayUrl) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
-
 async function main() {
-  const publicRelayUrl = configuredRelayUrl();
-  let relayUrl = publicRelayUrl;
-  let port = null;
+  const configuredUrl = configuredRelayUrl();
+  let relayUrl = configuredUrl;
   if (!relayUrl) {
-    port = await reservePort();
+    const port = await reservePort();
     const started = await startWrangler(port);
     wrangler = started.child;
     relayUrl = started.relayUrl;
   } else {
-    console.log(`[mobile-terminal-sync] using public CCSM_RELAY_URL=${publicRelayUrl}`);
+    console.log('[mobile-terminal-sync] using configured public relay');
   }
 
   browser = await chromium.launch({ headless: true });
@@ -563,6 +800,10 @@ async function main() {
     ['duplicate-and-stale', caseDuplicateAndStale],
     ['snapshot-live-overlap', caseSnapshotLiveOverlap],
     ['gap-recovery', caseGapRecovery],
+    ['future-epoch-before-barrier', caseFutureEpochBeforeBarrier],
+    ['active-output-during-resize', caseActiveOutputDuringResize],
+    ['stale-and-superseded-barriers', caseStaleAndSupersededBarriers],
+    ['buffer-overflow-recovery', caseBufferOverflowRecovery],
     ['disconnect-during-burst', caseDisconnectDuringBurst],
     ['session-switch-race', caseSessionSwitchRace],
   ];
@@ -582,14 +823,14 @@ async function main() {
     }
   }
 
-  const failed = results.filter((r) => !r.ok);
+  const failed = results.filter((result) => !result.ok);
   if (failed.length > 0) {
     throw new Error(
-      `${failed.length}/${results.length} fault-injection case(s) failed: ${failed.map((r) => r.name).join(', ')}`,
+      `${failed.length}/${results.length} fault-injection case(s) failed: ${failed.map((result) => result.name).join(', ')}`,
     );
   }
 
-  console.log('[mobile-terminal-sync] PASS exact buffer parity across 5 fault cases');
+  console.log('[mobile-terminal-sync] PASS exact buffer parity across 9 fault cases');
 }
 
 try {
@@ -606,9 +847,4 @@ try {
   cleanupWranglerLocalState();
 }
 
-// See scripts/harness-e2e-mobile-remote-relay.mjs for why: Playwright/
-// Chromium (and Wrangler's dependency tree) can leave a handle open that
-// keeps the event loop alive after every resource here has already been
-// explicitly closed and every assertion has already run — exit codes are
-// finalized by this point, so force the exit rather than hang forever.
 process.exit(process.exitCode ?? 0);

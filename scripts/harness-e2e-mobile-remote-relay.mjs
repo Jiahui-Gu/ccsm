@@ -38,6 +38,14 @@ function log(step) {
   console.log(`[mobile-remote-relay] ${step}`);
 }
 
+function assertNoSessionResizeMessages(desktopInstance, label) {
+  assert.equal(
+    desktopInstance.receivedMessages.some((message) => message?.type === 'session.resize'),
+    false,
+    `${label}: phone must never emit session.resize`,
+  );
+}
+
 async function statusText(page) {
   return page.locator('.phone-topbar__connection').first().textContent();
 }
@@ -110,7 +118,7 @@ async function main() {
     wrangler = started.child;
     relayUrl = started.relayUrl;
   } else {
-    log(`using public CCSM_RELAY_URL=${configuredUrl}`);
+    log('using configured public relay');
   }
 
   await assertSecurityHeaders(relayUrl);
@@ -254,6 +262,7 @@ async function main() {
   // timing, and it works identically for both the local-Wrangler and
   // public-relay (`CCSM_RELAY_URL`) code paths.
   await composer(page).fill('kept across disconnect');
+  assertNoSessionResizeMessages(desktop, 'before disconnect');
   desktop.close();
   desktop = null;
   await waitFor('phone network interruption', async () => (await statusAttr(page)) === 'reconnecting');
@@ -291,6 +300,7 @@ async function main() {
   log('PASS live output renders and a duplicate seq is deduplicated');
 
   // --- Old-secret rejection after rotation ------------------------------
+  assertNoSessionResizeMessages(desktop, 'before credential rotation');
   desktop.close();
   desktop = null;
   const rotatedPairing = { roomId: pairing.roomId, secret: generatePairingIdentity().secret };
@@ -300,6 +310,7 @@ async function main() {
     async () => (await statusAttr(page)) === 'authentication_failed',
     30_000,
   );
+  assertNoSessionResizeMessages(rotatedDesktop, 'after credential rotation');
   log('PASS old pairing secret is rejected after rotation');
 
   assert.deepEqual(consoleErrors, [], 'no browser console errors across the whole run');

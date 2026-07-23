@@ -18,6 +18,7 @@
 export type MobileTestSyncState = {
   sid: string | null;
   phase: 'idle' | 'syncing' | 'live';
+  geometry: { cols: number; rows: number; epoch: number } | null;
   geometryEpoch: number | null;
   lastSeq: number;
   snapshotRequested: boolean;
@@ -28,6 +29,8 @@ export type MobileTestSyncState = {
     | 'buffer-overflow'
     | null;
   bufferedSeqs: number[];
+  installSnapshotCount: number;
+  terminalResetCount: number;
 };
 
 export type MobileTestBridge = {

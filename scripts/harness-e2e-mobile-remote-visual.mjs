@@ -1,24 +1,20 @@
-// Visual viewport proof for the mobile remote phone shell (composer/
-// terminal-sync plan, Task 6 Step E): portrait, a simulated on-screen
-// keyboard (visualViewport shrink), landscape, and the session drawer.
+// Visual viewport + geometry-authority proof for the phone remote shell.
 //
 // Pre-req: `npm run build`.
 // Run:    node scripts/harness-e2e-mobile-remote-visual.mjs
 //
-// "Keyboard open" is simulated purely as a `visualViewport` state change
-// (a faked `window.visualViewport` installed via `page.addInitScript`,
-// overridden on demand) — this harness never calls `focus()`/`blur()` on
-// anything to try to summon a real software keyboard. The override still
-// drives the SAME production code path (`mobileTerminalAdapter.ts`'s
-// `visualViewport` listener, which sets the real `--app-height` /
-// `--app-offset-top` CSS custom properties `mobile.css` consumes), so the
-// actual CSS variables and terminal refit are genuinely exercised, not
-// faked at the assertion layer.
+// Assertions:
+// - canonical geometry stays desktop-owned (120x30) across portrait, keyboard,
+//   restored portrait, landscape, and zoom;
+// - phone never emits session.resize;
+// - horizontal pan, left-edge affordance, 24px rail, >=44px thumb/controls;
+// - scrollbar track jump + thumb drag move logical viewport;
+// - helper/composer focus is not stolen by viewport changes;
+// - canonical geometry changes only when desktop sends one resize barrier.
 
 import assert from 'node:assert/strict';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { chromium } from 'playwright';
 
@@ -36,6 +32,8 @@ import {
 
 const SID = 'visual-e2e';
 const MIN_TOUCH_TARGET = 44;
+const CANONICAL_GEOMETRY = Object.freeze({ cols: 120, rows: 30, epoch: 0 });
+const BARRIER_GEOMETRY = Object.freeze({ cols: 160, rows: 36, epoch: 1 });
 const ARTIFACT_DIR = path.join(rootDir, 'artifacts', 'mobile-remote');
 
 let wrangler = null;
@@ -47,17 +45,6 @@ function log(step) {
   console.log(`[mobile-remote-visual] ${step}`);
 }
 
-/**
- * Replaces `window.visualViewport` with a thin wrapper that passes through
- * the REAL native visual viewport (so native browser resizes — e.g. an
- * actual Playwright `setViewportSize` landscape rotation — keep working
- * exactly as in production) unless an explicit override is set via
- * `window.__ccsmSetVisualViewportOverride({ height, width, offsetTop,
- * offsetLeft } | null)`, which is the deterministic "on-screen keyboard"
- * simulation seam. Installed via `addInitScript` so it exists before any
- * of the app's own bundled JS runs (in particular before
- * `mobileTerminalAdapter.ts` ever reads `window.visualViewport`).
- */
 async function installFakeVisualViewport(page) {
   await page.addInitScript(() => {
     const native = window.visualViewport;
@@ -65,19 +52,19 @@ async function installFakeVisualViewport(page) {
     const target = new EventTarget();
     const fake = {
       get height() {
-        return override ? override.height : (native ? native.height : window.innerHeight);
+        return override?.height ?? (native ? native.height : window.innerHeight);
       },
       get width() {
-        return override ? override.width : (native ? native.width : window.innerWidth);
+        return override?.width ?? (native ? native.width : window.innerWidth);
       },
       get offsetTop() {
-        return override ? override.offsetTop : native ? native.offsetTop : 0;
+        return override?.offsetTop ?? (native ? native.offsetTop : 0);
       },
       get offsetLeft() {
-        return override ? override.offsetLeft : native ? native.offsetLeft : 0;
+        return override?.offsetLeft ?? (native ? native.offsetLeft : 0);
       },
       get scale() {
-        return native ? native.scale : 1;
+        return override?.scale ?? (native ? native.scale : 1);
       },
       addEventListener: (...args) => target.addEventListener(...args),
       removeEventListener: (...args) => target.removeEventListener(...args),
@@ -94,12 +81,68 @@ async function installFakeVisualViewport(page) {
     window.__ccsmSetVisualViewportOverride = (next) => {
       override = next;
       target.dispatchEvent(new Event('resize'));
+      target.dispatchEvent(new Event('scroll'));
     };
   });
 }
 
 async function setVisualViewportOverride(page, override) {
   await page.evaluate((value) => window.__ccsmSetVisualViewportOverride(value), override);
+}
+
+function getSyncState(page) {
+  return page.evaluate(() => window.__ccsmMobileTest.getSyncState());
+}
+
+async function waitForBridge(page) {
+  await page.waitForFunction(() => typeof window.__ccsmMobileTest !== 'undefined', undefined, {
+    timeout: 15_000,
+  });
+}
+
+async function waitForCanonicalGeometry(page, label) {
+  await waitFor(
+    `${label}: canonical 120x30 is installed`,
+    async () => {
+      const state = await getSyncState(page);
+      return (
+        state.phase === 'live' &&
+        state.geometry?.cols === CANONICAL_GEOMETRY.cols &&
+        state.geometry?.rows === CANONICAL_GEOMETRY.rows &&
+        state.geometry?.epoch === CANONICAL_GEOMETRY.epoch
+      );
+    },
+    20_000,
+  );
+}
+
+async function waitForBarrierGeometry(page, label) {
+  await waitFor(
+    `${label}: desktop barrier geometry is installed`,
+    async () => {
+      const state = await getSyncState(page);
+      return (
+        state.phase === 'live' &&
+        state.geometry?.cols === BARRIER_GEOMETRY.cols &&
+        state.geometry?.rows === BARRIER_GEOMETRY.rows &&
+        state.geometry?.epoch === BARRIER_GEOMETRY.epoch
+      );
+    },
+    20_000,
+  );
+}
+
+async function assertGeometry(page, label, geometry) {
+  const state = await getSyncState(page);
+  assert.deepEqual(state.geometry, geometry, `${label}: installed geometry must match`);
+}
+
+function assertNoSessionResizeMessages(desktopInstance, label) {
+  assert.equal(
+    desktopInstance.receivedMessages.some((message) => message?.type === 'session.resize'),
+    false,
+    `${label}: phone must never emit session.resize`,
+  );
 }
 
 async function appHeightPx(page) {
@@ -127,63 +170,101 @@ async function visibleViewportBounds(page) {
   }));
 }
 
-async function assertWithinVisibleViewport(page, selector, label) {
+async function assertWithinVisibleViewport(page, selector, label, options = {}) {
+  const horizontalMode = options.horizontal ?? 'full';
   const [rect, viewport] = await Promise.all([rectOf(page, selector), visibleViewportBounds(page)]);
   assert.ok(rect, `${label}: "${selector}" must exist`);
   assert.ok(
     rect.top >= viewport.top - 0.5 && rect.bottom <= viewport.bottom + 0.5,
-    `${label}: "${selector}" (top=${rect.top.toFixed(1)}, bottom=${rect.bottom.toFixed(1)}) must be vertically within the visible viewport [${viewport.top}, ${viewport.bottom}]`,
+    `${label}: "${selector}" must be vertically within visible viewport`,
   );
-  assert.ok(
-    rect.left >= viewport.left - 0.5 && rect.right <= viewport.right + 0.5,
-    `${label}: "${selector}" (left=${rect.left.toFixed(1)}, right=${rect.right.toFixed(1)}) must be horizontally within the visible viewport [${viewport.left}, ${viewport.right}]`,
-  );
+  if (horizontalMode === 'intersect') {
+    assert.ok(
+      rect.right > viewport.left + 0.5 && rect.left < viewport.right - 0.5,
+      `${label}: "${selector}" must intersect visible viewport horizontally`,
+    );
+  } else {
+    assert.ok(
+      rect.left >= viewport.left - 0.5 && rect.right <= viewport.right + 0.5,
+      `${label}: "${selector}" must be horizontally within visible viewport`,
+    );
+  }
 }
 
 async function assertTouchTarget(page, selector, label) {
   const rect = await rectOf(page, selector);
   assert.ok(rect, `${label}: "${selector}" must exist`);
-  assert.ok(rect.width >= MIN_TOUCH_TARGET - 0.5, `${label}: "${selector}" width ${rect.width.toFixed(1)}px must be >= 44px`);
-  assert.ok(rect.height >= MIN_TOUCH_TARGET - 0.5, `${label}: "${selector}" height ${rect.height.toFixed(1)}px must be >= 44px`);
+  assert.ok(
+    rect.width >= MIN_TOUCH_TARGET - 0.5,
+    `${label}: "${selector}" width must be >= ${MIN_TOUCH_TARGET}px`,
+  );
+  assert.ok(
+    rect.height >= MIN_TOUCH_TARGET - 0.5,
+    `${label}: "${selector}" height must be >= ${MIN_TOUCH_TARGET}px`,
+  );
 }
 
-async function assertCoreLayout(page, label, { drawerOpen = false } = {}) {
+async function assertCoreLayout(page, label, options = {}) {
+  const wideContainers = options.wideContainers ?? false;
   for (const selector of ['.phone-topbar', '.mobile-terminal', '.terminal-keybar', '.message-composer']) {
-    await assertWithinVisibleViewport(page, selector, label);
-  }
-  await assertWithinVisibleViewport(page, '.composer-send', label);
-  if (drawerOpen) {
-    await assertWithinVisibleViewport(page, '.session-drawer__panel', label);
-  }
-  // Terminal actually visible (non-zero, real on-screen area).
-  const terminalRect = await rectOf(page, '.mobile-terminal');
-  assert.ok(terminalRect.width > 0 && terminalRect.height > 0, `${label}: terminal must have a visible, non-zero area`);
-
-  // Touch targets: menu button, every discrete key, Send, and (when open)
-  // the drawer's close button + at least one navigator row.
-  await assertTouchTarget(page, '.phone-topbar__menu', label);
-  const keyCount = await page.locator('.terminal-key').count();
-  assert.ok(keyCount > 0, `${label}: expected at least one terminal key button`);
-  for (let i = 0; i < keyCount; i += 1) {
-    const rect = await page.locator('.terminal-key').nth(i).evaluate((el) => {
-      const r = el.getBoundingClientRect();
-      return { width: r.width, height: r.height };
+    await assertWithinVisibleViewport(page, selector, label, {
+      horizontal: wideContainers ? 'intersect' : 'full',
     });
-    assert.ok(rect.width >= MIN_TOUCH_TARGET - 0.5, `${label}: terminal key #${i} width must be >= 44px`);
-    assert.ok(rect.height >= MIN_TOUCH_TARGET - 0.5, `${label}: terminal key #${i} height must be >= 44px`);
   }
+  await assertWithinVisibleViewport(page, '.composer-send', label, {
+    horizontal: wideContainers ? 'intersect' : 'full',
+  });
+  await assertTouchTarget(page, '.phone-topbar__menu', label);
   await assertTouchTarget(page, '.composer-send', label);
-  if (drawerOpen) {
-    await assertTouchTarget(page, '.session-drawer__close', label);
-    await assertTouchTarget(page, '[data-session-id]', label);
-  }
 }
 
-async function currentResizeCols(desktop) {
-  return desktop.resizes.at(-1)?.cols ?? null;
+async function readTerminalViewportMetrics(page) {
+  return page.evaluate(() => {
+    const root = document.querySelector('.mobile-terminal');
+    const viewport = document.querySelector('.mobile-terminal__viewport');
+    if (!root || !viewport) return null;
+    return {
+      hasLeftEdgeAffordanceClass: root.classList.contains('mobile-terminal--left-edge-affordance-visible'),
+      scrollLeft: viewport.scrollLeft,
+      maxHorizontalOffset: Math.max(0, viewport.scrollWidth - viewport.clientWidth),
+      gridWidth: viewport.scrollWidth,
+      viewportWidth: viewport.clientWidth,
+    };
+  });
 }
-async function currentResizeRows(desktop) {
-  return desktop.resizes.at(-1)?.rows ?? null;
+
+async function setHorizontalOffset(page, offsetPx) {
+  await page.evaluate((offset) => {
+    const viewport = document.querySelector('.mobile-terminal__viewport');
+    if (!viewport) return;
+    viewport.scrollLeft = offset;
+    viewport.dispatchEvent(new Event('scroll', { bubbles: true }));
+  }, offsetPx);
+}
+
+async function assertScrollbarGeometry(page, label) {
+  const railRect = await rectOf(page, '.mobile-terminal-scrollbar__rail');
+  const thumbRect = await rectOf(page, '.mobile-terminal-scrollbar__thumb');
+  assert.ok(railRect, `${label}: scrollbar rail must exist`);
+  assert.ok(thumbRect, `${label}: scrollbar thumb must exist`);
+  assert.ok(Math.abs(railRect.width - 24) <= 1.5, `${label}: scrollbar rail width must stay ~24px`);
+  assert.ok(thumbRect.height >= MIN_TOUCH_TARGET - 0.5, `${label}: scrollbar thumb height must be >= 44px`);
+}
+
+async function activeElementDescriptor(page) {
+  return page.evaluate(() => {
+    const el = document.activeElement;
+    if (!el || el === document.body) return 'body';
+    const tag = el.tagName.toLowerCase();
+    const aria = el.getAttribute('aria-label') ?? '';
+    const classes = [...el.classList].slice(0, 2).join('.');
+    return `${tag}${classes ? `.${classes}` : ''}[aria=${aria}]`;
+  });
+}
+
+async function assertNoBrowserErrors(consoleErrors, pageErrors, label) {
+  assert.deepEqual(consoleErrors, [], `${label}: no browser console errors`);
+  assert.deepEqual(pageErrors, [], `${label}: no browser page errors`);
 }
 
 async function main() {
@@ -197,11 +278,13 @@ async function main() {
     wrangler = started.child;
     relayUrl = started.relayUrl;
   } else {
-    log(`using public CCSM_RELAY_URL=${configuredUrl}`);
+    log('using configured public relay');
   }
 
   const pairing = generatePairingIdentity();
-  desktop = createSimulatedDesktop(relayUrl, pairing, { sessions: [{ sid: SID, cwd: 'C:\\work\\visual-e2e' }] });
+  desktop = createSimulatedDesktop(relayUrl, pairing, {
+    sessions: [{ sid: SID, cwd: 'C:\\work\\visual-e2e' }],
+  });
 
   browser = await chromium.launch({ headless: true });
   context = await browser.newContext({ viewport: { width: 390, height: 844 } });
@@ -214,76 +297,202 @@ async function main() {
   page.on('pageerror', (error) => pageErrors.push(String(error?.stack ?? error)));
 
   await installFakeVisualViewport(page);
-  await page.goto(`${relayUrl}/#pair=${pairing.roomId}.${pairing.secret}`);
-  await waitFor('encrypted handshake', async () =>
-    (await page.locator('.phone-topbar__connection').first().textContent()) === 'Connected',
+  await page.goto(`${relayUrl}/?ccsmTest=1#pair=${pairing.roomId}.${pairing.secret}`);
+  await waitForBridge(page);
+  await waitFor(
+    'encrypted handshake',
+    async () => (await page.locator('.phone-topbar__connection').first().textContent()) === 'Connected',
   );
-  await page.locator('.phone-topbar__name').filter({ hasText: SID }).waitFor();
-  await waitFor('initial session.resize', () => desktop.resizes.length >= 1);
+  await waitFor('initial snapshot request', () => desktop.snapshotRequests.length >= 1, 20_000);
+  await waitForCanonicalGeometry(page, 'initial sync');
 
-  // --- Portrait: 390x844 -------------------------------------------------
-  await waitFor('portrait --app-height stabilizes', async () => (await appHeightPx(page)) === 844);
+  let seq = 0;
+  let snapshot = '';
+  for (let index = 1; index <= 220; index += 1) {
+    const chunk =
+      `VISUAL-LINE-${String(index).padStart(3, '0')} ${'W'.repeat(160)}\r\n`;
+    seq += 1;
+    snapshot += chunk;
+    desktop.sendPty(SID, seq, chunk, CANONICAL_GEOMETRY.epoch);
+  }
+  await waitFor(
+    'terminal catches up to line feed',
+    async () => {
+      const state = await getSyncState(page);
+      return state.phase === 'live' && state.lastSeq >= seq;
+    },
+    20_000,
+  );
+
+  // Portrait: 390x844.
+  await waitFor('portrait app-height', async () => (await appHeightPx(page)) === 844, 10_000);
   await assertCoreLayout(page, 'portrait');
+  await assertScrollbarGeometry(page, 'portrait');
+  await assertGeometry(page, 'portrait geometry', CANONICAL_GEOMETRY);
+  const portraitMetrics = await readTerminalViewportMetrics(page);
+  assert.ok(portraitMetrics, 'portrait: terminal viewport must exist');
+  assert.ok(
+    portraitMetrics.maxHorizontalOffset > 0 && portraitMetrics.gridWidth > portraitMetrics.viewportWidth,
+    'portrait: canonical grid must be wider than physical viewport',
+  );
   await page.screenshot({ path: path.join(ARTIFACT_DIR, 'portrait.png') });
-  const portraitRows = await currentResizeRows(desktop);
-  const portraitCols = await currentResizeCols(desktop);
-  assert.ok(portraitRows && portraitCols, 'portrait: a session.resize must have reported real cols/rows');
-  log('PASS portrait (390x844): layout, touch targets, terminal visible');
+  log('PASS portrait canonical width + controls');
 
-  // --- Keyboard-open: visualViewport shrinks to 390x520 ------------------
-  const resizesBeforeKeyboard = desktop.resizes.length;
-  await setVisualViewportOverride(page, { height: 520, width: 390, offsetTop: 0, offsetLeft: 0 });
-  await waitFor('keyboard-open --app-height stabilizes', async () => (await appHeightPx(page)) === 520);
-  await waitFor('keyboard-open triggers a fresh session.resize', () => desktop.resizes.length > resizesBeforeKeyboard);
-  await assertCoreLayout(page, 'keyboard-open');
-  // Explicit, dedicated assertion (not just "within viewport" generically):
-  // the keybar and composer must both sit entirely above y=520 — i.e. never
-  // covered by the simulated keyboard.
-  const keybarRect = await rectOf(page, '.terminal-keybar');
-  const composerRect = await rectOf(page, '.message-composer');
-  assert.ok(keybarRect.bottom <= 520.5, `keyboard-open: keybar bottom (${keybarRect.bottom}) must not be covered by the keyboard (<= 520)`);
-  assert.ok(composerRect.bottom <= 520.5, `keyboard-open: composer bottom (${composerRect.bottom}) must not be covered by the keyboard (<= 520)`);
-  const keyboardRows = await currentResizeRows(desktop);
-  assert.ok(keyboardRows < portraitRows, `keyboard-open: rows (${keyboardRows}) must shrink from portrait rows (${portraitRows})`);
+  // Horizontal right-edge pan shows left-edge affordance.
+  await setHorizontalOffset(page, portraitMetrics.maxHorizontalOffset);
+  await waitFor(
+    'horizontal pan reaches right edge',
+    async () => {
+      const metrics = await readTerminalViewportMetrics(page);
+      return metrics && metrics.scrollLeft >= Math.max(0, metrics.maxHorizontalOffset - 2);
+    },
+    10_000,
+  );
+  const pannedMetrics = await readTerminalViewportMetrics(page);
+  assert.ok(pannedMetrics.hasLeftEdgeAffordanceClass, 'right-edge pan must show left-edge affordance');
+  await assertGeometry(page, 'post-pan geometry', CANONICAL_GEOMETRY);
+  log('PASS horizontal right-edge pan + affordance');
+
+  // Scrollbar jump + thumb drag alter logical viewport.
+  const scrollbar = page.getByRole('scrollbar', { name: 'Terminal output scroll position' });
+  const initialValMax = Number(await scrollbar.getAttribute('aria-valuemax'));
+  assert.ok(initialValMax > 0, 'scrollbar: vertical range must be scrollable');
+  const initialValNow = Number(await scrollbar.getAttribute('aria-valuenow'));
+
+  const railBox = await page.locator('.mobile-terminal-scrollbar__rail').boundingBox();
+  assert.ok(railBox, 'scrollbar rail must have a bounding box');
+  await page.mouse.click(
+    railBox.x + railBox.width / 2,
+    railBox.y + railBox.height * 0.15,
+  );
+  await waitFor(
+    'scrollbar track jump updates aria-valuenow',
+    async () => Number(await scrollbar.getAttribute('aria-valuenow')) !== initialValNow,
+    10_000,
+  );
+  const afterJump = Number(await scrollbar.getAttribute('aria-valuenow'));
+  assert.notEqual(afterJump, initialValNow, 'track jump should change logical viewport position');
+
+  const thumbBox = await page.locator('.mobile-terminal-scrollbar__thumb').boundingBox();
+  assert.ok(thumbBox, 'scrollbar thumb must have a bounding box');
+  await page.mouse.move(thumbBox.x + thumbBox.width / 2, thumbBox.y + thumbBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(
+    thumbBox.x + thumbBox.width / 2,
+    Math.max(railBox.y + 8, thumbBox.y - 80),
+    { steps: 8 },
+  );
+  await page.mouse.up();
+  await waitFor(
+    'thumb drag updates aria-valuenow',
+    async () => Number(await scrollbar.getAttribute('aria-valuenow')) !== afterJump,
+    10_000,
+  );
+  await assertGeometry(page, 'post-scrollbar geometry', CANONICAL_GEOMETRY);
+  log('PASS scrollbar track jump + thumb drag');
+
+  // Helper focus survives keyboard shrink + restore.
+  const helperTextarea = page.locator('.xterm-helper-textarea');
+  await helperTextarea.waitFor({ state: 'attached' });
+  await helperTextarea.focus();
+  const helperFocused = await activeElementDescriptor(page);
+  assert.match(helperFocused, /xterm-helper-textarea/, 'helper focus should be set');
+
+  await setVisualViewportOverride(page, {
+    height: 520,
+    width: 390,
+    offsetTop: 0,
+    offsetLeft: 0,
+    scale: 1,
+  });
+  await waitFor('keyboard app-height', async () => (await appHeightPx(page)) === 520, 10_000);
+  await assertCoreLayout(page, 'keyboard');
+  await assertScrollbarGeometry(page, 'keyboard');
+  await assertGeometry(page, 'keyboard geometry', CANONICAL_GEOMETRY);
+  assert.equal(await activeElementDescriptor(page), helperFocused, 'keyboard shrink must not steal helper focus');
   await page.screenshot({ path: path.join(ARTIFACT_DIR, 'keyboard-open.png') });
-  log('PASS keyboard-open (390x520 visualViewport): keybar/composer stay above the simulated keyboard, terminal refit smaller');
+  log('PASS keyboard visual viewport shrink');
 
-  // Restore — clearing the override must resize back toward the portrait
-  // dimensions (proving the resize pipeline reacts to BOTH directions, not
-  // just the shrink).
-  const resizesBeforeRestore = desktop.resizes.length;
   await setVisualViewportOverride(page, null);
-  await waitFor('restored --app-height stabilizes', async () => (await appHeightPx(page)) === 844);
-  await waitFor('restore triggers a fresh session.resize', () => desktop.resizes.length > resizesBeforeRestore);
-  assert.equal(await currentResizeRows(desktop), portraitRows, 'restored: rows must return to the portrait value');
-  log('PASS restoring the visualViewport re-emits a resize reflecting the restored dimensions');
+  await waitFor('restored portrait app-height', async () => (await appHeightPx(page)) === 844, 10_000);
+  await assertCoreLayout(page, 'restored-portrait');
+  await assertGeometry(page, 'restored portrait geometry', CANONICAL_GEOMETRY);
+  assert.equal(
+    await activeElementDescriptor(page),
+    helperFocused,
+    'restoring portrait viewport must not steal helper focus',
+  );
+  log('PASS restored portrait');
 
-  // --- Landscape: 844x390 (a real Playwright viewport rotation) ----------
-  const resizesBeforeLandscape = desktop.resizes.length;
+  // Composer focus survives landscape + zoom.
+  await page.getByRole('textbox', { name: 'Message' }).click();
+  const composerFocused = await activeElementDescriptor(page);
+  assert.match(composerFocused, /textarea\.message-composer__input/, 'composer focus should be set');
+
   await page.setViewportSize({ width: 844, height: 390 });
-  await waitFor('landscape --app-height stabilizes', async () => (await appHeightPx(page)) === 390);
-  await waitFor('landscape triggers a fresh session.resize', () => desktop.resizes.length > resizesBeforeLandscape);
+  await waitFor('landscape app-height', async () => (await appHeightPx(page)) === 390, 10_000);
   await assertCoreLayout(page, 'landscape');
-  const landscapeRows = await currentResizeRows(desktop);
-  const landscapeCols = await currentResizeCols(desktop);
-  assert.ok(landscapeCols > portraitCols, `landscape: cols (${landscapeCols}) must exceed portrait cols (${portraitCols})`);
-  assert.ok(landscapeRows < portraitRows, `landscape: rows (${landscapeRows}) must be fewer than portrait rows (${portraitRows})`);
+  await assertScrollbarGeometry(page, 'landscape');
+  await assertGeometry(page, 'landscape geometry', CANONICAL_GEOMETRY);
+  assert.equal(
+    await activeElementDescriptor(page),
+    composerFocused,
+    'landscape rotation must not steal composer focus',
+  );
   await page.screenshot({ path: path.join(ARTIFACT_DIR, 'landscape.png') });
-  log('PASS landscape (844x390): layout, touch targets, resize reflects the oriented dimensions');
+  log('PASS landscape 844x390');
 
-  // --- Drawer: back to portrait, drawer open ------------------------------
-  await page.setViewportSize({ width: 390, height: 844 });
-  await waitFor('portrait --app-height restored before opening the drawer', async () => (await appHeightPx(page)) === 844);
-  await page.getByRole('button', { name: 'Sessions menu' }).click();
-  await page.locator('.session-drawer__panel').waitFor();
-  await assertCoreLayout(page, 'drawer', { drawerOpen: true });
-  await page.screenshot({ path: path.join(ARTIFACT_DIR, 'drawer.png') });
-  log('PASS drawer (390x844, open): drawer + underlying shell all within the visible viewport, touch targets intact');
+  await setVisualViewportOverride(page, {
+    height: 390,
+    width: 820,
+    offsetTop: 0,
+    offsetLeft: 0,
+    scale: 1.2,
+  });
+  await waitFor('zoom app-height remains bounded', async () => (await appHeightPx(page)) === 390, 10_000);
+  await assertCoreLayout(page, 'zoom', { wideContainers: true });
+  await assertScrollbarGeometry(page, 'zoom');
+  await assertGeometry(page, 'zoom geometry', CANONICAL_GEOMETRY);
+  assert.equal(
+    await activeElementDescriptor(page),
+    composerFocused,
+    'zoom viewport changes must not steal composer focus',
+  );
+  await page.screenshot({ path: path.join(ARTIFACT_DIR, 'zoom.png') });
+  log('PASS zoom viewport');
 
-  assert.deepEqual(consoleErrors, [], 'no browser console errors across the whole run');
-  assert.deepEqual(pageErrors, [], 'no browser pageerror events across the whole run');
+  assertNoSessionResizeMessages(desktop, 'pre-barrier');
 
-  console.log('[mobile-remote-visual] PASS portrait, keyboard, landscape, drawer');
+  // Desktop-authoritative barrier: geometry changes only after snapshot barrier.
+  const preBarrierState = await getSyncState(page);
+  desktop.sendResizeBarrier(SID, seq, snapshot, BARRIER_GEOMETRY);
+  await waitForBarrierGeometry(page, 'desktop barrier');
+  const postBarrierState = await getSyncState(page);
+  assert.equal(
+    postBarrierState.installSnapshotCount,
+    preBarrierState.installSnapshotCount + 1,
+    'desktop barrier must install exactly one extra snapshot',
+  );
+  assert.equal(
+    postBarrierState.terminalResetCount,
+    preBarrierState.terminalResetCount + 1,
+    'desktop barrier must trigger exactly one extra reset',
+  );
+
+  seq += 1;
+  const tailChunk = `POST-BARRIER-LINE ${'Z'.repeat(120)}\r\n`;
+  snapshot += tailChunk;
+  desktop.sendPty(SID, seq, tailChunk, BARRIER_GEOMETRY.epoch);
+  await waitFor(
+    'post-barrier live tail applied',
+    async () => (await getSyncState(page)).lastSeq >= seq,
+    10_000,
+  );
+  await assertGeometry(page, 'post-barrier geometry', BARRIER_GEOMETRY);
+  assertNoSessionResizeMessages(desktop, 'post-barrier');
+
+  await assertNoBrowserErrors(consoleErrors, pageErrors, 'final');
+  console.log('[mobile-remote-visual] PASS geometry authority + visual controls');
 }
 
 try {

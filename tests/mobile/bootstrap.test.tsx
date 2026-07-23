@@ -236,11 +236,14 @@ describe('phone bootstrap', () => {
     expect(syncState).toEqual({
       sid: null,
       phase: 'idle',
+      geometry: null,
       geometryEpoch: null,
       lastSeq: -1,
       snapshotRequested: false,
       recoveryReason: null,
       bufferedSeqs: [],
+      installSnapshotCount: 0,
+      terminalResetCount: 0,
     });
     const serializedState = JSON.stringify(syncState);
     expect(serializedState).not.toContain(PAIRING.roomId);

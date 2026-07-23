@@ -6,8 +6,9 @@
 // (`electron/remote/remoteMessages.ts` / `mobileRemoteController.ts`).
 //
 // Consumed by `scripts/harness-e2e-mobile-remote-relay.mjs`,
-// `scripts/harness-e2e-mobile-terminal-sync.mjs`, and
-// `scripts/harness-e2e-mobile-remote-visual.mjs` so the Wrangler
+// `scripts/harness-e2e-mobile-terminal-sync.mjs`,
+// `scripts/harness-e2e-mobile-remote-visual.mjs`, and
+// `scripts/harness-e2e-mobile-desktop-ownership.mjs` so the Wrangler
 // lifecycle and desktop-simulation code is written — and fixed — exactly
 // once. Requires `npm run build` first (imports compiled `dist/electron`
 // and `dist/src/shared` output, exactly like the harnesses that use it).
@@ -234,8 +235,8 @@ export function buildNavigatorModel(sessionDescriptors, options = {}) {
  *     live output until a `session.snapshot` request re-arms it. The
  *     narrowly-scoped `sendInFlightPty` bypasses this gate entirely, for
  *     the one deliberate in-flight-frame race it exists to model;
- *   - records every `session.input`, `session.resize`, and `session.snapshot`
- *     request, and answers every `session.submit` with a correlated
+ *   - records every inbound phone message plus every `session.input` and
+ *     `session.snapshot` request, and answers every `session.submit` with a correlated
  *     `session.submit.result` (default validation mirrors the real
  *     server: empty sid/requestId/draft or an unknown sid is rejected,
  *     anything else succeeds — override with `setSubmitHandler` for a
@@ -246,7 +247,7 @@ export function buildNavigatorModel(sessionDescriptors, options = {}) {
 export function createSimulatedDesktop(relayUrl, pairing, options = {}) {
   const sessions = new Map();
   const inputs = [];
-  const resizes = [];
+  const receivedMessages = [];
   const submissions = [];
   const snapshotRequests = [];
   const failures = [];
@@ -254,12 +255,39 @@ export function createSimulatedDesktop(relayUrl, pairing, options = {}) {
   let navigatorModel = options.navigatorModel ?? null;
   let submitHandler = options.submitHandler ?? defaultSubmitHandler;
 
+  function sessionGeometry(session) {
+    return {
+      cols: session.cols,
+      rows: session.rows,
+      epoch: session.geometryEpoch,
+    };
+  }
+
+  function normalizeGeometry(geometry, fallback) {
+    if (!geometry || typeof geometry !== 'object') return fallback;
+    const cols = Number(geometry.cols);
+    const rows = Number(geometry.rows);
+    const epoch = Number(geometry.epoch);
+    if (
+      !Number.isSafeInteger(cols) ||
+      !Number.isSafeInteger(rows) ||
+      !Number.isSafeInteger(epoch) ||
+      cols <= 0 ||
+      rows <= 0 ||
+      epoch < 0
+    ) {
+      return fallback;
+    }
+    return { cols, rows, epoch };
+  }
+
   function addSession(sid, sessionOptions = {}) {
     sessions.set(sid, {
       sid,
       cwd: sessionOptions.cwd ?? 'C:\\work\\mobile-e2e',
-      cols: sessionOptions.cols ?? 80,
-      rows: sessionOptions.rows ?? 24,
+      cols: sessionOptions.cols ?? 120,
+      rows: sessionOptions.rows ?? 30,
+      geometryEpoch: sessionOptions.geometryEpoch ?? 0,
       buffer: '',
       seq: 0,
       snapshotProvider: sessionOptions.snapshotProvider ?? defaultSnapshotProvider,
@@ -268,7 +296,11 @@ export function createSimulatedDesktop(relayUrl, pairing, options = {}) {
   for (const descriptor of options.sessions ?? []) addSession(descriptor.sid, descriptor);
 
   function defaultSnapshotProvider(session) {
-    return { seq: session.seq, data: session.buffer };
+    return {
+      seq: session.seq,
+      snapshot: session.buffer,
+      geometry: sessionGeometry(session),
+    };
   }
 
   function defaultSubmitHandler(sid, requestId, draft) {
@@ -281,8 +313,7 @@ export function createSimulatedDesktop(relayUrl, pairing, options = {}) {
     return [...sessions.values()].map((session) => ({
       sid: session.sid,
       cwd: session.cwd,
-      cols: session.cols,
-      rows: session.rows,
+      geometry: sessionGeometry(session),
     }));
   }
 
@@ -303,6 +334,7 @@ export function createSimulatedDesktop(relayUrl, pairing, options = {}) {
 
   async function handleMessage(remotePeer, raw) {
     const message = JSON.parse(raw);
+    receivedMessages.push(message);
     if (message.type === 'sessions.list') {
       sendSessionCatalog(remotePeer);
       return;
@@ -312,7 +344,7 @@ export function createSimulatedDesktop(relayUrl, pairing, options = {}) {
       remotePeer.subscribedSid = message.sid;
       const session = sessions.get(message.sid);
       if (!session) {
-        remotePeer.send({ type: 'session.snapshot', sid: message.sid, seq: 0, data: '', cols: null, rows: null });
+        remotePeer.send({ type: 'error', message: 'missing_sid' });
         return;
       }
       const result = await session.snapshotProvider(session);
@@ -322,13 +354,14 @@ export function createSimulatedDesktop(relayUrl, pairing, options = {}) {
       // explicitly, via `sendSnapshotNow`. The request is still recorded
       // above either way.
       if (result == null) return;
+      const fallbackGeometry = sessionGeometry(session);
+      const geometry = normalizeGeometry(result.geometry, fallbackGeometry);
       remotePeer.send({
         type: 'session.snapshot',
         sid: message.sid,
         seq: result.seq,
-        data: result.data,
-        cols: session.cols,
-        rows: session.rows,
+        snapshot: result.snapshot ?? result.data ?? '',
+        geometry,
       });
       return;
     }
@@ -347,14 +380,6 @@ export function createSimulatedDesktop(relayUrl, pairing, options = {}) {
         ...(result.error ? { error: result.error } : {}),
       });
       return;
-    }
-    if (message.type === 'session.resize') {
-      resizes.push({ sid: message.sid, cols: message.cols, rows: message.rows });
-      const session = sessions.get(message.sid);
-      if (session) {
-        session.cols = message.cols;
-        session.rows = message.rows;
-      }
     }
   }
 
@@ -381,8 +406,8 @@ export function createSimulatedDesktop(relayUrl, pairing, options = {}) {
     get inputs() {
       return inputs;
     },
-    get resizes() {
-      return resizes;
+    get receivedMessages() {
+      return [...receivedMessages];
     },
     get submissions() {
       return submissions;
@@ -429,14 +454,15 @@ export function createSimulatedDesktop(relayUrl, pairing, options = {}) {
      *  real production's underlying PTY buffer keeps accumulating
      *  regardless of which remote peer happens to be subscribed, so a
      *  later `session.snapshot` answer must reflect it either way. */
-    sendPty(sid, seq, chunk) {
+    sendPty(sid, seq, chunk, geometryEpoch) {
       const session = sessions.get(sid);
       if (session) {
         session.buffer += chunk;
         session.seq = seq;
       }
+      const epoch = geometryEpoch ?? session?.geometryEpoch ?? 0;
       if (peer.subscribedSid === sid) {
-        peer.send({ type: 'pty.data', sid, seq, chunk });
+        peer.send({ type: 'pty.data', sid, seq, chunk, geometryEpoch: epoch });
       }
     },
     /** Sends a raw `pty.data` chunk over the wire WITHOUT touching any
@@ -452,9 +478,11 @@ export function createSimulatedDesktop(relayUrl, pairing, options = {}) {
      *  frame that was already in flight before a subscription changed —
      *  must use the deliberate, narrowly-scoped `sendInFlightPty` bypass
      *  below instead, never this one. */
-    sendRawPty(sid, seq, chunk) {
+    sendRawPty(sid, seq, chunk, geometryEpoch) {
+      const session = sessions.get(sid);
+      const epoch = geometryEpoch ?? session?.geometryEpoch ?? 0;
       if (peer.subscribedSid === sid) {
-        peer.send({ type: 'pty.data', sid, seq, chunk });
+        peer.send({ type: 'pty.data', sid, seq, chunk, geometryEpoch: epoch });
       }
     },
     /** DELIBERATE IN-FLIGHT INJECTION — bypasses the `subscribedSid` gate
@@ -469,14 +497,36 @@ export function createSimulatedDesktop(relayUrl, pairing, options = {}) {
      *  one stale-old-sid-tail assertion in the session-switch-race case;
      *  every other case must keep using the gated `sendPty`/`sendRawPty`
      *  above. */
-    sendInFlightPty(sid, seq, chunk) {
-      peer.send({ type: 'pty.data', sid, seq, chunk });
+    sendInFlightPty(sid, seq, chunk, geometryEpoch) {
+      const session = sessions.get(sid);
+      const epoch = geometryEpoch ?? session?.geometryEpoch ?? 0;
+      peer.send({ type: 'pty.data', sid, seq, chunk, geometryEpoch: epoch });
     },
     /** Sends an arbitrary `session.snapshot` response directly, bypassing
      *  the per-session `snapshotProvider` — used to answer a specific
      *  gap-recovery request with a precisely chosen seq/payload. */
-    sendSnapshotNow(sid, seq, data, cols, rows) {
-      peer.send({ type: 'session.snapshot', sid, seq, data, cols: cols ?? null, rows: rows ?? null });
+    sendSnapshotNow(sid, seq, snapshot, geometry) {
+      const session = sessions.get(sid);
+      if (session) {
+        session.seq = seq;
+        session.buffer = snapshot;
+      }
+      const fallbackGeometry = session ? sessionGeometry(session) : { cols: 120, rows: 30, epoch: 0 };
+      const normalizedGeometry = normalizeGeometry(geometry, fallbackGeometry);
+      peer.send({ type: 'session.snapshot', sid, seq, snapshot, geometry: normalizedGeometry });
+    },
+    sendResizeBarrier(sid, seq, snapshot, geometry) {
+      const session = sessions.get(sid);
+      if (!session) throw new Error(`unknown session: ${sid}`);
+      const normalizedGeometry = normalizeGeometry(geometry, sessionGeometry(session));
+      session.cols = normalizedGeometry.cols;
+      session.rows = normalizedGeometry.rows;
+      session.geometryEpoch = normalizedGeometry.epoch;
+      session.seq = seq;
+      session.buffer = snapshot;
+      if (peer.subscribedSid === sid) {
+        peer.send({ type: 'session.snapshot', sid, seq, snapshot, geometry: normalizedGeometry });
+      }
     },
     /** Re-broadcasts the session catalog on demand (e.g. after
      *  dynamically adding a session or updating the navigator model). */

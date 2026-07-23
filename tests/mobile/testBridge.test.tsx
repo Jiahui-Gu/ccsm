@@ -6,8 +6,9 @@
 //     else (no pairing identity/secret, encryption keys, drafts, relay
 //     frames, the `RelayClient`, or the raw zustand store);
 //   - have `getSyncState()` return exactly the JSON-safe sync fields
-//     (sid/phase/geometryEpoch/lastSeq/snapshotRequested/recoveryReason/
-//     bufferedSeqs) — no `drafts` or
+//     (sid/phase/geometry/geometryEpoch/lastSeq/snapshotRequested/
+//     recoveryReason/bufferedSeqs/installSnapshotCount/terminalResetCount) —
+//     no `drafts` or
 //     any other store field;
 //   - reference the same long-lived adapter/store for the whole component
 //     lifetime (no remounting), and clean itself up on unmount.
@@ -93,6 +94,7 @@ function createFakeAdapterFactory(serializeReturn = 'serialized-buffer'): Mobile
       scrollLines: vi.fn(),
       copySelection: vi.fn().mockResolvedValue(undefined),
       serialize: vi.fn(() => serializeReturn),
+      getRenderStats: vi.fn(() => ({ installSnapshotCount: 0, terminalResetCount: 0 })),
       dispose: vi.fn(),
     };
     return adapter;
@@ -159,16 +161,21 @@ describe('mobile test bridge (window.__ccsmMobileTest)', () => {
     const state = window.__ccsmMobileTest!.getSyncState();
     expect(Object.keys(state).sort()).toEqual([
       'bufferedSeqs',
+      'geometry',
       'geometryEpoch',
+      'installSnapshotCount',
       'lastSeq',
       'phase',
       'recoveryReason',
       'sid',
       'snapshotRequested',
+      'terminalResetCount',
     ]);
     expect(state).not.toHaveProperty('drafts');
     expect(state).not.toHaveProperty('pendingSubmission');
     expect(state).not.toHaveProperty('buffered'); // raw Map, not the JSON-safe bufferedSeqs array
+    expect(state.installSnapshotCount).toBe(0);
+    expect(state.terminalResetCount).toBe(0);
   });
 
   it('getSyncState() reflects the real store: sid updates on selection, bufferedSeqs on a gap', () => {
@@ -194,6 +201,7 @@ describe('mobile test bridge (window.__ccsmMobileTest)', () => {
     });
     const gapped = window.__ccsmMobileTest!.getSyncState();
     expect(gapped.bufferedSeqs).toEqual([5]);
+    expect(gapped.geometry).toBeNull();
     expect(gapped.geometryEpoch).toBeNull();
     expect(gapped.snapshotRequested).toBe(true);
     expect(gapped.recoveryReason).toBe('initial');
