@@ -488,13 +488,7 @@ export interface BufferSnapshot {
   seq: number;
 }
 
-export async function getBufferSnapshot(
-  sessions: Map<string, Entry>,
-  sid: string,
-): Promise<BufferSnapshot> {
-  const entry = sessions.get(sid);
-  if (!entry) return { snapshot: '', seq: 0 };
-
+async function waitForHeadlessWrites(entry: Entry): Promise<void> {
   // Round-4 fix (PR #1355 dogfood): `entry.seq` is bumped synchronously
   // by `dispatchPtyChunk` BEFORE the chunk is fully absorbed by
   // `entry.headless.write` (xterm.js `write` is async — the chunk goes
@@ -544,25 +538,23 @@ export async function getBufferSnapshot(
       finish();
     }
   });
+}
 
-  // Capture seq + serialized string atomically (both sync, no awaits).
-  // DO NOT add awaits between the drain above and this seq capture —
-  // any yield here re-introduces the async race the drain just closed.
-  const seq = entry.seq;
+async function serializeHeadlessInChunks(entry: Entry): Promise<string> {
   // PR-B contract: serialize captures whatever lives in the headless buffer
-  // at this instant, paired with `seq`. We bound the payload to the user's
+  // at this instant. We bound the payload to the user's
   // configured scrollback cap (last N rows from the bottom of the scrollback)
   // so a long-running session doesn't return MB of lines on every attach.
   // Cap honors the live setting (read fresh per call), so the user's
   // change takes effect on the next attach without restarting the entry.
   const full = entry.serialize.serialize({ scrollback: loadScrollbackLines() });
-  if (!full) return { snapshot: '', seq };
+  if (!full) return '';
   // Split on '\n' so we yield on a line boundary; preserves the original
   // separator on rejoin. setImmediate is available in Electron main (Node
   // event loop). We deliberately avoid Promise.resolve()-style microtask
   // yields — those don't drain macrotask I/O.
   const lines = full.split('\n');
-  if (lines.length <= SNAPSHOT_CHUNK_LINES) return { snapshot: full, seq };
+  if (lines.length <= SNAPSHOT_CHUNK_LINES) return full;
   const out: string[] = [];
   for (let i = 0; i < lines.length; i += SNAPSHOT_CHUNK_LINES) {
     out.push(lines.slice(i, i + SNAPSHOT_CHUNK_LINES).join('\n'));
@@ -570,7 +562,24 @@ export async function getBufferSnapshot(
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
   }
-  return { snapshot: out.join('\n'), seq };
+  return out.join('\n');
+}
+
+export async function captureEntrySnapshot(entry: Entry): Promise<BufferSnapshot> {
+  await waitForHeadlessWrites(entry);
+  // Reading seq and invoking serializeHeadlessInChunks are synchronous until
+  // its first chunk-yield, so the serialized string and seq share one instant.
+  const seq = entry.seq;
+  const snapshot = await serializeHeadlessInChunks(entry);
+  return { snapshot, seq };
+}
+
+export async function getBufferSnapshot(
+  sessions: Map<string, Entry>,
+  sid: string,
+): Promise<BufferSnapshot> {
+  const entry = sessions.get(sid);
+  return entry ? captureEntrySnapshot(entry) : { snapshot: '', seq: 0 };
 }
 
 // Kill every running pty. Returns a Promise that resolves after every

@@ -13,14 +13,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockedPty = vi.hoisted(() => ({
+  getCoordinatedSnapshot: vi.fn(),
   listPtySessions: vi.fn(() => []),
   resizePtySession: vi.fn(),
   submitPtySession: vi.fn(),
 }));
 
 vi.mock('../../ptyHost', () => ({
-  getBufferSnapshot: vi.fn(),
-  getPtySession: vi.fn(),
+  getCoordinatedSnapshot: mockedPty.getCoordinatedSnapshot,
   inputPtySession: vi.fn(),
   listPtySessions: mockedPty.listPtySessions,
   resizePtySession: mockedPty.resizePtySession,
@@ -40,10 +40,62 @@ function makePeer(): RemotePeer {
 }
 
 beforeEach(() => {
+  mockedPty.getCoordinatedSnapshot.mockReset();
   mockedPty.listPtySessions.mockReset();
   mockedPty.listPtySessions.mockReturnValue([]);
   mockedPty.resizePtySession.mockReset();
   mockedPty.submitPtySession.mockReset();
+});
+
+describe('handleClientMessage — coordinated session snapshot', () => {
+  it('subscribes before awaiting and sends the complete coordinated result', async () => {
+    let resolveSnapshot!: (value: {
+      type: 'session.snapshot';
+      sid: string;
+      seq: number;
+      snapshot: string;
+      geometry: { cols: number; rows: number; epoch: number };
+    }) => void;
+    mockedPty.getCoordinatedSnapshot.mockReturnValue(
+      new Promise((resolve) => {
+        resolveSnapshot = resolve;
+      }),
+    );
+    const peer = makePeer();
+
+    const handling = handleClientMessage(
+      peer,
+      JSON.stringify({ type: 'session.snapshot', sid: 's1' }),
+    );
+
+    expect(peer.subscribedSid).toBe('s1');
+    expect(mockedPty.getCoordinatedSnapshot).toHaveBeenCalledWith('s1');
+    expect(peer.send).not.toHaveBeenCalled();
+
+    const response = {
+      type: 'session.snapshot' as const,
+      sid: 's1',
+      seq: 9,
+      snapshot: 'screen',
+      geometry: { cols: 150, rows: 40, epoch: 3 },
+    };
+    resolveSnapshot(response);
+    await handling;
+    expect(peer.send).toHaveBeenCalledWith(response);
+  });
+
+  it('reports missing_sid when the coordinated snapshot has no live entry', async () => {
+    mockedPty.getCoordinatedSnapshot.mockResolvedValue(null);
+    const peer = makePeer();
+
+    await handleClientMessage(
+      peer,
+      JSON.stringify({ type: 'session.snapshot', sid: 'missing' }),
+    );
+
+    expect(peer.subscribedSid).toBe('missing');
+    expect(peer.send).toHaveBeenCalledWith({ type: 'error', message: 'missing_sid' });
+  });
 });
 
 describe('handleClientMessage — sessions.list geometry catalog', () => {

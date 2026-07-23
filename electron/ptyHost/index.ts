@@ -36,6 +36,10 @@ import type { BrowserWindow, IpcMain } from 'electron';
 import type { Entry } from './entryFactory';
 import * as L from './lifecycle';
 import { registerPtyIpc } from './ipcRegistrar';
+import {
+  commitResizeBarrier,
+  getCoordinatedSnapshot as getCoordinatedSnapshotFromRegistry,
+} from './terminalSyncCoordinator';
 
 // Re-export the helpers callers historically imported from `ptyHost/index`.
 // The unit tests under `__tests__/` import `resolveSpawnCwd` and
@@ -43,6 +47,12 @@ import { registerPtyIpc } from './ipcRegistrar';
 // imports `onPtyData`. Keep that surface stable post-extraction.
 export { onPtyData } from './dataFanout';
 export type { PtyDataListener } from './dataFanout';
+export { onTerminalSyncPublication } from './terminalSyncCoordinator';
+export type {
+  CoordinatedSessionSnapshot,
+  TerminalSyncPublication,
+  TerminalSyncPublicationListener,
+} from './terminalSyncCoordinator';
 export {
   ensureResumeJsonlAtSpawnCwd,
   findJsonlForSid,
@@ -90,7 +100,7 @@ export const resizePtySession = (
   cols: number,
   rows: number,
   origin: L.PtyResizeOrigin,
-) => L.resizeCanonicalGeometry(sessions, sid, cols, rows, origin);
+) => commitResizeBarrier(sessions, sid, cols, rows, origin);
 
 // Acknowledged complete-draft submission (mobile composer). Returns the
 // explicit `PtySubmitResult` — NOT a boolean — so the `session.submit`
@@ -113,6 +123,9 @@ export const killAllPtySessions = (): Promise<void> => L.killAll(sessions);
 // uses the seq to dedupe live `pty:data` chunks against the snapshot.
 export const getBufferSnapshot = (sid: string): Promise<L.BufferSnapshot> =>
   L.getBufferSnapshot(sessions, sid);
+
+export const getCoordinatedSnapshot = (sid: string) =>
+  getCoordinatedSnapshotFromRegistry(sessions, sid);
 
 // --- IPC registration --------------------------------------------------------
 

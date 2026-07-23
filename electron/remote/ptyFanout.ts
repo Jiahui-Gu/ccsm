@@ -1,18 +1,25 @@
-import { getPtySession, onPtyData } from '../ptyHost';
+import { onTerminalSyncPublication } from '../ptyHost';
 import type { RemotePeer } from './remotePeer';
 
 export function installPtyFanout(peers: ReadonlySet<RemotePeer>): () => void {
-  return onPtyData((sid, chunk, seq) => {
-    const info = getPtySession(sid);
-    if (!info) return;
+  return onTerminalSyncPublication((publication) => {
     for (const peer of peers) {
-      if (peer.subscribedSid === sid) {
+      if (peer.subscribedSid !== publication.sid) continue;
+      if (publication.type === 'chunk') {
         peer.send({
           type: 'pty.data',
-          sid,
-          chunk,
-          seq,
-          geometryEpoch: info.geometry.epoch,
+          sid: publication.sid,
+          chunk: publication.chunk,
+          seq: publication.seq,
+          geometryEpoch: publication.geometryEpoch,
+        });
+      } else {
+        peer.send({
+          type: 'session.snapshot',
+          sid: publication.sid,
+          seq: publication.seq,
+          snapshot: publication.snapshot,
+          geometry: publication.geometry,
         });
       }
     }

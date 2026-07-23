@@ -264,6 +264,7 @@ describe('pty:data event payload (real dispatchPtyChunk)', () => {
       seq: 6,
       pendingHeadlessWrites: 0,
       backpressureWarned: false,
+      terminalSyncQueue: Promise.resolve(),
     } satisfies Entry;
 
     dispatchPtyChunk('abc', entry, 'hello');

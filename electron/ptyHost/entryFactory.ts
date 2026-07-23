@@ -33,6 +33,7 @@ import {
 } from './jsonlResolver';
 import { resolveSpawnCwd } from './cwdResolver';
 import { emitPtyData } from './dataFanout';
+import { enqueueChunkPublication } from './terminalSyncCoordinator';
 import { loadScrollbackLines } from '../prefs/scrollback';
 import { PTY_CHANNELS } from '../shared/ipcChannels';
 import { warn } from '../shared/log';
@@ -97,6 +98,8 @@ export interface Entry {
    *  long stall doesn't spam the log. Reset to false when the counter
    *  drops back below the threshold. */
   backpressureWarned: boolean;
+  /** Serializes remote chunks, resize barriers, and coordinated snapshots. */
+  terminalSyncQueue: Promise<void>;
 }
 
 export interface MakeEntryDeps {
@@ -218,6 +221,7 @@ export function dispatchPtyChunk(sid: string, entry: Entry, chunk: string): void
   // the PTY. Kept inside dispatchPtyChunk (not a separate hook) so the
   // single fan-out point is the only place chunk-handling lives.
   emitPtyData(sid, chunk, seq);
+  enqueueChunkPublication(entry, sid, seq, chunk);
 }
 
 export function makeEntry(
@@ -333,6 +337,7 @@ export function makeEntry(
     seq: 0,
     pendingHeadlessWrites: 0,
     backpressureWarned: false,
+    terminalSyncQueue: Promise.resolve(),
   };
 
   p.onData((chunk) => dispatchPtyChunk(sid, entry, chunk));

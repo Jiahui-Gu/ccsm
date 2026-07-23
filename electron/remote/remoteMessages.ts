@@ -1,6 +1,5 @@
 import {
-  getBufferSnapshot,
-  getPtySession,
+  getCoordinatedSnapshot,
   inputPtySession,
   listPtySessions,
   submitPtySession,
@@ -62,22 +61,16 @@ export async function handleClientMessage(client: RemotePeer, raw: string): Prom
   }
 
   if (message.type === 'session.snapshot') {
-    const info = getPtySession(message.sid);
-    if (!info) {
+    client.subscribedSid = message.sid;
+    const snapshot = await getCoordinatedSnapshot(message.sid);
+    if (!snapshot) {
       client.send({ type: 'error', message: 'missing_sid' });
       return;
     }
     // session.snapshot is the client's "select this session" signal. Record it
     // so the pty.data broadcast only forwards this session's bytes to this
-    // client (see the onPtyData gate above).
-    client.subscribedSid = message.sid;
-    const snapshot = await getBufferSnapshot(message.sid);
-    client.send({
-      type: 'session.snapshot',
-      sid: message.sid,
-      geometry: info.geometry,
-      ...snapshot,
-    });
+    // client through the ordered terminal publication gate.
+    client.send(snapshot);
     return;
   }
 

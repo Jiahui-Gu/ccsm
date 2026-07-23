@@ -30,20 +30,18 @@ import type { RelaySocket, RelaySocketStatus } from '../relaySocket';
 const mockedRemoteState = vi.hoisted(() => ({
   loadState: vi.fn(),
   listPtySessions: vi.fn(),
-  getPtySession: vi.fn(),
 }));
-const ptyListeners: Array<(sid: string, chunk: string, seq: number) => void> = [];
+const terminalSyncListeners: Array<(publication: Record<string, unknown>) => void> = [];
 vi.mock('../../db', () => ({
   loadState: mockedRemoteState.loadState,
 }));
 vi.mock('../../ptyHost', () => ({
-  onPtyData: vi.fn((handler: (sid: string, chunk: string, seq: number) => void) => {
-    ptyListeners.push(handler);
-    return () => ptyListeners.splice(ptyListeners.indexOf(handler), 1);
+  onTerminalSyncPublication: vi.fn((handler: (publication: Record<string, unknown>) => void) => {
+    terminalSyncListeners.push(handler);
+    return () => terminalSyncListeners.splice(terminalSyncListeners.indexOf(handler), 1);
   }),
   listPtySessions: mockedRemoteState.listPtySessions,
-  getBufferSnapshot: vi.fn(),
-  getPtySession: mockedRemoteState.getPtySession,
+  getCoordinatedSnapshot: vi.fn(),
   inputPtySession: vi.fn(),
   resizePtySession: vi.fn(),
 }));
@@ -94,10 +92,9 @@ class FakeRelaySocket implements RelaySocket {
 
 describe('desktop mobile remote controller', () => {
   beforeEach(() => {
-    ptyListeners.splice(0);
+    terminalSyncListeners.splice(0);
     mockedRemoteState.loadState.mockReset();
     mockedRemoteState.listPtySessions.mockReset();
-    mockedRemoteState.getPtySession.mockReset();
     mockedRemoteState.loadState.mockReturnValue(navigationSnapshot());
     mockedRemoteState.listPtySessions.mockReturnValue([{
       sid: 's1',
@@ -107,14 +104,6 @@ describe('desktop mobile remote controller', () => {
       cols: 80,
       rows: 24,
     }]);
-    mockedRemoteState.getPtySession.mockReturnValue({
-      sid: 's1',
-      cwd: '/work',
-      pid: 1,
-      geometry: { cols: 80, rows: 24, epoch: 0 },
-      cols: 80,
-      rows: 24,
-    });
   });
 
   it('never forwards application traffic after a failed phone proof', async () => {
@@ -389,7 +378,13 @@ describe('desktop mobile remote controller', () => {
     };
     const uninstall = installPtyFanout(new Set([matching, other]));
 
-    ptyListeners[0]?.('sid-a', 'chunk', 42);
+    terminalSyncListeners[0]?.({
+      type: 'chunk',
+      sid: 'sid-a',
+      chunk: 'chunk',
+      seq: 42,
+      geometryEpoch: 0,
+    });
 
     expect(matching.send).toHaveBeenCalledWith({
       type: 'pty.data',
