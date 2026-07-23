@@ -83,6 +83,7 @@ import {
   resetShellForReload,
   applyTerminalFontSize,
   applyTerminalScrollback,
+  commitVisibleDesktopResizeNow,
   scheduleVisibleDesktopResize,
   __resetShellRegistryForTests,
 } from '../../src/terminal/shellRegistry';
@@ -304,6 +305,22 @@ describe('shellRegistry', () => {
     createShell('sid-a', host);
     expect(() => disposeShell('nope')).not.toThrow();
     expect(shellCount()).toBe(1);
+  });
+
+  it('disposeShell clears resize suppression so recreating the same sid resizes on first reveal', async () => {
+    const a = createShell('sid-a', host);
+    a.warmed = true;
+    await commitVisibleDesktopResizeNow('sid-a', 80, 24);
+    expect(resizeSpy).toHaveBeenCalledTimes(1);
+
+    disposeShell('sid-a');
+    const recreated = createShell('sid-a', host);
+    recreated.warmed = true;
+    resizeSpy.mockClear();
+
+    showShell('sid-a');
+    expect(resizeSpy).toHaveBeenCalledWith('sid-a', 80, 24);
+    expect(resizeSpy).toHaveBeenCalledTimes(1);
   });
 
   it('disposeAll tears down every shell', () => {

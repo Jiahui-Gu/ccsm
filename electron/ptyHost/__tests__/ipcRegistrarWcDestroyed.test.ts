@@ -83,7 +83,11 @@ function makeDeps(over: Partial<PtyIpcDeps> = {}): PtyIpcDeps {
     resizePtySession: vi.fn(),
     killPtySession: vi.fn(async () => true),
     getPtySession: vi.fn(() => null),
-    getBufferSnapshot: vi.fn(async () => ({ snapshot: '', seq: 0 })),
+    getBufferSnapshot: vi.fn(async () => ({
+      snapshot: '',
+      seq: 0,
+      geometry: { cols: 0, rows: 0, epoch: 0 },
+    })),
     ...over,
   };
 }

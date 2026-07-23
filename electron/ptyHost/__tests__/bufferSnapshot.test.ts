@@ -167,12 +167,32 @@ describe('lifecycle.getBufferSnapshot (PR-A async chunking + PR-B seq capture)',
     expect(entry.serialize.serialize).not.toHaveBeenCalled();
 
     finishDrain?.();
-    await expect(pending).resolves.toEqual({ snapshot: 'fully parsed', seq: 7 });
+    await expect(pending).resolves.toEqual({
+      snapshot: 'fully parsed',
+      seq: 7,
+      geometry: { cols: 80, rows: 24, epoch: 0 },
+    });
   });
 
-  it('returns empty snapshot + seq 0 when the sid is not registered', async () => {
+  it('returns empty snapshot + seq 0 + empty geometry when the sid is not registered', async () => {
     const sessions = new Map<string, Entry>();
-    expect(await getBufferSnapshot(sessions, 'missing')).toEqual({ snapshot: '', seq: 0 });
+    expect(await getBufferSnapshot(sessions, 'missing')).toEqual({
+      snapshot: '',
+      seq: 0,
+      geometry: { cols: 0, rows: 0, epoch: 0 },
+    });
+  });
+
+  it('returns canonical entry geometry with the snapshot payload', async () => {
+    const sessions = new Map<string, Entry>();
+    const entry = fakeEntry('x', 5);
+    entry.cols = 132;
+    entry.rows = 41;
+    entry.geometryEpoch = 9;
+    sessions.set('g1', entry);
+
+    const result = await getBufferSnapshot(sessions, 'g1');
+    expect(result.geometry).toEqual({ cols: 132, rows: 41, epoch: 9 });
   });
 
   it('returns the full snapshot + entry.seq when the buffer fits in one chunk (no yield needed)', async () => {
@@ -180,7 +200,11 @@ describe('lifecycle.getBufferSnapshot (PR-A async chunking + PR-B seq capture)',
     const small = Array.from({ length: 50 }, (_, i) => `row-${i}`).join('\n');
     sessions.set('s1', fakeEntry(small, 42));
     const result = await getBufferSnapshot(sessions, 's1');
-    expect(result).toEqual({ snapshot: small, seq: 42 });
+    expect(result).toEqual({
+      snapshot: small,
+      seq: 42,
+      geometry: { cols: 80, rows: 24, epoch: 0 },
+    });
   });
 
   it('chunked path preserves the full string verbatim across yields and returns entry.seq', async () => {

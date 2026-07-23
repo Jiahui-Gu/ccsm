@@ -474,8 +474,9 @@ export function get(sessions: Map<string, Entry>, sid: string): PtySessionInfo |
 // chunk's seq against this value to drop chunks already baked into the
 // snapshot, eliminating the race between attach-fanout and snapshot read.
 //
-// Returns `{snapshot:'', seq:0}` when the sid isn't registered (callers
-// treat empty as "no snapshot available", same as `attach` returning null).
+// Returns `{snapshot:'', seq:0, geometry:{0,0,0}}` when the sid isn't
+// registered (callers treat empty as "no snapshot available", same as
+// `attach` returning null).
 export const SNAPSHOT_CHUNK_LINES = 1000;
 
 export interface BufferSnapshot {
@@ -486,6 +487,8 @@ export interface BufferSnapshot {
    *  `seq > snapshot.seq` are the post-snapshot live tail and must be
    *  written after the snapshot. */
   seq: number;
+  /** Canonical geometry captured from the same entry instant as seq/snapshot. */
+  geometry: TerminalGeometry;
 }
 
 async function waitForHeadlessWrites(entry: Entry): Promise<void> {
@@ -569,9 +572,10 @@ export async function captureEntrySnapshot(entry: Entry): Promise<BufferSnapshot
   await waitForHeadlessWrites(entry);
   // Reading seq and invoking serializeHeadlessInChunks are synchronous until
   // its first chunk-yield, so the serialized string and seq share one instant.
+  const geometry = geometryFromEntry(entry);
   const seq = entry.seq;
   const snapshot = await serializeHeadlessInChunks(entry);
-  return { snapshot, seq };
+  return { snapshot, seq, geometry };
 }
 
 export async function getBufferSnapshot(
@@ -579,7 +583,11 @@ export async function getBufferSnapshot(
   sid: string,
 ): Promise<BufferSnapshot> {
   const entry = sessions.get(sid);
-  return entry ? captureEntrySnapshot(entry) : { snapshot: '', seq: 0 };
+  return entry ? captureEntrySnapshot(entry) : {
+    snapshot: '',
+    seq: 0,
+    geometry: { cols: 0, rows: 0, epoch: 0 },
+  };
 }
 
 // Kill every running pty. Returns a Promise that resolves after every

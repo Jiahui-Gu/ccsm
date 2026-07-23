@@ -119,8 +119,9 @@ export const killAllPtySessions = (): Promise<void> => L.killAll(sessions);
 
 // L4 PR-A (#861) + PR-B (#865): async chunked snapshot of the per-session
 // authoritative headless buffer paired with the per-entry chunk seq.
-// Returns `{snapshot:'', seq:0}` when the sid isn't registered. Renderer
-// uses the seq to dedupe live `pty:data` chunks against the snapshot.
+// Returns `{snapshot:'', seq:0, geometry:{0,0,0}}` when the sid isn't
+// registered. Renderer uses the seq to dedupe live `pty:data` chunks
+// against the snapshot.
 export const getBufferSnapshot = (sid: string): Promise<L.BufferSnapshot> =>
   L.getBufferSnapshot(sessions, sid);
 

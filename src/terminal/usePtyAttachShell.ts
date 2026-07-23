@@ -145,10 +145,7 @@ async function runColdStartSuffix(
     /* best-effort */
   }
 
-  const snap = (await pty.getBufferSnapshot(sessionId)) as {
-    snapshot: string;
-    seq: number;
-  };
+  const snap = await pty.getBufferSnapshot(sessionId);
   try {
     shell.term.reset();
   } catch {

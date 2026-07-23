@@ -108,6 +108,23 @@ describe('ccsmPty preload bridge', () => {
     expect(invokeSpy).toHaveBeenCalledWith(chan, ...args);
   });
 
+  it('getBufferSnapshot preserves snapshot/seq/geometry payload shape at runtime', async () => {
+    const api = lastApi();
+    invokeSpy.mockResolvedValueOnce({
+      snapshot: 'payload',
+      seq: 9,
+      geometry: { cols: 120, rows: 33, epoch: 4 },
+    });
+
+    await expect(
+      (api.getBufferSnapshot as (sid: string) => Promise<unknown>)('s1'),
+    ).resolves.toEqual({
+      snapshot: 'payload',
+      seq: 9,
+      geometry: { cols: 120, rows: 33, epoch: 4 },
+    });
+  });
+
   it('spawn with forkSourceSid forwards 3 args to pty:spawn', async () => {
     const api = lastApi();
     await (

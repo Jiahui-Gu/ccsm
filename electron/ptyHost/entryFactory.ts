@@ -80,7 +80,7 @@ export interface Entry {
    *  every `p.onData` BEFORE the chunk is written to the headless / fanned
    *  out. The renderer attach flow uses it together with
    *  `getBufferSnapshot` to dedupe live chunks against the snapshot:
-   *  `getBufferSnapshot` returns `{snapshot, seq}` capturing the value of
+   *  `getBufferSnapshot` returns `{snapshot, seq, geometry}` capturing the value of
    *  this counter at snapshot time, and any live chunk with `chunk.seq <=
    *  snap.seq` is already baked into the snapshot. Because Node's event
    *  loop is single-threaded, increment + write + broadcast + snapshot

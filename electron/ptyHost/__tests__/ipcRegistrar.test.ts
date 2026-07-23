@@ -112,7 +112,11 @@ function makeDeps(over: Partial<PtyIpcDeps> = {}): PtyIpcDeps {
     resizePtySession: vi.fn(),
     killPtySession: vi.fn(async () => true),
     getPtySession: vi.fn(() => null),
-    getBufferSnapshot: vi.fn(async () => ({ snapshot: '', seq: 0 })),
+    getBufferSnapshot: vi.fn(async () => ({
+      snapshot: '',
+      seq: 0,
+      geometry: { cols: 0, rows: 0, epoch: 0 },
+    })),
     ...over,
   };
 }
@@ -163,11 +167,16 @@ describe('registerPtyIpc handler registration', () => {
       getBufferSnapshot: vi.fn(async (sid: string) => ({
         snapshot: `snap-for-${sid}`,
         seq: 7,
+        geometry: { cols: 91, rows: 29, epoch: 3 },
       })),
     });
     registerPtyIpc(ipc as any, deps);
     const out = await ipc.handlers.get(PTY_CHANNELS.getBufferSnapshot)!({}, 'sid-Z');
-    expect(out).toEqual({ snapshot: 'snap-for-sid-Z', seq: 7 });
+    expect(out).toEqual({
+      snapshot: 'snap-for-sid-Z',
+      seq: 7,
+      geometry: { cols: 91, rows: 29, epoch: 3 },
+    });
     expect(deps.getBufferSnapshot).toHaveBeenCalledWith('sid-Z');
   });
 });
