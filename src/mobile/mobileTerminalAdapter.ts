@@ -273,8 +273,10 @@ export function createMobileTerminalAdapter(
   ): void {
     if (disposed) return;
     const anchor = suppliedAnchor ?? captureAnchor(0);
+    let installedSnapshot = false;
     for (const effect of effects) {
       if (effect.type === 'installSnapshot') {
+        installedSnapshot = true;
         installSnapshotCount += 1;
         geometry = effect.geometry;
         terminal.resize(effect.geometry.cols, effect.geometry.rows);
@@ -290,7 +292,9 @@ export function createMobileTerminalAdapter(
         continue;
       }
 
-      const beforeWrite = captureAnchor(anchor.horizontalOffsetPx);
+      const beforeWrite = installedSnapshot
+        ? anchor
+        : captureAnchor(anchor.horizontalOffsetPx);
       enqueueRenderCompletion(
         (done) => terminal.write(effect.data, done),
         () => {

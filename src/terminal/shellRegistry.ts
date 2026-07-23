@@ -459,6 +459,7 @@ export function disposeAll(): void {
 export function resetShellForReload(sid: string): Shell | undefined {
   const shell = shells.get(sid);
   if (!shell) return undefined;
+  cancelVisibleDesktopResize(sid);
   try {
     shell.term.reset();
   } catch (e) {

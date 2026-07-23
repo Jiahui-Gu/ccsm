@@ -350,6 +350,20 @@ describe('shellRegistry', () => {
     expect(a.mask.style.display).toBe('none');
   });
 
+  it('resetShellForReload clears resize suppression for the fresh PTY entry', async () => {
+    const shell = createShell('sid-a', host);
+    shell.warmed = true;
+    await commitVisibleDesktopResizeNow('sid-a', 80, 24);
+    expect(resizeSpy).toHaveBeenCalledTimes(1);
+    resizeSpy.mockClear();
+
+    resetShellForReload('sid-a');
+    await commitVisibleDesktopResizeNow('sid-a', 80, 24);
+
+    expect(resizeSpy).toHaveBeenCalledWith('sid-a', 80, 24);
+    expect(resizeSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('resetShellForReload on unknown sid returns undefined', () => {
     expect(resetShellForReload('nope')).toBeUndefined();
   });

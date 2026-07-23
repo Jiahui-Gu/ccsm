@@ -89,7 +89,10 @@ function createFakeTerminal(seed?: {
       },
     },
     open: vi.fn((parent: HTMLElement) => parent.appendChild(element)),
-    reset: vi.fn(),
+    reset: vi.fn(() => {
+      terminal.buffer.active.baseY = 0;
+      terminal.buffer.active.viewportY = 0;
+    }),
     write: vi.fn((_data: string, callback?: () => void) => {
       if (callback) pendingWriteCallbacks.push(callback);
     }),
@@ -355,6 +358,8 @@ describe('createMobileTerminalAdapter', () => {
     const { adapter, terminal, terminalProbe } = createHarness({}, { baseY: 200, viewportY: 150 });
 
     adapter.apply([install({ cols: 140, rows: 32, epoch: 4 }, 'screen')]);
+    terminal.buffer.active.baseY = 200;
+    terminal.buffer.active.viewportY = 150;
     terminalProbe.completeNextWrite();
 
     const anchor = adapter.captureAnchor(76);
@@ -398,7 +403,7 @@ describe('createMobileTerminalAdapter', () => {
     expect(terminal.scrollToLine).not.toHaveBeenCalled();
 
     terminalProbe.completeWriteAt(0);
-    expect(terminal.scrollToLine.mock.calls.map((call) => call[0])).toEqual([115, 40]);
+    expect(terminal.scrollToLine.mock.calls.map((call) => call[0])).toEqual([115, 115]);
   });
 
   it('measures .xterm-screen width after canonical callbacks and physical changes', () => {
