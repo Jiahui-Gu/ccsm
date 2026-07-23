@@ -399,8 +399,7 @@ async function caseFutureEpochBeforeBarrier(relayUrl) {
     await waitForCanonicalLive(handle.page, label);
 
     const reference = createReferenceTerminal(CANONICAL_GEOMETRY.cols, CANONICAL_GEOMETRY.rows);
-    let referenceSeq = 0;
-    desktop.setSnapshotProvider(SID, () => ({ seq: referenceSeq, snapshot: reference.serialize() }));
+    desktop.setSnapshotProvider(SID, () => null);
 
     const FUTURE_SEQ = 51;
     const prefix = FIXTURE.filter((entry) => entry.seq < FUTURE_SEQ);
@@ -409,7 +408,6 @@ async function caseFutureEpochBeforeBarrier(relayUrl) {
 
     for (const { seq, chunk } of prefix) {
       await reference.write(chunk);
-      referenceSeq = seq;
       desktop.sendRawPty(SID, seq, chunk, CANONICAL_GEOMETRY.epoch);
     }
     await waitForSyncState(handle.page, `${label}: live at epoch 0 prefix`, (s) => s.phase === 'live' && s.lastSeq === FUTURE_SEQ - 1);
@@ -419,45 +417,52 @@ async function caseFutureEpochBeforeBarrier(relayUrl) {
     const barrierSnapshot = reference.serialize();
 
     await reference.write(futureChunk.chunk);
-    referenceSeq = futureChunk.seq;
     desktop.sendRawPty(SID, futureChunk.seq, futureChunk.chunk, RESIZE_GEOMETRY_A.epoch);
 
+    const waitingForBarrier = await waitForSyncState(
+      handle.page,
+      `${label}: future-epoch chunk buffers until the authoritative barrier`,
+      (s) =>
+        s.phase === 'syncing' &&
+        s.snapshotRequested === true &&
+        s.recoveryReason === 'future-geometry' &&
+        s.bufferedSeqs.length === 1,
+    );
     await waitFor(
       `${label}: future-epoch chunk triggers a recovery snapshot request`,
-      () => desktop.snapshotRequests.length >= 2,
+      () => desktop.snapshotRequests.length === 2,
       20_000,
     );
-    const waitingForBarrier = await getSyncState(handle.page);
     assert.equal(
       waitingForBarrier.geometry?.epoch,
       CANONICAL_GEOMETRY.epoch,
       `${label}: geometry must remain canonical until the barrier arrives`,
     );
-    assert.ok(
-      waitingForBarrier.lastSeq >= FUTURE_SEQ - 1 && waitingForBarrier.lastSeq <= FUTURE_SEQ,
-      `${label}: pre-barrier lastSeq must stay within the future-epoch boundary`,
+    assert.equal(
+      waitingForBarrier.lastSeq,
+      FUTURE_SEQ - 1,
+      `${label}: future-epoch chunk must not advance lastSeq before the barrier`,
     );
-    if (waitingForBarrier.bufferedSeqs.length > 0) {
-      assert.ok(
-        waitingForBarrier.bufferedSeqs.includes(FUTURE_SEQ),
-        `${label}: buffered sequence set must include the future-epoch chunk`,
-      );
-    }
+    assert.deepEqual(
+      waitingForBarrier.bufferedSeqs,
+      [FUTURE_SEQ],
+      `${label}: exactly the future-epoch chunk must remain buffered`,
+    );
 
     desktop.sendResizeBarrier(SID, barrierSeq, barrierSnapshot, RESIZE_GEOMETRY_A);
 
     for (const { seq, chunk } of rest) {
       await reference.write(chunk);
-      referenceSeq = seq;
       desktop.sendRawPty(SID, seq, chunk, RESIZE_GEOMETRY_A.epoch);
     }
 
     await assertExactParity(label, handle.page, reference.serialize(), {
       expectedGeometry: RESIZE_GEOMETRY_A,
     });
-    assert.ok(
-      desktop.snapshotRequests.length >= 2,
-      `${label}: future-epoch chunk must trigger at least one recovery snapshot request`,
+    assert.equal(
+      desktop.snapshotRequests.length,
+      2,
+      `${label}: future-epoch chunk must trigger exactly one recovery snapshot request`,
     );
     assertNoSessionResizeMessages(desktop, label);
     assertNoBrowserErrors(label, handle);
