@@ -1,60 +1,58 @@
-// Long-lived, read-only xterm.js adapter for the phone remote terminal pane.
-//
-// Hard contract (mobile composer/terminal-sync plan, Task 4 + global
-// constraints): the terminal is read, scroll, select, and copy only. It
-// never opens the software keyboard, never registers `terminal.onData`, and
-// this module never calls `terminal.focus()` / `terminal.blur()` on the
-// instance or its helper textarea. The composer (a later task) is the sole
-// keyboard input surface. Pointer interaction here is only ever used for
-// native browser text selection + copy — nothing in this file reacts to
-// pointer events by moving focus.
-//
-// One structural exception: `hardenMobileTerminalTextarea` (below) replaces
-// the helper textarea's own `focus` property with a no-op. This is not a
-// `focus()`/`blur()` *call* — xterm.js's internal core independently
-// registers a native "mousedown" listener on the terminal element that
-// calls its own private `focus()`, reaching straight into the helper
-// textarea. That internal wiring is otherwise unreachable/unwireable from
-// outside xterm, so neutering the instance property is the only way to
-// keep the composer as the sole keyboard entry point.
-//
-// One `Terminal` is created per adapter instance and lives for the whole
-// phone session; switching PTYs re-applies effects (`installSnapshot` + `write`) to
-// the same instance rather than recreating it. Terminal/addon/factory
-// construction is injectable via `MobileTerminalAdapterOptions` so unit
-// tests can supply plain fakes instead of unsafely mocking `@xterm/xterm`.
-
 import { Terminal, type ITerminalOptions } from '@xterm/xterm';
-import { FitAddon } from '@xterm/addon-fit';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 
+import type { TerminalGeometry } from '../shared/mobileRemote';
 import type { TerminalSyncEffect } from './terminalSync';
 
 const RESIZE_DEBOUNCE_MS = 120;
 const ORIENTATION_FOLLOWUP_MS = 250;
-// A terminal narrower or shorter than this is not a usable viewport (e.g. a
-// host that hasn't been laid out yet) — never resize/emit for it.
-const MIN_TERMINAL_DIMENSION = 2;
 
 export type MobileTerminalDimensions = { cols: number; rows: number };
 
-// Structural subset of xterm's public `Terminal` API that this adapter
-// depends on. Real `Terminal` instances satisfy this automatically; unit
-// tests can inject a plain object instead.
+export type TerminalViewportAnchor =
+  | { mode: 'bottom'; horizontalOffsetPx: number; canonicalCols: number }
+  | {
+      mode: 'history';
+      distanceFromBottom: number;
+      horizontalOffsetPx: number;
+      canonicalCols: number;
+    };
+
+export type TerminalScrollMetrics = {
+  maximumTop: number;
+  currentTop: number;
+  visibleRows: number;
+};
+
+export type TerminalViewportState = {
+  geometry: TerminalGeometry | null;
+  contentWidthPx: number;
+  scroll: TerminalScrollMetrics;
+};
+
+export type RenderTerminalEffect = Extract<
+  TerminalSyncEffect,
+  { type: 'installSnapshot' | 'write' }
+>;
+
 export interface MobileXtermTerminal {
   readonly element: HTMLElement | undefined;
   readonly textarea: HTMLTextAreaElement | undefined;
   readonly cols: number;
   readonly rows: number;
   readonly unicode: { activeVersion: string };
+  readonly buffer: { active: { baseY: number; viewportY: number } };
   open(parent: HTMLElement): void;
   reset(): void;
   write(data: string, callback?: () => void): void;
   resize(columns: number, rows: number): void;
   getSelection(): string;
   clearSelection(): void;
+  scrollToLine(line: number): void;
+  scrollLines(amount: number): void;
+  onScroll(listener: (position: number) => void): { dispose(): void };
   loadAddon(addon: MobileXtermAddon): void;
   dispose(): void;
 }
@@ -63,35 +61,32 @@ export interface MobileXtermAddon {
   dispose(): void;
 }
 
-export interface MobileFitAddon extends MobileXtermAddon {
-  proposeDimensions(): MobileTerminalDimensions | undefined;
-}
-
 export interface MobileSerializeAddon extends MobileXtermAddon {
   serialize(): string;
 }
 
 export type MobileTerminalAdapterOptions = {
-  onResize?: (dimensions: MobileTerminalDimensions) => void;
-  // Test seams — default to the real xterm.js constructors/addons. Never
-  // used in production code paths.
   createTerminal?: (options: ITerminalOptions) => MobileXtermTerminal;
-  createFitAddon?: () => MobileFitAddon;
   createSerializeAddon?: () => MobileSerializeAddon;
   createUnicode11Addon?: () => MobileXtermAddon;
   createWebLinksAddon?: () => MobileXtermAddon;
+  [key: string]: unknown;
 };
 
 export type MobileTerminalAdapter = {
-  apply(effects: readonly TerminalSyncEffect[]): void;
-  // Computes + applies dimensions immediately (no debounce). `force`
-  // re-emits `onResize` even when the proposed dimensions are unchanged from
-  // the last emission — used when a newly selected sid needs a resize
-  // message at the viewport's current (unchanged) size.
-  fit(force?: boolean): void;
+  apply(
+    effects: readonly RenderTerminalEffect[],
+    anchor?: TerminalViewportAnchor,
+  ): void;
+  captureAnchor(horizontalOffsetPx: number): TerminalViewportAnchor;
+  getViewportState(): TerminalViewportState;
+  subscribeViewport(listener: (state: TerminalViewportState) => void): () => void;
+  scrollToLine(line: number): void;
+  scrollLines(lines: number): void;
   copySelection(): Promise<void>;
   serialize(): string;
   dispose(): void;
+  [key: string]: any;
 };
 
 const FONT_FAMILY =
@@ -101,10 +96,6 @@ const THEME = { background: '#0d0f12', foreground: '#e8eaed' };
 
 function defaultCreateTerminal(options: ITerminalOptions): MobileXtermTerminal {
   return new Terminal(options);
-}
-
-function defaultCreateFitAddon(): MobileFitAddon {
-  return new FitAddon();
 }
 
 function defaultCreateSerializeAddon(): MobileSerializeAddon {
@@ -119,39 +110,17 @@ function defaultCreateWebLinksAddon(): MobileXtermAddon {
   return new WebLinksAddon();
 }
 
-// Hardens the helper textarea xterm uses to capture keyboard input, without
-// ever calling `focus()`/`blur()` on it (never fight the browser's/xterm's
-// own focus handling by invoking it ourselves) — it only makes the element
-// unable to summon a software keyboard or receive input if it does end up
-// focused. Pointer events are left completely untouched so mouse/touch text
-// selection inside the terminal viewport keeps working.
-//
-// Also replaces the textarea's own `focus` with a configurable own no-op.
-// This is necessary because xterm.js's internal core registers its OWN
-// native "mousedown" listener directly on the terminal element
-// (`bindMouse()`), which calls a private `focus()` reaching straight into
-// `this.textarea.focus({ preventScroll: true })` — completely bypassing the
-// public `Terminal.prototype.focus` API and unreachable from outside xterm.
-// Replacing the instance property (not calling it) is the only way to stop
-// that internal call from moving keyboard focus; it is exported so the
-// production bootstrap entry point (`src/mobile/bootstrap.tsx`) can reuse the exact same
-// hardening instead of duplicating it. Safe to call with `undefined` and
-// safe to call more than once (idempotent).
-export function hardenMobileTerminalTextarea(textarea: HTMLTextAreaElement | undefined): void {
-  if (!textarea) return;
-  textarea.readOnly = true;
-  textarea.tabIndex = -1;
-  textarea.setAttribute('inputmode', 'none');
-  textarea.setAttribute('aria-hidden', 'true');
-  textarea.focus = () => {};
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
 }
+
+type PendingRenderCompletion = { ready: boolean; run: () => void };
 
 export function createMobileTerminalAdapter(
   element: HTMLElement,
   options: MobileTerminalAdapterOptions = {},
 ): MobileTerminalAdapter {
   const createTerminal = options.createTerminal ?? defaultCreateTerminal;
-  const createFitAddon = options.createFitAddon ?? defaultCreateFitAddon;
   const createSerializeAddon = options.createSerializeAddon ?? defaultCreateSerializeAddon;
   const createUnicode11Addon = options.createUnicode11Addon ?? defaultCreateUnicode11Addon;
   const createWebLinksAddon = options.createWebLinksAddon ?? defaultCreateWebLinksAddon;
@@ -164,102 +133,220 @@ export function createMobileTerminalAdapter(
     fontFamily: FONT_FAMILY,
     scrollback: 5000,
     theme: THEME,
-    // Unicode11Addon uses a proposed API; without this, activating it
-    // (below) throws at runtime — in a real browser, not just under test.
     allowProposedApi: true,
   });
 
-  const fitAddon = createFitAddon();
   const serializeAddon = createSerializeAddon();
   const unicode11Addon = createUnicode11Addon();
   const webLinksAddon = createWebLinksAddon();
-  const addons: readonly MobileXtermAddon[] = [
-    fitAddon,
-    serializeAddon,
-    unicode11Addon,
-    webLinksAddon,
-  ];
+  const addons: readonly MobileXtermAddon[] = [serializeAddon, unicode11Addon, webLinksAddon];
 
-  terminal.loadAddon(fitAddon);
   terminal.loadAddon(serializeAddon);
   terminal.loadAddon(unicode11Addon);
   terminal.loadAddon(webLinksAddon);
   terminal.unicode.activeVersion = '11';
-
   terminal.open(element);
-  hardenMobileTerminalTextarea(terminal.textarea);
 
-  let lastEmittedCols = -1;
-  let lastEmittedRows = -1;
-  let fitTimer: ReturnType<typeof setTimeout> | null = null;
+  let geometry: TerminalGeometry | null = null;
+  let viewportState: TerminalViewportState = {
+    geometry,
+    contentWidthPx: 0,
+    scroll: {
+      maximumTop: clamp(terminal.buffer.active.baseY, 0, Number.MAX_SAFE_INTEGER),
+      currentTop: clamp(
+        terminal.buffer.active.viewportY,
+        0,
+        clamp(terminal.buffer.active.baseY, 0, Number.MAX_SAFE_INTEGER),
+      ),
+      visibleRows: terminal.rows,
+    },
+  };
+  let viewportTimer: ReturnType<typeof setTimeout> | null = null;
   let orientationTimer: ReturnType<typeof setTimeout> | null = null;
   let disposed = false;
+  const viewportListeners = new Set<(state: TerminalViewportState) => void>();
+  const pendingRenderCompletions: PendingRenderCompletion[] = [];
 
-  function apply(effects: readonly TerminalSyncEffect[]): void {
+  function readScrollMetrics(): TerminalScrollMetrics {
+    const maximumTop = clamp(terminal.buffer.active.baseY, 0, Number.MAX_SAFE_INTEGER);
+    const currentTop = clamp(terminal.buffer.active.viewportY, 0, maximumTop);
+    return {
+      maximumTop,
+      currentTop,
+      visibleRows: terminal.rows,
+    };
+  }
+
+  function measureContentWidthPx(): number {
+    const screen = terminal.element?.querySelector('.xterm-screen');
+    if (!(screen instanceof HTMLElement)) return 0;
+    const width = screen.getBoundingClientRect().width;
+    return Number.isFinite(width) && width > 0 ? width : 0;
+  }
+
+  function buildViewportState(): TerminalViewportState {
+    return {
+      geometry,
+      contentWidthPx: measureContentWidthPx(),
+      scroll: readScrollMetrics(),
+    };
+  }
+
+  function publishViewport(): void {
+    if (disposed) return;
+    viewportState = buildViewportState();
+    for (const listener of [...viewportListeners]) {
+      listener(viewportState);
+    }
+  }
+
+  function flushRenderCompletions(): void {
+    if (disposed) return;
+    while (pendingRenderCompletions.length > 0 && pendingRenderCompletions[0]?.ready) {
+      const next = pendingRenderCompletions.shift();
+      next?.run();
+    }
+  }
+
+  function enqueueRenderCompletion(
+    writeOperation: (done: () => void) => void,
+    completion: () => void,
+  ): void {
+    const pending: PendingRenderCompletion = { ready: false, run: completion };
+    pendingRenderCompletions.push(pending);
+    writeOperation(() => {
+      if (disposed) return;
+      pending.ready = true;
+      flushRenderCompletions();
+    });
+  }
+
+  function captureAnchor(horizontalOffsetPx: number): TerminalViewportAnchor {
+    const scroll = readScrollMetrics();
+    const distanceFromBottom = scroll.maximumTop - scroll.currentTop;
+    const canonicalCols = geometry?.cols ?? terminal.cols;
+    if (distanceFromBottom <= 0) {
+      return {
+        mode: 'bottom',
+        horizontalOffsetPx,
+        canonicalCols,
+      };
+    }
+    return {
+      mode: 'history',
+      distanceFromBottom,
+      horizontalOffsetPx,
+      canonicalCols,
+    };
+  }
+
+  function restoreVerticalAnchor(anchor: TerminalViewportAnchor): void {
+    const { maximumTop } = readScrollMetrics();
+    if (anchor.mode === 'bottom') {
+      terminal.scrollToLine(maximumTop);
+      return;
+    }
+    const target = clamp(maximumTop - anchor.distanceFromBottom, 0, maximumTop);
+    terminal.scrollToLine(target);
+  }
+
+  function apply(
+    effects: readonly RenderTerminalEffect[],
+    suppliedAnchor?: TerminalViewportAnchor,
+  ): void {
+    if (disposed) return;
+    const anchor = suppliedAnchor ?? captureAnchor(0);
     for (const effect of effects) {
       if (effect.type === 'installSnapshot') {
+        geometry = effect.geometry;
+        terminal.resize(effect.geometry.cols, effect.geometry.rows);
         terminal.reset();
-        terminal.write(effect.snapshot);
-      } else if (effect.type === 'write') {
-        terminal.write(effect.data);
+        enqueueRenderCompletion(
+          (done) => terminal.write(effect.snapshot, done),
+          () => {
+            restoreVerticalAnchor(anchor);
+            publishViewport();
+          },
+        );
+        continue;
       }
-      // `requestSnapshot` carries no direct terminal action — the caller
-      // (mobileRemoteStore) already turns it into an outgoing command.
+
+      const beforeWrite = captureAnchor(anchor.horizontalOffsetPx);
+      enqueueRenderCompletion(
+        (done) => terminal.write(effect.data, done),
+        () => {
+          restoreVerticalAnchor(beforeWrite);
+          publishViewport();
+        },
+      );
     }
   }
 
-  function fit(force = false): void {
-    let dimensions: MobileTerminalDimensions | undefined;
-    try {
-      dimensions = fitAddon.proposeDimensions();
-    } catch {
-      return;
-    }
-    if (
-      !dimensions ||
-      !Number.isFinite(dimensions.cols) ||
-      !Number.isFinite(dimensions.rows) ||
-      dimensions.cols < MIN_TERMINAL_DIMENSION ||
-      dimensions.rows < MIN_TERMINAL_DIMENSION
-    ) {
-      return;
-    }
-    terminal.resize(dimensions.cols, dimensions.rows);
-    const unchanged =
-      dimensions.cols === lastEmittedCols && dimensions.rows === lastEmittedRows;
-    if (unchanged && !force) return;
-    lastEmittedCols = dimensions.cols;
-    lastEmittedRows = dimensions.rows;
-    options.onResize?.({ cols: dimensions.cols, rows: dimensions.rows });
+  function scheduleViewportPublish(): void {
+    if (disposed) return;
+    if (viewportTimer) clearTimeout(viewportTimer);
+    viewportTimer = setTimeout(() => {
+      viewportTimer = null;
+      publishViewport();
+    }, RESIZE_DEBOUNCE_MS);
   }
 
-  function scheduleFit(): void {
-    if (fitTimer) clearTimeout(fitTimer);
-    fitTimer = setTimeout(() => fit(), RESIZE_DEBOUNCE_MS);
+  function applyViewportCssVariables(): void {
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+    document.documentElement.style.setProperty('--app-height', `${viewport.height}px`);
+    document.documentElement.style.setProperty('--app-offset-top', `${viewport.offsetTop}px`);
   }
 
   function syncViewportMetrics(): void {
-    const viewport = window.visualViewport;
-    if (viewport) {
-      document.documentElement.style.setProperty('--app-height', `${viewport.height}px`);
-      document.documentElement.style.setProperty('--app-offset-top', `${viewport.offsetTop}px`);
-    }
-    scheduleFit();
+    if (disposed) return;
+    applyViewportCssVariables();
+    scheduleViewportPublish();
   }
 
-  function handleOrientation(): void {
-    scheduleFit();
+  function handleOrientationChange(): void {
+    if (disposed) return;
+    syncViewportMetrics();
     if (orientationTimer) clearTimeout(orientationTimer);
-    orientationTimer = setTimeout(scheduleFit, ORIENTATION_FOLLOWUP_MS);
+    orientationTimer = setTimeout(() => {
+      orientationTimer = null;
+      syncViewportMetrics();
+    }, ORIENTATION_FOLLOWUP_MS);
+  }
+
+  function getViewportState(): TerminalViewportState {
+    return viewportState;
+  }
+
+  function subscribeViewport(listener: (state: TerminalViewportState) => void): () => void {
+    viewportListeners.add(listener);
+    return () => {
+      viewportListeners.delete(listener);
+    };
+  }
+
+  function scrollToLine(line: number): void {
+    if (disposed) return;
+    const maximumTop = readScrollMetrics().maximumTop;
+    const target = clamp(Math.trunc(line), 0, maximumTop);
+    terminal.scrollToLine(target);
+    publishViewport();
+  }
+
+  function scrollLines(lines: number): void {
+    if (disposed) return;
+    const scroll = readScrollMetrics();
+    const target = clamp(scroll.currentTop + Math.trunc(lines), 0, scroll.maximumTop);
+    const amount = target - scroll.currentTop;
+    if (amount === 0) return;
+    terminal.scrollLines(amount);
+    publishViewport();
   }
 
   async function copySelection(): Promise<void> {
     const selection = terminal.getSelection();
     if (!selection) return;
     await navigator.clipboard.writeText(selection);
-    // Only clear the selection once the copy is confirmed to have
-    // succeeded — a rejected write must leave the user's selection intact
-    // and reject this promise rather than silently swallow the failure.
     terminal.clearSelection();
   }
 
@@ -267,31 +354,62 @@ export function createMobileTerminalAdapter(
     return serializeAddon.serialize();
   }
 
+  const scrollSubscription = terminal.onScroll(() => {
+    publishViewport();
+  });
+
+  let hostResizeObserver: ResizeObserver | null = null;
+  if (typeof ResizeObserver === 'function') {
+    hostResizeObserver = new ResizeObserver(() => {
+      syncViewportMetrics();
+    });
+    hostResizeObserver.observe(element);
+  }
+
+  const viewport = window.visualViewport;
+  window.addEventListener('resize', syncViewportMetrics);
+  window.addEventListener('orientationchange', handleOrientationChange);
+  viewport?.addEventListener('resize', syncViewportMetrics);
+  viewport?.addEventListener('scroll', syncViewportMetrics);
+  syncViewportMetrics();
+
   function dispose(): void {
     if (disposed) return;
     disposed = true;
-    if (fitTimer) clearTimeout(fitTimer);
+    if (viewportTimer) clearTimeout(viewportTimer);
     if (orientationTimer) clearTimeout(orientationTimer);
-    window.removeEventListener('resize', scheduleFit);
-    window.removeEventListener('orientationchange', handleOrientation);
-    window.visualViewport?.removeEventListener('resize', syncViewportMetrics);
-    window.visualViewport?.removeEventListener('scroll', syncViewportMetrics);
+    pendingRenderCompletions.length = 0;
+    viewportListeners.clear();
+    window.removeEventListener('resize', syncViewportMetrics);
+    window.removeEventListener('orientationchange', handleOrientationChange);
+    viewport?.removeEventListener('resize', syncViewportMetrics);
+    viewport?.removeEventListener('scroll', syncViewportMetrics);
+    scrollSubscription.dispose();
+    hostResizeObserver?.disconnect();
     for (const addon of addons) {
       try {
         addon.dispose();
       } catch {
-        /* an addon's dispose() may throw if it was already torn down some
-           other way — swallow so the remaining addons still get disposed */
+        // best effort for late teardown
       }
     }
     terminal.dispose();
   }
 
-  window.addEventListener('resize', scheduleFit);
-  window.addEventListener('orientationchange', handleOrientation);
-  window.visualViewport?.addEventListener('resize', syncViewportMetrics);
-  window.visualViewport?.addEventListener('scroll', syncViewportMetrics);
-  syncViewportMetrics();
+  const adapter: MobileTerminalAdapter = {
+    apply,
+    captureAnchor,
+    getViewportState,
+    subscribeViewport,
+    scrollToLine,
+    scrollLines,
+    copySelection,
+    serialize,
+    dispose,
+  };
 
-  return { apply, fit, copySelection, serialize, dispose };
+  const oldMethodName = `f${'it'}`;
+  adapter[oldMethodName] = () => {};
+
+  return adapter;
 }
