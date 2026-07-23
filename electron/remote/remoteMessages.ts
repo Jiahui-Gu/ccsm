@@ -64,6 +64,7 @@ export async function handleClientMessage(client: RemotePeer, raw: string): Prom
     client.subscribedSid = message.sid;
     const snapshot = await getCoordinatedSnapshot(message.sid);
     if (!snapshot) {
+      if (client.subscribedSid === message.sid) client.subscribedSid = null;
       client.send({ type: 'error', message: 'missing_sid' });
       return;
     }

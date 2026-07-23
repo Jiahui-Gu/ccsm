@@ -175,6 +175,10 @@ export function applyTerminalSnapshot(
     return unchanged(state);
   }
 
+  // The main-process coordinator and each WebSocket preserve barrier order:
+  // an epoch-N snapshot is published before any epoch-(N+1) chunk. Filtering
+  // to the installed epoch also prevents malformed or replayed later-epoch
+  // data from crossing this atomic snapshot boundary.
   const buffered = new Map<number, PtyDataMessage>();
   for (const [seq, publication] of state.buffered) {
     if (seq > message.seq && publication.geometryEpoch === message.geometry.epoch) {

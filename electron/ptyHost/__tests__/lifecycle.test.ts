@@ -444,44 +444,6 @@ describe('lifecycle.resize', () => {
     expect(entry.pty.write).toHaveBeenCalledWith('\u0003');
   });
 
-  it('resizes pty + headless and updates cached cols/rows', () => {
-    const sessions = new Map<string, FakeEntry>();
-    const entry = makeFakeEntry();
-    sessions.set('s', entry);
-    L.resize(sessions as any, 's', 100, 40);
-    expect(entry.pty.resize).toHaveBeenCalledWith(100, 40);
-    expect(entry.headless.resize).toHaveBeenCalledWith(100, 40);
-    expect(entry.cols).toBe(100);
-    expect(entry.rows).toBe(40);
-  });
-
-  it('rejects degenerate sizes (cols<2 or rows<2) — neither pty nor headless touched', () => {
-    const sessions = new Map<string, FakeEntry>();
-    const entry = makeFakeEntry();
-    sessions.set('s', entry);
-    L.resize(sessions as any, 's', 1, 40);
-    L.resize(sessions as any, 's', 40, 1);
-    expect(entry.pty.resize).not.toHaveBeenCalled();
-    expect(entry.headless.resize).not.toHaveBeenCalled();
-    // cached size unchanged
-    expect(entry.cols).toBe(80);
-    expect(entry.rows).toBe(24);
-  });
-
-  it('warns and survives when pty.resize throws', () => {
-    const sessions = new Map<string, FakeEntry>();
-    const entry = makeFakeEntry();
-    entry.pty.resize = vi.fn(() => { throw new Error('boom'); });
-    sessions.set('s', entry);
-    expect(() => L.resize(sessions as any, 's', 100, 40)).not.toThrow();
-    expect(console.warn).toHaveBeenCalledWith(
-      expect.stringContaining('resize s failed'),
-    );
-  });
-
-  it('is a no-op when sid is unknown', () => {
-    expect(L.resize(new Map() as any, 'ghost', 100, 40)).toBeUndefined();
-  });
 });
 
 // ─── kill / killAll ───────────────────────────────────────────────────────

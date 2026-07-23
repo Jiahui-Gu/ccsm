@@ -87,14 +87,47 @@ describe('handleClientMessage — coordinated session snapshot', () => {
   it('reports missing_sid when the coordinated snapshot has no live entry', async () => {
     mockedPty.getCoordinatedSnapshot.mockResolvedValue(null);
     const peer = makePeer();
+    peer.subscribedSid = 'previous';
 
     await handleClientMessage(
       peer,
       JSON.stringify({ type: 'session.snapshot', sid: 'missing' }),
     );
 
-    expect(peer.subscribedSid).toBe('missing');
+    expect(peer.subscribedSid).toBeNull();
     expect(peer.send).toHaveBeenCalledWith({ type: 'error', message: 'missing_sid' });
+  });
+
+  it('does not clear a newer subscription when an older missing snapshot resolves late', async () => {
+    let resolveMissing!: (value: null) => void;
+    mockedPty.getCoordinatedSnapshot.mockImplementation((sid: string) => {
+      if (sid === 'missing') {
+        return new Promise<null>((resolve) => {
+          resolveMissing = resolve;
+        });
+      }
+      return Promise.resolve({
+        type: 'session.snapshot',
+        sid,
+        seq: 1,
+        snapshot: 'screen',
+        geometry: { cols: 120, rows: 30, epoch: 0 },
+      });
+    });
+    const peer = makePeer();
+
+    const missingHandling = handleClientMessage(
+      peer,
+      JSON.stringify({ type: 'session.snapshot', sid: 'missing' }),
+    );
+    await handleClientMessage(
+      peer,
+      JSON.stringify({ type: 'session.snapshot', sid: 'current' }),
+    );
+    resolveMissing(null);
+    await missingHandling;
+
+    expect(peer.subscribedSid).toBe('current');
   });
 });
 

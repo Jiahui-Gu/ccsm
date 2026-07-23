@@ -263,25 +263,6 @@ export async function submit(
   }
 }
 
-export function resize(
-  sessions: Map<string, Entry>,
-  sid: string,
-  cols: number,
-  rows: number,
-): void {
-  const origin: PtyResizeOrigin = { kind: 'visible-desktop', webContentsId: -1 };
-  const entry = sessions.get(sid);
-  if (!entry) return;
-  if (cols < 2 || rows < 2) return;
-  try {
-    resizeCanonicalGeometry(sessions, sid, cols, rows, origin);
-  } catch (e) {
-    console.warn(
-      `[ptyHost] resize ${sid} failed: ${e instanceof Error ? e.message : String(e)}`,
-    );
-  }
-}
-
 export function getCanonicalGeometry(
   registry: Map<string, Entry>,
   sid: string,
