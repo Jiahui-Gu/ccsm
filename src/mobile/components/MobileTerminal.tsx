@@ -1,76 +1,212 @@
-// React lifecycle wrapper around the long-lived, read-only xterm adapter
-// (`createMobileTerminalAdapter`). Renders a single host `div` and owns the
-// adapter's create/apply/dispose lifecycle; it never manages keyboard focus
-// itself — the terminal stays read/scroll/select/copy only.
-//
-// The adapter is created exactly once per mount (keyed only by stable adapter
-// dependencies, never by `batch`), and disposed exactly once on unmount.
-// Each numbered `TerminalRenderBatch` is
-// applied at most once, in `useLayoutEffect` so the DOM reflects new PTY
-// output before the browser paints, and `onConsumed` is only called after a
-// successful `apply`.
-//
-// Both the adapter-creation effect and the batch-application effect are
-// `useLayoutEffect`, and the adapter-creation one is declared FIRST. React
-// runs same-phase effects (all `useLayoutEffect`s before any `useEffect`) in
-// declaration order within a component, so this guarantees the adapter
-// exists in `adapterRef` before the batch effect runs in the very same
-// commit — including the first mount, when `batch` can already be non-null
-// (e.g. a snapshot batch queued by the store before this component ever
-// rendered). Using `useEffect` for adapter creation would defer it until
-// after paint, one tick later than the batch effect, silently dropping
-// whatever batch was already queued on that first render.
+import { useLayoutEffect, useRef, useState, type MutableRefObject } from 'react';
 
-import { useLayoutEffect, useRef, type MutableRefObject } from 'react';
-
+import { MobileTerminalScrollbar } from './MobileTerminalScrollbar';
 import {
   createMobileTerminalAdapter,
   type MobileTerminalAdapter,
+  type TerminalViewportAnchor,
+  type TerminalViewportState,
 } from '../mobileTerminalAdapter';
 import type { TerminalRenderBatch } from '../mobileRemoteStore';
+
+const DEFAULT_VIEWPORT_STATE: TerminalViewportState = {
+  geometry: null,
+  contentWidthPx: 0,
+  scroll: { maximumTop: 0, currentTop: 0, visibleRows: 30 },
+};
 
 export type MobileTerminalAdapterFactory = (
   element: HTMLElement,
 ) => MobileTerminalAdapter;
 
 export type MobileTerminalProps = {
+  sid: string | null;
   batch: TerminalRenderBatch | null;
   onConsumed: (id: number) => void;
   adapterRef: MutableRefObject<MobileTerminalAdapter | null>;
-  // Test seam: inject a fake adapter factory for component tests instead of
-  // unsafely mocking the `@xterm/xterm` module. Defaults to the real
-  // adapter at runtime.
   createAdapter?: MobileTerminalAdapterFactory;
 };
 
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.max(minimum, Math.min(maximum, value));
+}
+
+function maxHorizontalOffset(viewport: HTMLDivElement): number {
+  return Math.max(0, viewport.scrollWidth - viewport.clientWidth);
+}
+
+function finitePositive(value: number): number | null {
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function withHorizontalOffset(
+  anchor: TerminalViewportAnchor,
+  horizontalOffsetPx: number,
+): TerminalViewportAnchor {
+  return {
+    ...anchor,
+    horizontalOffsetPx,
+  };
+}
+
+function canonicalColsFromBatch(batch: TerminalRenderBatch): number | null {
+  for (let index = batch.effects.length - 1; index >= 0; index -= 1) {
+    const effect = batch.effects[index];
+    if (effect?.type === 'installSnapshot') return effect.geometry.cols;
+  }
+  return null;
+}
+
+function bottomAnchor(canonicalCols: number): TerminalViewportAnchor {
+  return {
+    mode: 'bottom',
+    horizontalOffsetPx: 0,
+    canonicalCols,
+  };
+}
+
 export function MobileTerminal({
+  sid,
   batch,
   onConsumed,
   adapterRef,
   createAdapter = createMobileTerminalAdapter,
 }: MobileTerminalProps) {
   const hostRef = useRef<HTMLDivElement>(null);
-  const lastAppliedBatch = useRef(0);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const activeSidRef = useRef<string | null>(sid);
+  const sidChangedRef = useRef(false);
+  const lastAppliedBatches = useRef(new Set<number>());
+  const anchorBySidRef = useRef(new Map<string, TerminalViewportAnchor>());
+  const desiredHorizontalOffsetRef = useRef(0);
+  const [viewportState, setViewportState] = useState<TerminalViewportState>(DEFAULT_VIEWPORT_STATE);
+  const [showLeftEdgeAffordance, setShowLeftEdgeAffordance] = useState(false);
 
-  // Declared before the batch-application effect below so the adapter is
-  // guaranteed to exist in `adapterRef` by the time that effect runs in the
-  // same commit (see the module doc above) — order matters here.
+  const readHorizontalOffset = (): number => {
+    const viewport = viewportRef.current;
+    if (!viewport) return 0;
+    const measurableExtent = viewport.scrollWidth > 0 && viewport.clientWidth > 0;
+    const maximumLeft = measurableExtent ? maxHorizontalOffset(viewport) : Number.MAX_SAFE_INTEGER;
+    return clamp(viewport.scrollLeft, 0, maximumLeft);
+  };
+
+  const captureHorizontalOffset = (): void => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const clamped = readHorizontalOffset();
+    desiredHorizontalOffsetRef.current = clamped;
+    if (sid) {
+      const existing = anchorBySidRef.current.get(sid);
+      if (existing) {
+        anchorBySidRef.current.set(sid, withHorizontalOffset(existing, clamped));
+      }
+    }
+    const measurableExtent = viewport.scrollWidth > 0 && viewport.clientWidth > 0;
+    const maximumLeft = measurableExtent ? maxHorizontalOffset(viewport) : 0;
+    setShowLeftEdgeAffordance((measurableExtent && maximumLeft > 0) || clamped > 0);
+  };
+
   useLayoutEffect(() => {
     if (!hostRef.current) return;
     const adapter = createAdapter(hostRef.current);
     adapterRef.current = adapter;
+    setViewportState(adapter.getViewportState());
+    const unsubscribe = adapter.subscribeViewport((state) => {
+      setViewportState(state);
+    });
     return () => {
+      unsubscribe();
       adapterRef.current = null;
       adapter.dispose();
     };
   }, [adapterRef, createAdapter]);
 
   useLayoutEffect(() => {
-    if (!batch || batch.id <= lastAppliedBatch.current || !adapterRef.current) return;
-    adapterRef.current.apply(batch.effects);
-    lastAppliedBatch.current = batch.id;
-    onConsumed(batch.id);
-  }, [adapterRef, batch, onConsumed]);
+    const previousSid = activeSidRef.current;
+    if (previousSid === sid) return;
+    sidChangedRef.current = true;
+    const adapter = adapterRef.current;
+    if (previousSid && adapter) {
+      const horizontalOffsetPx = readHorizontalOffset();
+      anchorBySidRef.current.set(previousSid, adapter.captureAnchor(horizontalOffsetPx));
+    }
+    activeSidRef.current = sid;
+    const restored = sid ? anchorBySidRef.current.get(sid) : undefined;
+    desiredHorizontalOffsetRef.current = restored?.horizontalOffsetPx ?? 0;
+  }, [adapterRef, sid]);
 
-  return <div ref={hostRef} className="mobile-terminal" aria-label="Terminal output" />;
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    if (viewport.scrollWidth <= 0 || viewport.clientWidth <= 0) {
+      setShowLeftEdgeAffordance(desiredHorizontalOffsetRef.current > 0);
+      return;
+    }
+    const maximumLeft = maxHorizontalOffset(viewport);
+    const clamped = clamp(desiredHorizontalOffsetRef.current, 0, maximumLeft);
+    if (viewport.scrollLeft !== clamped) viewport.scrollLeft = clamped;
+    desiredHorizontalOffsetRef.current = clamped;
+    if (sid) {
+      const existing = anchorBySidRef.current.get(sid);
+      if (existing) {
+        anchorBySidRef.current.set(sid, withHorizontalOffset(existing, clamped));
+      }
+    }
+    setShowLeftEdgeAffordance(maximumLeft > 0 || clamped > 0);
+  }, [sid, viewportState.contentWidthPx, viewportState.geometry?.cols]);
+
+  useLayoutEffect(() => {
+    if (!batch || !sid || batch.sid !== sid || lastAppliedBatches.current.has(batch.id)) return;
+    const adapter = adapterRef.current;
+    if (!adapter) return;
+
+    const existingAnchor = anchorBySidRef.current.get(sid);
+    if (!sidChangedRef.current && existingAnchor) {
+      const horizontalOffsetPx = readHorizontalOffset();
+      anchorBySidRef.current.set(sid, adapter.captureAnchor(horizontalOffsetPx));
+    }
+
+    const canonicalCols =
+      canonicalColsFromBatch(batch) ??
+      viewportState.geometry?.cols ??
+      anchorBySidRef.current.get(sid)?.canonicalCols ??
+      0;
+    const anchor = anchorBySidRef.current.get(sid) ?? bottomAnchor(canonicalCols);
+    adapter.apply(batch.effects, anchor);
+    sidChangedRef.current = false;
+    lastAppliedBatches.current.add(batch.id);
+    anchorBySidRef.current.set(sid, anchor);
+    desiredHorizontalOffsetRef.current = anchor.horizontalOffsetPx;
+    onConsumed(batch.id);
+  }, [adapterRef, batch, onConsumed, sid, viewportState.geometry?.cols]);
+
+  const gridWidthPx = finitePositive(viewportState.contentWidthPx);
+
+  return (
+    <div
+      className={`mobile-terminal${showLeftEdgeAffordance ? ' mobile-terminal--left-edge-affordance-visible' : ''}`}
+      aria-label="Terminal viewport"
+    >
+      <div className="mobile-terminal__left-edge-affordance" aria-hidden="true" />
+      <div
+        ref={viewportRef}
+        className="mobile-terminal__viewport"
+        onScroll={captureHorizontalOffset}
+      >
+        <div
+          id="phone-terminal-output"
+          ref={hostRef}
+          className="mobile-terminal__grid"
+          aria-label="Terminal output"
+          style={gridWidthPx === null ? undefined : { width: `${gridWidthPx}px` }}
+        />
+      </div>
+      <MobileTerminalScrollbar
+        terminalId="phone-terminal-output"
+        metrics={viewportState.scroll}
+        onScrollToLine={(line) => adapterRef.current?.scrollToLine(line)}
+        onScrollLines={(lines) => adapterRef.current?.scrollLines(lines)}
+      />
+    </div>
+  );
 }

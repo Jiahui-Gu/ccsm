@@ -120,7 +120,7 @@ describe('phone protocol state', () => {
   it('applies sessions.list with no terminal effects or commands', () => {
     const message: MobileServerMessage = {
       type: 'sessions.list',
-      sessions: [{ sid: 's1', cwd: '/repo', cols: 80, rows: 24 }],
+      sessions: [{ sid: 's1', cwd: '/repo', geometry: { cols: 80, rows: 24, epoch: 0 } }],
     };
     const result = applyServerMessage(emptyPhoneState(), message);
 

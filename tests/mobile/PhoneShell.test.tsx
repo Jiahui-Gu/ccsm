@@ -15,7 +15,10 @@ import { createMobileRemoteStore } from '../../src/mobile/mobileRemoteStore';
 import type { PhoneConnectionStatus, RelayClient } from '../../src/mobile/relayClient';
 import type { MobileClientMessage, MobileServerMessage } from '../../src/shared/mobileRemote';
 import type { SessionNavigatorModel } from '../../src/shared/sessionNavigator';
-import type { MobileTerminalAdapter } from '../../src/mobile/mobileTerminalAdapter';
+import type {
+  MobileTerminalAdapter,
+  TerminalViewportState,
+} from '../../src/mobile/mobileTerminalAdapter';
 import type { MobileTerminalAdapterFactory } from '../../src/mobile/components/MobileTerminal';
 
 type FakeRelayClient = RelayClient & {
@@ -77,13 +80,18 @@ function navigatorModel(overrides: Partial<SessionNavigatorModel> = {}): Session
   };
 }
 
+type FakeMobileTerminalAdapter = MobileTerminalAdapter & {
+  emitViewport(state: TerminalViewportState): void;
+};
+
 function createFakeAdapterFactory(): {
   factory: MobileTerminalAdapterFactory;
-  adapters: MobileTerminalAdapter[];
+  adapters: FakeMobileTerminalAdapter[];
 } {
-  const adapters: MobileTerminalAdapter[] = [];
+  const adapters: FakeMobileTerminalAdapter[] = [];
   const factory: MobileTerminalAdapterFactory = (_element) => {
-    const adapter: MobileTerminalAdapter = {
+    const listeners = new Set<(state: TerminalViewportState) => void>();
+    const adapter: FakeMobileTerminalAdapter = {
       apply: vi.fn(),
       captureAnchor: vi.fn(() => ({ mode: 'bottom', horizontalOffsetPx: 0, canonicalCols: 80 })),
       getViewportState: vi.fn(() => ({
@@ -91,12 +99,18 @@ function createFakeAdapterFactory(): {
         contentWidthPx: 0,
         scroll: { maximumTop: 0, currentTop: 0, visibleRows: 24 },
       })),
-      subscribeViewport: vi.fn(() => vi.fn()),
+      subscribeViewport: vi.fn((listener) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      }),
       scrollToLine: vi.fn(),
       scrollLines: vi.fn(),
       copySelection: vi.fn().mockResolvedValue(undefined),
       serialize: vi.fn(() => ''),
       dispose: vi.fn(),
+      emitViewport(state) {
+        for (const listener of listeners) listener(state);
+      },
     };
     adapters.push(adapter);
     return adapter;
@@ -781,6 +795,32 @@ describe('PhoneShell', () => {
 
     expect(adapters).toHaveLength(1);
     expect(adapters[0]?.dispose).not.toHaveBeenCalled();
+  });
+
+  it('never sends session.resize for viewport, keyboard, orientation, or session switch', async () => {
+    const user = userEvent.setup();
+    const client = createFakeClient();
+    const { factory, adapters } = createFakeAdapterFactory();
+    render(<PhoneShell client={client} createAdapter={factory} />);
+    client.emitMessage({ type: 'sessions.navigator', version: 1, model: navigatorModel() });
+    client.emitStatus('connected');
+
+    window.dispatchEvent(new Event('resize'));
+    window.dispatchEvent(new Event('orientationchange'));
+    adapters[0]?.emitViewport({
+      geometry: { cols: 140, rows: 30, epoch: 1 },
+      contentWidthPx: 1120,
+      scroll: { maximumTop: 10, currentTop: 10, visibleRows: 30 },
+    });
+
+    await user.click(screen.getByRole('button', { name: /sessions menu/i }));
+    await user.click(within(screen.getByRole('dialog')).getByText('Beta'));
+    await user.click(screen.getByRole('button', { name: /sessions menu/i }));
+    await user.click(within(screen.getByRole('dialog')).getByText('Alpha'));
+
+    expect(
+      client.sent.some((message) => (message as { type: string }).type === 'session.resize'),
+    ).toBe(false);
   });
 
 

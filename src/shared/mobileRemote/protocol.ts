@@ -44,9 +44,7 @@ export type TerminalGeometry = {
 export type SessionListEntry = {
   sid: string;
   cwd: string;
-  geometry?: TerminalGeometry;
-  cols?: number;
-  rows?: number;
+  geometry: TerminalGeometry;
 };
 
 // Mobile composer complete-draft submission (Task 1). 64 KiB character

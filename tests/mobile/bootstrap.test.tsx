@@ -27,7 +27,15 @@ const PAIRING: PairingIdentity = { roomId: 'B'.repeat(43), secret: 'A'.repeat(43
 // bootstrap's own orchestration.
 const fakeCreateAdapter: MobileTerminalAdapterFactory = () => ({
   apply: () => {},
-  fit: () => {},
+  captureAnchor: () => ({ mode: 'bottom', horizontalOffsetPx: 0, canonicalCols: 80 }),
+  getViewportState: () => ({
+    geometry: null,
+    contentWidthPx: 0,
+    scroll: { maximumTop: 0, currentTop: 0, visibleRows: 24 },
+  }),
+  subscribeViewport: () => () => {},
+  scrollToLine: () => {},
+  scrollLines: () => {},
   copySelection: () => Promise.resolve(),
   serialize: () => '',
   dispose: () => {},

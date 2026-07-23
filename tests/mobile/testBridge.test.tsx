@@ -76,9 +76,21 @@ function navigatorModel(): SessionNavigatorModel {
 
 function createFakeAdapterFactory(serializeReturn = 'serialized-buffer'): MobileTerminalAdapterFactory {
   return (_element, _options) => {
+    const listeners = new Set<(state: unknown) => void>();
     const adapter: MobileTerminalAdapter = {
       apply: vi.fn(),
-      fit: vi.fn(),
+      captureAnchor: vi.fn(() => ({ mode: 'bottom', horizontalOffsetPx: 0, canonicalCols: 80 })),
+      getViewportState: vi.fn(() => ({
+        geometry: null,
+        contentWidthPx: 0,
+        scroll: { maximumTop: 0, currentTop: 0, visibleRows: 24 },
+      })),
+      subscribeViewport: vi.fn((listener) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      }),
+      scrollToLine: vi.fn(),
+      scrollLines: vi.fn(),
       copySelection: vi.fn().mockResolvedValue(undefined),
       serialize: vi.fn(() => serializeReturn),
       dispose: vi.fn(),

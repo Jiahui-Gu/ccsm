@@ -243,6 +243,7 @@ export function PhoneShell({
       />
 
       <MobileTerminal
+        sid={state.selectedSessionId}
         batch={state.terminalBatch}
         onConsumed={handleConsumed}
         adapterRef={adapterRef}
