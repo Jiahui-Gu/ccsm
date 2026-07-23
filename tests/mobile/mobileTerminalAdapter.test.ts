@@ -173,20 +173,32 @@ describe('createMobileTerminalAdapter', () => {
 
   it('applies writes incrementally and snapshots as reset plus write, in order', () => {
     const { adapter, terminal } = createHarness();
-    adapter.apply([{ type: 'write', data: 'tail' }]);
+    adapter.apply([{ type: 'write', sid: 's1', seq: 2, data: 'tail' }]);
     expect(terminal.reset).not.toHaveBeenCalled();
     expect(terminal.write).toHaveBeenCalledWith('tail');
 
-    adapter.apply([{ type: 'reset', data: 'screen' }]);
+    adapter.apply([{
+      type: 'installSnapshot',
+      sid: 's1',
+      seq: 2,
+      snapshot: 'screen',
+      geometry: { cols: 80, rows: 24, epoch: 0 },
+    }]);
     expect(terminal.reset).toHaveBeenCalledOnce();
     expect(terminal.write).toHaveBeenLastCalledWith('screen');
 
     terminal.write.mockClear();
     terminal.reset.mockClear();
     adapter.apply([
-      { type: 'reset', data: 'a' },
-      { type: 'write', data: 'b' },
-      { type: 'write', data: 'c' },
+      {
+        type: 'installSnapshot',
+        sid: 's1',
+        seq: 3,
+        snapshot: 'a',
+        geometry: { cols: 80, rows: 24, epoch: 0 },
+      },
+      { type: 'write', sid: 's1', seq: 4, data: 'b' },
+      { type: 'write', sid: 's1', seq: 5, data: 'c' },
     ]);
     expect(terminal.reset).toHaveBeenCalledOnce();
     expect(terminal.write.mock.calls.map((call) => call[0])).toEqual(['a', 'b', 'c']);
@@ -194,7 +206,11 @@ describe('createMobileTerminalAdapter', () => {
 
   it('ignores requestSnapshot effects (no terminal action)', () => {
     const { adapter, terminal } = createHarness();
-    adapter.apply([{ type: 'requestSnapshot', sid: 'sid-1' }]);
+    adapter.apply([{
+      type: 'requestSnapshot',
+      sid: 'sid-1',
+      reason: 'sequence-gap',
+    }]);
     expect(terminal.reset).not.toHaveBeenCalled();
     expect(terminal.write).not.toHaveBeenCalled();
   });

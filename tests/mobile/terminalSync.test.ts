@@ -4,184 +4,409 @@ import {
   applyTerminalChunk,
   applyTerminalSnapshot,
   beginTerminalSync,
+  emptyTerminalSync,
   MAX_BUFFERED_TERMINAL_CHUNKS,
   type TerminalSyncState,
 } from '../../src/mobile/terminalSync';
+import type {
+  PtyDataMessage,
+  SessionSnapshotMessage,
+  TerminalGeometry,
+} from '../../src/shared/mobileRemote';
 
-function chunk(seq: number, data: string, sid = 's1') {
-  return { sid, seq, chunk: data };
+function chunk(
+  seq: number,
+  geometryEpoch: number,
+  data: string,
+  sid = 's1',
+): PtyDataMessage {
+  return { type: 'pty.data', sid, seq, chunk: data, geometryEpoch };
 }
 
-function snapshot(seq: number, data: string, sid = 's1') {
-  return { sid, seq, data };
+function snapshot(
+  seq: number,
+  geometry: TerminalGeometry,
+  data: string,
+  sid = 's1',
+): SessionSnapshotMessage {
+  return { type: 'session.snapshot', sid, seq, snapshot: data, geometry };
 }
 
-function syncedState(sid: string, lastSeq: number): TerminalSyncState {
+function syncedState(
+  geometry: TerminalGeometry,
+  lastSeq: number,
+  sid = 's1',
+): TerminalSyncState {
   return {
     sid,
     phase: 'live',
+    geometry,
     lastSeq,
-    snapshotRequested: false,
     buffered: new Map(),
+    snapshotRequested: false,
+    recoveryReason: null,
   };
 }
 
-describe('terminalSync', () => {
-  it('writes only the next sequence and drops duplicate or stale chunks', () => {
-    const live = syncedState('s1', 8);
-    expect(applyTerminalChunk(live, chunk(9, 'new')).effects).toEqual([
-      { type: 'write', data: 'new' },
-    ]);
-    expect(applyTerminalChunk(live, chunk(8, 'duplicate')).effects).toEqual([]);
-  });
-
-  it('requests one snapshot on a gap and buffers the tail', () => {
-    const first = applyTerminalChunk(syncedState('s1', 8), chunk(11, 'eleven'));
-    expect(first.effects).toEqual([{ type: 'requestSnapshot', sid: 's1' }]);
-    const second = applyTerminalChunk(first.state, chunk(12, 'twelve'));
-    expect(second.effects).toEqual([]);
-  });
-
-  it('replaces once then drains only the contiguous post-snapshot tail', () => {
-    let syncing = beginTerminalSync('s1');
-    syncing = applyTerminalChunk(syncing, chunk(11, 'eleven')).state;
-    syncing = applyTerminalChunk(syncing, chunk(10, 'ten')).state;
-    const applied = applyTerminalSnapshot(syncing, snapshot(9, 'screen'));
-    expect(applied.effects).toEqual([
-      { type: 'reset', data: 'screen' },
-      { type: 'write', data: 'ten' },
-      { type: 'write', data: 'eleven' },
-    ]);
-    expect(applied.state.lastSeq).toBe(11);
-    expect(applied.state.phase).toBe('live');
-  });
-
-  it('does not append a stale snapshot over a live screen', () => {
-    const result = applyTerminalSnapshot(syncedState('s1', 12), snapshot(9, 'old'));
-    expect(result.effects).toEqual([]);
-  });
-
-  it('ignores chunks with a non-integer or NaN sequence', () => {
-    const live = syncedState('s1', 8);
-    expect(applyTerminalChunk(live, chunk(8.5, 'x')).effects).toEqual([]);
-    expect(applyTerminalChunk(live, chunk(8.5, 'x')).state).toBe(live);
-    expect(applyTerminalChunk(live, chunk(Number.NaN, 'y')).effects).toEqual([]);
-  });
-
-  it('ignores a snapshot with a non-integer sequence', () => {
-    const live = syncedState('s1', 8);
-    expect(applyTerminalSnapshot(live, snapshot(9.5, 'y')).effects).toEqual([]);
-    expect(applyTerminalSnapshot(live, snapshot(9.5, 'y')).state).toBe(live);
-  });
-
-  it('ignores a chunk for a different session id', () => {
-    const live = syncedState('s1', 8);
-    expect(applyTerminalChunk(live, chunk(9, 'x', 's2')).effects).toEqual([]);
-    expect(applyTerminalChunk(live, chunk(9, 'x', 's2')).state).toBe(live);
-  });
-
-  it('ignores a snapshot for a different session id', () => {
-    const live = syncedState('s1', 8);
-    expect(applyTerminalSnapshot(live, snapshot(20, 'x', 's2')).effects).toEqual([]);
-  });
-
-  it('does not request a redundant snapshot for out-of-order chunks after sync already started', () => {
-    const state = beginTerminalSync('s1');
-    expect(state.snapshotRequested).toBe(true);
-    const result = applyTerminalChunk(state, chunk(5, 'five'));
-    expect(result.effects).toEqual([]);
-    expect(result.state.buffered.get(5)).toBe('five');
-  });
-
-  it('keeps the first authoritative bytes for a duplicate buffered sequence and never grows the buffer', () => {
-    let state = beginTerminalSync('s1');
-    state = applyTerminalChunk(state, chunk(5, 'first')).state;
-    const sizeBefore = state.buffered.size;
-    state = applyTerminalChunk(state, chunk(5, 'second')).state;
-    expect(state.buffered.get(5)).toBe('first');
-    expect(state.buffered.size).toBe(sizeBefore);
-  });
-
-  it('bounds the buffer to 256 entries and evicts the highest (far-future) sequence on overflow', () => {
-    let state = beginTerminalSync('s1');
-    for (let seq = 1; seq <= 300; seq += 1) {
-      state = applyTerminalChunk(state, chunk(seq, `chunk-${seq}`)).state;
-    }
-    expect(state.buffered.size).toBe(MAX_BUFFERED_TERMINAL_CHUNKS);
-    expect(state.buffered.has(1)).toBe(true);
-    expect(state.buffered.has(256)).toBe(true);
-    expect(state.buffered.has(257)).toBe(false);
-    expect(state.buffered.has(300)).toBe(false);
-  });
-
-  it('keeps the lowest sequences nearest lastSeq even when far chunks arrive first', () => {
-    let state = beginTerminalSync('s1');
-    for (let seq = 1000; seq > 1000 - (MAX_BUFFERED_TERMINAL_CHUNKS + 10); seq -= 1) {
-      state = applyTerminalChunk(state, chunk(seq, `chunk-${seq}`)).state;
-    }
-    expect(state.buffered.size).toBe(MAX_BUFFERED_TERMINAL_CHUNKS);
-    expect(state.buffered.has(1000 - (MAX_BUFFERED_TERMINAL_CHUNKS + 10) + 1)).toBe(true);
-    expect(state.buffered.has(1000)).toBe(false);
-  });
-
-  it('emits exactly one new snapshot request when a gap remains after applying a snapshot', () => {
-    let state = beginTerminalSync('s1');
-    state = applyTerminalChunk(state, chunk(5, 'five')).state;
-    state = applyTerminalChunk(state, chunk(8, 'eight')).state;
-    const applied = applyTerminalSnapshot(state, snapshot(4, 'screen'));
-    expect(applied.effects).toEqual([
-      { type: 'reset', data: 'screen' },
-      { type: 'write', data: 'five' },
-      { type: 'requestSnapshot', sid: 's1' },
-    ]);
-    expect(applied.state.phase).toBe('syncing');
-    expect(applied.state.snapshotRequested).toBe(true);
-    expect(applied.state.lastSeq).toBe(5);
-    expect([...applied.state.buffered.keys()]).toEqual([8]);
-  });
-
-  it('resets a fresh session with no buffered data and requests exactly one snapshot semantics', () => {
-    const state = beginTerminalSync('s1');
-    expect(state).toEqual({
+describe('terminalSync geometry epochs', () => {
+  it('starts idle and begins a session with exactly one outstanding initial recovery', () => {
+    expect(emptyTerminalSync()).toEqual({
+      sid: null,
+      phase: 'idle',
+      geometry: null,
+      lastSeq: -1,
+      buffered: new Map(),
+      snapshotRequested: false,
+      recoveryReason: null,
+    });
+    expect(beginTerminalSync('s1')).toEqual({
       sid: 's1',
       phase: 'syncing',
+      geometry: null,
       lastSeq: -1,
-      snapshotRequested: true,
       buffered: new Map(),
+      snapshotRequested: true,
+      recoveryReason: 'initial',
     });
   });
 
-  it('discards old-session buffered data on a session switch', () => {
-    let s1 = beginTerminalSync('s1');
-    s1 = applyTerminalChunk(s1, chunk(4, 'buffered-for-s1')).state;
-    expect(s1.buffered.size).toBe(1);
+  it.each([
+    ['wrong sid', chunk(11, 2, 'wrong-session', 's2')],
+    ['stale epoch', chunk(11, 1, 'stale')],
+    ['duplicate seq', chunk(10, 2, 'duplicate')],
+    ['old seq', chunk(9, 2, 'old')],
+  ])('ignores %s without effects or recovery', (_label, message) => {
+    const state = syncedState({ cols: 120, rows: 30, epoch: 2 }, 10);
+    const result = applyTerminalChunk(state, message);
 
-    const s2 = beginTerminalSync('s2');
-    expect(s2.sid).toBe('s2');
-    expect(s2.buffered.size).toBe(0);
-    expect(s2.phase).toBe('syncing');
-    expect(s2.snapshotRequested).toBe(true);
-    expect(s2.lastSeq).toBe(-1);
-
-    // A stale chunk still addressed to the old session must not affect the new one.
-    expect(applyTerminalChunk(s2, chunk(4, 'stale-for-s1', 's1')).effects).toEqual([]);
-    expect(applyTerminalChunk(s2, chunk(4, 'stale-for-s1', 's1')).state).toBe(s2);
+    expect(result).toEqual({ state, effects: [] });
+    expect(result.state.snapshotRequested).toBe(false);
+    expect(result.state.recoveryReason).toBeNull();
   });
 
-  it('resets exactly once for a newer snapshot and drains only chunks newer than it', () => {
-    let state = beginTerminalSync('s1');
-    state = applyTerminalChunk(state, chunk(3, 'three')).state;
-    state = applyTerminalChunk(state, chunk(4, 'four')).state;
-    const firstSnapshot = applyTerminalSnapshot(state, snapshot(2, 'first-screen'));
-    expect(firstSnapshot.effects).toEqual([
-      { type: 'reset', data: 'first-screen' },
-      { type: 'write', data: 'three' },
-      { type: 'write', data: 'four' },
-    ]);
-    expect(firstSnapshot.state.phase).toBe('live');
+  it('writes a same-epoch contiguous chunk with its session and sequence', () => {
+    const result = applyTerminalChunk(
+      syncedState({ cols: 120, rows: 30, epoch: 2 }, 10),
+      chunk(11, 2, 'next'),
+    );
 
-    // A late/duplicate response to the earlier request must not repaint over live output.
-    const staleReplay = applyTerminalSnapshot(firstSnapshot.state, snapshot(2, 'first-screen'));
-    expect(staleReplay.effects).toEqual([]);
+    expect(result.effects).toEqual([
+      { type: 'write', sid: 's1', seq: 11, data: 'next' },
+    ]);
+    expect(result.state).toMatchObject({
+      phase: 'live',
+      lastSeq: 11,
+      snapshotRequested: false,
+      recoveryReason: null,
+    });
+  });
+
+  it('buffers a same-epoch gap immutably and requests one sequence-gap recovery', () => {
+    const state = syncedState({ cols: 120, rows: 30, epoch: 2 }, 10);
+    const originalBuffer = state.buffered;
+    const result = applyTerminalChunk(state, chunk(12, 2, 'gap'));
+
+    expect(result.effects).toEqual([
+      { type: 'requestSnapshot', sid: 's1', reason: 'sequence-gap' },
+    ]);
+    expect(result.state).toMatchObject({
+      phase: 'syncing',
+      snapshotRequested: true,
+      recoveryReason: 'sequence-gap',
+      lastSeq: 10,
+      geometry: { cols: 120, rows: 30, epoch: 2 },
+    });
+    expect(result.state.buffered).not.toBe(originalBuffer);
+    expect(result.state.buffered.get(12)).toEqual(chunk(12, 2, 'gap'));
+    expect(originalBuffer.size).toBe(0);
+  });
+
+  it('buffers a future epoch and requests exactly one snapshot while syncing', () => {
+    const live = syncedState({ cols: 120, rows: 30, epoch: 2 }, 10);
+    const first = applyTerminalChunk(live, chunk(12, 3, 'tail-12'));
+    const second = applyTerminalChunk(first.state, chunk(11, 3, 'tail-11'));
+
+    expect(first.effects).toEqual([
+      { type: 'requestSnapshot', sid: 's1', reason: 'future-geometry' },
+    ]);
+    expect(second.effects).toEqual([]);
+    expect(second.state).toMatchObject({
+      phase: 'syncing',
+      geometry: live.geometry,
+      lastSeq: 10,
+      snapshotRequested: true,
+      recoveryReason: 'future-geometry',
+    });
+    expect([...second.state.buffered.keys()]).toEqual([12, 11]);
+  });
+
+  it('buffers pre-snapshot data without geometry and does not duplicate the initial request', () => {
+    const initial = beginTerminalSync('s1');
+    const result = applyTerminalChunk(initial, chunk(1, 4, 'early'));
+
+    expect(result.effects).toEqual([]);
+    expect(result.state.buffered.get(1)).toEqual(chunk(1, 4, 'early'));
+    expect(result.state.recoveryReason).toBe('initial');
+  });
+
+  it('keeps the first buffered publication for a duplicate sequence', () => {
+    const first = applyTerminalChunk(beginTerminalSync('s1'), chunk(5, 3, 'first'));
+    const duplicate = applyTerminalChunk(first.state, chunk(5, 3, 'second'));
+
+    expect(duplicate).toEqual({ state: first.state, effects: [] });
+    expect(duplicate.state.buffered.get(5)?.chunk).toBe('first');
+  });
+
+  it('installs a future-epoch barrier once and drains only its contiguous tail', () => {
+    let state = syncedState({ cols: 120, rows: 30, epoch: 2 }, 10);
+    state = applyTerminalChunk(state, chunk(12, 3, 'tail-12')).state;
+    state = applyTerminalChunk(state, chunk(11, 3, 'tail-11')).state;
+
+    const result = applyTerminalSnapshot(
+      state,
+      snapshot(10, { cols: 150, rows: 40, epoch: 3 }, 'screen-v3'),
+    );
+
+    expect(result.effects).toEqual([
+      {
+        type: 'installSnapshot',
+        sid: 's1',
+        seq: 10,
+        snapshot: 'screen-v3',
+        geometry: { cols: 150, rows: 40, epoch: 3 },
+      },
+      { type: 'write', sid: 's1', seq: 11, data: 'tail-11' },
+      { type: 'write', sid: 's1', seq: 12, data: 'tail-12' },
+    ]);
+    expect(result.state).toMatchObject({
+      phase: 'live',
+      geometry: { cols: 150, rows: 40, epoch: 3 },
+      lastSeq: 12,
+      snapshotRequested: false,
+      recoveryReason: null,
+    });
+    expect(result.state.buffered.size).toBe(0);
+  });
+
+  it.each([
+    [
+      'wrong sid',
+      snapshot(11, { cols: 120, rows: 30, epoch: 2 }, 'wrong-session', 's2'),
+    ],
+    [
+      'stale epoch',
+      snapshot(20, { cols: 80, rows: 24, epoch: 1 }, 'stale-geometry'),
+    ],
+    [
+      'superseded same-epoch barrier',
+      snapshot(10, { cols: 120, rows: 30, epoch: 2 }, 'superseded'),
+    ],
+  ])('ignores a %s without effects or recovery', (_label, message) => {
+    const state = syncedState({ cols: 120, rows: 30, epoch: 2 }, 10);
+    const result = applyTerminalSnapshot(state, message);
+
+    expect(result).toEqual({ state, effects: [] });
+    expect(result.state.snapshotRequested).toBe(false);
+    expect(result.state.recoveryReason).toBeNull();
+  });
+
+  it('accepts a future barrier even when its sequence is behind the old epoch', () => {
+    const result = applyTerminalSnapshot(
+      syncedState({ cols: 120, rows: 30, epoch: 2 }, 10),
+      snapshot(8, { cols: 150, rows: 40, epoch: 3 }, 'new-epoch'),
+    );
+
+    expect(result.effects).toEqual([
+      {
+        type: 'installSnapshot',
+        sid: 's1',
+        seq: 8,
+        snapshot: 'new-epoch',
+        geometry: { cols: 150, rows: 40, epoch: 3 },
+      },
+    ]);
+    expect(result.state).toMatchObject({
+      phase: 'live',
+      lastSeq: 8,
+      geometry: { cols: 150, rows: 40, epoch: 3 },
+    });
+  });
+
+  it('treats snapshot/live overlap as covered and never replays covered tails', () => {
+    let state = syncedState({ cols: 120, rows: 30, epoch: 2 }, 10);
+    state = applyTerminalChunk(state, chunk(11, 3, 'covered-11')).state;
+    state = applyTerminalChunk(state, chunk(12, 3, 'covered-12')).state;
+
+    const result = applyTerminalSnapshot(
+      state,
+      snapshot(12, { cols: 150, rows: 40, epoch: 3 }, 'covers-tail'),
+    );
+
+    expect(result.effects).toEqual([
+      {
+        type: 'installSnapshot',
+        sid: 's1',
+        seq: 12,
+        snapshot: 'covers-tail',
+        geometry: { cols: 150, rows: 40, epoch: 3 },
+      },
+    ]);
+    expect(result.state.buffered.size).toBe(0);
+    expect(result.state).toMatchObject({ phase: 'live', lastSeq: 12 });
+  });
+
+  it('discards buffered publications from other epochs when installing a barrier', () => {
+    const state: TerminalSyncState = {
+      ...syncedState({ cols: 120, rows: 30, epoch: 2 }, 10),
+      phase: 'syncing',
+      snapshotRequested: true,
+      recoveryReason: 'future-geometry',
+      buffered: new Map([
+        [11, chunk(11, 3, 'matching')],
+        [12, chunk(12, 4, 'other-epoch')],
+      ]),
+    };
+
+    const result = applyTerminalSnapshot(
+      state,
+      snapshot(10, { cols: 150, rows: 40, epoch: 3 }, 'screen-v3'),
+    );
+
+    expect(result.effects).toEqual([
+      {
+        type: 'installSnapshot',
+        sid: 's1',
+        seq: 10,
+        snapshot: 'screen-v3',
+        geometry: { cols: 150, rows: 40, epoch: 3 },
+      },
+      { type: 'write', sid: 's1', seq: 11, data: 'matching' },
+    ]);
+    expect(result.state).toMatchObject({ phase: 'live', lastSeq: 11 });
+    expect(result.state.buffered.size).toBe(0);
+  });
+
+  it('keeps the installed frame and geometry visible when a gap remains', () => {
+    const oldGeometry = { cols: 120, rows: 30, epoch: 2 };
+    const newGeometry = { cols: 150, rows: 40, epoch: 3 };
+    const state: TerminalSyncState = {
+      ...syncedState(oldGeometry, 10),
+      phase: 'syncing',
+      snapshotRequested: true,
+      recoveryReason: 'future-geometry',
+      buffered: new Map([
+        [12, chunk(12, 3, 'tail-12')],
+        [14, chunk(14, 3, 'tail-14')],
+        [11, chunk(11, 3, 'tail-11')],
+      ]),
+    };
+
+    const result = applyTerminalSnapshot(state, snapshot(10, newGeometry, 'screen-v3'));
+
+    expect(result.effects).toEqual([
+      {
+        type: 'installSnapshot',
+        sid: 's1',
+        seq: 10,
+        snapshot: 'screen-v3',
+        geometry: newGeometry,
+      },
+      { type: 'write', sid: 's1', seq: 11, data: 'tail-11' },
+      { type: 'write', sid: 's1', seq: 12, data: 'tail-12' },
+      { type: 'requestSnapshot', sid: 's1', reason: 'sequence-gap' },
+    ]);
+    expect(result.state).toMatchObject({
+      phase: 'syncing',
+      geometry: newGeometry,
+      lastSeq: 12,
+      snapshotRequested: true,
+      recoveryReason: 'sequence-gap',
+    });
+    expect([...result.state.buffered.keys()]).toEqual([14]);
+
+    const stillSyncing = applyTerminalChunk(result.state, chunk(15, 3, 'tail-15'));
+    expect(stillSyncing.effects).toEqual([]);
+    expect(stillSyncing.state.geometry).toEqual(newGeometry);
+    expect(stillSyncing.state.lastSeq).toBe(12);
+  });
+
+  it('allows exactly 256 buffered chunks without overflow', () => {
+    let state = syncedState({ cols: 120, rows: 30, epoch: 2 }, 0);
+    let recoveryRequests = 0;
+    for (let seq = 1; seq <= MAX_BUFFERED_TERMINAL_CHUNKS; seq += 1) {
+      const result = applyTerminalChunk(state, chunk(seq + 1, 3, `future-${seq}`));
+      recoveryRequests += result.effects.filter(
+        (effect) => effect.type === 'requestSnapshot',
+      ).length;
+      state = result.state;
+    }
+
+    expect(state.buffered.size).toBe(MAX_BUFFERED_TERMINAL_CHUNKS);
+    expect(state.recoveryReason).toBe('future-geometry');
+    expect(recoveryRequests).toBe(1);
+  });
+
+  it('clears the unsafe buffer on the 257th chunk and keeps recovery bounded', () => {
+    let state = syncedState({ cols: 120, rows: 30, epoch: 2 }, 0);
+    let recoveryRequests = 0;
+    for (let seq = 1; seq <= MAX_BUFFERED_TERMINAL_CHUNKS + 1; seq += 1) {
+      const result = applyTerminalChunk(state, chunk(seq + 1, 3, `future-${seq}`));
+      recoveryRequests += result.effects.filter(
+        (effect) => effect.type === 'requestSnapshot',
+      ).length;
+      state = result.state;
+    }
+
+    expect(state.buffered.size).toBe(0);
+    expect(state).toMatchObject({
+      phase: 'syncing',
+      geometry: { cols: 120, rows: 30, epoch: 2 },
+      lastSeq: 0,
+      snapshotRequested: true,
+      recoveryReason: 'buffer-overflow',
+    });
+    expect(recoveryRequests).toBe(1);
+  });
+
+  it('does not treat a duplicate as overflow when the buffer is full', () => {
+    const buffered = new Map<number, PtyDataMessage>();
+    for (let seq = 1; seq <= MAX_BUFFERED_TERMINAL_CHUNKS; seq += 1) {
+      buffered.set(seq, chunk(seq, 3, `future-${seq}`));
+    }
+    const state: TerminalSyncState = {
+      ...syncedState({ cols: 120, rows: 30, epoch: 2 }, 0),
+      phase: 'syncing',
+      buffered,
+      snapshotRequested: true,
+      recoveryReason: 'future-geometry',
+    };
+
+    expect(applyTerminalChunk(state, chunk(256, 3, 'duplicate'))).toEqual({
+      state,
+      effects: [],
+    });
+  });
+
+  it('reconnect and session reset discard old data and reject late old-session effects', () => {
+    let oldState = syncedState({ cols: 120, rows: 30, epoch: 2 }, 10);
+    oldState = applyTerminalChunk(oldState, chunk(12, 3, 'old-buffer')).state;
+
+    const reconnected = beginTerminalSync('s1');
+    expect(reconnected.buffered.size).toBe(0);
+    expect(reconnected.geometry).toBeNull();
+    expect(reconnected.lastSeq).toBe(-1);
+
+    const switched = beginTerminalSync('s2');
+    expect(switched.buffered.size).toBe(0);
+    expect(applyTerminalChunk(switched, chunk(13, 3, 'late-s1'))).toEqual({
+      state: switched,
+      effects: [],
+    });
+    expect(
+      applyTerminalSnapshot(
+        switched,
+        snapshot(13, { cols: 150, rows: 40, epoch: 3 }, 'late-s1'),
+      ),
+    ).toEqual({ state: switched, effects: [] });
   });
 });

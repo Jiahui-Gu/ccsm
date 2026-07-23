@@ -124,8 +124,10 @@ export function PhoneShell({
         return {
           sid: sync.sid,
           phase: sync.phase,
+          geometryEpoch: sync.geometry?.epoch ?? null,
           lastSeq: sync.lastSeq,
           snapshotRequested: sync.snapshotRequested,
+          recoveryReason: sync.recoveryReason,
           bufferedSeqs: [...sync.buffered.keys()].sort((a, b) => a - b),
         };
       },

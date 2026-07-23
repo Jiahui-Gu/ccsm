@@ -19,7 +19,7 @@
 // keep the composer as the sole keyboard entry point.
 //
 // One `Terminal` is created per adapter instance and lives for the whole
-// phone session; switching PTYs re-applies effects (`reset` + `write`) to
+// phone session; switching PTYs re-applies effects (`installSnapshot` + `write`) to
 // the same instance rather than recreating it. Terminal/addon/factory
 // construction is injectable via `MobileTerminalAdapterOptions` so unit
 // tests can supply plain fakes instead of unsafely mocking `@xterm/xterm`.
@@ -197,9 +197,9 @@ export function createMobileTerminalAdapter(
 
   function apply(effects: readonly TerminalSyncEffect[]): void {
     for (const effect of effects) {
-      if (effect.type === 'reset') {
+      if (effect.type === 'installSnapshot') {
         terminal.reset();
-        terminal.write(effect.data);
+        terminal.write(effect.snapshot);
       } else if (effect.type === 'write') {
         terminal.write(effect.data);
       }

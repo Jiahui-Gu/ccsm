@@ -10,16 +10,23 @@
 // `@xterm/headless` + `@xterm/addon-serialize` authoritative buffer, and
 // `getSyncState()` exposes a plain-object copy of the pure
 // `TerminalSyncState` fields relevant to fault-injection assertions
-// (current sid, sync phase, last applied seq, whether a snapshot request is
-// outstanding, and which sequence numbers are buffered awaiting a gap
-// recovery). This bridge NEVER exposes pairing identity/secret, encryption
+// (current sid, sync phase, geometry epoch, recovery reason, last applied
+// seq, whether a snapshot request is outstanding, and the sequence numbers
+// buffered awaiting recovery). This bridge NEVER exposes pairing identity/secret, encryption
 // keys, drafts, raw relay frames, the `RelayClient` instance, or the raw
 // zustand store — only these two derived, read-only functions.
 export type MobileTestSyncState = {
   sid: string | null;
   phase: 'idle' | 'syncing' | 'live';
+  geometryEpoch: number | null;
   lastSeq: number;
   snapshotRequested: boolean;
+  recoveryReason:
+    | 'initial'
+    | 'sequence-gap'
+    | 'future-geometry'
+    | 'buffer-overflow'
+    | null;
   bufferedSeqs: number[];
 };
 

@@ -26,7 +26,10 @@ import type { SessionNavigatorModel } from '../shared/sessionNavigator';
 
 export type TerminalRenderBatch = {
   id: number;
-  effects: Array<Extract<TerminalSyncEffect, { type: 'reset' | 'write' }>>;
+  sid: string;
+  effects: Array<
+    Extract<TerminalSyncEffect, { type: 'installSnapshot' | 'write' }>
+  >;
 };
 
 export type PendingSubmission = {
@@ -261,8 +264,8 @@ function normalizeSubmitError(error: unknown): string {
 
 function isRenderEffect(
   effect: TerminalSyncEffect,
-): effect is Extract<TerminalSyncEffect, { type: 'reset' | 'write' }> {
-  return effect.type === 'reset' || effect.type === 'write';
+): effect is Extract<TerminalSyncEffect, { type: 'installSnapshot' | 'write' }> {
+  return effect.type === 'installSnapshot' || effect.type === 'write';
 }
 
 export function createMobileRemoteStore(
@@ -477,12 +480,21 @@ export function createMobileRemoteStore(
         effect.type === 'requestSnapshot',
     );
 
-    const terminalBatch =
-      renderEffects.length === 0
-        ? state.terminalBatch
-        : state.terminalBatch
-          ? { id: nextBatchId(), effects: [...state.terminalBatch.effects, ...renderEffects] }
-          : { id: nextBatchId(), effects: renderEffects };
+    let terminalBatch = state.terminalBatch;
+    if (renderEffects.length > 0 && result.state.sid !== null) {
+      terminalBatch =
+        state.terminalBatch?.sid === result.state.sid
+          ? {
+              id: nextBatchId(),
+              sid: result.state.sid,
+              effects: [...state.terminalBatch.effects, ...renderEffects],
+            }
+          : {
+              id: nextBatchId(),
+              sid: result.state.sid,
+              effects: renderEffects,
+            };
+    }
 
     store.setState({ terminalSync: result.state, terminalBatch });
 

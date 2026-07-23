@@ -497,7 +497,13 @@ describe('PhoneShell', () => {
     const menuFocus = vi.spyOn(menuButton, 'focus');
     const menuBlur = vi.spyOn(menuButton, 'blur');
 
-    client.emitMessage({ type: 'pty.data', sid: 's1', seq: 1, chunk: 'AskUserQuestion: choose an option' });
+    client.emitMessage({
+      type: 'pty.data',
+      sid: 's1',
+      seq: 1,
+      chunk: 'AskUserQuestion: choose an option',
+      geometryEpoch: 0,
+    });
     client.emitStatus('reconnecting');
     client.emitStatus('connected');
 
@@ -514,7 +520,13 @@ describe('PhoneShell', () => {
     client.emitMessage({ type: 'sessions.navigator', version: 1, model: navigatorModel() });
     client.emitStatus('connected');
 
-    client.emitMessage({ type: 'pty.data', sid: 's1', seq: 1, chunk: 'AskUserQuestion: pick one\r\n1) yes\r\n2) no' });
+    client.emitMessage({
+      type: 'pty.data',
+      sid: 's1',
+      seq: 1,
+      chunk: 'AskUserQuestion: pick one\r\n1) yes\r\n2) no',
+      geometryEpoch: 0,
+    });
 
     // Exactly one composer textbox and no extra form/select controls appear.
     expect(screen.getAllByRole('textbox')).toHaveLength(1);
@@ -756,7 +768,13 @@ describe('PhoneShell', () => {
     client.emitMessage({ type: 'sessions.navigator', version: 1, model: navigatorModel() });
     client.emitStatus('authenticating');
     client.emitStatus('connected');
-    client.emitMessage({ type: 'pty.data', sid: 's1', seq: 1, chunk: 'more output' });
+    client.emitMessage({
+      type: 'pty.data',
+      sid: 's1',
+      seq: 1,
+      chunk: 'more output',
+      geometryEpoch: 0,
+    });
     client.emitStatus('reconnecting');
     client.emitStatus('connected');
 
@@ -817,8 +835,7 @@ describe('PhoneShell', () => {
       sid: 's1',
       seq: 1,
       snapshot: 'hello world',
-      cols: 80,
-      rows: 24,
+      geometry: { cols: 80, rows: 24, epoch: 0 },
     });
 
     const adapter = adapters[0]!;

@@ -26,12 +26,17 @@ describe('phone protocol state', () => {
       type: 'session.snapshot',
       sid: 's1',
       seq: 4,
-      data: 'screen',
-      cols: 80,
-      rows: 24,
+      snapshot: 'screen',
+      geometry: { cols: 80, rows: 24, epoch: 0 },
     });
 
-    expect(repainted.terminalEffects).toEqual([{ type: 'reset', data: 'screen' }]);
+    expect(repainted.terminalEffects).toEqual([{
+      type: 'installSnapshot',
+      sid: 's1',
+      seq: 4,
+      snapshot: 'screen',
+      geometry: { cols: 80, rows: 24, epoch: 0 },
+    }]);
     expect(repainted.commands).toEqual([]);
     expect(repainted.state.terminalSync.phase).toBe('live');
     expect(repainted.state.terminalSync.lastSeq).toBe(4);
@@ -43,9 +48,8 @@ describe('phone protocol state', () => {
       type: 'session.snapshot',
       sid: 's1',
       seq: 8,
-      data: 'full',
-      cols: 80,
-      rows: 24,
+      snapshot: 'full',
+      geometry: { cols: 80, rows: 24, epoch: 0 },
     });
 
     const duplicate = applyServerMessage(live.state, {
@@ -53,18 +57,28 @@ describe('phone protocol state', () => {
       sid: 's1',
       seq: 8,
       chunk: 'duplicate',
+      geometryEpoch: 0,
     });
     expect(duplicate.terminalEffects).toEqual([]);
     expect(duplicate.commands).toEqual([]);
 
-    const next = applyServerMessage(live.state, { type: 'pty.data', sid: 's1', seq: 9, chunk: 'new' });
-    expect(next.terminalEffects).toEqual([{ type: 'write', data: 'new' }]);
+    const next = applyServerMessage(live.state, {
+      type: 'pty.data',
+      sid: 's1',
+      seq: 9,
+      chunk: 'new',
+      geometryEpoch: 0,
+    });
+    expect(next.terminalEffects).toEqual([
+      { type: 'write', sid: 's1', seq: 9, data: 'new' },
+    ]);
 
     const duplicateLive = applyServerMessage(next.state, {
       type: 'pty.data',
       sid: 's1',
       seq: 9,
       chunk: 'duplicate-live',
+      geometryEpoch: 0,
     });
     expect(duplicateLive.terminalEffects).toEqual([]);
   });
@@ -75,9 +89,8 @@ describe('phone protocol state', () => {
       type: 'session.snapshot',
       sid: 's1',
       seq: 8,
-      data: 'full',
-      cols: 80,
-      rows: 24,
+      snapshot: 'full',
+      geometry: { cols: 80, rows: 24, epoch: 0 },
     });
 
     const gapped = applyServerMessage(live.state, {
@@ -85,8 +98,11 @@ describe('phone protocol state', () => {
       sid: 's1',
       seq: 11,
       chunk: 'eleven',
+      geometryEpoch: 0,
     });
-    expect(gapped.terminalEffects).toEqual([{ type: 'requestSnapshot', sid: 's1' }]);
+    expect(gapped.terminalEffects).toEqual([
+      { type: 'requestSnapshot', sid: 's1', reason: 'sequence-gap' },
+    ]);
     expect(gapped.commands).toEqual([{ type: 'session.snapshot', sid: 's1' }]);
     expect(gapped.state.terminalSync.phase).toBe('syncing');
 
@@ -95,6 +111,7 @@ describe('phone protocol state', () => {
       sid: 's1',
       seq: 12,
       chunk: 'twelve',
+      geometryEpoch: 0,
     });
     expect(tail.terminalEffects).toEqual([]);
     expect(tail.commands).toEqual([]);
@@ -132,11 +149,16 @@ describe('phone protocol state', () => {
         type: 'session.snapshot',
         sid: 's1',
         seq: 1,
-        data: 'first-screen',
-        cols: 80,
-        rows: 24,
+        snapshot: 'first-screen',
+        geometry: { cols: 80, rows: 24, epoch: 0 },
       }).state,
-      { type: 'pty.data', sid: 's1', seq: 4, chunk: 'gap-for-s1' },
+      {
+        type: 'pty.data',
+        sid: 's1',
+        seq: 4,
+        chunk: 'gap-for-s1',
+        geometryEpoch: 0,
+      },
     );
     expect(gapped.state.terminalSync.buffered.size).toBe(1);
 
@@ -150,6 +172,7 @@ describe('phone protocol state', () => {
       sid: 's1',
       seq: 4,
       chunk: 'stale-for-s1',
+      geometryEpoch: 0,
     });
     expect(staleChunk.terminalEffects).toEqual([]);
   });

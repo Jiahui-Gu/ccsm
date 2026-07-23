@@ -1082,12 +1082,21 @@ describe('mobileRemoteStore', () => {
       type: 'session.snapshot',
       sid: 's1',
       seq: 0,
-      data: 'screen',
-      cols: 80,
-      rows: 24,
+      snapshot: 'screen',
+      geometry: { cols: 80, rows: 24, epoch: 0 },
     });
     const batch = store.getState().terminalBatch;
-    expect(batch).toEqual({ id: expect.any(Number), effects: [{ type: 'reset', data: 'screen' }] });
+    expect(batch).toEqual({
+      id: expect.any(Number),
+      sid: 's1',
+      effects: [{
+        type: 'installSnapshot',
+        sid: 's1',
+        seq: 0,
+        snapshot: 'screen',
+        geometry: { cols: 80, rows: 24, epoch: 0 },
+      }],
+    });
 
     store.getState().consumeTerminalBatch(batch!.id - 1);
     expect(store.getState().terminalBatch).toEqual(batch);
@@ -1104,18 +1113,67 @@ describe('mobileRemoteStore', () => {
       type: 'session.snapshot',
       sid: 's1',
       seq: 0,
-      data: 'first',
-      cols: 80,
-      rows: 24,
+      snapshot: 'first',
+      geometry: { cols: 80, rows: 24, epoch: 0 },
     });
     const first = store.getState().terminalBatch!;
-    store.getState().receive({ type: 'pty.data', sid: 's1', seq: 1, chunk: 'more' });
+    store.getState().receive({
+      type: 'pty.data',
+      sid: 's1',
+      seq: 1,
+      chunk: 'more',
+      geometryEpoch: 0,
+    });
     const second = store.getState().terminalBatch!;
     expect(second.id).toBeGreaterThan(first.id);
+    expect(second.sid).toBe('s1');
     expect(second.effects).toEqual([
-      { type: 'reset', data: 'first' },
-      { type: 'write', data: 'more' },
+      {
+        type: 'installSnapshot',
+        sid: 's1',
+        seq: 0,
+        snapshot: 'first',
+        geometry: { cols: 80, rows: 24, epoch: 0 },
+      },
+      { type: 'write', sid: 's1', seq: 1, data: 'more' },
     ]);
+  });
+
+  it('replaces an unconsumed batch rather than merging effects across sessions', () => {
+    const { store } = createTestStore();
+    store.getState().selectSession('s2');
+    store.setState({
+      terminalBatch: {
+        id: 40,
+        sid: 's1',
+        effects: [{
+          type: 'write',
+          sid: 's1',
+          seq: 40,
+          data: 'must-not-leak',
+        }],
+      },
+    });
+
+    store.getState().receive({
+      type: 'session.snapshot',
+      sid: 's2',
+      seq: 0,
+      snapshot: 'screen-s2',
+      geometry: { cols: 100, rows: 30, epoch: 0 },
+    });
+
+    expect(store.getState().terminalBatch).toEqual({
+      id: expect.any(Number),
+      sid: 's2',
+      effects: [{
+        type: 'installSnapshot',
+        sid: 's2',
+        seq: 0,
+        snapshot: 'screen-s2',
+        geometry: { cols: 100, rows: 30, epoch: 0 },
+      }],
+    });
   });
 
   it('never applies the same batch id twice', () => {
@@ -1125,9 +1183,8 @@ describe('mobileRemoteStore', () => {
       type: 'session.snapshot',
       sid: 's1',
       seq: 0,
-      data: 'screen',
-      cols: 80,
-      rows: 24,
+      snapshot: 'screen',
+      geometry: { cols: 80, rows: 24, epoch: 0 },
     });
     const batch = store.getState().terminalBatch!;
     store.getState().consumeTerminalBatch(batch.id);
@@ -1145,15 +1202,80 @@ describe('mobileRemoteStore', () => {
       type: 'session.snapshot',
       sid: 's1',
       seq: 0,
-      data: 'screen',
-      cols: 80,
-      rows: 24,
+      snapshot: 'screen',
+      geometry: { cols: 80, rows: 24, epoch: 0 },
     });
     client.sent.length = 0;
-    store.getState().receive({ type: 'pty.data', sid: 's1', seq: 5, chunk: 'later' });
+    store.getState().receive({
+      type: 'pty.data',
+      sid: 's1',
+      seq: 5,
+      chunk: 'later',
+      geometryEpoch: 0,
+    });
+    store.getState().receive({
+      type: 'pty.data',
+      sid: 's1',
+      seq: 6,
+      chunk: 'still-later',
+      geometryEpoch: 0,
+    });
     expect(
       client.sent.filter((message) => message.type === 'session.snapshot' && message.sid === 's1'),
     ).toHaveLength(1);
+  });
+
+  it('publishes a barrier and its contiguous buffered tail as one atomic batch', () => {
+    const { store, client } = createTestStore();
+    store.getState().selectSession('s1');
+    store.getState().receive({
+      type: 'session.snapshot',
+      sid: 's1',
+      seq: 10,
+      snapshot: 'old-screen',
+      geometry: { cols: 80, rows: 24, epoch: 2 },
+    });
+    store.getState().consumeTerminalBatch(store.getState().terminalBatch!.id);
+    client.sent.length = 0;
+    store.getState().receive({
+      type: 'pty.data',
+      sid: 's1',
+      seq: 12,
+      chunk: 'tail-12',
+      geometryEpoch: 3,
+    });
+    store.getState().receive({
+      type: 'pty.data',
+      sid: 's1',
+      seq: 11,
+      chunk: 'tail-11',
+      geometryEpoch: 3,
+    });
+    expect(client.sent).toEqual([{ type: 'session.snapshot', sid: 's1' }]);
+
+    store.getState().receive({
+      type: 'session.snapshot',
+      sid: 's1',
+      seq: 10,
+      snapshot: 'new-screen',
+      geometry: { cols: 100, rows: 30, epoch: 3 },
+    });
+
+    expect(store.getState().terminalBatch).toEqual({
+      id: expect.any(Number),
+      sid: 's1',
+      effects: [
+        {
+          type: 'installSnapshot',
+          sid: 's1',
+          seq: 10,
+          snapshot: 'new-screen',
+          geometry: { cols: 100, rows: 30, epoch: 3 },
+        },
+        { type: 'write', sid: 's1', seq: 11, data: 'tail-11' },
+        { type: 'write', sid: 's1', seq: 12, data: 'tail-12' },
+      ],
+    });
   });
 
   // A fresh (re)connection's desktop peer never fans out live pty.data on
@@ -1181,9 +1303,8 @@ describe('mobileRemoteStore', () => {
       type: 'session.snapshot',
       sid: 's1',
       seq: 0,
-      data: 'before-outage',
-      cols: 80,
-      rows: 24,
+      snapshot: 'before-outage',
+      geometry: { cols: 80, rows: 24, epoch: 0 },
     });
     expect(store.getState().terminalSync).toMatchObject({ sid: 's1', phase: 'live', lastSeq: 0 });
     expect(store.getState().terminalBatch).not.toBeNull();
@@ -1267,12 +1388,17 @@ describe('mobileRemoteStore', () => {
       type: 'session.snapshot',
       sid: 's1',
       seq: 0,
-      data: 'via-message',
-      cols: 80,
-      rows: 24,
+      snapshot: 'via-message',
+      geometry: { cols: 80, rows: 24, epoch: 0 },
     });
     expect(store.getState().terminalBatch?.effects).toEqual([
-      { type: 'reset', data: 'via-message' },
+      {
+        type: 'installSnapshot',
+        sid: 's1',
+        seq: 0,
+        snapshot: 'via-message',
+        geometry: { cols: 80, rows: 24, epoch: 0 },
+      },
     ]);
     expect(() => store.getState().dispose()).not.toThrow();
   });

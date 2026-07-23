@@ -5,8 +5,9 @@
 //   - expose exactly `serializeTerminal()` and `getSyncState()` — nothing
 //     else (no pairing identity/secret, encryption keys, drafts, relay
 //     frames, the `RelayClient`, or the raw zustand store);
-//   - have `getSyncState()` return exactly the five JSON-safe sync fields
-//     (sid/phase/lastSeq/snapshotRequested/bufferedSeqs) — no `drafts` or
+//   - have `getSyncState()` return exactly the JSON-safe sync fields
+//     (sid/phase/geometryEpoch/lastSeq/snapshotRequested/recoveryReason/
+//     bufferedSeqs) — no `drafts` or
 //     any other store field;
 //   - reference the same long-lived adapter/store for the whole component
 //     lifetime (no remounting), and clean itself up on unmount.
@@ -138,7 +139,7 @@ describe('mobile test bridge (window.__ccsmMobileTest)', () => {
     expect(window.__ccsmMobileTest!.serializeTerminal()).toBe('exact-adapter-output');
   });
 
-  it('getSyncState() returns exactly sid/phase/lastSeq/snapshotRequested/bufferedSeqs — no drafts, no other store field', () => {
+  it('getSyncState() returns only JSON-safe synchronization fields', () => {
     setSearch('?ccsmTest=1');
     const client = createFakeClient();
     render(<PhoneShell client={client} createAdapter={createFakeAdapterFactory()} />);
@@ -146,8 +147,10 @@ describe('mobile test bridge (window.__ccsmMobileTest)', () => {
     const state = window.__ccsmMobileTest!.getSyncState();
     expect(Object.keys(state).sort()).toEqual([
       'bufferedSeqs',
+      'geometryEpoch',
       'lastSeq',
       'phase',
+      'recoveryReason',
       'sid',
       'snapshotRequested',
     ]);
@@ -170,10 +173,18 @@ describe('mobile test bridge (window.__ccsmMobileTest)', () => {
 
     // Gap: seq 5 arrives while nothing has been applied yet (lastSeq -1) —
     // not the immediate next seq, so it gets buffered rather than written.
-    client.emitMessage({ type: 'pty.data', sid: 's1', seq: 5, chunk: 'tail' });
+    client.emitMessage({
+      type: 'pty.data',
+      sid: 's1',
+      seq: 5,
+      chunk: 'tail',
+      geometryEpoch: 0,
+    });
     const gapped = window.__ccsmMobileTest!.getSyncState();
     expect(gapped.bufferedSeqs).toEqual([5]);
+    expect(gapped.geometryEpoch).toBeNull();
     expect(gapped.snapshotRequested).toBe(true);
+    expect(gapped.recoveryReason).toBe('initial');
   });
 
   it('does not expose pairing identity/secret, encryption keys, the client, or the raw store anywhere on the bridge', () => {
@@ -182,7 +193,17 @@ describe('mobile test bridge (window.__ccsmMobileTest)', () => {
     render(<PhoneShell client={client} createAdapter={createFakeAdapterFactory()} />);
 
     const bridge = window.__ccsmMobileTest as unknown as Record<string, unknown>;
-    for (const forbidden of ['pairing', 'secret', 'roomId', 'client', 'store', 'drafts', 'keys']) {
+    for (const forbidden of [
+      'pairing',
+      'secret',
+      'roomId',
+      'client',
+      'store',
+      'drafts',
+      'keys',
+      'frames',
+      'buffered',
+    ]) {
       expect(bridge).not.toHaveProperty(forbidden);
     }
   });

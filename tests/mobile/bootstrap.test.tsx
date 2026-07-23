@@ -224,5 +224,20 @@ describe('phone bootstrap', () => {
     expect(window.__ccsmMobileTest).toBeDefined();
     expect(Object.keys(window.__ccsmMobileTest!).sort()).toEqual(['getSyncState', 'serializeTerminal']);
     expect(typeof window.__ccsmMobileTest!.serializeTerminal()).toBe('string');
+    const syncState = window.__ccsmMobileTest!.getSyncState();
+    expect(syncState).toEqual({
+      sid: null,
+      phase: 'idle',
+      geometryEpoch: null,
+      lastSeq: -1,
+      snapshotRequested: false,
+      recoveryReason: null,
+      bufferedSeqs: [],
+    });
+    const serializedState = JSON.stringify(syncState);
+    expect(serializedState).not.toContain(PAIRING.roomId);
+    expect(serializedState).not.toContain(PAIRING.secret);
+    expect(serializedState).not.toContain('draft');
+    expect(serializedState).not.toContain('ciphertext');
   });
 });

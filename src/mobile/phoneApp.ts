@@ -3,7 +3,6 @@ import {
   applyTerminalSnapshot,
   beginTerminalSync,
   emptyTerminalSync,
-  type TerminalSnapshotMessage,
   type TerminalSyncEffect,
   type TerminalSyncState,
 } from './terminalSync';
@@ -80,13 +79,7 @@ export function applyServerMessage(state: PhoneState, message: MobileServerMessa
     return noopTransition({ ...state, navigator: message.model });
   }
   if (message.type === 'session.snapshot') {
-    const snapshotMessage: TerminalSnapshotMessage = {
-      sid: message.sid,
-      seq: message.seq,
-      data: message.data,
-      snapshot: message.snapshot,
-    };
-    return withTerminalSyncResult(state, applyTerminalSnapshot(state.terminalSync, snapshotMessage));
+    return withTerminalSyncResult(state, applyTerminalSnapshot(state.terminalSync, message));
   }
   if (message.type === 'pty.data') {
     return withTerminalSyncResult(state, applyTerminalChunk(state.terminalSync, message));

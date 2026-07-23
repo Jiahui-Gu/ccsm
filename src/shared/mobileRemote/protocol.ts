@@ -72,11 +72,8 @@ export type SessionSnapshotMessage = {
   type: 'session.snapshot';
   sid: string;
   seq: number;
-  snapshot?: string;
-  data?: string;
-  geometry?: TerminalGeometry;
-  cols?: number | null;
-  rows?: number | null;
+  snapshot: string;
+  geometry: TerminalGeometry;
 };
 
 export type PtyDataMessage = {
@@ -84,7 +81,7 @@ export type PtyDataMessage = {
   sid: string;
   seq: number;
   chunk: string;
-  geometryEpoch?: number;
+  geometryEpoch: number;
 };
 
 export type MobileServerMessage =
