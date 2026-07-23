@@ -2,7 +2,8 @@
 // composer/terminal-sync plan, Task 6). `window.__ccsmMobileTest` must:
 //   - be completely absent during a normal (non-test) page load;
 //   - appear only when the page URL has `?ccsmTest=1`;
-//   - expose exactly `serializeTerminal()` and `getSyncState()` — nothing
+//   - expose exactly `serializeTerminal()`, `getDimensions()`, and
+//     `getSyncState()` — nothing
 //     else (no pairing identity/secret, encryption keys, drafts, relay
 //     frames, the `RelayClient`, or the raw zustand store);
 //   - have `getSyncState()` return exactly the five JSON-safe sync fields
@@ -73,8 +74,12 @@ function navigatorModel(): SessionNavigatorModel {
   };
 }
 
-function createFakeAdapterFactory(serializeReturn = 'serialized-buffer'): MobileTerminalAdapterFactory {
-  return (_element, _options) => {
+function createFakeAdapterFactory(
+  serializeReturn = 'serialized-buffer',
+  dimensions?: { cols: number; rows: number },
+): MobileTerminalAdapterFactory {
+  return (_element, options) => {
+    if (dimensions) options.onResize(dimensions);
     const adapter: MobileTerminalAdapter = {
       apply: vi.fn(),
       fit: vi.fn(),
@@ -120,14 +125,18 @@ describe('mobile test bridge (window.__ccsmMobileTest)', () => {
     expect(window.__ccsmMobileTest).toBeUndefined();
   });
 
-  it('appears with exactly serializeTerminal + getSyncState when ?ccsmTest=1', () => {
+  it('appears with exactly serializeTerminal + getDimensions + getSyncState when ?ccsmTest=1', () => {
     setSearch('?ccsmTest=1');
     const client = createFakeClient();
     render(<PhoneShell client={client} createAdapter={createFakeAdapterFactory()} />);
 
     const bridge = window.__ccsmMobileTest;
     expect(bridge).toBeDefined();
-    expect(Object.keys(bridge!).sort()).toEqual(['getSyncState', 'serializeTerminal']);
+    expect(Object.keys(bridge!).sort()).toEqual([
+      'getDimensions',
+      'getSyncState',
+      'serializeTerminal',
+    ]);
   });
 
   it('serializeTerminal() delegates to the long-lived terminal adapter', () => {
@@ -136,6 +145,19 @@ describe('mobile test bridge (window.__ccsmMobileTest)', () => {
     render(<PhoneShell client={client} createAdapter={createFakeAdapterFactory('exact-adapter-output')} />);
 
     expect(window.__ccsmMobileTest!.serializeTerminal()).toBe('exact-adapter-output');
+  });
+
+  it('getDimensions() reports the phone xterm viewport without exposing it on the wire', () => {
+    setSearch('?ccsmTest=1');
+    const client = createFakeClient();
+    render(
+      <PhoneShell
+        client={client}
+        createAdapter={createFakeAdapterFactory('serialized-buffer', { cols: 52, rows: 42 })}
+      />,
+    );
+
+    expect(window.__ccsmMobileTest!.getDimensions()).toEqual({ cols: 52, rows: 42 });
   });
 
   it('getSyncState() returns exactly sid/phase/lastSeq/snapshotRequested/bufferedSeqs — no drafts, no other store field', () => {

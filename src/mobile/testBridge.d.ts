@@ -8,13 +8,14 @@
 // Deliberately minimal and JSON-safe: `serializeTerminal()` exposes exactly
 // what a Playwright-driven browser needs to compare against an
 // `@xterm/headless` + `@xterm/addon-serialize` authoritative buffer, and
-// `getSyncState()` exposes a plain-object copy of the pure
+// `getDimensions()` exposes the phone xterm's local viewport without granting
+// it shared PTY resize authority, and `getSyncState()` exposes a plain-object copy of the pure
 // `TerminalSyncState` fields relevant to fault-injection assertions
 // (current sid, sync phase, last applied seq, whether a snapshot request is
 // outstanding, and which sequence numbers are buffered awaiting a gap
 // recovery). This bridge NEVER exposes pairing identity/secret, encryption
 // keys, drafts, raw relay frames, the `RelayClient` instance, or the raw
-// zustand store — only these two derived, read-only functions.
+// zustand store — only these three derived, read-only functions.
 export type MobileTestSyncState = {
   sid: string | null;
   phase: 'idle' | 'syncing' | 'live';
@@ -25,6 +26,7 @@ export type MobileTestSyncState = {
 
 export type MobileTestBridge = {
   serializeTerminal(): string;
+  getDimensions(): { cols: number; rows: number } | null;
   getSyncState(): MobileTestSyncState;
 };
 

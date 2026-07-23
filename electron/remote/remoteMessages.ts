@@ -3,7 +3,6 @@ import {
   getPtySession,
   inputPtySession,
   listPtySessions,
-  resizePtySession,
   submitPtySession,
 } from '../ptyHost';
 import {
@@ -144,10 +143,9 @@ export async function handleClientMessage(client: RemotePeer, raw: string): Prom
       client.send({ type: 'error', message: 'invalid_resize' });
       return;
     }
-    // Clamp to a sane floor; a 0/1-column PTY breaks line wrapping in the CLI.
-    const cols = Math.max(2, message.cols as number);
-    const rows = Math.max(2, message.rows as number);
-    resizePtySession(message.sid, cols, rows);
+    // Compatibility with already-deployed phone clients. Phone viewports are
+    // projections of the desktop-owned terminal and must never resize the
+    // shared PTY/headless buffer.
     return;
   }
 

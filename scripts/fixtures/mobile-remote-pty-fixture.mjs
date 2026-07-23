@@ -22,8 +22,8 @@
 // ORDERING IS LOAD-BEARING. A full-screen erase (`\x1b[2J`) only blanks
 // whatever is *currently on screen* — rows that have already scrolled into
 // scrollback survive untouched, but the terminal's exact viewport height is
-// unknown until the real phone browser reports it (Task 6 Step C determines
-// dimensions from the phone's own `session.resize`), so this fixture must
+// unknown until the real phone browser reports its local projection through
+// the test bridge, so this fixture must
 // never depend on a specific row count to decide what a clear-screen does
 // or doesn't destroy. To stay dimension-independent:
 //   1. FIXTURE-START and the CR-overwrite progress marker are written FIRST

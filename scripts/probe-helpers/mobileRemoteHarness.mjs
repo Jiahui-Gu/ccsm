@@ -234,7 +234,7 @@ export function buildNavigatorModel(sessionDescriptors, options = {}) {
  *     live output until a `session.snapshot` request re-arms it. The
  *     narrowly-scoped `sendInFlightPty` bypasses this gate entirely, for
  *     the one deliberate in-flight-frame race it exists to model;
- *   - records every `session.input`, `session.resize`, and `session.snapshot`
+ *   - records every `session.input`, legacy `session.resize`, and `session.snapshot`
  *     request, and answers every `session.submit` with a correlated
  *     `session.submit.result` (default validation mirrors the real
  *     server: empty sid/requestId/draft or an unknown sid is rejected,
@@ -350,11 +350,8 @@ export function createSimulatedDesktop(relayUrl, pairing, options = {}) {
     }
     if (message.type === 'session.resize') {
       resizes.push({ sid: message.sid, cols: message.cols, rows: message.rows });
-      const session = sessions.get(message.sid);
-      if (session) {
-        session.cols = message.cols;
-        session.rows = message.rows;
-      }
+      // Match production ownership: legacy phone viewport messages are
+      // accepted for compatibility but never mutate desktop authority.
     }
   }
 
@@ -404,6 +401,13 @@ export function createSimulatedDesktop(relayUrl, pairing, options = {}) {
     setSnapshotProvider(sid, fn) {
       const session = sessions.get(sid);
       if (session) session.snapshotProvider = fn;
+    },
+    setSessionDimensions(sid, dimensions) {
+      const session = sessions.get(sid);
+      if (session) {
+        session.cols = dimensions.cols;
+        session.rows = dimensions.rows;
+      }
     },
     setNavigatorModel(model) {
       navigatorModel = model;

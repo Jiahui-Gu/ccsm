@@ -10,10 +10,10 @@
 //   2. opens the REAL built phone PWA in Playwright at
 //      `?ccsmTest=1#pair=...` (never a page-injected reducer call — every
 //      PTY byte and snapshot travels as a real encrypted wire message);
-//   3. learns the browser's own negotiated terminal dimensions from its
-//      first `session.resize`, THEN builds an authoritative
-//      `@xterm/headless` + `@xterm/addon-serialize` terminal at those exact
-//      dimensions;
+//   3. reads the browser's local projection dimensions from the test bridge,
+//      asserts no `session.resize` crossed the wire, then configures the
+//      simulated desktop authority to those dimensions so strict serialized
+//      parity remains dimension-for-dimension;
 //   4. feeds the deterministic fixture (`scripts/fixtures/
 //      mobile-remote-pty-fixture.mjs`) to that authoritative terminal in
 //      perfect order (the "ground truth PTY"), while deliberately
@@ -157,10 +157,18 @@ async function waitForExactSerialize(page, expected, timeout = 15_000) {
   return last;
 }
 
-async function waitForNewResize(desktop, sinceCount, timeout = 15_000) {
-  await waitFor('phone session.resize reflecting real browser dimensions', () => desktop.resizes.length > sinceCount, timeout);
-  const resize = desktop.resizes[desktop.resizes.length - 1];
-  return { cols: resize.cols, rows: resize.rows };
+async function waitForPhoneDimensions(page, desktop, timeout = 15_000) {
+  let dimensions = null;
+  await waitFor(
+    'phone test bridge to report local xterm dimensions',
+    async () => {
+      dimensions = await page.evaluate(() => window.__ccsmMobileTest.getDimensions());
+      return dimensions !== null;
+    },
+    timeout,
+  );
+  assert.deepEqual(desktop.resizes, [], 'phone local fit must not emit session.resize');
+  return dimensions;
 }
 
 function countOccurrences(haystack, needle) {
@@ -215,7 +223,8 @@ async function caseDuplicateAndStale(relayUrl) {
   try {
     await waitForBridge(handle.page);
     await waitFor(`${label}: initial session.snapshot request`, () => desktop.snapshotRequests.length >= 1, 15_000);
-    const dims = await waitForNewResize(desktop, 0);
+    const dims = await waitForPhoneDimensions(handle.page, desktop);
+    desktop.setSessionDimensions(SID, dims);
     const reference = createReferenceTerminal(dims.cols, dims.rows);
     let referenceSeq = 0;
     desktop.setSnapshotProvider(SID, () => ({ seq: referenceSeq, data: reference.serialize() }));
@@ -267,7 +276,8 @@ async function caseSnapshotLiveOverlap(relayUrl) {
   try {
     await waitForBridge(handle.page);
     await waitFor(`${label}: initial session.snapshot request`, () => desktop.snapshotRequests.length >= 1, 15_000);
-    const dims = await waitForNewResize(desktop, 0);
+    const dims = await waitForPhoneDimensions(handle.page, desktop);
+    desktop.setSessionDimensions(SID, dims);
     const reference = createReferenceTerminal(dims.cols, dims.rows);
     let referenceSeq = 0;
     // Every snapshot request for this session is now answered entirely
@@ -359,7 +369,8 @@ async function caseGapRecovery(relayUrl) {
   try {
     await waitForBridge(handle.page);
     await waitFor(`${label}: initial session.snapshot request`, () => desktop.snapshotRequests.length >= 1, 15_000);
-    const dims = await waitForNewResize(desktop, 0);
+    const dims = await waitForPhoneDimensions(handle.page, desktop);
+    desktop.setSessionDimensions(SID, dims);
     const reference = createReferenceTerminal(dims.cols, dims.rows);
     let referenceSeq = 0;
     desktop.setSnapshotProvider(SID, () => ({ seq: referenceSeq, data: reference.serialize() }));
@@ -400,7 +411,8 @@ async function caseDisconnectDuringBurst(relayUrl) {
   try {
     await waitForBridge(handle.page);
     await waitFor(`${label}: initial session.snapshot request`, () => desktop.snapshotRequests.length >= 1, 15_000);
-    const dims = await waitForNewResize(desktop, 0);
+    const dims = await waitForPhoneDimensions(handle.page, desktop);
+    desktop.setSessionDimensions(SID, dims);
     const reference = createReferenceTerminal(dims.cols, dims.rows);
     let referenceSeq = 0;
     desktop.setSnapshotProvider(SID, () => ({ seq: referenceSeq, data: reference.serialize() }));
@@ -477,7 +489,9 @@ async function caseSessionSwitchRace(relayUrl) {
     await waitForBridge(handle.page);
     await waitForSyncState(handle.page, `${label}: session A auto-selected`, (s) => s.sid === SID);
     await waitFor(`${label}: initial session.snapshot request for A`, () => desktop.snapshotRequests.length >= 1, 15_000);
-    const dims = await waitForNewResize(desktop, 0);
+    const dims = await waitForPhoneDimensions(handle.page, desktop);
+    desktop.setSessionDimensions(SID, dims);
+    desktop.setSessionDimensions(SID_B, dims);
 
     const referenceA = createReferenceTerminal(dims.cols, dims.rows);
     const referenceB = createReferenceTerminal(dims.cols, dims.rows);

@@ -13,6 +13,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockedPty = vi.hoisted(() => ({
+  resizePtySession: vi.fn(),
   submitPtySession: vi.fn(),
 }));
 
@@ -21,7 +22,7 @@ vi.mock('../../ptyHost', () => ({
   getPtySession: vi.fn(),
   inputPtySession: vi.fn(),
   listPtySessions: vi.fn(() => []),
-  resizePtySession: vi.fn(),
+  resizePtySession: mockedPty.resizePtySession,
   submitPtySession: mockedPty.submitPtySession,
 }));
 
@@ -38,7 +39,34 @@ function makePeer(): RemotePeer {
 }
 
 beforeEach(() => {
+  mockedPty.resizePtySession.mockReset();
   mockedPty.submitPtySession.mockReset();
+});
+
+describe('handleClientMessage — session.resize ownership', () => {
+  it('keeps desktop PTY/headless dimensions authoritative when a legacy phone reports its viewport size', async () => {
+    const peer = makePeer();
+
+    await handleClientMessage(
+      peer,
+      JSON.stringify({ type: 'session.resize', sid: 's1', cols: 42, rows: 28 }),
+    );
+
+    expect(mockedPty.resizePtySession).not.toHaveBeenCalled();
+    expect(peer.send).not.toHaveBeenCalled();
+  });
+
+  it('still rejects malformed legacy resize messages', async () => {
+    const peer = makePeer();
+
+    await handleClientMessage(
+      peer,
+      JSON.stringify({ type: 'session.resize', sid: 's1', cols: 0.5, rows: 28 }),
+    );
+
+    expect(mockedPty.resizePtySession).not.toHaveBeenCalled();
+    expect(peer.send).toHaveBeenCalledWith({ type: 'error', message: 'invalid_resize' });
+  });
 });
 
 describe('handleClientMessage — session.submit', () => {

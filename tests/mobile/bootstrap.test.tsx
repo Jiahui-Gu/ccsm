@@ -222,7 +222,11 @@ describe('phone bootstrap', () => {
     });
 
     expect(window.__ccsmMobileTest).toBeDefined();
-    expect(Object.keys(window.__ccsmMobileTest!).sort()).toEqual(['getSyncState', 'serializeTerminal']);
+    expect(Object.keys(window.__ccsmMobileTest!).sort()).toEqual([
+      'getDimensions',
+      'getSyncState',
+      'serializeTerminal',
+    ]);
     expect(typeof window.__ccsmMobileTest!.serializeTerminal()).toBe('string');
   });
 });

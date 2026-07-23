@@ -19,13 +19,13 @@
 // state without ever touching the DOM, focus, or the encrypted transport.
 // It is installed in a plain `useEffect` keyed only on the stable `store`
 // instance (never on `state`, `batch`, or any other per-render value), so
-// it neither remounts the adapter nor recreates the store, and both bridge
-// functions read `store.getState()`/`adapterRef.current` fresh on every
+// it neither remounts the adapter nor recreates the store, and all bridge
+// functions read their refs/store fresh on every
 // call rather than closing over a stale snapshot. It is removed on
 // unmount. It never exposes the pairing identity/secret, encryption keys,
 // drafts, raw relay frames, the `RelayClient`, or the raw store — only a
-// derived, read-only copy of `terminalSync` and the adapter's own
-// `serialize()`.
+// derived, read-only copy of `terminalSync`, the phone-local dimensions, and
+// the adapter's own `serialize()`.
 
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import type { StoreApi } from 'zustand/vanilla';
@@ -105,6 +105,7 @@ export function PhoneShell({
   );
   const state = useSyncExternalStore(store.subscribe, store.getState, store.getState);
   const adapterRef = useRef<MobileTerminalAdapter | null>(null);
+  const dimensionsRef = useRef<{ cols: number; rows: number } | null>(null);
 
   useEffect(() => {
     if (providedStore) return undefined; // caller owns disposal, not PhoneShell
@@ -119,6 +120,7 @@ export function PhoneShell({
     if (new URLSearchParams(location.search).get('ccsmTest') !== '1') return undefined;
     window.__ccsmMobileTest = {
       serializeTerminal: () => adapterRef.current?.serialize() ?? '',
+      getDimensions: () => dimensionsRef.current,
       getSyncState: () => {
         const sync = store.getState().terminalSync;
         return {
@@ -135,19 +137,14 @@ export function PhoneShell({
     };
   }, [store]);
 
-  // Stable identity across re-renders: reads fresh state via `store.getState()`
-  // inside the callback body instead of depending on the reactive `state`
-  // value, so `MobileTerminal` never recreates the adapter just because the
-  // store emitted an unrelated update.
+  // The phone terminal fits to its own viewport for readability. Its
+  // dimensions are local projection state; the desktop xterm exclusively
+  // owns the shared PTY/headless dimensions.
   const handleResize = useCallback(
     (dimensions: { cols: number; rows: number }) => {
-      const current = store.getState();
-      if (!current.selectedSessionId || !current.inputEnabled) return;
-      void client
-        .send({ type: 'session.resize', sid: current.selectedSessionId, cols: dimensions.cols, rows: dimensions.rows })
-        .catch(() => undefined);
+      dimensionsRef.current = dimensions;
     },
-    [client, store],
+    [],
   );
 
   const handleConsumed = useCallback(
@@ -157,10 +154,8 @@ export function PhoneShell({
     [store],
   );
 
-  // Force a resize emission at the new session's PTY, even if the terminal
-  // element's own on-screen dimensions happen not to have changed — a
-  // different session is a different backing PTY that needs its own
-  // dimensions applied, not just a cosmetic no-op.
+  // Refit the local projection on session changes without touching the
+  // desktop-owned PTY.
   useEffect(() => {
     if (!state.selectedSessionId) return;
     adapterRef.current?.fit(true);

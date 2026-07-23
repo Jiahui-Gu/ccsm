@@ -51,6 +51,8 @@ export type MobileClientMessage =
   | { type: 'session.snapshot'; sid: string }
   | { type: 'session.input'; sid: string; data: string }
   | { type: 'session.submit'; sid: string; requestId: string; draft: string }
+  // Legacy compatibility only. Desktop accepts and ignores this message so
+  // older phone clients cannot take ownership of the shared PTY dimensions.
   | { type: 'session.resize'; sid: string; cols: number; rows: number };
 
 export type SessionSubmitResult = {

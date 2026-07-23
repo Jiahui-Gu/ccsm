@@ -783,7 +783,7 @@ describe('PhoneShell', () => {
     expect(callsAfterSwitch.at(-1)).toEqual([true]);
   });
 
-  it('sends session.resize through the client for the current session on adapter resize', () => {
+  it('keeps phone viewport resize local instead of sending shared PTY dimensions', () => {
     const client = createFakeClient();
     const { factory, onResizeHandlers } = createFakeAdapterFactory();
     render(<PhoneShell client={client} createAdapter={factory} />);
@@ -791,7 +791,7 @@ describe('PhoneShell', () => {
     client.emitStatus('connected');
 
     onResizeHandlers[0]?.({ cols: 90, rows: 32 });
-    expect(client.sent.at(-1)).toEqual({ type: 'session.resize', sid: 's1', cols: 90, rows: 32 });
+    expect(client.sent.find((message) => message.type === 'session.resize')).toBeUndefined();
   });
 
   it('does not send a resize while disconnected', () => {

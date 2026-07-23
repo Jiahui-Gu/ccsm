@@ -179,11 +179,8 @@ async function assertCoreLayout(page, label, { drawerOpen = false } = {}) {
   }
 }
 
-async function currentResizeCols(desktop) {
-  return desktop.resizes.at(-1)?.cols ?? null;
-}
-async function currentResizeRows(desktop) {
-  return desktop.resizes.at(-1)?.rows ?? null;
+async function currentPhoneDimensions(page) {
+  return page.evaluate(() => window.__ccsmMobileTest?.getDimensions() ?? null);
 }
 
 async function main() {
@@ -214,27 +211,29 @@ async function main() {
   page.on('pageerror', (error) => pageErrors.push(String(error?.stack ?? error)));
 
   await installFakeVisualViewport(page);
-  await page.goto(`${relayUrl}/#pair=${pairing.roomId}.${pairing.secret}`);
+  await page.goto(`${relayUrl}/?ccsmTest=1#pair=${pairing.roomId}.${pairing.secret}`);
   await waitFor('encrypted handshake', async () =>
     (await page.locator('.phone-topbar__connection').first().textContent()) === 'Connected',
   );
   await page.locator('.phone-topbar__name').filter({ hasText: SID }).waitFor();
-  await waitFor('initial session.resize', () => desktop.resizes.length >= 1);
+  await waitFor('initial local phone fit', async () => (await currentPhoneDimensions(page)) !== null);
 
   // --- Portrait: 390x844 -------------------------------------------------
   await waitFor('portrait --app-height stabilizes', async () => (await appHeightPx(page)) === 844);
   await assertCoreLayout(page, 'portrait');
   await page.screenshot({ path: path.join(ARTIFACT_DIR, 'portrait.png') });
-  const portraitRows = await currentResizeRows(desktop);
-  const portraitCols = await currentResizeCols(desktop);
-  assert.ok(portraitRows && portraitCols, 'portrait: a session.resize must have reported real cols/rows');
+  const portrait = await currentPhoneDimensions(page);
+  assert.ok(portrait?.rows && portrait?.cols, 'portrait: phone xterm must have real local cols/rows');
+  assert.deepEqual(desktop.resizes, [], 'portrait: phone fit must not resize desktop authority');
   log('PASS portrait (390x844): layout, touch targets, terminal visible');
 
   // --- Keyboard-open: visualViewport shrinks to 390x520 ------------------
-  const resizesBeforeKeyboard = desktop.resizes.length;
   await setVisualViewportOverride(page, { height: 520, width: 390, offsetTop: 0, offsetLeft: 0 });
   await waitFor('keyboard-open --app-height stabilizes', async () => (await appHeightPx(page)) === 520);
-  await waitFor('keyboard-open triggers a fresh session.resize', () => desktop.resizes.length > resizesBeforeKeyboard);
+  await waitFor(
+    'keyboard-open refits the local phone xterm',
+    async () => (await currentPhoneDimensions(page))?.rows < portrait.rows,
+  );
   await assertCoreLayout(page, 'keyboard-open');
   // Explicit, dedicated assertion (not just "within viewport" generically):
   // the keybar and composer must both sit entirely above y=520 — i.e. never
@@ -243,33 +242,47 @@ async function main() {
   const composerRect = await rectOf(page, '.message-composer');
   assert.ok(keybarRect.bottom <= 520.5, `keyboard-open: keybar bottom (${keybarRect.bottom}) must not be covered by the keyboard (<= 520)`);
   assert.ok(composerRect.bottom <= 520.5, `keyboard-open: composer bottom (${composerRect.bottom}) must not be covered by the keyboard (<= 520)`);
-  const keyboardRows = await currentResizeRows(desktop);
-  assert.ok(keyboardRows < portraitRows, `keyboard-open: rows (${keyboardRows}) must shrink from portrait rows (${portraitRows})`);
+  const keyboard = await currentPhoneDimensions(page);
+  assert.ok(
+    keyboard.rows < portrait.rows,
+    `keyboard-open: rows (${keyboard.rows}) must shrink from portrait rows (${portrait.rows})`,
+  );
+  assert.deepEqual(desktop.resizes, [], 'keyboard-open: local refit must not resize desktop authority');
   await page.screenshot({ path: path.join(ARTIFACT_DIR, 'keyboard-open.png') });
   log('PASS keyboard-open (390x520 visualViewport): keybar/composer stay above the simulated keyboard, terminal refit smaller');
 
   // Restore — clearing the override must resize back toward the portrait
   // dimensions (proving the resize pipeline reacts to BOTH directions, not
   // just the shrink).
-  const resizesBeforeRestore = desktop.resizes.length;
   await setVisualViewportOverride(page, null);
   await waitFor('restored --app-height stabilizes', async () => (await appHeightPx(page)) === 844);
-  await waitFor('restore triggers a fresh session.resize', () => desktop.resizes.length > resizesBeforeRestore);
-  assert.equal(await currentResizeRows(desktop), portraitRows, 'restored: rows must return to the portrait value');
-  log('PASS restoring the visualViewport re-emits a resize reflecting the restored dimensions');
+  await waitFor(
+    'restored visualViewport refits the local phone xterm',
+    async () => (await currentPhoneDimensions(page))?.rows === portrait.rows,
+  );
+  assert.deepEqual(desktop.resizes, [], 'restore: local refit must not resize desktop authority');
+  log('PASS restoring the visualViewport restores local phone dimensions');
 
   // --- Landscape: 844x390 (a real Playwright viewport rotation) ----------
-  const resizesBeforeLandscape = desktop.resizes.length;
   await page.setViewportSize({ width: 844, height: 390 });
   await waitFor('landscape --app-height stabilizes', async () => (await appHeightPx(page)) === 390);
-  await waitFor('landscape triggers a fresh session.resize', () => desktop.resizes.length > resizesBeforeLandscape);
+  await waitFor(
+    'landscape refits the local phone xterm',
+    async () => (await currentPhoneDimensions(page))?.cols > portrait.cols,
+  );
   await assertCoreLayout(page, 'landscape');
-  const landscapeRows = await currentResizeRows(desktop);
-  const landscapeCols = await currentResizeCols(desktop);
-  assert.ok(landscapeCols > portraitCols, `landscape: cols (${landscapeCols}) must exceed portrait cols (${portraitCols})`);
-  assert.ok(landscapeRows < portraitRows, `landscape: rows (${landscapeRows}) must be fewer than portrait rows (${portraitRows})`);
+  const landscape = await currentPhoneDimensions(page);
+  assert.ok(
+    landscape.cols > portrait.cols,
+    `landscape: cols (${landscape.cols}) must exceed portrait cols (${portrait.cols})`,
+  );
+  assert.ok(
+    landscape.rows < portrait.rows,
+    `landscape: rows (${landscape.rows}) must be fewer than portrait rows (${portrait.rows})`,
+  );
+  assert.deepEqual(desktop.resizes, [], 'landscape: local refit must not resize desktop authority');
   await page.screenshot({ path: path.join(ARTIFACT_DIR, 'landscape.png') });
-  log('PASS landscape (844x390): layout, touch targets, resize reflects the oriented dimensions');
+  log('PASS landscape (844x390): layout, touch targets, local fit reflects the oriented dimensions');
 
   // --- Drawer: back to portrait, drawer open ------------------------------
   await page.setViewportSize({ width: 390, height: 844 });
