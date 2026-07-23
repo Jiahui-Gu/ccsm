@@ -227,6 +227,51 @@ describe('pty:input / resize / kill / get pass-through', () => {
     });
   });
 
+  it('resize resolves undefined only after the resize barrier settles', async () => {
+    const ipc = makeFakeIpc();
+    const mainWc = makeWc(77);
+    const win = makeWin(mainWc);
+    let releaseBarrier!: () => void;
+    const barrier = new Promise<{ snapshot: string; seq: number }>((resolve) => {
+      releaseBarrier = () => resolve({ snapshot: 'coordinated-snapshot', seq: 41 });
+    });
+    const deps = makeDeps({
+      getMainWindow: () => win as any,
+      resizePtySession: vi.fn(() => barrier),
+    });
+    registerPtyIpc(ipc as any, deps);
+
+    const promise = ipc.handlers.get(PTY_CHANNELS.resize)!({ sender: makeWc(77) }, 'sid', 100, 30);
+    const observed: unknown[] = [];
+    promise.then((value) => observed.push(value));
+
+    await Promise.resolve();
+    expect(observed).toEqual([]);
+
+    releaseBarrier();
+    await expect(promise).resolves.toBeUndefined();
+    expect(observed).toEqual([undefined]);
+  });
+
+  it('resize rejects when the resize barrier fails', async () => {
+    const ipc = makeFakeIpc();
+    const mainWc = makeWc(77);
+    const win = makeWin(mainWc);
+    const barrierError = new Error('resize barrier failed');
+    const deps = makeDeps({
+      getMainWindow: () => win as any,
+      resizePtySession: vi.fn(async () => {
+        throw barrierError;
+      }),
+    });
+    registerPtyIpc(ipc as any, deps);
+
+    await expect(
+      ipc.handlers.get(PTY_CHANNELS.resize)!({ sender: makeWc(77) }, 'sid', 100, 30),
+    ).rejects.toThrow('resize barrier failed');
+    expect(deps.resizePtySession).toHaveBeenCalledTimes(1);
+  });
+
   it('resize rejects a sender that is not the main window webContents', () => {
     const ipc = makeFakeIpc();
     const deps = makeDeps();

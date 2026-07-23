@@ -226,7 +226,7 @@ export function registerPtyIpc(ipcMain: IpcMain, deps: PtyIpcDeps): void {
     });
   });
 
-  ipcMain.handle(PTY_CHANNELS.resize, (event, sid: string, cols: number, rows: number) => {
+  ipcMain.handle(PTY_CHANNELS.resize, async (event, sid: string, cols: number, rows: number) => {
     const mainWindow = deps.getMainWindow();
     if (
       !mainWindow ||
@@ -242,10 +242,11 @@ export function registerPtyIpc(ipcMain: IpcMain, deps: PtyIpcDeps): void {
     // renderer asking for a 2^31 × 2^31 resize.
     if (!Number.isFinite(cols) || !Number.isFinite(rows)) return;
     if (cols < 1 || rows < 1 || cols > 1000 || rows > 1000) return;
-    return deps.resizePtySession(sid, cols, rows, {
+    await deps.resizePtySession(sid, cols, rows, {
       kind: 'visible-desktop',
       webContentsId: event.sender.id,
     });
+    return undefined;
   });
 
   // Race fix (#1277 review): killPtySession returns a Promise that resolves
