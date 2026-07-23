@@ -25,6 +25,11 @@ interface FakeEntry {
   headless: {
     resize: ReturnType<typeof vi.fn>;
     modes?: { bracketedPasteMode: boolean };
+    /** Only present on entries exercised by the `lifecycle.submit` FIFO
+     *  barrier tests below — mirrors `@xterm/headless` Terminal#write's
+     *  `(data, callback?) => void` signature closely enough to control
+     *  exactly when the barrier resolves. */
+    write?: ReturnType<typeof vi.fn>;
   };
   serialize: { serialize: () => string };
   attached: Map<number, unknown>;
@@ -804,6 +809,26 @@ describe('lifecycle.killAll', () => {
 // never a partial/typed stream. Reads `entry.headless.modes?.bracketedPasteMode`
 // so a fake entry lacking `.modes` degrades to `false`, matching the plan's
 // explicit optional-chaining contract.
+//
+// `submit` is now ASYNC: `@xterm/headless` parses writes asynchronously, so
+// a synchronous read of `modes.bracketedPasteMode` right after the PTY write
+// that toggles bracketed-paste (`CSI ?2004h`) can observe stale (pre-toggle)
+// state. `submit` first drains the headless parser's FIFO write queue with a
+// zero-length `entry.headless.write('', cb)` barrier — the same contract
+// `getBufferSnapshot` already relies on — and only reads the live mode AFTER
+// that callback fires. Unlike `getBufferSnapshot`, there is no timeout
+// fallback here: a barrier write that throws fails the submission explicitly
+// (`pty_write_failed`) rather than silently proceeding on stale state, and a
+// slow barrier is re-checked against the live `sessions` map so a
+// reload/kill that swaps or removes the Entry while the barrier is pending
+// can never replay the draft onto a stale or replacement PTY.
+
+/** Default fake `headless.write` — synchronously invokes its callback, i.e.
+ *  "the parser queue is already empty." Good enough for every test that
+ *  isn't specifically exercising the FIFO barrier's async ordering. */
+function syncHeadlessWrite(): ReturnType<typeof vi.fn> {
+  return vi.fn((_data: string, cb?: () => void) => cb?.());
+}
 
 function makeSession(opts: { bracketedPasteMode: boolean }): {
   sessions: Map<string, FakeEntry>;
@@ -811,48 +836,132 @@ function makeSession(opts: { bracketedPasteMode: boolean }): {
 } {
   const sessions = new Map<string, FakeEntry>();
   const entry = makeFakeEntry({
-    headless: { resize: vi.fn(), modes: { bracketedPasteMode: opts.bracketedPasteMode } },
+    headless: {
+      resize: vi.fn(),
+      modes: { bracketedPasteMode: opts.bracketedPasteMode },
+      write: syncHeadlessWrite(),
+    },
   });
   sessions.set('s1', entry);
   return { sessions, pty: entry.pty };
 }
 
 describe('lifecycle.submit', () => {
-  it('submits a complete bracketed multiline draft and Enter in one PTY write', () => {
+  it('submits a complete bracketed multiline draft and Enter in one PTY write', async () => {
     const { sessions, pty } = makeSession({ bracketedPasteMode: true });
 
-    expect(L.submit(sessions as any, 's1', 'one\r\ntwo')).toBe('ok');
+    await expect(L.submit(sessions as any, 's1', 'one\r\ntwo')).resolves.toBe('ok');
     expect(pty.write).toHaveBeenCalledOnce();
     expect(pty.write).toHaveBeenCalledWith('\x1b[200~one\ntwo\x1b[201~\r');
   });
 
-  it('submits a complete plain multiline draft and Enter in one PTY write when bracketed paste is off', () => {
+  it('submits a complete plain multiline draft and Enter in one PTY write when bracketed paste is off', async () => {
     const { sessions, pty } = makeSession({ bracketedPasteMode: false });
 
-    expect(L.submit(sessions as any, 's1', 'one\r\ntwo')).toBe('ok');
+    await expect(L.submit(sessions as any, 's1', 'one\r\ntwo')).resolves.toBe('ok');
     expect(pty.write).toHaveBeenCalledOnce();
     expect(pty.write).toHaveBeenCalledWith('one\ntwo\r');
   });
 
-  it('rejects empty drafts and missing sessions without writing', () => {
+  it('rejects empty drafts and missing sessions without writing', async () => {
     const { sessions, pty } = makeSession({ bracketedPasteMode: false });
-    expect(L.submit(sessions as any, 's1', '')).toBe('invalid_submission');
-    expect(L.submit(sessions as any, 'missing', 'hello')).toBe('session_not_found');
+    await expect(L.submit(sessions as any, 's1', '')).resolves.toBe('invalid_submission');
+    await expect(L.submit(sessions as any, 'missing', 'hello')).resolves.toBe('session_not_found');
     expect(pty.write).not.toHaveBeenCalled();
   });
 
-  it('returns pty_write_failed when the synchronous write throws, without swallowing via a broad catch elsewhere', () => {
+  it('returns pty_write_failed when the synchronous PTY write throws, without swallowing via a broad catch elsewhere', async () => {
     const { sessions, pty } = makeSession({ bracketedPasteMode: false });
     pty.write = vi.fn(() => { throw new Error('EPIPE'); });
-    expect(L.submit(sessions as any, 's1', 'hello')).toBe('pty_write_failed');
+    await expect(L.submit(sessions as any, 's1', 'hello')).resolves.toBe('pty_write_failed');
     expect(pty.write).toHaveBeenCalledOnce();
   });
 
-  it('treats a fake entry with no headless.modes as bracketed-paste off', () => {
+  it('treats a fake entry with no headless.modes as bracketed-paste off', async () => {
     const sessions = new Map<string, FakeEntry>();
-    const entry = makeFakeEntry({ headless: { resize: vi.fn() } });
+    const entry = makeFakeEntry({ headless: { resize: vi.fn(), write: syncHeadlessWrite() } });
     sessions.set('s1', entry);
-    expect(L.submit(sessions as any, 's1', 'hi')).toBe('ok');
+    await expect(L.submit(sessions as any, 's1', 'hi')).resolves.toBe('ok');
     expect(entry.pty.write).toHaveBeenCalledWith('hi\r');
+  });
+
+  it('drains the headless FIFO barrier before reading bracketed-paste mode, issuing no PTY write until the barrier callback fires, then exactly one combined payload+CR write', async () => {
+    const sessions = new Map<string, FakeEntry>();
+    let barrierCb: (() => void) | undefined;
+    const modes = { bracketedPasteMode: false };
+    const write = vi.fn((_data: string, cb?: () => void) => {
+      barrierCb = cb;
+    });
+    const entry = makeFakeEntry({ headless: { resize: vi.fn(), modes, write } });
+    sessions.set('s1', entry);
+
+    const pending = L.submit(sessions as any, 's1', 'hello');
+
+    // The barrier must be issued immediately (synchronously, before any
+    // PTY write) — this is the ordering the real bug violated.
+    expect(write).toHaveBeenCalledOnce();
+    expect(write).toHaveBeenCalledWith('', expect.any(Function));
+    expect(entry.pty.write).not.toHaveBeenCalled();
+
+    // Flip the mode "in the write callback" — mirroring real xterm, where
+    // `modes.bracketedPasteMode` only becomes true once the queued
+    // `CSI ?2004h` has actually been parsed, not at write() call time.
+    modes.bracketedPasteMode = true;
+    barrierCb!();
+
+    await expect(pending).resolves.toBe('ok');
+    expect(entry.pty.write).toHaveBeenCalledOnce();
+    expect(entry.pty.write).toHaveBeenCalledWith('\x1b[200~hello\x1b[201~\r');
+  });
+
+  it('returns pty_write_failed and issues no PTY write when the headless barrier write throws synchronously', async () => {
+    const sessions = new Map<string, FakeEntry>();
+    const write = vi.fn(() => {
+      throw new Error('headless disposed');
+    });
+    const entry = makeFakeEntry({ headless: { resize: vi.fn(), write } });
+    sessions.set('s1', entry);
+
+    await expect(L.submit(sessions as any, 's1', 'hello')).resolves.toBe('pty_write_failed');
+    expect(entry.pty.write).not.toHaveBeenCalled();
+  });
+
+  it('returns session_not_found and writes to no PTY when the entry is removed while the barrier is pending', async () => {
+    const sessions = new Map<string, FakeEntry>();
+    let barrierCb: (() => void) | undefined;
+    const write = vi.fn((_data: string, cb?: () => void) => {
+      barrierCb = cb;
+    });
+    const entry = makeFakeEntry({ headless: { resize: vi.fn(), write } });
+    sessions.set('s1', entry);
+
+    const pending = L.submit(sessions as any, 's1', 'hello');
+    sessions.delete('s1'); // reload/kill raced ahead of the barrier resolving
+    barrierCb!();
+
+    await expect(pending).resolves.toBe('session_not_found');
+    expect(entry.pty.write).not.toHaveBeenCalled();
+  });
+
+  it('returns session_not_found and never writes the replacement PTY when the sid is respawned while the barrier is pending', async () => {
+    const sessions = new Map<string, FakeEntry>();
+    let barrierCb: (() => void) | undefined;
+    const write = vi.fn((_data: string, cb?: () => void) => {
+      barrierCb = cb;
+    });
+    const oldEntry = makeFakeEntry({ headless: { resize: vi.fn(), write } });
+    sessions.set('s1', oldEntry);
+
+    const pending = L.submit(sessions as any, 's1', 'hello');
+    // Reload replaced the Entry under the same sid while the barrier from
+    // the OLD entry is still pending — a slow barrier must never resolve
+    // into a write on either the old or the new PTY.
+    const newEntry = makeFakeEntry({ headless: { resize: vi.fn(), write: syncHeadlessWrite() } });
+    sessions.set('s1', newEntry);
+    barrierCb!();
+
+    await expect(pending).resolves.toBe('session_not_found');
+    expect(oldEntry.pty.write).not.toHaveBeenCalled();
+    expect(newEntry.pty.write).not.toHaveBeenCalled();
   });
 });

@@ -126,7 +126,7 @@ export async function handleClientMessage(client: RemotePeer, raw: string): Prom
       return;
     }
 
-    const result = submitPtySession(message.sid as string, message.draft as string);
+    const result = await submitPtySession(message.sid as string, message.draft as string);
     if (result === 'ok') {
       client.send({ type: 'session.submit.result', sid, requestId, ok: true });
       return;

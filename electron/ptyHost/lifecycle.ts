@@ -154,23 +154,74 @@ export type PtySubmitResult =
  * treats it as a submitted line, and returns an explicit `PtySubmitResult`
  * so the caller (the `session.submit` protocol handler) can send exactly
  * one correlated success/failure response back to the phone. No broad
- * catch, no silent fallback: only the synchronous `pty.write` call is
- * guarded, and only to distinguish "PTY rejected the write" from "wrote
- * fine" — everything else propagates.
+ * catch, no silent fallback: only the two synchronous writes below are
+ * guarded (the headless FIFO barrier write and the PTY write), and only to
+ * distinguish "rejected" from "wrote fine" — everything else propagates.
  *
  * Bracketed-paste mode is read off the LIVE session's headless mirror
  * (`entry.headless.modes?.bracketedPasteMode`) at submit time, mirroring
  * desktop paste's `getBracketedPasteMode` — the phone never tracks this
  * mode itself.
+ *
+ * `submit` is ASYNC because `@xterm/headless` parses writes asynchronously:
+ * a chunk that flips bracketed-paste mode (`CSI ?2004h`/`l`) sits in the
+ * headless Terminal's internal write queue and doesn't update
+ * `modes.bracketedPasteMode` until its parser tick runs. Reading the mode
+ * synchronously (the old behaviour) could observe stale state and either
+ * bracket-wrap a payload the CLI isn't expecting yet, or send an unwrapped
+ * payload the CLI silently discards into its composer instead of
+ * submitting it (see the real-Claude submit probe report).
+ *
+ * The fix drains the headless parser's FIFO write queue FIRST with a
+ * zero-length `entry.headless.write('', cb)` barrier — xterm processes
+ * writes in FIFO order, so `cb` fires only once every previously queued
+ * chunk (including any pending mode toggle) has actually been parsed. This
+ * is the same barrier contract `getBufferSnapshot` already relies on, but
+ * with two differences appropriate to a user-acknowledged submission
+ * rather than a best-effort paint:
+ *   1. No timeout fallback — a barrier write that throws (e.g. the headless
+ *      mirror was disposed mid-call) fails the submission explicitly
+ *      (`pty_write_failed`) instead of silently proceeding on stale state.
+ *   2. After the barrier resolves, the Entry is re-checked for identity
+ *      against the live `sessions` map. A slow barrier can span an
+ *      arbitrary number of event-loop turns, during which a reload/kill
+ *      race could have removed the sid or respawned a brand-new Entry
+ *      under it; without this guard a stale submit could replay onto a
+ *      PTY the phone no longer intends to target.
+ *
+ * The prepared payload and Enter remain a SINGLE combined `pty.write` call
+ * (never split) — the probe found that splitting the payload from the
+ * trailing `\r`, even across a microtask/setImmediate boundary, is what
+ * caused real claude to insert the draft into its composer without
+ * submitting it 10/10 times.
  */
-export function submit(
+export async function submit(
   sessions: Map<string, Entry>,
   sid: string,
   draft: string,
-): PtySubmitResult {
+): Promise<PtySubmitResult> {
   if (draft.length === 0) return 'invalid_submission';
   const entry = sessions.get(sid);
   if (!entry) return 'session_not_found';
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      try {
+        entry.headless.write('', () => resolve());
+      } catch (e) {
+        reject(e);
+      }
+    });
+  } catch {
+    return 'pty_write_failed';
+  }
+
+  // Re-check identity: the barrier may have spanned a reload/kill race that
+  // removed this sid or respawned a new Entry under it. Never write to the
+  // OLD entry's PTY (it may be exiting/exited) nor to a REPLACEMENT PTY the
+  // phone never targeted — no replay, no stale submit.
+  if (sessions.get(sid) !== entry) return 'session_not_found';
+
   const payload = preparePastePayload(
     draft,
     entry.headless.modes?.bracketedPasteMode === true,

@@ -85,8 +85,10 @@ export const resizePtySession = (sid: string, cols: number, rows: number): void 
 // explicit `PtySubmitResult` — NOT a boolean — so the `session.submit`
 // protocol handler can map every outcome ('ok' | 'invalid_submission' |
 // 'session_not_found' | 'pty_write_failed') to exactly one correlated
-// `session.submit.result` response.
-export const submitPtySession = (sid: string, draft: string): L.PtySubmitResult =>
+// `session.submit.result` response. Async: `L.submit` drains the headless
+// FIFO parser barrier before reading live bracketed-paste mode (see
+// lifecycle.ts doc comment) — callers MUST await before acking the phone.
+export const submitPtySession = (sid: string, draft: string): Promise<L.PtySubmitResult> =>
   L.submit(sessions, sid, draft);
 
 export const killPtySession = (sid: string): Promise<boolean> => L.kill(sessions, sid);

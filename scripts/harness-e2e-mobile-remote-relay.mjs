@@ -152,11 +152,22 @@ async function main() {
   log('PASS terminal click never focuses the composer or the xterm helper');
 
   // --- Composer: a complete draft submission (/status) -----------------
+  // Capture the input-relay count BEFORE the Send click so we can prove the
+  // composer's acknowledged submission relies solely on `session.submit`
+  // (the ordered/awaited PTY write) and never masks/duplicates the
+  // submission with a follow-up raw `session.input` (e.g. a synthesized
+  // Enter keystroke) once the ack arrives.
+  const priorStatusInputCount = desktop.inputs.length;
   await submitViaComposer(page, '/status');
   await waitFor('acknowledged /status submission', () => desktop.submissions.some((s) => s.draft === '/status' && s.ok));
   assert.equal(desktop.submissions.filter((s) => s.draft === '/status').length, 1, '/status must be submitted exactly once');
   await waitFor('composer clears after an acknowledged submission', async () => (await composer(page).inputValue()) === '');
-  log('PASS composer Send submits a complete /status draft exactly once and clears on ack');
+  assert.equal(
+    desktop.inputs.length,
+    priorStatusInputCount,
+    'an acknowledged composer Send must never send a follow-up session.input (e.g. a masking Enter) — session.submit alone must carry the draft+Enter',
+  );
+  log('PASS composer Send submits a complete /status draft exactly once and clears on ack, with no follow-up session.input');
 
   // --- CJK composition: one complete draft, one wire submission --------
   await composeCjkDraft(page, '你好世界');
