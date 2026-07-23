@@ -83,7 +83,7 @@ export async function handleClientMessage(client: RemotePeer, raw: string): Prom
   // already protocol-validated; we only map the PTY lifecycle result to one
   // correlated `session.submit.result`.
   if (message.type === 'session.submit') {
-    const result = submitPtySession(message.sid, message.draft);
+    const result = await submitPtySession(message.sid, message.draft);
     if (result === 'ok') {
       client.send({ type: 'session.submit.result', sid: message.sid, requestId: message.requestId, ok: true });
       return;

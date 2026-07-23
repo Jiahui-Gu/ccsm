@@ -185,6 +185,76 @@ describe('handleClientMessage — session.submit', () => {
     });
   });
 
+  // `submitPtySession` is now async (Promise<PtySubmitResult>) — the ordered
+  // FIFO barrier fix lives in `lifecycle.submit`. This pins that
+  // `handleClientMessage` actually awaits it rather than firing the ack
+  // off a still-pending Promise: no `session.submit.result` may reach the
+  // phone until the ptyHost Promise settles, exactly one `submitPtySession`
+  // call happens per valid message, and a rejected-then-`pty_write_failed`
+  // resolution maps to exactly one correlated failure.
+  it('does not ack a deferred submitPtySession Promise until it resolves', async () => {
+    let resolveSubmit!: (value: 'ok') => void;
+    mockedPty.submitPtySession.mockReturnValue(
+      new Promise<'ok'>((resolve) => {
+        resolveSubmit = resolve;
+      }),
+    );
+    const peer = makePeer();
+
+    const handled = handleClientMessage(
+      peer,
+      JSON.stringify({ type: 'session.submit', sid: 's1', requestId: 'req-deferred', draft: 'hi' }),
+    );
+
+    // Give any stray microtasks a chance to run before the Promise settles.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(peer.send).not.toHaveBeenCalled();
+
+    resolveSubmit('ok');
+    await handled;
+
+    expect(mockedPty.submitPtySession).toHaveBeenCalledTimes(1);
+    expect(peer.send).toHaveBeenCalledTimes(1);
+    expect(peer.send).toHaveBeenCalledWith({
+      type: 'session.submit.result',
+      sid: 's1',
+      requestId: 'req-deferred',
+      ok: true,
+    });
+  });
+
+  it('maps a deferred pty_write_failed resolution to exactly one correlated failure', async () => {
+    let resolveSubmit!: (value: 'pty_write_failed') => void;
+    mockedPty.submitPtySession.mockReturnValue(
+      new Promise<'pty_write_failed'>((resolve) => {
+        resolveSubmit = resolve;
+      }),
+    );
+    const peer = makePeer();
+
+    const handled = handleClientMessage(
+      peer,
+      JSON.stringify({ type: 'session.submit', sid: 's1', requestId: 'req-deferred-fail', draft: 'hi' }),
+    );
+
+    await Promise.resolve();
+    expect(peer.send).not.toHaveBeenCalled();
+
+    resolveSubmit('pty_write_failed');
+    await handled;
+
+    expect(mockedPty.submitPtySession).toHaveBeenCalledTimes(1);
+    expect(peer.send).toHaveBeenCalledTimes(1);
+    expect(peer.send).toHaveBeenCalledWith({
+      type: 'session.submit.result',
+      sid: 's1',
+      requestId: 'req-deferred-fail',
+      ok: false,
+      error: 'pty_write_failed',
+    });
+  });
+
   it.each([
     { sid: '', requestId: 'r', draft: 'x' },
     { sid: 's', requestId: '', draft: 'x' },

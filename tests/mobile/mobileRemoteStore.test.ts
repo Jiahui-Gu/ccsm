@@ -127,6 +127,30 @@ describe('mobileRemoteStore', () => {
     expect(store.getState().submissionErrors.s1).toBeUndefined();
   });
 
+  // Deterministic complement to the harness-e2e-mobile-remote-relay.mjs
+  // composer/Send regression check: an acknowledged Send must carry the
+  // draft+Enter solely via `session.submit` (the ordered/awaited PTY write
+  // fixed in `lifecycle.submit`) and must never also relay a masking raw
+  // `session.input` (e.g. a synthesized Enter keystroke) to "help" the
+  // submission land.
+  it('never sends a session.input alongside an acknowledged session.submit', async () => {
+    const { store, client } = createTestStore({ requestId: () => 'req-1' });
+    connect(store, client);
+    store.getState().selectSession('s1');
+    store.getState().setDraft('/status');
+    await store.getState().submitDraft();
+    const request = client.sent.at(-1) as Extract<MobileClientMessage, { type: 'session.submit' }>;
+    store.getState().receive({
+      type: 'session.submit.result',
+      sid: 's1',
+      requestId: request.requestId,
+      ok: true,
+    });
+
+    expect(client.sent.filter((message) => message.type === 'session.submit')).toHaveLength(1);
+    expect(client.sent.filter((message) => message.type === 'session.input')).toHaveLength(0);
+  });
+
   it('preserves a rejected draft and never queues it for reconnect', async () => {
     const { store, client } = createTestStore({ sendError: new Error('connection_changed') });
     connect(store, client);
