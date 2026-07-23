@@ -343,7 +343,37 @@ git commit -m "feat(mobile): version terminal geometry protocol"
   `getCanonicalGeometry(registry, sid): TerminalGeometry | null`, and
   origin-typed `input(registry, sid, data, origin): void`.
 
-- [ ] **Step 1: Write failing lifecycle authority tests**
+- [ ] **Step 1: Inspect the resize-ownership donor and port only compatible evidence**
+
+Treat commit `b730487cffd2784719a8ea7efcce9e209cfadc47` as a
+read-only donor. Do not cherry-pick it wholesale. First prove its base and
+inspect its scope:
+
+```bash
+git merge-base --is-ancestor 96cf4114 b730487c
+git show --stat --oneline b730487cffd2784719a8ea7efcce9e209cfadc47
+git diff 96cf4114..b730487c -- electron/remote/remoteMessages.ts electron/remote/__tests__/remoteMessages.test.ts
+git diff 96cf4114..b730487c -- src/mobile/components/PhoneShell.tsx tests/mobile/PhoneShell.test.tsx electron/remote/mobilePage.ts
+git diff 96cf4114..b730487c -- scripts/harness-e2e-mobile-terminal-sync.mjs scripts/harness-e2e-mobile-remote-visual.mjs scripts/probe-helpers/mobileRemoteHarness.mjs scripts/fixtures/mobile-remote-pty-fixture.mjs
+```
+
+Selectively port only:
+
+- ownership RED tests and evidence proving phone layout cannot own PTY geometry;
+- the legacy remote handler behavior where `session.resize` cannot resize a PTY;
+- removal of outgoing `session.resize` from both the current React phone path
+  and the legacy `mobilePage` path; and
+- the real Electron reproduction methodology that observes desktop canonical
+  geometry while exercising a physical phone viewport.
+
+Reject donor hunks that resize the phone xterm to physical `FitAddon`
+dimensions, expose phone-fit `getDimensions()` as canonical geometry, call
+`setSessionDimensions(phoneDims)` in a parity harness, or weaken canonical
+terminal parity when desktop and phone physical viewport sizes differ. Adapt
+accepted tests/evidence to the Task 1 protocol and the locked interfaces in
+this plan.
+
+- [ ] **Step 2: Write failing lifecycle authority tests**
 
 ```ts
 it('retains canonical geometry and increments epoch only for a changed desktop size', () => {
@@ -375,7 +405,7 @@ Extend the existing test-local `FakeEntry` and `makeFakeEntry` with
 `geometryEpoch: number`, defaulting to `0`; reuse the existing fake PTY and
 headless resize spies.
 
-- [ ] **Step 2: Run the lifecycle and remote tests and verify RED**
+- [ ] **Step 3: Run the lifecycle and remote tests and verify RED**
 
 Run:
 
@@ -386,7 +416,7 @@ npx vitest run electron/ptyHost/__tests__/lifecycle.test.ts electron/ptyHost/__t
 Expected: FAIL because `Entry.geometryEpoch`, resize/input origin types, and
 phone resize rejection do not exist.
 
-- [ ] **Step 3: Add canonical state and origin-typed lifecycle operations**
+- [ ] **Step 4: Add canonical state and origin-typed lifecycle operations**
 
 ```ts
 export type PtyResizeOrigin = {
@@ -450,7 +480,7 @@ Initialize `geometryEpoch: 0` in `makeEntry`; keep the existing default
 top-level `cols`/`rows` only on the desktop attach result until Task 4 updates
 its renderer declaration.
 
-- [ ] **Step 4: Remove the phone resize route and validate desktop sender identity**
+- [ ] **Step 5: Remove the phone resize route and validate desktop sender identity**
 
 ```ts
 ipcMain.handle(PTY_CHANNELS.resize, (event, sid, cols, rows) => {
@@ -478,7 +508,7 @@ test that passes `{type:'session.resize', ...}` and expects no
 Update IPC tests so a matching `event.sender.id` forwards the explicit origin
 and a different WebContents id is rejected.
 
-- [ ] **Step 5: Run targeted tests and verify GREEN**
+- [ ] **Step 6: Run targeted tests and verify GREEN**
 
 Run:
 
@@ -489,7 +519,7 @@ npx vitest run electron/ptyHost/__tests__/lifecycle.test.ts electron/ptyHost/__t
 Expected: PASS; only main-window desktop IPC can mutate canonical geometry,
 and raw phone resize input cannot reach PTY lifecycle.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add electron/ptyHost/entryFactory.ts electron/ptyHost/lifecycle.ts electron/ptyHost/index.ts electron/ptyHost/ipcRegistrar.ts electron/remote/remoteMessages.ts electron/ptyHost/__tests__/lifecycle.test.ts electron/ptyHost/__tests__/ipcRegistrar.test.ts electron/remote/__tests__/remoteMessages.test.ts
@@ -2010,12 +2040,39 @@ with no exact-parity, viewport, or process-cleanup failure.
 
 - [ ] **Step 5: Run the combined physical acceptance**
 
-Integrate the separately reviewed Send fix without copying its implementation
-into this feature, build the same candidate commit, and execute all ten
-physical checklist items in one public-relay phone session. Record only
-non-sensitive results in the acceptance document. If either Send requires an
-extra Enter or the phone shrinks the desktop, mark the candidate failed and do
-not deploy, tag, or release.
+Use the exact separately reviewed Send fix
+`61af85f11fcecc45b6c2a3aa68b825acefb9b59f`. Verify its base and inspect its
+diff before integration:
+
+```bash
+git merge-base --is-ancestor 96cf4114 61af85f11fcecc45b6c2a3aa68b825acefb9b59f
+git show --stat --oneline 61af85f11fcecc45b6c2a3aa68b825acefb9b59f
+git diff 96cf4114..61af85f11fcecc45b6c2a3aa68b825acefb9b59f -- electron/ptyHost/lifecycle.ts electron/ptyHost/index.ts electron/remote/remoteMessages.ts electron/ptyHost/__tests__/lifecycle.test.ts electron/remote/__tests__/remoteMessages.test.ts scripts/harness-e2e-mobile-remote-relay.mjs tests/mobile/mobileRemoteStore.test.ts
+```
+
+Check both commit ancestry and stable patch identity before applying it:
+
+```bash
+SEND_FIX=61af85f11fcecc45b6c2a3aa68b825acefb9b59f
+git merge-base --is-ancestor "$SEND_FIX" HEAD
+SEND_PATCH_ID="$(git show --pretty=format: "$SEND_FIX" | git patch-id --stable | awk '{print $1}')"
+git log --format=%H 96cf4114..HEAD | while read commit; do git show --pretty=format: "$commit" | git patch-id --stable; done | grep -F "$SEND_PATCH_ID"
+```
+
+If either check proves the fix is present, do not cherry-pick it. Only when the
+ancestor check fails and the patch-id search has no match, deliberately run:
+
+```bash
+git cherry-pick 61af85f11fcecc45b6c2a3aa68b825acefb9b59f
+```
+
+Viewport tasks never modify the Send implementation. Build the resulting same
+candidate commit and execute all ten physical checklist items in one
+public-relay phone session. The run must prove one Send action dispatches once
+without an extra Enter and that desktop geometry remains canonical while the
+phone uses a differing physical viewport. Record only non-sensitive results in
+the acceptance document. If either invariant fails, mark the candidate failed
+and do not deploy, tag, or release.
 
 - [ ] **Step 6: Commit documentation only after evidence is complete**
 
