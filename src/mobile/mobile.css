@@ -240,7 +240,11 @@ button {
 }
 
 .mobile-terminal .xterm-viewport {
-  overflow-y: hidden !important;
+  scrollbar-width: none;
+}
+
+.mobile-terminal .xterm-viewport::-webkit-scrollbar {
+  display: none;
 }
 
 .mobile-terminal-scrollbar {

@@ -42,9 +42,15 @@ describe('mobile shell CSS', () => {
     );
   });
 
-  it('hides xterm native vertical scrollbar while keeping forced-colors rail visibility', () => {
+  it('hides xterm scrollbar chrome without disabling native vertical scroll behavior', () => {
+    expect(mobileCss).not.toMatch(
+      /\.mobile-terminal\s+\.xterm-viewport\s*\{[^}]*overflow-y:\s*hidden(?:\s*!important)?;[^}]*\}/s,
+    );
     expect(mobileCss).toMatch(
-      /\.mobile-terminal\s+\.xterm-viewport\s*\{[^}]*overflow-y:\s*hidden\s*!important;[^}]*\}/s,
+      /\.mobile-terminal\s+\.xterm-viewport\s*\{[^}]*scrollbar-width:\s*none;[^}]*\}/s,
+    );
+    expect(mobileCss).toMatch(
+      /\.mobile-terminal\s+\.xterm-viewport::\-webkit-scrollbar\s*\{[^}]*display:\s*none;[^}]*\}/s,
     );
     expect(mobileCss).toMatch(
       /@media\s*\(forced-colors:\s*active\)\s*\{[^}]*\.mobile-terminal-scrollbar\s*\{[^}]*border-left:\s*1px\s+solid\s+CanvasText;[^}]*\}[^}]*\.mobile-terminal-scrollbar__thumb\s*\{[^}]*background:\s*Highlight;[^}]*forced-color-adjust:\s*none;[^}]*\}/s,

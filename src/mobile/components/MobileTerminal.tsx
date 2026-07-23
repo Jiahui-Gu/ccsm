@@ -76,10 +76,11 @@ export function MobileTerminal({
   const viewportRef = useRef<HTMLDivElement>(null);
   const activeSidRef = useRef<string | null>(sid);
   const sidChangedRef = useRef(false);
-  const lastAppliedBatches = useRef(new Set<number>());
+  const lastAppliedBatchIdRef = useRef(0);
   const anchorBySidRef = useRef(new Map<string, TerminalViewportAnchor>());
   const desiredHorizontalOffsetRef = useRef(0);
   const [viewportState, setViewportState] = useState<TerminalViewportState>(DEFAULT_VIEWPORT_STATE);
+  const [viewportClientWidthPx, setViewportClientWidthPx] = useState(0);
   const [showLeftEdgeAffordance, setShowLeftEdgeAffordance] = useState(false);
 
   const readHorizontalOffset = (): number => {
@@ -122,6 +123,21 @@ export function MobileTerminal({
   }, [adapterRef, createAdapter]);
 
   useLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport || typeof ResizeObserver !== 'function') return;
+    let previousWidth = viewport.clientWidth;
+    setViewportClientWidthPx(previousWidth);
+    const observer = new ResizeObserver(() => {
+      const nextWidth = viewport.clientWidth;
+      if (nextWidth === previousWidth) return;
+      previousWidth = nextWidth;
+      setViewportClientWidthPx(nextWidth);
+    });
+    observer.observe(viewport);
+    return () => observer.disconnect();
+  }, []);
+
+  useLayoutEffect(() => {
     const previousSid = activeSidRef.current;
     if (previousSid === sid) return;
     sidChangedRef.current = true;
@@ -153,10 +169,10 @@ export function MobileTerminal({
       }
     }
     setShowLeftEdgeAffordance(maximumLeft > 0 || clamped > 0);
-  }, [sid, viewportState.contentWidthPx, viewportState.geometry?.cols]);
+  }, [sid, viewportClientWidthPx, viewportState.contentWidthPx, viewportState.geometry?.cols]);
 
   useLayoutEffect(() => {
-    if (!batch || !sid || batch.sid !== sid || lastAppliedBatches.current.has(batch.id)) return;
+    if (!batch || !sid || batch.sid !== sid || batch.id <= lastAppliedBatchIdRef.current) return;
     const adapter = adapterRef.current;
     if (!adapter) return;
 
@@ -174,7 +190,7 @@ export function MobileTerminal({
     const anchor = anchorBySidRef.current.get(sid) ?? bottomAnchor(canonicalCols);
     adapter.apply(batch.effects, anchor);
     sidChangedRef.current = false;
-    lastAppliedBatches.current.add(batch.id);
+    lastAppliedBatchIdRef.current = batch.id;
     anchorBySidRef.current.set(sid, anchor);
     desiredHorizontalOffsetRef.current = anchor.horizontalOffsetPx;
     onConsumed(batch.id);
