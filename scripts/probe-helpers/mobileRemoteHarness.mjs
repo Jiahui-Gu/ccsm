@@ -15,6 +15,7 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { rmSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import net from 'node:net';
 import path from 'node:path';
@@ -42,6 +43,59 @@ export { generatePairingIdentity, SESSION_NAVIGATOR_MESSAGE_VERSION };
  *  opt-in every harness supports alongside its local-Wrangler default. */
 export function configuredRelayUrl() {
   return process.env.CCSM_RELAY_URL?.replace(/\/+$/, '') || null;
+}
+
+/**
+ * Serves the current local mobile build at a configured public relay origin
+ * while leaving WebSocket traffic untouched. This lets pre-deployment gates
+ * exercise candidate assets against the real Cloudflare relay without first
+ * replacing the currently deployed phone bundle.
+ */
+export async function installConfiguredMobileAssets(page, relayUrl) {
+  const configuredDir = process.env.CCSM_MOBILE_ASSET_DIR?.trim();
+  if (!configuredDir) return false;
+
+  const assetDir = path.resolve(rootDir, configuredDir);
+  const relayOrigin = new URL(relayUrl).origin;
+  const contentTypes = new Map([
+    ['.html', 'text/html'],
+    ['.js', 'application/javascript'],
+    ['.css', 'text/css'],
+    ['.webmanifest', 'application/manifest+json'],
+  ]);
+
+  await page.route(`${relayOrigin}/**`, async (route) => {
+    const request = route.request();
+    if (!['document', 'script', 'stylesheet', 'manifest'].includes(request.resourceType())) {
+      await route.continue();
+      return;
+    }
+
+    const pathname = new URL(request.url()).pathname;
+    const fileName = pathname === '/' ? 'index.html' : pathname.slice(1);
+    if (!fileName || fileName !== path.basename(fileName)) {
+      await route.continue();
+      return;
+    }
+
+    let body;
+    try {
+      body = await readFile(path.join(assetDir, fileName));
+    } catch (error) {
+      if (error?.code === 'ENOENT') {
+        await route.continue();
+        return;
+      }
+      throw error;
+    }
+
+    await route.fulfill({
+      status: 200,
+      body,
+      contentType: contentTypes.get(path.extname(fileName)) ?? 'application/octet-stream',
+    });
+  });
+  return true;
 }
 
 export function reservePort() {

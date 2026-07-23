@@ -23,6 +23,7 @@ import {
   configuredRelayUrl,
   createSimulatedDesktop,
   generatePairingIdentity,
+  installConfiguredMobileAssets,
   reservePort,
   startWrangler,
   stopExactChild,
@@ -420,6 +421,9 @@ async function main() {
   browser = await chromium.launch({ headless: true });
   context = await browser.newContext({ viewport: { width: 390, height: 844 } });
   const page = await context.newPage();
+  if (await installConfiguredMobileAssets(page, relayUrl)) {
+    log('using current local mobile build at the configured relay origin');
+  }
   const consoleErrors = [];
   const pageErrors = [];
   page.on('console', (message) => {

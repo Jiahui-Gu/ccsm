@@ -19,6 +19,7 @@ import {
   configuredRelayUrl,
   createSimulatedDesktop,
   generatePairingIdentity,
+  installConfiguredMobileAssets,
   reservePort,
   startWrangler,
   stopExactChild,
@@ -87,6 +88,7 @@ async function openPhonePage(relayUrl, pairing) {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
   openHandles.add(context);
   const page = await context.newPage();
+  await installConfiguredMobileAssets(page, relayUrl);
   const consoleErrors = [];
   const pageErrors = [];
   page.on('console', (message) => {
