@@ -1,6 +1,11 @@
 // Batch runner for every `scripts/probe-e2e-*.mjs` AND every
-// `scripts/harness-*.mjs` themed harness. This includes the mobile remote relay
-// harness, which owns its dynamically-ported Wrangler dev process.
+// `scripts/harness-*.mjs` themed harness. This includes the mobile remote
+// harnesses (`mobile-remote-relay`, `mobile-terminal-sync`,
+// `mobile-remote-visual`, `mobile-desktop-ownership`), each of which owns
+// its own dynamically-ported Wrangler dev process (or uses
+// `CCSM_RELAY_URL` when set) — no changes needed here to pick them up,
+// they're discovered by the same `harness-*.mjs` glob as every other
+// harness below.
 //
 // - Discovers probes by glob, sorts deterministically.
 // - Runs them serially (Electron can't share its singleton lock — parallel

@@ -8,8 +8,11 @@ cases. Current harnesses: `harness-dnd.mjs`, `harness-ui.mjs`,
 `harness-ime-overflow.mjs`, `harness-scrollbar-6-scenarios.mjs`, and the
 `harness-e2e-*.mjs` family (`error-recovery`, `import-from-claude`,
 `paste-fidelity`, `persistence-resume`, `session-lifecycle`,
-`window-lifecycle-notify`, `voice-download`, `voice-input`, and
-`mobile-remote-relay`).
+`window-lifecycle-notify`, `voice-download`, `voice-input`,
+`mobile-remote-relay`, `mobile-terminal-sync`, and `mobile-remote-visual`).
+The three `mobile-*` harnesses are standalone Playwright scripts (not
+Electron) that own their own local Wrangler dev server and encrypted
+simulated desktop — see "Mobile Remote harnesses" below.
 
 `scripts/run-all-e2e.mjs` discovers harnesses by glob and runs them serially
 (Electron can't share its singleton lock — parallel launches race on
@@ -101,19 +104,176 @@ npm run probe:e2e            # build + every harness
 node scripts/harness-ui.mjs                          # one harness, all cases
 node scripts/harness-e2e-session-lifecycle.mjs       # another harness
 node scripts/harness-e2e-mobile-remote-relay.mjs     # Wrangler + phone PWA relay proof
+node scripts/harness-e2e-mobile-terminal-sync.mjs    # deterministic buffer-parity dogfood
+node scripts/harness-e2e-mobile-remote-visual.mjs    # portrait/keyboard/landscape/drawer viewport proof
 ```
 
-The Mobile Remote harness selects a free localhost port, launches and owns
-Wrangler dev, simulates the encrypted desktop and PTY protocol, and opens the
-built phone PWA in Playwright. It proves pairing, snapshot/list rendering,
-input, live output, relay interruption recovery with sequence deduplication,
-and old-secret rejection after rotation. Cleanup targets only the exact child
-PIDs created by the harness.
+All three `mobile-*` harnesses require `npm run build` first (they load
+`dist/electron/remote/*.js`, `dist/src/shared/**/*.js`, and the built
+`dist/mobile` phone PWA — not the TypeScript sources directly).
 
 `E2E_SKIP=harness-ime-overflow,harness-dnd` (or any comma list of full
 harness filename stems — `probeName()` in `run-all-e2e.mjs` uses the whole
 `harness-*` filename, not a suffix) skips entries from `run-all-e2e.mjs`
 end-to-end.
+
+## Mobile Remote harnesses
+
+Three standalone Playwright scripts (not Electron, no `harness-runner.mjs`
+case list) share `scripts/probe-helpers/mobileRemoteHarness.mjs` for local
+Wrangler lifecycle and an encrypted "simulated desktop" peer that speaks the
+same wire protocol as the real Electron desktop controller
+(`electron/remote/mobileRemoteController.ts` /
+`electron/remote/remoteMessages.ts`): it proactively sends both the legacy
+`sessions.list` and the versioned `sessions.navigator` on every handshake,
+answers `session.snapshot`/`session.resize`/`session.input`, and answers
+`session.submit` with a correlated `session.submit.result`.
+
+By default each harness reserves a free localhost port and starts/owns its
+own local Wrangler dev server for `cloudflare/wrangler.jsonc`, cleaning up
+the exact child PID and `cloudflare/.wrangler/` local state in its `finally`
+block. Set `CCSM_RELAY_URL` (e.g. to a deployed public relay Worker URL) to
+run the same proofs against that relay instead — local Wrangler is skipped
+entirely and no local relay process is started or stopped.
+
+```powershell
+# Local Wrangler (default)
+node scripts/harness-e2e-mobile-terminal-sync.mjs
+node scripts/harness-e2e-mobile-remote-relay.mjs
+node scripts/harness-e2e-mobile-remote-visual.mjs
+
+# Public relay
+$env:CCSM_RELAY_URL = 'https://your-deployed-relay.workers.dev'
+node scripts/harness-e2e-mobile-terminal-sync.mjs
+node scripts/harness-e2e-mobile-remote-relay.mjs
+```
+
+### `harness-e2e-mobile-terminal-sync.mjs` — deterministic buffer-parity dogfood
+
+Feeds the deterministic ANSI fixture (`scripts/fixtures/
+mobile-remote-pty-fixture.mjs`) through an authoritative `@xterm/headless` +
+`@xterm/addon-serialize` terminal — sized from the *real* browser's own
+negotiated `session.resize`, never hardcoded — while deliberately perturbing
+what the phone actually receives over the encrypted wire: duplicate and
+stale sequence numbers, a snapshot/live overlap (buffered chunks arriving
+while a deliberately delayed snapshot response is withheld), a clean gap
+recovery, a disconnect mid-burst with reconnect and drain, and an old-sid
+tail arriving after a session switch. Each of the five independent cases
+uses its own pairing identity, page, and state. Every case asserts exact
+equality between the real browser's `SerializeAddon.serialize()` output and
+the authoritative buffer — never a substring/plain-text comparison — plus
+exactly-once marker counts, absent stale/erased/alt-screen markers, the
+exact expected snapshot-request count, and zero browser console
+errors/pageerrors. Prints `[mobile-terminal-sync] PASS exact buffer parity
+across 5 fault cases` only once every case has passed.
+
+### `harness-e2e-mobile-remote-relay.mjs` — composer, controls, Ask, recovery, re-pair
+
+Proves the final production contract end-to-end against the real built
+phone PWA: encrypted handshake and navigator-driven session selection; a
+complete-draft composer submission (`/status`) acknowledged and cleared
+exactly once; a CJK draft sent via real `CompositionEvent`/`InputEvent`
+choreography as one complete submission; Return staying a local multiline
+newline until Send; a rejected submission preserving the draft with a
+visible `role="alert"` and succeeding on retry; a simulated
+`AskUserQuestion` answered with discrete key clicks (exact control bytes)
+plus composer free text; that clicking the terminal never focuses the
+composer or the (hardened) xterm helper, and that a user-focused composer
+survives terminal clicks and live output; a disconnect (closing the
+encrypted desktop peer only, never restarting the relay process — the relay
+Durable Object already proactively closes the phone's own socket once its
+sole desktop peer disconnects) that disables Send/keys and preserves the
+draft; that reconnecting never auto-submits and an explicit Send afterward
+works; live output with sequence-duplicate deduplication; and old-secret
+rejection after rotation. Prints `[mobile-remote-relay] PASS composer,
+controls, Ask, recovery, re-pair` only on full success.
+
+Before pairing, this harness also requires the phone HTML response to include
+the Worker's CSP with `frame-ancestors 'none'`, `X-Frame-Options: DENY`, and
+`X-Content-Type-Options: nosniff`. The scripts Vitest project separately
+requires `assets.run_worker_first: true` in `cloudflare/wrangler.jsonc`, so
+Cloudflare's asset-first routing cannot bypass the canonical Worker headers.
+
+### `harness-e2e-mobile-remote-visual.mjs` — viewport and touch-target proof
+
+Captures four screenshots under `artifacts/mobile-remote/` (regenerated
+every run, gitignored — not committed evidence):
+
+| File | Viewport | What it proves |
+| --- | --- | --- |
+| `portrait.png` | 390×844 | baseline layout, touch targets, terminal visible |
+| `keyboard-open.png` | 390×520 visual viewport (844 layout viewport) | keybar/composer stay above the simulated keyboard |
+| `landscape.png` | 844×390 (real Playwright viewport rotation) | layout adapts, resize reflects the oriented dimensions |
+| `drawer.png` | 390×844, drawer open | drawer + underlying shell both within the visible viewport |
+
+The "keyboard open" state is a deterministic `visualViewport` simulation
+only — a fake `window.visualViewport` installed via `page.addInitScript`
+before any app code runs, overridden on demand via
+`window.__ccsmSetVisualViewportOverride({ height, width, offsetTop,
+offsetLeft })`. It is never simulated by calling `focus()`/`blur()` on
+anything. The override still drives the real production code path
+(`mobileTerminalAdapter.ts`'s `visualViewport` listener, which sets the real
+`--app-height`/`--app-offset-top` CSS custom properties `mobile.css`
+consumes), so the actual CSS variables and terminal refit are genuinely
+exercised. Before every screenshot, the harness asserts the top bar,
+terminal, key bar, composer, Send button, and (when open) the drawer are
+all within the visible viewport bounds; that the terminal has a real
+non-zero visible area; that every touch target (menu button, every
+discrete key, Send, and — when the drawer is open — its close button and
+at least one navigator row) is at least 44 CSS px in both dimensions; and
+that the key bar/composer specifically stay above the simulated keyboard
+under the 520 px visual viewport. It also asserts a fresh `session.resize`
+follows every viewport transition (shrink, restore, and rotation), with
+cols/rows changing in the expected direction. Prints
+`[mobile-remote-visual] PASS portrait, keyboard, landscape, drawer` only on
+full success.
+
+## Real CLI, public relay, and physical-phone acceptance
+
+The three harnesses above remain deterministic simulated-desktop dogfood.
+Public relay and real-browser acceptance were completed separately against
+`https://ccsm-mobile-remote.jiahuigu.workers.dev` from commit
+`85fcc0be715dc3b39a12d65299d0233fb5f30d1e`. Deployment workflow run
+`29902412040` succeeded from that SHA. The security-header routing correction
+was later deployed from commit `cd3edd7a439dc37f1854f71dd78f015c24bde018`
+by relay-only workflow run `29917928116`; installer builds and release
+publication were skipped. Post-deployment checks included:
+
+- public terminal synchronization: 5/5 exact buffer-parity fault cases;
+- public composer, controls, Ask, reconnect, re-pair, and Worker security
+  headers: 13/13 interaction cases plus the header gate;
+- public visual geometry and touch targets: 5/5 cases;
+- raw HTML and current hashed JavaScript responses containing CSP with
+  `frame-ancestors 'none'`, `X-Frame-Options: DENY`, and
+  `X-Content-Type-Options: nosniff`;
+- real Electron + global Claude Code through the public relay: `/status`,
+  `AskUserQuestion` option and free-text answers, Ctrl+C during active work,
+  disconnect/reopen during active output, exact authoritative recovery, and
+  empty console, page-error, and WebSocket-error arrays.
+
+The long-output proof used repeated short real Claude responses because Claude
+collapses large Bash tool cards and treats a bracketed-pasted leading `!` as a
+normal prompt. PTY and relay sequences still converged with no transport loss.
+At 52×42, 96 unique response markers exceeded the two-screen threshold of 84.
+A fresh phone context then serialized exactly 19,521 bytes, matching the
+desktop authoritative buffer byte-for-byte with SHA-256
+`BEC1A8207E8E0D94D5BAEE6665437C4C5CC5080F94EDB77F9EA2C0F9DEB0BF15`;
+all markers appeared exactly once.
+
+An upstream Claude permission confirmation is N/A under the current desktop
+policy: `electron/ptyHost/entryFactory.ts` unconditionally appends
+`--dangerously-skip-permissions`. The acceptance run did not change that
+longstanding policy.
+
+Claude Code `2.1.141` and its global executable were healthy before and after
+the real-flow acceptance. Every launch set `DISABLE_AUTOUPDATER=1`.
+
+**Physical-device acceptance remains pending.** A real phone over the public
+internet must still cover QR pairing, drawer open/close and session switching,
+terminal selection/copy with the keyboard closed, composer-only keyboard
+entry, CJK/IME/multiline/paste input, portrait/landscape rotation, native Ask
+flows, disconnect/reconnect with an unsent draft, and re-pairing in the
+existing browser tab, with the required screenshots or recording.
 
 ## Claude CLI auto-updater isolation
 
@@ -183,7 +343,16 @@ On case failure, the harness runner persists:
 - `scripts/e2e-artifacts/<harness>/<case>/failure.png` — full-page
   screenshot for fast triage without unzipping.
 
-Successful runs leave nothing behind.
+Successful runs leave nothing behind, **except** the three Mobile Remote
+harnesses above, which always write their artifacts on success too:
+
+- `scripts/harness-e2e-mobile-remote-visual.mjs` → `artifacts/mobile-remote/
+  {portrait,keyboard-open,landscape,drawer}.png` (gitignored, regenerated
+  every run).
+- All three Mobile Remote harnesses also clean up `cloudflare/.wrangler/`
+  (local Wrangler dev state) in their `finally` block when they started
+  their own local Wrangler instance; that directory is gitignored as a
+  backstop if a run is killed before cleanup.
 
 ## Known coverage gaps (tracked, not yet closed)
 

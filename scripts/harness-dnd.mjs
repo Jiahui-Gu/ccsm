@@ -236,7 +236,19 @@ await runHarness({
   // intercepts pointer events for the next drag in hidden mode. This
   // harness therefore launches with a visible window (~2s pop). The
   // other harnesses stay hidden during run-all-e2e batches.
-  launch: { env: { CCSM_E2E_HIDDEN: '0' } },
+  //
+  // CCSM_E2E_NO_SINGLE_INSTANCE='1' is REQUIRED here (not just nice-to-have):
+  // electron/lifecycle/singleInstance.ts skips the global single-instance
+  // lock only when CCSM_E2E_HIDDEN==='1' OR CCSM_E2E_NO_SINGLE_INSTANCE==='1'.
+  // The hidden harnesses get the skip for free via HIDDEN='1'; this visible
+  // harness sets HIDDEN='0', so it would otherwise NOT skip the lock. If a
+  // separately-running installed CCSM (or a prior harness) already owns the
+  // OS-level lock, requestSingleInstanceLock() fails and acquireSingleInstance
+  // Lock() calls app.quit()+process.exit(0) — the electron process dies with
+  // exit 0 / ws code=1006 before the Playwright handshake, so electron.launch
+  // reports "Process failed to launch!". Explicitly opting out keeps this
+  // visible launch isolated from any other CCSM instance.
+  launch: { env: { CCSM_E2E_HIDDEN: '0', CCSM_E2E_NO_SINGLE_INSTANCE: '1' } },
   cases: [
     { id: 'dnd', run: caseDnd }
   ]

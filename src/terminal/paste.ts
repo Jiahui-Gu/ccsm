@@ -23,9 +23,11 @@
 import type { Terminal } from '@xterm/xterm';
 import { log } from '../shared/log';
 import { normalizeError } from '../shared/scrub';
-
-const BRACKETED_PASTE_START = '\x1b[200~';
-const BRACKETED_PASTE_END = '\x1b[201~';
+import {
+  BRACKETED_PASTE_START,
+  BRACKETED_PASTE_END,
+  preparePastePayload,
+} from '../shared/terminal/preparePastePayload';
 
 /**
  * Prepare a clipboard payload for injection into the PTY:
@@ -40,16 +42,15 @@ const BRACKETED_PASTE_END = '\x1b[201~';
  *      submits prematurely, embedded `\x03` SIGINTs claude, embedded ANSI
  *      escapes are interpreted as terminal commands.
  *
- * Pure 2-arg helper so the contract property test
- * (`tests/contract/paste-normalization.property.test.ts`) can exercise
- * the production normalizer directly.
+ * Re-exported from the browser-safe shared helper
+ * (`src/shared/terminal/preparePastePayload.ts`) so mobile-composer
+ * submission (`electron/ptyHost/lifecycle.ts`) shares the exact same
+ * normalizer. Kept on this module's surface — pure 2-arg helper — so the
+ * contract property test (`tests/contract/paste-normalization.property.test.ts`)
+ * can keep exercising the production normalizer directly without changing
+ * its import.
  */
-export function preparePastePayload(text: string, bracketed: boolean): string {
-  const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  return bracketed
-    ? `${BRACKETED_PASTE_START}${normalized}${BRACKETED_PASTE_END}`
-    : normalized;
-}
+export { preparePastePayload };
 
 /** Read the live bracketed-paste mode from a Terminal. Returns `false`
  *  when undefined (e.g. fake terminals in tests). */

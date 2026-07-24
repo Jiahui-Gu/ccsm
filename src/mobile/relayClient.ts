@@ -4,16 +4,18 @@ import {
   MOBILE_REMOTE_PROTOCOL_VERSION,
   createHandshakeProof,
   deriveSessionKeys,
+  isMobileServerMessage,
   openEnvelope,
   sealEnvelope,
   type EncryptedEnvelope,
   type HandshakeHello,
   type HandshakeProof,
+  type MobileClientMessage,
+  type MobileServerMessage,
   type PairingIdentity,
   type RandomValues,
   type SessionKeys,
 } from '../shared/mobileRemote';
-import type { MobileClientMessage, MobileServerMessage } from './phoneApp';
 
 export type PhoneConnectionStatus =
   | 'connecting'
@@ -27,6 +29,7 @@ export type PhoneConnectionStatus =
 
 export type RelayClient = {
   connect(): void;
+  retry(): void;
   send(message: MobileClientMessage): Promise<void>;
   close(): void;
   onMessage(handler: (message: MobileServerMessage) => void): () => void;
@@ -53,7 +56,7 @@ type PendingMessage = {
 
 type RecoveryMessage = Extract<
   MobileClientMessage,
-  { type: 'sessions.list' | 'session.snapshot' | 'session.resize' }
+  { type: 'sessions.list' | 'session.snapshot' }
 >;
 
 export type RelayClientOptions = {
@@ -148,6 +151,11 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let reconnectDelay = 500;
   let manuallyClosed = false;
+  // Set once an authentication/protocol failure (update_required or any
+  // authentication_failed cause) has closed the connection. Reconnecting
+  // automatically — or via retry() — would only repeat the same failure, so
+  // this client instance stays blocked until the caller re-pairs or updates.
+  let blocked = false;
   let keys: SessionKeys | null = null;
   let peerVerified = false;
   let phoneHello: HandshakeHello | null = null;
@@ -156,6 +164,12 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
   let generation = 0;
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
+  // The socket (if any) whose `onerror` has already fired for the current
+  // generation but whose `onclose` has not yet followed. retry() uses this
+  // to tell an errored-but-still-open transport apart from a healthy one, so
+  // a manual retry during the connection_error window actually opens a new
+  // connection immediately instead of silently waiting for a close event.
+  let erroredSocket: SocketLike | null = null;
 
   function emitStatus(status: PhoneConnectionStatus): void {
     for (const handler of statusHandlers) handler(status);
@@ -166,14 +180,25 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
     current.close(code, reason);
   }
 
+  // Authentication/protocol failures are terminal for this client instance:
+  // emit the failure status, mark the client blocked (so retry() and the
+  // automatic reconnect loop both stay off), and close without scheduling a
+  // reconnect attempt.
+  function failConnection(
+    current: SocketLike,
+    status: PhoneConnectionStatus,
+    code: number,
+    reason: string,
+  ): void {
+    blocked = true;
+    emitStatus(status);
+    suppressAndClose(current, code, reason);
+  }
+
   function isRecoveryMessage(
     message: MobileClientMessage,
   ): message is RecoveryMessage {
-    return (
-      message.type === 'sessions.list' ||
-      message.type === 'session.snapshot' ||
-      message.type === 'session.resize'
-    );
+    return message.type === 'sessions.list' || message.type === 'session.snapshot';
   }
 
   function recoveryKey(message: RecoveryMessage): string {
@@ -303,15 +328,13 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
     try {
       message = JSON.parse(data);
     } catch {
-      emitStatus('authentication_failed');
-      suppressAndClose(current, 4003, 'invalid_message');
+      failConnection(current, 'authentication_failed', 4003, 'invalid_message');
       return;
     }
 
     if (isHello(message)) {
       if (message.version !== MOBILE_REMOTE_PROTOCOL_VERSION) {
-        emitStatus('update_required');
-        suppressAndClose(current, 4002, 'update_required');
+        failConnection(current, 'update_required', 4002, 'update_required');
         return;
       }
       if (
@@ -319,8 +342,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
         message.connectionId !== options.pairing.roomId ||
         !phoneHello
       ) {
-        emitStatus('authentication_failed');
-        suppressAndClose(current, 4003, 'invalid_hello');
+        failConnection(current, 'authentication_failed', 4003, 'invalid_hello');
         return;
       }
       if (desktopHello?.nonce === message.nonce && keys) return;
@@ -361,8 +383,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
         !keys ||
         message.connectionId !== options.pairing.roomId
       ) {
-        emitStatus('authentication_failed');
-        suppressAndClose(current, 4003, 'unexpected_proof');
+        failConnection(current, 'authentication_failed', 4003, 'unexpected_proof');
         return;
       }
       const expected = await createHandshakeProof(
@@ -371,8 +392,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
       );
       if (!isCurrent()) return;
       if (message.proof !== expected) {
-        emitStatus('authentication_failed');
-        suppressAndClose(current, 4003, 'invalid_proof');
+        failConnection(current, 'authentication_failed', 4003, 'invalid_proof');
         return;
       }
       peerVerified = true;
@@ -386,19 +406,27 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
 
     if (isEnvelope(message)) {
       if (!peerVerified || !keys) {
-        emitStatus('authentication_failed');
-        suppressAndClose(current, 4003, 'proof_required');
+        failConnection(current, 'authentication_failed', 4003, 'proof_required');
         return;
       }
       try {
         const currentKeys = keys;
         const plaintext = await openEnvelope(currentKeys.receive, message);
         if (!isCurrent() || keys !== currentKeys) return;
-        const applicationMessage = JSON.parse(textDecoder.decode(plaintext)) as MobileServerMessage;
+        let applicationMessage: unknown;
+        try {
+          applicationMessage = JSON.parse(textDecoder.decode(plaintext));
+        } catch {
+          failConnection(current, 'authentication_failed', 4003, 'invalid_message');
+          return;
+        }
+        if (!isMobileServerMessage(applicationMessage)) {
+          failConnection(current, 'authentication_failed', 4003, 'invalid_message');
+          return;
+        }
         for (const handler of messageHandlers) handler(applicationMessage);
       } catch {
-        emitStatus('authentication_failed');
-        suppressAndClose(current, 4003, 'invalid_frame');
+        failConnection(current, 'authentication_failed', 4003, 'invalid_frame');
       }
     }
   }
@@ -408,6 +436,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
     keys = null;
     peerVerified = false;
     desktopHello = null;
+    erroredSocket = null;
     const endpoint = new URL(`/relay/${options.pairing.roomId}`, options.relayUrl);
     endpoint.protocol = endpoint.protocol === 'https:' ? 'wss:' : 'ws:';
     endpoint.searchParams.set('role', 'phone');
@@ -438,12 +467,12 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
         .then(() => handleMessage(current, currentGeneration, event.data))
         .catch(() => {
           if (socket !== current || generation !== currentGeneration) return;
-          emitStatus('authentication_failed');
-          suppressAndClose(current, 4003, 'invalid_message');
+          failConnection(current, 'authentication_failed', 4003, 'invalid_message');
         });
     };
     current.onerror = () => {
       if (socket !== current || generation !== currentGeneration) return;
+      erroredSocket = current;
       emitStatus('connection_error');
     };
     current.onclose = () => {
@@ -454,6 +483,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
       peerVerified = false;
       clearConnectionTimers();
       rejectUnsafePending();
+      if (erroredSocket === current) erroredSocket = null;
       if (manuallyClosed || suppressedSockets.has(current as object)) return;
       emitStatus('reconnecting');
       const delay = reconnectDelay;
@@ -469,6 +499,48 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
     connect() {
       if (socket || reconnectTimer || manuallyClosed) return;
       openConnection();
+    },
+    retry() {
+      // Blocked (authentication/protocol failure) and manually-closed clients
+      // never retry: repeating the same handshake would only reproduce the
+      // same failure, and an explicit close() is a deliberate full stop.
+      if (blocked || manuallyClosed) return;
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      reconnectDelay = 500;
+      if (!socket) {
+        // No live socket (already between attempts, e.g. status
+        // "reconnecting") — the existing post-close reconnect path just
+        // needs its timer cancelled and backoff reset, done above.
+        openConnection();
+        return;
+      }
+      if (socket === erroredSocket) {
+        // The transport already reported `onerror` (status connection_error)
+        // but has not closed yet. Waiting for that close would leave retry()
+        // a no-op during exactly the window it exists for, so retire the
+        // errored socket ourselves: null it and advance the generation
+        // first so its own eventual `onclose` — whenever it fires — is a
+        // stale-generation no-op and never schedules a second, duplicate
+        // automatic reconnect. Then open exactly one new connection now.
+        const errored = socket;
+        socket = null;
+        generation += 1;
+        keys = null;
+        peerVerified = false;
+        clearConnectionTimers();
+        rejectUnsafePending();
+        erroredSocket = null;
+        suppressedSockets.add(errored as object);
+        errored.close(4000, 'manual_retry');
+        openConnection();
+        return;
+      }
+      // A live socket is already connecting, authenticating, or connected —
+      // resetting the backoff is enough; the existing lifecycle continues (or
+      // its own onclose will reconnect immediately at the reset delay).
     },
     send(message) {
       return new Promise<void>((resolve, reject) => {

@@ -5,44 +5,68 @@ import * as net from 'net';
 import type { AddressInfo } from 'net';
 import type { Socket } from 'net';
 
+const loadState = vi.fn();
+const listPtySessions = vi.fn();
+function defaultNavigationState(): string {
+  return navigationState(false);
+}
+
+function navigationState(collapsed: boolean): string {
+  return JSON.stringify({
+    version: 1,
+    activeId: 'mock-sid',
+    groups: [{ id: 'g1', name: 'Work', collapsed, kind: 'normal' }],
+    sessions: [{ id: 'mock-sid', name: 'Live', cwd: '/tmp/mock', groupId: 'g1', state: 'idle' }],
+  });
+}
+
+vi.mock('../db', () => ({
+  loadState,
+}));
+
 // Mock the ptyHost surface the server consumes. We don't want a real PTY,
 // and pulling in ../ptyHost would drag node-pty + electron transitively.
 //
-// The mock exposes an extra `__emitPtyData(sid, chunk, seq)` that fans out to
-// every listener the server registered via onPtyData, letting a test drive the
-// real broadcast path. `seq` is ptyHost's authoritative per-session chunk
-// counter — the test supplies it explicitly so we can prove the server forwards
-// it verbatim rather than re-deriving its own. (vi.mock factories are hoisted,
-// so the listener array lives inside the factory; we read __emitPtyData back
-// off the mocked module.)
+// The mock exposes an ordered-publication emitter so tests drive the same
+// coordinator stream as production. `seq` and `geometryEpoch` remain owned by
+// ptyHost and must pass through verbatim.
 vi.mock('../ptyHost', () => {
-  const listeners: Array<(sid: string, chunk: string, seq: number) => void> = [];
+  const listeners: Array<(publication: Record<string, unknown>) => void> = [];
   return {
-    listPtySessions: vi.fn(() => [{ sid: 'mock-sid', cwd: '/tmp/mock', cols: 80, rows: 24 }]),
-    getPtySession: vi.fn((sid: string) =>
-      sid === 'mock-sid' ? { sid, cwd: '/tmp/mock', cols: 80, rows: 24 } : null
-    ),
+    listPtySessions,
     inputPtySession: vi.fn(),
     resizePtySession: vi.fn(),
-    getBufferSnapshot: vi.fn(async (_sid: string) => ({ snapshot: 'hello\r\n', seq: 0 })),
-    onPtyData: vi.fn((cb: (sid: string, chunk: string, seq: number) => void) => {
+    getCoordinatedSnapshot: vi.fn(async (sid: string) => ({
+      type: 'session.snapshot',
+      sid,
+      snapshot: 'hello\r\n',
+      seq: 0,
+      geometry: { cols: 80, rows: 24, epoch: 0 },
+    })),
+    onTerminalSyncPublication: vi.fn((cb: (publication: Record<string, unknown>) => void) => {
       listeners.push(cb);
       return () => {
         const i = listeners.indexOf(cb);
         if (i >= 0) listeners.splice(i, 1);
       };
     }),
-    __emitPtyData: (sid: string, chunk: string, seq: number) => {
-      for (const cb of listeners.slice()) cb(sid, chunk, seq);
+    __emitTerminalSyncPublication: (publication: Record<string, unknown>) => {
+      for (const cb of listeners.slice()) cb(publication);
     },
   };
 });
 
-async function emitPtyData(sid: string, chunk: string, seq: number): Promise<void> {
+async function emitTerminalChunk(sid: string, chunk: string, seq: number): Promise<void> {
   const mod = (await import('../ptyHost')) as unknown as {
-    __emitPtyData: (sid: string, chunk: string, seq: number) => void;
+    __emitTerminalSyncPublication: (publication: Record<string, unknown>) => void;
   };
-  mod.__emitPtyData(sid, chunk, seq);
+  mod.__emitTerminalSyncPublication({
+    type: 'chunk',
+    sid,
+    chunk,
+    seq,
+    geometryEpoch: 0,
+  });
 }
 
 type Started = {
@@ -104,11 +128,14 @@ function httpGet(port: number, path: string): Promise<{ status: number; body: st
 // avoid pulling in `ws` so this stays a zero-dep test.
 type WsHandle = {
   socket: Socket;
+  /** Resolves after auth.ok + sessions.list + sessions.navigator are buffered. */
   recvText: Promise<string[]>;
   /** Returns the next not-yet-consumed text message, waiting up to `timeoutMs`. */
   nextMessage: (timeoutMs?: number) => Promise<string>;
   closeCode: Promise<number | null>;
 };
+
+const INITIAL_CATALOG_MESSAGE_COUNT = 3;
 
 function wsConnect(port: number, path: string): Promise<WsHandle> {
   return new Promise((resolve, reject) => {
@@ -180,7 +207,7 @@ function wsConnect(port: number, path: string): Promise<WsHandle> {
       socket.on('data', (chunk) => {
         buffer = Buffer.concat([buffer, chunk]);
         tryDrain();
-        if (messages.length >= 2 && resolveText) {
+        if (messages.length >= INITIAL_CATALOG_MESSAGE_COUNT && resolveText) {
           resolveText(messages.slice());
           cursor = messages.length;
           resolveText = null;
@@ -209,11 +236,11 @@ function wsConnect(port: number, path: string): Promise<WsHandle> {
 
       resolve({ socket: socket as Socket, recvText, nextMessage, closeCode: closePromise });
       // The upgrade response may carry initial server frames in `head` —
-      // drain synchronously so auth.ok / sessions.list don't wait for a
-      // later 'data' event that may never come if the server has nothing
-      // more to send.
+      // drain synchronously so auth.ok / sessions.list / sessions.navigator
+      // don't wait for a later 'data' event that may never come if the server
+      // has nothing more to send.
       tryDrain();
-      if (messages.length >= 2 && resolveText) {
+      if (messages.length >= INITIAL_CATALOG_MESSAGE_COUNT && resolveText) {
         resolveText(messages.slice());
         cursor = messages.length;
         resolveText = null;
@@ -260,6 +287,19 @@ function encodeClientFrame(
 let active: Started | null = null;
 beforeEach(() => {
   active = null;
+  loadState.mockReset();
+  listPtySessions.mockReset();
+  loadState.mockImplementation((key: string) => (key === 'main' ? defaultNavigationState() : null));
+  listPtySessions.mockImplementation(() => [
+    {
+      sid: 'mock-sid',
+      pid: 1,
+      cwd: '/tmp/mock',
+      geometry: { cols: 80, rows: 24, epoch: 0 },
+      cols: 80,
+      rows: 24,
+    },
+  ]);
 });
 afterEach(async () => {
   if (active) {
@@ -347,14 +387,20 @@ describe('mobileRemoteServer: WebSocket token auth', () => {
     ).rejects.toThrow(/401/);
   });
 
-  it('accepts upgrade with valid token and emits auth.ok + sessions.list', async () => {
+  it('accepts upgrade with valid token and emits auth.ok + sessions.list + sessions.navigator', async () => {
     active = await startServer();
     const ws = await wsConnect(active.port, `/ws?token=${active.token}`);
     const msgs = await ws.recvText;
     const parsed = msgs.map((m) => JSON.parse(m));
     expect(parsed[0]).toEqual({ type: 'auth.ok' });
-    expect(parsed[1].type).toBe('sessions.list');
-    expect(Array.isArray(parsed[1].sessions)).toBe(true);
+    expect(parsed.slice(1, 3)).toEqual([
+      { type: 'sessions.list', sessions: expect.any(Array) },
+      {
+        type: 'sessions.navigator',
+        version: 1,
+        model: expect.objectContaining({ groups: expect.any(Array) }),
+      },
+    ]);
     ws.socket.destroy();
   });
 });
@@ -409,15 +455,114 @@ describe('mobileRemoteServer: 1 MiB message cap', () => {
 });
 
 describe('mobileRemoteServer: message handling', () => {
-  it('replies with sessions.list on demand', async () => {
+  it('replies with sessions.list and sessions.navigator on demand', async () => {
     active = await startServer();
     const ws = await wsConnect(active.port, `/ws?token=${active.token}`);
     await ws.recvText;
 
     ws.socket.write(encodeClientText(JSON.stringify({ type: 'sessions.list' })));
-    const text = await ws.nextMessage();
-    expect(JSON.parse(text).type).toBe('sessions.list');
+    expect([JSON.parse(await ws.nextMessage()), JSON.parse(await ws.nextMessage())]).toEqual([
+      { type: 'sessions.list', sessions: expect.any(Array) },
+      {
+        type: 'sessions.navigator',
+        version: 1,
+        model: expect.objectContaining({ groups: expect.any(Array) }),
+      },
+    ]);
     ws.socket.destroy();
+  });
+
+  it('rebroadcasts a fresh sessions.navigator when persisted navigation metadata changes without a PTY list change', async () => {
+    vi.useFakeTimers();
+    let ws: WsHandle | null = null;
+    try {
+      active = await startServer();
+      ws = await wsConnect(active.port, `/ws?token=${active.token}`);
+      const initial = (await ws.recvText).map((m) => JSON.parse(m));
+      expect(initial).toEqual([
+        { type: 'auth.ok' },
+        {
+          type: 'sessions.list',
+          sessions: [
+            {
+              sid: 'mock-sid',
+              cwd: '/tmp/mock',
+              geometry: { cols: 80, rows: 24, epoch: 0 },
+            },
+          ],
+        },
+        {
+          type: 'sessions.navigator',
+          version: 1,
+          model: {
+            activeSessionId: 'mock-sid',
+            groups: [
+              {
+                id: 'g1',
+                name: 'Work',
+                order: 0,
+                collapsed: false,
+                sessions: [
+                  {
+                    id: 'mock-sid',
+                    name: 'Live',
+                    cwd: '/tmp/mock',
+                    state: 'active',
+                    order: 0,
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      ]);
+
+      loadState.mockImplementation((key: string) =>
+        key === 'main' ? navigationState(true) : null,
+      );
+
+      await vi.advanceTimersByTimeAsync(2000);
+
+      expect(JSON.parse(await ws.nextMessage())).toEqual({
+        type: 'sessions.list',
+        sessions: [
+          {
+            sid: 'mock-sid',
+            cwd: '/tmp/mock',
+            geometry: { cols: 80, rows: 24, epoch: 0 },
+          },
+        ],
+      });
+      expect(JSON.parse(await ws.nextMessage())).toEqual({
+        type: 'sessions.navigator',
+        version: 1,
+        model: {
+          activeSessionId: 'mock-sid',
+          groups: [
+            {
+              id: 'g1',
+              name: 'Work',
+              order: 0,
+              collapsed: true,
+              sessions: [
+                {
+                  id: 'mock-sid',
+                  name: 'Live',
+                  cwd: '/tmp/mock',
+                  state: 'active',
+                  order: 0,
+                },
+              ],
+            },
+          ],
+        },
+      });
+    } finally {
+      ws?.socket.destroy();
+      active?.close();
+      active = null;
+      vi.useRealTimers();
+    }
   });
 
   it('responds with error on invalid JSON', async () => {
@@ -438,7 +583,7 @@ describe('mobileRemoteServer: message handling', () => {
 
     ws.socket.write(encodeClientText(JSON.stringify({ type: 'totally.unknown' })));
     const parsed = JSON.parse(await ws.nextMessage());
-    expect(parsed).toEqual({ type: 'error', message: 'unknown_type' });
+    expect(parsed).toEqual({ type: 'error', message: 'invalid_message' });
     ws.socket.destroy();
   });
 
@@ -553,7 +698,7 @@ describe('mobileRemoteServer: per-client pty.data isolation', () => {
     const b = await connectAndSubscribe(active.port, active.token, 'B');
 
     // Emit data for session 'A' only.
-    await emitPtyData('A', 'alpha-bytes', 1);
+    await emitTerminalChunk('A', 'alpha-bytes', 1);
 
     // Client A (subscribed to 'A') must receive the pty.data frame.
     const aMsg = JSON.parse(await a.nextMessage());
@@ -572,7 +717,7 @@ describe('mobileRemoteServer: per-client pty.data isolation', () => {
     const ws = await wsConnect(active.port, `/ws?token=${active.token}`);
     await ws.recvText; // auth.ok + sessions.list
 
-    await emitPtyData('A', 'leak?', 1);
+    await emitTerminalChunk('A', 'leak?', 1);
 
     // No pty.data should arrive for an unsubscribed client.
     await expect(ws.nextMessage(200)).rejects.toThrow(/timed out/);
@@ -584,15 +729,15 @@ describe('mobileRemoteServer: per-client pty.data isolation', () => {
     const a = await connectAndSubscribe(active.port, active.token, 'A');
 
     // ptyHost owns the authoritative per-session chunk seq (the same counter
-    // getBufferSnapshot returns). The server must forward whatever seq ptyHost
+    // the coordinated snapshot returns). The server must forward whatever seq ptyHost
     // emits — NOT maintain its own counter starting at 0. A re-counting server
     // would relabel these as 1, 2; here we hand it 501 then 502 and require
     // those exact values to pass through. Regression guard: the old seqBySid
     // counter diverged from ptyHost and froze the mobile terminal (every live
     // chunk was dropped as seq <= snapSeq after a non-empty snapshot).
-    await emitPtyData('A', 'first', 501);
+    await emitTerminalChunk('A', 'first', 501);
     const m1 = JSON.parse(await a.nextMessage());
-    await emitPtyData('A', 'second', 502);
+    await emitTerminalChunk('A', 'second', 502);
     const m2 = JSON.parse(await a.nextMessage());
 
     expect(m1).toMatchObject({ type: 'pty.data', sid: 'A', chunk: 'first', seq: 501 });

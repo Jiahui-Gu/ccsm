@@ -11,7 +11,13 @@ import path from 'node:path';
 import { app, clipboard, type BrowserWindow, type IpcMain } from 'electron';
 import { resolveClaude } from './claudeResolver';
 import { sessionWatcher } from '../sessionWatcher';
-import type { AttachResult, BufferSnapshot, PtySessionInfo } from './lifecycle';
+import type {
+  AttachResult,
+  BufferSnapshot,
+  PtyInputOrigin,
+  PtyResizeOrigin,
+  PtySessionInfo,
+} from './lifecycle';
 import { PTY_CHANNELS, SESSION_CHANNELS } from '../shared/ipcChannels';
 
 /**
@@ -48,6 +54,7 @@ interface SessionEntryHandle {
   serialize: { serialize: () => string };
   cols: number;
   rows: number;
+  geometryEpoch: number;
   attached: Map<number, Electron.WebContents>;
 }
 
@@ -70,8 +77,13 @@ export interface PtyIpcDeps {
       forkSourceSid?: string;
     },
   ) => PtySessionInfo;
-  inputPtySession: (sid: string, data: string) => void;
-  resizePtySession: (sid: string, cols: number, rows: number) => void;
+  inputPtySession: (sid: string, data: string, origin: PtyInputOrigin) => void;
+  resizePtySession: (
+    sid: string,
+    cols: number,
+    rows: number,
+    origin: PtyResizeOrigin,
+  ) => unknown;
   killPtySession: (sid: string) => Promise<boolean>;
   getPtySession: (sid: string) => PtySessionInfo | null;
   /** L4 PR-B (#865): async chunked snapshot + capture seq. Routed through
@@ -191,6 +203,7 @@ export function registerPtyIpc(ipcMain: IpcMain, deps: PtyIpcDeps): void {
     return {
       cols: entry.cols,
       rows: entry.rows,
+      geometry: { cols: entry.cols, rows: entry.rows, epoch: entry.geometryEpoch },
       pid: entry.pty.pid,
     } satisfies AttachResult;
   });
@@ -201,16 +214,27 @@ export function registerPtyIpc(ipcMain: IpcMain, deps: PtyIpcDeps): void {
     entry.attached.delete(event.sender.id);
   });
 
-  ipcMain.handle(PTY_CHANNELS.input, (_event, sid: string, data: string) => {
+  ipcMain.handle(PTY_CHANNELS.input, (event, sid: string, data: string) => {
     // Defense-in-depth: TypeScript signature is advisory across the IPC
     // boundary — a compromised renderer (or a buggy preload bridge) can
     // hand us anything. node-pty's `write` truncates non-strings silently
     // or throws inside the addon, neither of which we want.
     if (typeof data !== 'string') return;
-    deps.inputPtySession(sid, data);
+    deps.inputPtySession(sid, data, {
+      kind: 'desktop-renderer',
+      webContentsId: event.sender.id,
+    });
   });
 
-  ipcMain.handle(PTY_CHANNELS.resize, (_event, sid: string, cols: number, rows: number) => {
+  ipcMain.handle(PTY_CHANNELS.resize, async (event, sid: string, cols: number, rows: number) => {
+    const mainWindow = deps.getMainWindow();
+    if (
+      !mainWindow ||
+      mainWindow.isDestroyed() ||
+      event.sender.id !== mainWindow.webContents.id
+    ) {
+      return;
+    }
     // Same rationale as `pty:input` — guard the numeric channels too.
     // `Number.isFinite` rejects NaN / Infinity / -Infinity; `>= 1` rejects
     // zero and negatives. xterm's typical max is ~600 cols × ~600 rows on a
@@ -218,7 +242,11 @@ export function registerPtyIpc(ipcMain: IpcMain, deps: PtyIpcDeps): void {
     // renderer asking for a 2^31 × 2^31 resize.
     if (!Number.isFinite(cols) || !Number.isFinite(rows)) return;
     if (cols < 1 || rows < 1 || cols > 1000 || rows > 1000) return;
-    deps.resizePtySession(sid, cols, rows);
+    await deps.resizePtySession(sid, cols, rows, {
+      kind: 'visible-desktop',
+      webContentsId: event.sender.id,
+    });
+    return undefined;
   });
 
   // Race fix (#1277 review): killPtySession returns a Promise that resolves

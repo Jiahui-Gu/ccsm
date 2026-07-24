@@ -1,107 +1,101 @@
-export type SessionListEntry = {
-  sid: string;
-  cwd: string;
-  cols: number;
-  rows: number;
-};
+import {
+  applyTerminalChunk,
+  applyTerminalSnapshot,
+  beginTerminalSync,
+  emptyTerminalSync,
+  type TerminalSyncEffect,
+  type TerminalSyncState,
+} from './terminalSync';
 
-export type MobileClientMessage =
-  | { type: 'sessions.list' }
-  | { type: 'session.snapshot'; sid: string }
-  | { type: 'session.input'; sid: string; data: string }
-  | { type: 'session.resize'; sid: string; cols: number; rows: number };
+import type {
+  MobileClientMessage,
+  MobileServerMessage,
+  SessionListEntry,
+} from '../shared/mobileRemote';
+import type { SessionNavigatorModel } from '../shared/sessionNavigator';
 
-export type MobileServerMessage =
-  | { type: 'sessions.list'; sessions: SessionListEntry[] }
-  | {
-      type: 'session.snapshot';
-      sid: string;
-      seq: number;
-      data?: string;
-      snapshot?: string;
-      cols: number | null;
-      rows: number | null;
-    }
-  | { type: 'pty.data'; sid: string; seq: number; chunk: string }
-  | { type: 'error'; message: string };
+export type { MobileClientMessage, MobileServerMessage, SessionListEntry } from '../shared/mobileRemote';
+export type { TerminalSyncEffect } from './terminalSync';
 
 export type PhoneState = {
   sessions: SessionListEntry[];
+  navigator: SessionNavigatorModel | null;
   activeSid: string;
-  snapshotSequence: number;
-  terminalReset: boolean;
-  terminalWrites: string[];
+  terminalSync: TerminalSyncState;
+};
+
+// A single reducer step: the next state, the terminal effects (reset/write/
+// requestSnapshot) that must be applied to the read-only xterm display, and
+// any client commands (e.g. a `session.snapshot` request) that must be sent
+// back over the relay as a result.
+export type PhoneTransition = {
+  state: PhoneState;
+  terminalEffects: TerminalSyncEffect[];
+  commands: MobileClientMessage[];
 };
 
 export function emptyPhoneState(): PhoneState {
   return {
     sessions: [],
+    navigator: null,
     activeSid: '',
-    snapshotSequence: -1,
-    terminalReset: false,
-    terminalWrites: [],
+    terminalSync: emptyTerminalSync(),
   };
 }
 
-export function applySnapshot(
-  state: PhoneState,
-  snapshot: { sid: string; seq: number; data?: string; snapshot?: string },
-): PhoneState {
-  if (snapshot.sid !== state.activeSid && state.activeSid !== '') return state;
-  return {
-    ...state,
-    activeSid: snapshot.sid,
-    snapshotSequence: Number.isInteger(snapshot.seq) ? snapshot.seq : -1,
-    terminalReset: true,
-    terminalWrites: [snapshot.data ?? snapshot.snapshot ?? ''],
-  };
+function noopTransition(state: PhoneState): PhoneTransition {
+  return { state, terminalEffects: [], commands: [] };
 }
 
-export function applyPtyData(
-  state: PhoneState,
-  message: { sid: string; seq: number; chunk: string },
-): PhoneState {
-  if (
-    message.sid !== state.activeSid ||
-    (Number.isInteger(message.seq) && message.seq <= state.snapshotSequence)
-  ) {
-    return state;
+// Any `requestSnapshot` terminal effect must also become an outgoing
+// `session.snapshot` client command so the desktop actually resends the
+// authoritative screen; a gap must never be papered over locally.
+function commandsForEffects(effects: TerminalSyncEffect[]): MobileClientMessage[] {
+  const commands: MobileClientMessage[] = [];
+  for (const effect of effects) {
+    if (effect.type === 'requestSnapshot') {
+      commands.push({ type: 'session.snapshot', sid: effect.sid });
+    }
   }
+  return commands;
+}
+
+function withTerminalSyncResult(
+  state: PhoneState,
+  result: { state: TerminalSyncState; effects: TerminalSyncEffect[] },
+): PhoneTransition {
   return {
-    ...state,
-    snapshotSequence: Number.isInteger(message.seq) ? message.seq : state.snapshotSequence,
-    terminalReset: false,
-    terminalWrites: [message.chunk],
+    state: { ...state, terminalSync: result.state },
+    terminalEffects: result.effects,
+    commands: commandsForEffects(result.effects),
   };
 }
 
-export function applyServerMessage(state: PhoneState, message: MobileServerMessage): PhoneState {
+export function applyServerMessage(state: PhoneState, message: MobileServerMessage): PhoneTransition {
   if (message.type === 'sessions.list') {
-    return {
-      ...state,
-      sessions: message.sessions,
-      terminalReset: false,
-      terminalWrites: [],
-    };
+    return noopTransition({ ...state, sessions: message.sessions });
   }
-  if (message.type === 'session.snapshot') return applySnapshot(state, message);
-  if (message.type === 'pty.data') return applyPtyData(state, message);
-  return state;
+  if (message.type === 'sessions.navigator') {
+    return noopTransition({ ...state, navigator: message.model });
+  }
+  if (message.type === 'session.snapshot') {
+    return withTerminalSyncResult(state, applyTerminalSnapshot(state.terminalSync, message));
+  }
+  if (message.type === 'pty.data') {
+    return withTerminalSyncResult(state, applyTerminalChunk(state.terminalSync, message));
+  }
+  return noopTransition(state);
 }
 
-export function selectSession(
-  state: PhoneState,
-  sid: string,
-): { state: PhoneState; message: MobileClientMessage } {
+export function selectSession(state: PhoneState, sid: string): PhoneTransition {
   return {
     state: {
       ...state,
       activeSid: sid,
-      snapshotSequence: -1,
-      terminalReset: true,
-      terminalWrites: [],
+      terminalSync: beginTerminalSync(sid),
     },
-    message: { type: 'session.snapshot', sid },
+    terminalEffects: [],
+    commands: [{ type: 'session.snapshot', sid }],
   };
 }
 

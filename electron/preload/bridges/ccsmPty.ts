@@ -20,7 +20,18 @@ type PtyExitPayload = {
   code: number | null;
   signal: number | null;
 };
-type BufferSnapshotPayload = { snapshot: string; seq: number };
+type TerminalGeometryPayload = { cols: number; rows: number; epoch: number };
+type AttachPayload = {
+  cols: number;
+  rows: number;
+  geometry: TerminalGeometryPayload;
+  pid: number;
+};
+type BufferSnapshotPayload = {
+  snapshot: string;
+  seq: number;
+  geometry: TerminalGeometryPayload;
+};
 
 type CheckClaudeAvailableResult =
   | { available: true; path: string }
@@ -35,7 +46,8 @@ const ccsmPty = {
     forkSourceSid === undefined
       ? ipcRenderer.invoke(PTY_CHANNELS.spawn, sid, cwd)
       : ipcRenderer.invoke(PTY_CHANNELS.spawn, sid, cwd, forkSourceSid),
-  attach: (sid: string): Promise<unknown> => ipcRenderer.invoke(PTY_CHANNELS.attach, sid),
+  attach: (sid: string): Promise<AttachPayload | null> =>
+    ipcRenderer.invoke(PTY_CHANNELS.attach, sid),
   detach: (sid: string): Promise<void> => ipcRenderer.invoke(PTY_CHANNELS.detach, sid),
   input: (sid: string, data: string): Promise<void> =>
     ipcRenderer.invoke(PTY_CHANNELS.input, sid, data),

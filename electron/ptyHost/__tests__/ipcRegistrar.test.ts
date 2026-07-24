@@ -100,12 +100,23 @@ function makeDeps(over: Partial<PtyIpcDeps> = {}): PtyIpcDeps {
     getMainWindow: () => null,
     getEntry: () => undefined,
     listPtySessions: vi.fn(() => []),
-    spawnPtySession: vi.fn(() => ({ sid: 's', pid: 1, cols: 80, rows: 24, cwd: '/' })),
+    spawnPtySession: vi.fn(() => ({
+      sid: 's',
+      pid: 1,
+      geometry: { cols: 80, rows: 24, epoch: 0 },
+      cols: 80,
+      rows: 24,
+      cwd: '/',
+    })),
     inputPtySession: vi.fn(),
     resizePtySession: vi.fn(),
     killPtySession: vi.fn(async () => true),
     getPtySession: vi.fn(() => null),
-    getBufferSnapshot: vi.fn(async () => ({ snapshot: '', seq: 0 })),
+    getBufferSnapshot: vi.fn(async () => ({
+      snapshot: '',
+      seq: 0,
+      geometry: { cols: 0, rows: 0, epoch: 0 },
+    })),
     ...over,
   };
 }
@@ -156,11 +167,16 @@ describe('registerPtyIpc handler registration', () => {
       getBufferSnapshot: vi.fn(async (sid: string) => ({
         snapshot: `snap-for-${sid}`,
         seq: 7,
+        geometry: { cols: 91, rows: 29, epoch: 3 },
       })),
     });
     registerPtyIpc(ipc as any, deps);
     const out = await ipc.handlers.get(PTY_CHANNELS.getBufferSnapshot)!({}, 'sid-Z');
-    expect(out).toEqual({ snapshot: 'snap-for-sid-Z', seq: 7 });
+    expect(out).toEqual({
+      snapshot: 'snap-for-sid-Z',
+      seq: 7,
+      geometry: { cols: 91, rows: 29, epoch: 3 },
+    });
     expect(deps.getBufferSnapshot).toHaveBeenCalledWith('sid-Z');
   });
 });
@@ -170,10 +186,26 @@ describe('registerPtyIpc handler registration', () => {
 describe(PTY_CHANNELS.list, () => {
   it('delegates to deps.listPtySessions', () => {
     const ipc = makeFakeIpc();
-    const deps = makeDeps({ listPtySessions: vi.fn(() => [{ sid: 'a', pid: 1, cols: 80, rows: 24, cwd: '/x' }]) });
+    const deps = makeDeps({
+      listPtySessions: vi.fn(() => [{
+        sid: 'a',
+        pid: 1,
+        geometry: { cols: 80, rows: 24, epoch: 0 },
+        cols: 80,
+        rows: 24,
+        cwd: '/x',
+      }]),
+    });
     registerPtyIpc(ipc as any, deps);
     const out = ipc.handlers.get(PTY_CHANNELS.list)!({});
-    expect(out).toEqual([{ sid: 'a', pid: 1, cols: 80, rows: 24, cwd: '/x' }]);
+    expect(out).toEqual([{
+      sid: 'a',
+      pid: 1,
+      geometry: { cols: 80, rows: 24, epoch: 0 },
+      cols: 80,
+      rows: 24,
+      cwd: '/x',
+    }]);
     expect(deps.listPtySessions).toHaveBeenCalledTimes(1);
   });
 });
@@ -183,16 +215,79 @@ describe('pty:input / resize / kill / get pass-through', () => {
     const ipc = makeFakeIpc();
     const deps = makeDeps();
     registerPtyIpc(ipc as any, deps);
-    ipc.handlers.get(PTY_CHANNELS.input)!({}, 'sid', 'echo\n');
-    expect(deps.inputPtySession).toHaveBeenCalledWith('sid', 'echo\n');
+    ipc.handlers.get(PTY_CHANNELS.input)!({ sender: makeWc(5) }, 'sid', 'echo\n');
+    expect(deps.inputPtySession).toHaveBeenCalledWith('sid', 'echo\n', {
+      kind: 'desktop-renderer',
+      webContentsId: 5,
+    });
   });
 
-  it('resize forwards sid+cols+rows', () => {
+  it('resize forwards sid+cols+rows with visible-desktop origin when sender is the main window', () => {
+    const ipc = makeFakeIpc();
+    const mainWc = makeWc(77);
+    const win = makeWin(mainWc);
+    const deps = makeDeps();
+    deps.getMainWindow = () => win as any;
+    registerPtyIpc(ipc as any, deps);
+    ipc.handlers.get(PTY_CHANNELS.resize)!({ sender: makeWc(77) }, 'sid', 100, 30);
+    expect(deps.resizePtySession).toHaveBeenCalledWith('sid', 100, 30, {
+      kind: 'visible-desktop',
+      webContentsId: 77,
+    });
+  });
+
+  it('resize resolves undefined only after the resize barrier settles', async () => {
+    const ipc = makeFakeIpc();
+    const mainWc = makeWc(77);
+    const win = makeWin(mainWc);
+    let releaseBarrier!: () => void;
+    const barrier = new Promise<{ snapshot: string; seq: number }>((resolve) => {
+      releaseBarrier = () => resolve({ snapshot: 'coordinated-snapshot', seq: 41 });
+    });
+    const deps = makeDeps({
+      getMainWindow: () => win as any,
+      resizePtySession: vi.fn(() => barrier),
+    });
+    registerPtyIpc(ipc as any, deps);
+
+    const promise = ipc.handlers.get(PTY_CHANNELS.resize)!({ sender: makeWc(77) }, 'sid', 100, 30);
+    const observed: unknown[] = [];
+    promise.then((value) => observed.push(value));
+
+    await Promise.resolve();
+    expect(observed).toEqual([]);
+
+    releaseBarrier();
+    await expect(promise).resolves.toBeUndefined();
+    expect(observed).toEqual([undefined]);
+  });
+
+  it('resize rejects when the resize barrier fails', async () => {
+    const ipc = makeFakeIpc();
+    const mainWc = makeWc(77);
+    const win = makeWin(mainWc);
+    const barrierError = new Error('resize barrier failed');
+    const deps = makeDeps({
+      getMainWindow: () => win as any,
+      resizePtySession: vi.fn(async () => {
+        throw barrierError;
+      }),
+    });
+    registerPtyIpc(ipc as any, deps);
+
+    await expect(
+      ipc.handlers.get(PTY_CHANNELS.resize)!({ sender: makeWc(77) }, 'sid', 100, 30),
+    ).rejects.toThrow('resize barrier failed');
+    expect(deps.resizePtySession).toHaveBeenCalledTimes(1);
+  });
+
+  it('resize rejects a sender that is not the main window webContents', () => {
     const ipc = makeFakeIpc();
     const deps = makeDeps();
+    deps.getMainWindow = () => makeWin(makeWc(77)) as any;
     registerPtyIpc(ipc as any, deps);
-    ipc.handlers.get(PTY_CHANNELS.resize)!({}, 'sid', 100, 30);
-    expect(deps.resizePtySession).toHaveBeenCalledWith('sid', 100, 30);
+    ipc.handlers.get(PTY_CHANNELS.resize)!({ sender: makeWc(99) }, 'sid', 100, 30);
+    expect(deps.resizePtySession).not.toHaveBeenCalled();
   });
 
   // Defense-in-depth — TS signatures are advisory across the IPC boundary.
@@ -204,7 +299,7 @@ describe('pty:input / resize / kill / get pass-through', () => {
     const deps = makeDeps();
     registerPtyIpc(ipc as any, deps);
     for (const bad of [123, null, undefined, {}, [], true, Buffer.from('x')]) {
-      ipc.handlers.get(PTY_CHANNELS.input)!({}, 'sid', bad as any);
+      ipc.handlers.get(PTY_CHANNELS.input)!({ sender: makeWc(5) }, 'sid', bad as any);
     }
     expect(deps.inputPtySession).not.toHaveBeenCalled();
   });
@@ -212,6 +307,7 @@ describe('pty:input / resize / kill / get pass-through', () => {
   it('resize drops non-finite or out-of-range cols/rows without calling deps', () => {
     const ipc = makeFakeIpc();
     const deps = makeDeps();
+    deps.getMainWindow = () => makeWin(makeWc(1)) as any;
     registerPtyIpc(ipc as any, deps);
     const cases: Array<[unknown, unknown]> = [
       [Number.NaN, 30],
@@ -227,7 +323,7 @@ describe('pty:input / resize / kill / get pass-through', () => {
       ['80' as unknown, 30],
     ];
     for (const [c, r] of cases) {
-      ipc.handlers.get(PTY_CHANNELS.resize)!({}, 'sid', c as any, r as any);
+      ipc.handlers.get(PTY_CHANNELS.resize)!({ sender: makeWc(1) }, 'sid', c as any, r as any);
     }
     expect(deps.resizePtySession).not.toHaveBeenCalled();
   });
@@ -236,11 +332,18 @@ describe('pty:input / resize / kill / get pass-through', () => {
     const ipc = makeFakeIpc();
     const deps = makeDeps();
     registerPtyIpc(ipc as any, deps);
-    ipc.handlers.get(PTY_CHANNELS.resize)!({}, 'sid', 1, 1);
-    ipc.handlers.get(PTY_CHANNELS.resize)!({}, 'sid', 1000, 1000);
+    deps.getMainWindow = () => makeWin(makeWc(1)) as any;
+    ipc.handlers.get(PTY_CHANNELS.resize)!({ sender: makeWc(1) }, 'sid', 1, 1);
+    ipc.handlers.get(PTY_CHANNELS.resize)!({ sender: makeWc(1) }, 'sid', 1000, 1000);
     expect(deps.resizePtySession).toHaveBeenCalledTimes(2);
-    expect(deps.resizePtySession).toHaveBeenNthCalledWith(1, 'sid', 1, 1);
-    expect(deps.resizePtySession).toHaveBeenNthCalledWith(2, 'sid', 1000, 1000);
+    expect(deps.resizePtySession).toHaveBeenNthCalledWith(1, 'sid', 1, 1, {
+      kind: 'visible-desktop',
+      webContentsId: 1,
+    });
+    expect(deps.resizePtySession).toHaveBeenNthCalledWith(2, 'sid', 1000, 1000, {
+      kind: 'visible-desktop',
+      webContentsId: 1,
+    });
   });
 
   it('kill returns the deps result', async () => {
@@ -252,7 +355,14 @@ describe('pty:input / resize / kill / get pass-through', () => {
   });
 
   it('get returns the deps result', () => {
-    const info = { sid: 's', pid: 9, cols: 80, rows: 24, cwd: '/' };
+    const info = {
+      sid: 's',
+      pid: 9,
+      geometry: { cols: 80, rows: 24, epoch: 0 },
+      cols: 80,
+      rows: 24,
+      cwd: '/',
+    };
     const ipc = makeFakeIpc();
     const deps = makeDeps({ getPtySession: vi.fn(() => info) });
     registerPtyIpc(ipc as any, deps);
@@ -277,11 +387,26 @@ describe(PTY_CHANNELS.spawn, () => {
     const ipc = makeFakeIpc();
     bus().resolveClaude.mockReturnValue('/bin/claude');
     const deps = makeDeps({
-      spawnPtySession: vi.fn(() => ({ sid: 'sid', pid: 1, cols: 80, rows: 24, cwd: '/picked' })),
+      spawnPtySession: vi.fn(() => ({
+        sid: 'sid',
+        pid: 1,
+        geometry: { cols: 80, rows: 24, epoch: 0 },
+        cols: 80,
+        rows: 24,
+        cwd: '/picked',
+      })),
     });
     registerPtyIpc(ipc as any, deps);
     const out = await ipc.handlers.get(PTY_CHANNELS.spawn)!({}, 'sid', '/work');
-    expect(out).toEqual({ ok: true, sid: 'sid', pid: 1, cols: 80, rows: 24, cwd: '/picked' });
+    expect(out).toEqual({
+      ok: true,
+      sid: 'sid',
+      pid: 1,
+      geometry: { cols: 80, rows: 24, epoch: 0 },
+      cols: 80,
+      rows: 24,
+      cwd: '/picked',
+    });
     const call = (deps.spawnPtySession as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(call[0]).toBe('sid');
     expect(call[1]).toBe('/work');
@@ -299,7 +424,14 @@ describe(PTY_CHANNELS.spawn, () => {
     const ipc = makeFakeIpc();
     bus().resolveClaude.mockReturnValue('/bin/claude');
     const deps = makeDeps({
-      spawnPtySession: vi.fn(() => ({ sid: 'sid', pid: 1, cols: 120, rows: 30, cwd: '/picked' })),
+      spawnPtySession: vi.fn(() => ({
+        sid: 'sid',
+        pid: 1,
+        geometry: { cols: 120, rows: 30, epoch: 0 },
+        cols: 120,
+        rows: 30,
+        cwd: '/picked',
+      })),
     });
     registerPtyIpc(ipc as any, deps);
     // Even if a (legacy) renderer were to send the third opts argument,
@@ -317,7 +449,14 @@ describe(PTY_CHANNELS.spawn, () => {
     const ipc = makeFakeIpc();
     bus().resolveClaude.mockReturnValue('/bin/claude');
     const deps = makeDeps({
-      spawnPtySession: vi.fn(() => ({ sid: 'sid', pid: 1, cols: 120, rows: 30, cwd: '/picked' })),
+      spawnPtySession: vi.fn(() => ({
+        sid: 'sid',
+        pid: 1,
+        geometry: { cols: 120, rows: 30, epoch: 0 },
+        cols: 120,
+        rows: 30,
+        cwd: '/picked',
+      })),
     });
     registerPtyIpc(ipc as any, deps);
     await ipc.handlers.get(PTY_CHANNELS.spawn)!({}, 'sid', '/work');
@@ -350,7 +489,14 @@ describe(PTY_CHANNELS.spawn, () => {
       getMainWindow: () => win as any,
       spawnPtySession: vi.fn((_sid: string, _cwd: string, _claude: string, opts?: { onCwdRedirect?: (n: string) => void }) => {
         captured = opts?.onCwdRedirect ?? null;
-        return { sid: 'sid', pid: 1, cols: 80, rows: 24, cwd: '/picked' };
+        return {
+          sid: 'sid',
+          pid: 1,
+          geometry: { cols: 80, rows: 24, epoch: 0 },
+          cols: 80,
+          rows: 24,
+          cwd: '/picked',
+        };
       }),
     });
     registerPtyIpc(ipc as any, deps);
@@ -368,7 +514,14 @@ describe(PTY_CHANNELS.spawn, () => {
       getMainWindow: () => null,
       spawnPtySession: vi.fn((_sid, _cwd, _claude, opts?: { onCwdRedirect?: (n: string) => void }) => {
         captured = opts?.onCwdRedirect ?? null;
-        return { sid: 'sid', pid: 1, cols: 80, rows: 24, cwd: '/' };
+        return {
+          sid: 'sid',
+          pid: 1,
+          geometry: { cols: 80, rows: 24, epoch: 0 },
+          cols: 80,
+          rows: 24,
+          cwd: '/',
+        };
       }),
     });
     registerPtyIpc(ipc as any, deps);
@@ -386,7 +539,14 @@ describe(PTY_CHANNELS.spawn, () => {
       getMainWindow: () => win as any,
       spawnPtySession: vi.fn((_sid, _cwd, _claude, opts?: { onCwdRedirect?: (n: string) => void }) => {
         captured = opts?.onCwdRedirect ?? null;
-        return { sid: 'sid', pid: 1, cols: 80, rows: 24, cwd: '/' };
+        return {
+          sid: 'sid',
+          pid: 1,
+          geometry: { cols: 80, rows: 24, epoch: 0 },
+          cols: 80,
+          rows: 24,
+          cwd: '/',
+        };
       }),
     });
     registerPtyIpc(ipc as any, deps);
@@ -413,6 +573,7 @@ describe(PTY_CHANNELS.attach, () => {
       serialize: { serialize: serializeSpy },
       cols: 80,
       rows: 24,
+      geometryEpoch: 0,
       attached,
     };
     const deps = makeDeps({
@@ -421,7 +582,12 @@ describe(PTY_CHANNELS.attach, () => {
     registerPtyIpc(ipc as any, deps);
     const wc = makeWc(7);
     const res = ipc.handlers.get(PTY_CHANNELS.attach)!({ sender: wc }, 'sid');
-    expect(res).toEqual({ cols: 80, rows: 24, pid: 42 });
+    expect(res).toEqual({
+      cols: 80,
+      rows: 24,
+      geometry: { cols: 80, rows: 24, epoch: 0 },
+      pid: 42,
+    });
     expect(attached.get(7)).toBe(wc);
     // #888 follow-up: pty:attach MUST NOT serialize the headless buffer.
     // The renderer paints via getBufferSnapshot (PR-B); this serialize was
@@ -437,6 +603,7 @@ describe(PTY_CHANNELS.attach, () => {
       serialize: { serialize: () => '' },
       cols: 80,
       rows: 24,
+      geometryEpoch: 0,
       attached,
     };
     const deps = makeDeps({

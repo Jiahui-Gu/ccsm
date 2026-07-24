@@ -48,6 +48,17 @@ describe('relay worker', () => {
     expect(assetFetch).toHaveBeenCalledWith(input);
   });
 
+  it('delegates non-relay HEAD requests to static assets', async () => {
+    const { assetFetch, env } = fakeEnv();
+    const input = request('/phone.js', { method: 'HEAD', upgrade: false });
+
+    const response = await worker.fetch(input, env);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('X-Content-Type-Options')).toBe('nosniff');
+    expect(assetFetch).toHaveBeenCalledWith(input);
+  });
+
   it('prevents the phone UI from being framed', async () => {
     const { env } = fakeEnv();
 
@@ -58,6 +69,12 @@ describe('relay worker', () => {
 
     expect(response.headers.get('Content-Security-Policy')).toContain(
       "frame-ancestors 'none'",
+    );
+    expect(response.headers.get('Content-Security-Policy')).toContain(
+      "style-src-attr 'unsafe-inline'",
+    );
+    expect(response.headers.get('Content-Security-Policy')).toContain(
+      "style-src-elem 'self' 'unsafe-inline'",
     );
     expect(response.headers.get('X-Frame-Options')).toBe('DENY');
   });

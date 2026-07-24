@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { ChevronRight } from 'lucide-react';
 import {
   useDroppable
 } from '@dnd-kit/core';
@@ -28,6 +27,11 @@ import {
 import type { Group, Session } from '../../types';
 import { headerDroppableId } from './dnd';
 import { SessionRow } from './SessionRow';
+import { toDesktopNavigatorSession } from './DesktopSessionPresentation';
+import {
+  SessionGroupHeaderBody,
+  type SessionNavigatorGroup,
+} from '../../shared/sessionNavigator/presentation';
 
 function GroupRowImpl({
   group,
@@ -72,6 +76,19 @@ function GroupRowImpl({
   const [renaming, setRenaming] = useState(!!autoRename);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const isSpecial = group.kind !== 'normal';
+  // Translated/display name — resolved once here so both the shared header
+  // body (below) and the ConfirmDialog/toast copy see the same string.
+  const displayName = group.nameKey ? t(group.nameKey) : group.name;
+  // Synthetic shared-presentation group, used only to feed
+  // SessionGroupHeaderBody's session count. Per-session `state` isn't read
+  // by the header body, so active/crashed are fixed to `false` here.
+  const navigatorGroup: SessionNavigatorGroup = {
+    id: group.id,
+    name: displayName,
+    order: 0,
+    collapsed,
+    sessions: sessions.map((s) => toDesktopNavigatorSession(s, false, false)),
+  };
   // Previously gated against a `kind: 'deleted'` enum value that no code path
   // ever produced. Now that the enum is normal | archive only, no group is
   // ever menu-disabled (archived groups still allow rename / unarchive).
@@ -148,50 +165,42 @@ function GroupRowImpl({
               className="flex flex-1 min-w-0 items-center gap-1.5 text-left text-fg-secondary outline-none rounded-sm focus-ring"
               aria-expanded={!collapsed}
             >
-              <motion.span
-                initial={false}
-                animate={{ rotate: collapsed ? 0 : 90 }}
-                transition={{ duration: DURATION_RAW.ms200, ease: EASING.enter }}
-                className="inline-flex shrink-0"
-              >
-                <ChevronRight size={12} className="stroke-[1.75] text-fg-tertiary" />
-              </motion.span>
-              {renaming ? (
-                <InlineRename
-                  value={group.name}
-                  onCommit={(next) => {
-                    renameGroup(group.id, next);
-                    setRenaming(false);
-                  }}
-                  onCancel={() => setRenaming(false)}
-                  inputClassName="text-chrome font-semibold text-fg-primary"
-                />
-              ) : (
-                <>
-                  <span
-                    className="truncate text-chrome font-semibold text-fg-secondary"
-                    onDoubleClick={(e) => {
-                      // Double-click the label to enter rename mode — matches
-                      // the SessionRow handler. Stop propagation so the
-                      // wrapping <button>'s onClick doesn't toggle collapsed
-                      // on the same gesture. Skip for special (archive)
-                      // groups since they have no rename action.
-                      if (isSpecial) return;
-                      e.stopPropagation();
-                      setRenaming(true);
-                    }}
-                  >{group.nameKey ? t(group.nameKey) : group.name}</span>
-                  {hasWaiting && (
+              <SessionGroupHeaderBody
+                group={navigatorGroup}
+                expanded={!collapsed}
+                onLabelDoubleClick={(e) => {
+                  // Double-click the label to enter rename mode — matches
+                  // the SessionRow handler. Stop propagation so the
+                  // wrapping <button>'s onClick doesn't toggle collapsed
+                  // on the same gesture. Skip for special (archive)
+                  // groups since they have no rename action.
+                  if (isSpecial) return;
+                  e.stopPropagation();
+                  setRenaming(true);
+                }}
+                trailing={
+                  hasWaiting ? (
                     <span
                       aria-label={t('sidebar.waitingForResponse')}
                       className="ml-1.5 shrink-0 inline-block w-1.5 h-1.5 rounded-full bg-state-waiting"
                     />
-                  )}
-                  {!isSpecial && sessions.length > 0 && (
-                    <span className="ml-1 text-label-meta">{sessions.length}</span>
-                  )}
-                </>
-              )}
+                  ) : undefined
+                }
+                showCount={!isSpecial && sessions.length > 0}
+                labelSlot={
+                  renaming ? (
+                    <InlineRename
+                      value={group.name}
+                      onCommit={(next) => {
+                        renameGroup(group.id, next);
+                        setRenaming(false);
+                      }}
+                      onCancel={() => setRenaming(false)}
+                      inputClassName="text-chrome font-semibold text-fg-primary"
+                    />
+                  ) : undefined
+                }
+              />
             </button>
           </div>
         </ContextMenuTrigger>

@@ -16,10 +16,22 @@ import { killProcessSubtree } from './processKiller';
 import { DEFAULT_COLS, DEFAULT_ROWS, makeEntry } from './entryFactory';
 import type { Entry } from './entryFactory';
 import { loadScrollbackLines } from '../prefs/scrollback';
+import { preparePastePayload } from '../../src/shared/terminal/preparePastePayload';
+import type { TerminalGeometry } from '../../src/shared/mobileRemote/protocol';
+
+export type PtyResizeOrigin = {
+  kind: 'visible-desktop';
+  webContentsId: number;
+};
+
+export type PtyInputOrigin =
+  | { kind: 'desktop-renderer'; webContentsId: number }
+  | { kind: 'mobile-control' };
 
 export interface PtySessionInfo {
   sid: string;
   pid: number;
+  geometry: TerminalGeometry;
   cols: number;
   rows: number;
   /** Working directory the PTY was actually spawned with (post-`resolveSpawnCwd`
@@ -40,11 +52,23 @@ export interface AttachResult {
   // listener + getBufferSnapshot + drain sequence.
   cols: number;
   rows: number;
+  geometry: TerminalGeometry;
   pid: number;
 }
 
+function geometryFromEntry(entry: Entry): TerminalGeometry {
+  return { cols: entry.cols, rows: entry.rows, epoch: entry.geometryEpoch };
+}
+
 function infoFromEntry(sid: string, e: Entry): PtySessionInfo {
-  return { sid, pid: e.pty.pid, cols: e.cols, rows: e.rows, cwd: e.cwd };
+  return {
+    sid,
+    pid: e.pty.pid,
+    geometry: geometryFromEntry(e),
+    cols: e.cols,
+    rows: e.rows,
+    cwd: e.cwd,
+  };
 }
 
 export function spawn(
@@ -119,6 +143,7 @@ export function attach(sessions: Map<string, Entry>, sid: string): AttachResult 
   return {
     cols: entry.cols,
     rows: entry.rows,
+    geometry: geometryFromEntry(entry),
     pid: entry.pty.pid,
   };
 }
@@ -130,7 +155,12 @@ export function detach(_sessions: Map<string, Entry>, sid: string): void {
   void sid;
 }
 
-export function input(sessions: Map<string, Entry>, sid: string, data: string): void {
+export function input(
+  sessions: Map<string, Entry>,
+  sid: string,
+  data: string,
+  _origin: PtyInputOrigin,
+): void {
   const entry = sessions.get(sid);
   if (!entry) return;
   try {
@@ -140,25 +170,134 @@ export function input(sessions: Map<string, Entry>, sid: string, data: string): 
   }
 }
 
-export function resize(
+export type PtySubmitResult =
+  | 'ok'
+  | 'invalid_submission'
+  | 'session_not_found'
+  | 'pty_write_failed';
+
+/**
+ * Acknowledged complete-draft submission (mobile composer). Unlike `input`
+ * (raw keystroke passthrough, silently no-ops on any failure), `submit`
+ * writes exactly ONE fully-prepared draft plus a trailing `\r` so the CLI
+ * treats it as a submitted line, and returns an explicit `PtySubmitResult`
+ * so the caller (the `session.submit` protocol handler) can send exactly
+ * one correlated success/failure response back to the phone. No broad
+ * catch, no silent fallback: only the two synchronous writes below are
+ * guarded (the headless FIFO barrier write and the PTY write), and only to
+ * distinguish "rejected" from "wrote fine" — everything else propagates.
+ *
+ * Bracketed-paste mode is read off the LIVE session's headless mirror
+ * (`entry.headless.modes?.bracketedPasteMode`) at submit time, mirroring
+ * desktop paste's `getBracketedPasteMode` — the phone never tracks this
+ * mode itself.
+ *
+ * `submit` is ASYNC because `@xterm/headless` parses writes asynchronously:
+ * a chunk that flips bracketed-paste mode (`CSI ?2004h`/`l`) sits in the
+ * headless Terminal's internal write queue and doesn't update
+ * `modes.bracketedPasteMode` until its parser tick runs. Reading the mode
+ * synchronously (the old behaviour) could observe stale state and either
+ * bracket-wrap a payload the CLI isn't expecting yet, or send an unwrapped
+ * payload the CLI silently discards into its composer instead of
+ * submitting it (see the real-Claude submit probe report).
+ *
+ * The fix drains the headless parser's FIFO write queue FIRST with a
+ * zero-length `entry.headless.write('', cb)` barrier — xterm processes
+ * writes in FIFO order, so `cb` fires only once every previously queued
+ * chunk (including any pending mode toggle) has actually been parsed. This
+ * is the same barrier contract `getBufferSnapshot` already relies on, but
+ * with two differences appropriate to a user-acknowledged submission
+ * rather than a best-effort paint:
+ *   1. No timeout fallback — a barrier write that throws (e.g. the headless
+ *      mirror was disposed mid-call) fails the submission explicitly
+ *      (`pty_write_failed`) instead of silently proceeding on stale state.
+ *   2. After the barrier resolves, the Entry is re-checked for identity
+ *      against the live `sessions` map. A slow barrier can span an
+ *      arbitrary number of event-loop turns, during which a reload/kill
+ *      race could have removed the sid or respawned a brand-new Entry
+ *      under it; without this guard a stale submit could replay onto a
+ *      PTY the phone no longer intends to target.
+ *
+ * The prepared payload and Enter remain a SINGLE combined `pty.write` call
+ * (never split) — the probe found that splitting the payload from the
+ * trailing `\r`, even across a microtask/setImmediate boundary, is what
+ * caused real claude to insert the draft into its composer without
+ * submitting it 10/10 times.
+ */
+export async function submit(
   sessions: Map<string, Entry>,
+  sid: string,
+  draft: string,
+): Promise<PtySubmitResult> {
+  if (draft.length === 0) return 'invalid_submission';
+  const entry = sessions.get(sid);
+  if (!entry) return 'session_not_found';
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      try {
+        entry.headless.write('', () => resolve());
+      } catch (e) {
+        reject(e);
+      }
+    });
+  } catch {
+    return 'pty_write_failed';
+  }
+
+  // Re-check identity: the barrier may have spanned a reload/kill race that
+  // removed this sid or respawned a new Entry under it. Never write to the
+  // OLD entry's PTY (it may be exiting/exited) nor to a REPLACEMENT PTY the
+  // phone never targeted — no replay, no stale submit.
+  if (sessions.get(sid) !== entry) return 'session_not_found';
+
+  const payload = preparePastePayload(
+    draft,
+    entry.headless.modes?.bracketedPasteMode === true,
+  );
+  try {
+    entry.pty.write(`${payload}\r`);
+    return 'ok';
+  } catch {
+    return 'pty_write_failed';
+  }
+}
+
+export function getCanonicalGeometry(
+  registry: Map<string, Entry>,
+  sid: string,
+): TerminalGeometry | null {
+  const entry = registry.get(sid);
+  return entry ? geometryFromEntry(entry) : null;
+}
+
+export function resizeCanonicalGeometry(
+  registry: Map<string, Entry>,
   sid: string,
   cols: number,
   rows: number,
-): void {
-  const entry = sessions.get(sid);
-  if (!entry) return;
-  if (cols < 2 || rows < 2) return;
+  _origin: PtyResizeOrigin,
+): TerminalGeometry | null {
+  const entry = registry.get(sid);
+  if (!entry || (entry.cols === cols && entry.rows === rows)) return null;
+  const epoch = entry.geometryEpoch + 1;
+  const previous = { cols: entry.cols, rows: entry.rows };
   try {
     entry.pty.resize(cols, rows);
     entry.headless.resize(cols, rows);
-    entry.cols = cols;
-    entry.rows = rows;
-  } catch (e) {
-    console.warn(
-      `[ptyHost] resize ${sid} failed: ${e instanceof Error ? e.message : String(e)}`,
-    );
+  } catch (error) {
+    try {
+      entry.pty.resize(previous.cols, previous.rows);
+      entry.headless.resize(previous.cols, previous.rows);
+    } catch (rollbackError) {
+      console.error('[ptyHost] canonical resize rollback failed', rollbackError);
+    }
+    throw error;
   }
+  entry.cols = cols;
+  entry.rows = rows;
+  entry.geometryEpoch = epoch;
+  return { cols, rows, epoch };
 }
 
 // Graceful-flush + teardown budget. Reload sends a soft signal (Ctrl+C via
@@ -367,8 +506,9 @@ export function get(sessions: Map<string, Entry>, sid: string): PtySessionInfo |
 // chunk's seq against this value to drop chunks already baked into the
 // snapshot, eliminating the race between attach-fanout and snapshot read.
 //
-// Returns `{snapshot:'', seq:0}` when the sid isn't registered (callers
-// treat empty as "no snapshot available", same as `attach` returning null).
+// Returns `{snapshot:'', seq:0, geometry:{0,0,0}}` when the sid isn't
+// registered (callers treat empty as "no snapshot available", same as
+// `attach` returning null).
 export const SNAPSHOT_CHUNK_LINES = 1000;
 
 export interface BufferSnapshot {
@@ -379,15 +519,11 @@ export interface BufferSnapshot {
    *  `seq > snapshot.seq` are the post-snapshot live tail and must be
    *  written after the snapshot. */
   seq: number;
+  /** Canonical geometry captured from the same entry instant as seq/snapshot. */
+  geometry: TerminalGeometry;
 }
 
-export async function getBufferSnapshot(
-  sessions: Map<string, Entry>,
-  sid: string,
-): Promise<BufferSnapshot> {
-  const entry = sessions.get(sid);
-  if (!entry) return { snapshot: '', seq: 0 };
-
+async function waitForHeadlessWrites(entry: Entry): Promise<void> {
   // Round-4 fix (PR #1355 dogfood): `entry.seq` is bumped synchronously
   // by `dispatchPtyChunk` BEFORE the chunk is fully absorbed by
   // `entry.headless.write` (xterm.js `write` is async — the chunk goes
@@ -437,25 +573,23 @@ export async function getBufferSnapshot(
       finish();
     }
   });
+}
 
-  // Capture seq + serialized string atomically (both sync, no awaits).
-  // DO NOT add awaits between the drain above and this seq capture —
-  // any yield here re-introduces the async race the drain just closed.
-  const seq = entry.seq;
+async function serializeHeadlessInChunks(entry: Entry): Promise<string> {
   // PR-B contract: serialize captures whatever lives in the headless buffer
-  // at this instant, paired with `seq`. We bound the payload to the user's
+  // at this instant. We bound the payload to the user's
   // configured scrollback cap (last N rows from the bottom of the scrollback)
   // so a long-running session doesn't return MB of lines on every attach.
   // Cap honors the live setting (read fresh per call), so the user's
   // change takes effect on the next attach without restarting the entry.
   const full = entry.serialize.serialize({ scrollback: loadScrollbackLines() });
-  if (!full) return { snapshot: '', seq };
+  if (!full) return '';
   // Split on '\n' so we yield on a line boundary; preserves the original
   // separator on rejoin. setImmediate is available in Electron main (Node
   // event loop). We deliberately avoid Promise.resolve()-style microtask
   // yields — those don't drain macrotask I/O.
   const lines = full.split('\n');
-  if (lines.length <= SNAPSHOT_CHUNK_LINES) return { snapshot: full, seq };
+  if (lines.length <= SNAPSHOT_CHUNK_LINES) return full;
   const out: string[] = [];
   for (let i = 0; i < lines.length; i += SNAPSHOT_CHUNK_LINES) {
     out.push(lines.slice(i, i + SNAPSHOT_CHUNK_LINES).join('\n'));
@@ -463,7 +597,29 @@ export async function getBufferSnapshot(
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
   }
-  return { snapshot: out.join('\n'), seq };
+  return out.join('\n');
+}
+
+export async function captureEntrySnapshot(entry: Entry): Promise<BufferSnapshot> {
+  await waitForHeadlessWrites(entry);
+  // Reading seq and invoking serializeHeadlessInChunks are synchronous until
+  // its first chunk-yield, so the serialized string and seq share one instant.
+  const geometry = geometryFromEntry(entry);
+  const seq = entry.seq;
+  const snapshot = await serializeHeadlessInChunks(entry);
+  return { snapshot, seq, geometry };
+}
+
+export async function getBufferSnapshot(
+  sessions: Map<string, Entry>,
+  sid: string,
+): Promise<BufferSnapshot> {
+  const entry = sessions.get(sid);
+  return entry ? captureEntrySnapshot(entry) : {
+    snapshot: '',
+    seq: 0,
+    geometry: { cols: 0, rows: 0, epoch: 0 },
+  };
 }
 
 // Kill every running pty. Returns a Promise that resolves after every

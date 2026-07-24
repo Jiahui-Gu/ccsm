@@ -47,7 +47,7 @@ import {
   dismissFirstRunModals,
   launchCcsmIsolated,
   seedSession,
-  sendToClaudeTui,
+  sendPromptAndWaitForPersist,
   waitForTerminalReady,
   waitForXtermBuffer,
 } from './probe-utils-real-cli.mjs';
@@ -142,17 +142,31 @@ async function caseReopenResume({ fakeApi }) {
     );
     await dismissFirstRunModals(win1);
 
-    // Send the probe prompt + Enter.
-    await sendToClaudeTui(win1, PROBE_TOKEN);
-    await sleep(400);
-    await sendToClaudeTui(win1, '\r');
+    // Type the probe prompt, confirm it echoes, then press Enter until the
+    // turn is actually dispatched and written to a session JSONL on disk.
+    //
+    // Confirming only the ECHO (token visible in the input box) is NOT enough:
+    // claude's Ink TUI intermittently swallows the first Enter at cold-start,
+    // leaving the prompt un-dispatched — no /v1/messages, no <sid>.jsonl. If we
+    // quit at that point, run-2's `--resume <sid>` has no transcript to load
+    // (findJsonlForSid finds nothing → the reopen spawns `--session-id` fresh),
+    // and the token never replays. sendPromptAndWaitForPersist re-presses Enter
+    // until the on-disk transcript contains PROBE_TOKEN — the authoritative
+    // proof the turn went through. See its doc for the full rationale.
+    const persistedJsonl = await sendPromptAndWaitForPersist(win1, {
+      projectsRoot: path.join(tempDir, 'projects'),
+      prompt: PROBE_TOKEN,
+      timeout: 60000,
+    });
+    if (!persistedJsonl) {
+      throw new Error(
+        `run1: PROBE_TOKEN never reached a session JSONL under ` +
+          `${path.join(tempDir, 'projects')} within 60s — claude did not dispatch the turn`,
+      );
+    }
 
-    // Wait for token to land in the xterm buffer (claude echoes the user
-    // line in its TUI input box even before any reply arrives).
-    await waitForXtermBuffer(win1, new RegExp(PROBE_TOKEN), { timeout: 30000 });
-
-    // Wait a beat so JSONL flush + ccsm persist debounce land before quit.
-    await sleep(4000);
+    // Small settle so ccsm's persist/title-rename debounce lands before quit.
+    await sleep(1500);
 
     // Quit ccsm (real quit, not just window close — drives the persistence
     // shutdown path).

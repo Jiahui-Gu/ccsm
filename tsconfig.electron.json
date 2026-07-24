@@ -12,6 +12,11 @@
     "rootDir": ".",
     "lib": ["ES2022", "DOM"]
   },
-  "include": ["electron/**/*", "src/shared/**/*"],
-  "exclude": ["electron/**/__tests__/**"]
+  "include": ["electron/**/*", "src/shared/**/*.ts"],
+  "exclude": [
+    "electron/**/__tests__/**",
+    "src/shared/sessionNavigator/presentation.ts",
+    "src/shared/sessionNavigator/**/*.tsx",
+    "src/shared/sessionNavigator/css.d.ts"
+  ]
 }

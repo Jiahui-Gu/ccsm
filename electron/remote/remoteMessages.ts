@@ -1,40 +1,27 @@
 import {
-  getBufferSnapshot,
-  getPtySession,
+  getCoordinatedSnapshot,
   inputPtySession,
   listPtySessions,
-  resizePtySession,
+  submitPtySession,
 } from '../ptyHost';
-import { isRecord } from './remoteHttp';
+import {
+  isMobileClientMessage,
+  type MobileServerMessage as SharedMobileServerMessage,
+  type SessionListEntry,
+} from '../../src/shared/mobileRemote';
+import { SESSION_NAVIGATOR_MESSAGE_VERSION } from '../../src/shared/sessionNavigator';
+import { readRemoteNavigationModel } from './navigationSource';
 import type { RemotePeer } from './remotePeer';
 
 /** The session-chip payload the mobile client renders: just the identity and
  *  size it needs. We deliberately omit `pid` — it is noise on the wire and the
  *  client never uses it. */
-export type SessionListEntry = {
-  sid: string;
-  cwd: string;
-  cols: number;
-  rows: number;
-};
-
 export type MobileServerMessage =
   | { type: 'auth.ok' }
-  | { type: 'sessions.list'; sessions: SessionListEntry[] }
-  | {
-      type: 'session.snapshot';
-      sid: string;
-      seq: number;
-      data?: string;
-      snapshot?: string;
-      cols: number | null;
-      rows: number | null;
-    }
-  | { type: 'pty.data'; sid: string; seq: number; chunk: string }
-  | { type: 'error'; message: string };
+  | SharedMobileServerMessage;
 
 export function listEntries(): SessionListEntry[] {
-  return listPtySessions().map((s) => ({ sid: s.sid, cwd: s.cwd, cols: s.cols, rows: s.rows }));
+  return listPtySessions().map((s) => ({ sid: s.sid, cwd: s.cwd, geometry: s.geometry }));
 }
 
 /** A cheap fingerprint of the session list used by the server poll loop to
@@ -43,6 +30,15 @@ export function listEntries(): SessionListEntry[] {
  *  sessions.list spam. */
 export function listSignature(entries: SessionListEntry[]): string {
   return entries.map((e) => `${e.sid}:${e.cwd}`).join('|');
+}
+
+export function sendSessionCatalog(peer: { send(payload: MobileServerMessage): void }): void {
+  peer.send({ type: 'sessions.list', sessions: listEntries() });
+  peer.send({
+    type: 'sessions.navigator',
+    version: SESSION_NAVIGATOR_MESSAGE_VERSION,
+    model: readRemoteNavigationModel(),
+  });
 }
 
 export async function handleClientMessage(client: RemotePeer, raw: string): Promise<void> {
@@ -54,61 +50,54 @@ export async function handleClientMessage(client: RemotePeer, raw: string): Prom
     return;
   }
 
-  if (!isRecord(message) || typeof message.type !== 'string') {
+  if (!isMobileClientMessage(message)) {
     client.send({ type: 'error', message: 'invalid_message' });
     return;
   }
 
   if (message.type === 'sessions.list') {
-    client.send({ type: 'sessions.list', sessions: listEntries() });
+    sendSessionCatalog(client);
     return;
   }
 
   if (message.type === 'session.snapshot') {
-    if (typeof message.sid !== 'string') {
+    client.subscribedSid = message.sid;
+    const snapshot = await getCoordinatedSnapshot(message.sid);
+    if (!snapshot) {
+      if (client.subscribedSid === message.sid) client.subscribedSid = null;
       client.send({ type: 'error', message: 'missing_sid' });
       return;
     }
     // session.snapshot is the client's "select this session" signal. Record it
     // so the pty.data broadcast only forwards this session's bytes to this
-    // client (see the onPtyData gate above).
-    client.subscribedSid = message.sid;
-    const snapshot = await getBufferSnapshot(message.sid);
-    const info = getPtySession(message.sid);
-    client.send({
-      type: 'session.snapshot',
-      sid: message.sid,
-      cols: info?.cols ?? null,
-      rows: info?.rows ?? null,
-      ...snapshot,
-    });
+    // client through the ordered terminal publication gate.
+    client.send(snapshot);
     return;
   }
 
   if (message.type === 'session.input') {
-    if (typeof message.sid !== 'string' || typeof message.data !== 'string') {
-      client.send({ type: 'error', message: 'invalid_input' });
-      return;
-    }
-    inputPtySession(message.sid, message.data);
+    inputPtySession(message.sid, message.data, { kind: 'mobile-control' });
     return;
   }
 
-  if (message.type === 'session.resize') {
-    if (
-      typeof message.sid !== 'string' ||
-      !Number.isInteger(message.cols) ||
-      !Number.isInteger(message.rows)
-    ) {
-      client.send({ type: 'error', message: 'invalid_resize' });
+  // Acknowledged complete-draft submission (mobile composer). Message shape is
+  // already protocol-validated; we only map the PTY lifecycle result to one
+  // correlated `session.submit.result`.
+  if (message.type === 'session.submit') {
+    const result = await submitPtySession(message.sid, message.draft);
+    if (result === 'ok') {
+      client.send({ type: 'session.submit.result', sid: message.sid, requestId: message.requestId, ok: true });
       return;
     }
-    // Clamp to a sane floor; a 0/1-column PTY breaks line wrapping in the CLI.
-    const cols = Math.max(2, message.cols as number);
-    const rows = Math.max(2, message.rows as number);
-    resizePtySession(message.sid, cols, rows);
+    client.send({
+      type: 'session.submit.result',
+      sid: message.sid,
+      requestId: message.requestId,
+      ok: false,
+      error: result,
+    });
     return;
   }
 
-  client.send({ type: 'error', message: 'unknown_type' });
+  client.send({ type: 'error', message: 'invalid_message' });
 }

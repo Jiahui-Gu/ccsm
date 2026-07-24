@@ -36,6 +36,10 @@ import type { BrowserWindow, IpcMain } from 'electron';
 import type { Entry } from './entryFactory';
 import * as L from './lifecycle';
 import { registerPtyIpc } from './ipcRegistrar';
+import {
+  commitResizeBarrier,
+  getCoordinatedSnapshot as getCoordinatedSnapshotFromRegistry,
+} from './terminalSyncCoordinator';
 
 // Re-export the helpers callers historically imported from `ptyHost/index`.
 // The unit tests under `__tests__/` import `resolveSpawnCwd` and
@@ -43,6 +47,12 @@ import { registerPtyIpc } from './ipcRegistrar';
 // imports `onPtyData`. Keep that surface stable post-extraction.
 export { onPtyData } from './dataFanout';
 export type { PtyDataListener } from './dataFanout';
+export { onTerminalSyncPublication } from './terminalSyncCoordinator';
+export type {
+  CoordinatedSessionSnapshot,
+  TerminalSyncPublication,
+  TerminalSyncPublicationListener,
+} from './terminalSyncCoordinator';
 export {
   ensureResumeJsonlAtSpawnCwd,
   findJsonlForSid,
@@ -51,7 +61,14 @@ export {
 } from './jsonlResolver';
 export type { EnsureResumeJsonlResult } from './jsonlResolver';
 export { resolveSpawnCwd } from './cwdResolver';
-export type { PtySessionInfo, AttachResult, BufferSnapshot } from './lifecycle';
+export type {
+  PtySessionInfo,
+  AttachResult,
+  BufferSnapshot,
+  PtySubmitResult,
+  PtyResizeOrigin,
+  PtyInputOrigin,
+} from './lifecycle';
 
 // --- Singleton registry ------------------------------------------------------
 
@@ -75,11 +92,25 @@ export const attachPtySession = (sid: string): L.AttachResult | null =>
 
 export const detachPtySession = (sid: string): void => L.detach(sessions, sid);
 
-export const inputPtySession = (sid: string, data: string): void =>
-  L.input(sessions, sid, data);
+export const inputPtySession = (sid: string, data: string, origin: L.PtyInputOrigin): void =>
+  L.input(sessions, sid, data, origin);
 
-export const resizePtySession = (sid: string, cols: number, rows: number): void =>
-  L.resize(sessions, sid, cols, rows);
+export const resizePtySession = (
+  sid: string,
+  cols: number,
+  rows: number,
+  origin: L.PtyResizeOrigin,
+) => commitResizeBarrier(sessions, sid, cols, rows, origin);
+
+// Acknowledged complete-draft submission (mobile composer). Returns the
+// explicit `PtySubmitResult` — NOT a boolean — so the `session.submit`
+// protocol handler can map every outcome ('ok' | 'invalid_submission' |
+// 'session_not_found' | 'pty_write_failed') to exactly one correlated
+// `session.submit.result` response. Async: `L.submit` drains the headless
+// FIFO parser barrier before reading live bracketed-paste mode (see
+// lifecycle.ts doc comment) — callers MUST await before acking the phone.
+export const submitPtySession = (sid: string, draft: string): Promise<L.PtySubmitResult> =>
+  L.submit(sessions, sid, draft);
 
 export const killPtySession = (sid: string): Promise<boolean> => L.kill(sessions, sid);
 
@@ -90,10 +121,14 @@ export const killAllPtySessions = (): Promise<void> => L.killAll(sessions);
 
 // L4 PR-A (#861) + PR-B (#865): async chunked snapshot of the per-session
 // authoritative headless buffer paired with the per-entry chunk seq.
-// Returns `{snapshot:'', seq:0}` when the sid isn't registered. Renderer
-// uses the seq to dedupe live `pty:data` chunks against the snapshot.
+// Returns `{snapshot:'', seq:0, geometry:{0,0,0}}` when the sid isn't
+// registered. Renderer uses the seq to dedupe live `pty:data` chunks
+// against the snapshot.
 export const getBufferSnapshot = (sid: string): Promise<L.BufferSnapshot> =>
   L.getBufferSnapshot(sessions, sid);
+
+export const getCoordinatedSnapshot = (sid: string) =>
+  getCoordinatedSnapshotFromRegistry(sessions, sid);
 
 // --- IPC registration --------------------------------------------------------
 

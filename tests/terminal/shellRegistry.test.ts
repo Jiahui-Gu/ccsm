@@ -83,6 +83,8 @@ import {
   resetShellForReload,
   applyTerminalFontSize,
   applyTerminalScrollback,
+  commitVisibleDesktopResizeNow,
+  scheduleVisibleDesktopResize,
   __resetShellRegistryForTests,
 } from '../../src/terminal/shellRegistry';
 
@@ -194,6 +196,29 @@ describe('shellRegistry', () => {
     expect(resizeSpy).toHaveBeenCalledWith('sid-a', 80, 24);
   });
 
+  it('showShell cancels stale pending resize work from the previously visible shell', async () => {
+    vi.useFakeTimers();
+    try {
+      const a = createShell('sid-a', host);
+      const b = createShell('sid-b', host);
+      a.warmed = true;
+      b.warmed = true;
+
+      showShell('sid-a');
+      resizeSpy.mockClear();
+
+      scheduleVisibleDesktopResize('sid-a', 101, 29);
+      showShell('sid-b');
+      vi.advanceTimersByTime(200);
+      await Promise.resolve();
+
+      expect(resizeSpy).toHaveBeenCalledTimes(1);
+      expect(resizeSpy).toHaveBeenCalledWith('sid-b', 80, 24);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('setMask toggles the mask div display', () => {
     createShell('sid-a', host);
     setMask('sid-a', false);
@@ -282,6 +307,22 @@ describe('shellRegistry', () => {
     expect(shellCount()).toBe(1);
   });
 
+  it('disposeShell clears resize suppression so recreating the same sid resizes on first reveal', async () => {
+    const a = createShell('sid-a', host);
+    a.warmed = true;
+    await commitVisibleDesktopResizeNow('sid-a', 80, 24);
+    expect(resizeSpy).toHaveBeenCalledTimes(1);
+
+    disposeShell('sid-a');
+    const recreated = createShell('sid-a', host);
+    recreated.warmed = true;
+    resizeSpy.mockClear();
+
+    showShell('sid-a');
+    expect(resizeSpy).toHaveBeenCalledWith('sid-a', 80, 24);
+    expect(resizeSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('disposeAll tears down every shell', () => {
     createShell('sid-a', host);
     createShell('sid-b', host);
@@ -309,6 +350,20 @@ describe('shellRegistry', () => {
     expect(a.mask.style.display).toBe('none');
   });
 
+  it('resetShellForReload clears resize suppression for the fresh PTY entry', async () => {
+    const shell = createShell('sid-a', host);
+    shell.warmed = true;
+    await commitVisibleDesktopResizeNow('sid-a', 80, 24);
+    expect(resizeSpy).toHaveBeenCalledTimes(1);
+    resizeSpy.mockClear();
+
+    resetShellForReload('sid-a');
+    await commitVisibleDesktopResizeNow('sid-a', 80, 24);
+
+    expect(resizeSpy).toHaveBeenCalledWith('sid-a', 80, 24);
+    expect(resizeSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('resetShellForReload on unknown sid returns undefined', () => {
     expect(resetShellForReload('nope')).toBeUndefined();
   });
@@ -324,6 +379,7 @@ describe('shellRegistry', () => {
     expect((b.term.options as { fontSize?: number }).fontSize).toBe(22);
     expect(b.fit.fit).toHaveBeenCalled();
     expect(resizeSpy).toHaveBeenCalledWith('sid-b', 80, 24);
+    expect(resizeSpy).toHaveBeenCalledTimes(1);
     // Hidden has a deferred pending value.
     expect(a.pendingFontSize).toBe(22);
     expect((a.term.options as { fontSize?: number }).fontSize).toBe(13);

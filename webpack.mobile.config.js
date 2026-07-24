@@ -9,23 +9,33 @@ const HtmlWebpackPlugin = require('html-webpack-plugin');
 const MiniCssExtractPlugin = require('mini-css-extract-plugin');
 const { typescriptRule } = require('./webpack.config.js');
 
+function listSourceFiles(directory) {
+  const entries = fs.readdirSync(directory, { withFileTypes: true }).sort((a, b) =>
+    a.name.localeCompare(b.name),
+  );
+  const files = [];
+  for (const entry of entries) {
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...listSourceFiles(entryPath));
+    } else if (entry.isFile()) {
+      files.push(entryPath);
+    }
+  }
+  return files;
+}
+
 const mobileSourceDirectory = path.resolve(__dirname, 'src/mobile');
 const mobileCacheVersion = crypto
   .createHash('sha256')
   .update(fs.readFileSync(path.resolve(__dirname, 'src/phone.html')))
-  .update(
-    fs
-      .readdirSync(mobileSourceDirectory)
-      .sort()
-      .map((name) => fs.readFileSync(path.join(mobileSourceDirectory, name)))
-      .join(''),
-  )
+  .update(listSourceFiles(mobileSourceDirectory).map((file) => fs.readFileSync(file)).join(''))
   .digest('hex')
   .slice(0, 12);
 
 module.exports = {
   entry: {
-    phone: './src/mobile/index.ts',
+    phone: './src/mobile/index.tsx',
     sw: './src/mobile/sw.ts',
   },
   target: 'web',
@@ -36,7 +46,7 @@ module.exports = {
     clean: true,
   },
   resolve: {
-    extensions: ['.ts', '.js'],
+    extensions: ['.tsx', '.ts', '.js'],
   },
   module: {
     rules: [

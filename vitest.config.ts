@@ -24,7 +24,16 @@ export default defineConfig({
           name: 'renderer',
           environment: 'jsdom',
           setupFiles: ['tests/setup.ts'],
-          include: ['tests/**/*.test.ts', 'tests/**/*.test.tsx'],
+          include: [
+            'tests/**/*.test.ts',
+            'tests/**/*.test.tsx',
+            // Browser-safe shared helpers (e.g. `src/shared/terminal/`) get
+            // colocated __tests__ next to the source, matching the electron
+            // project's `electron/**/__tests__` convention, instead of
+            // living under `tests/` alongside integration-style specs.
+            'src/**/__tests__/**/*.test.ts',
+            'src/**/__tests__/**/*.test.tsx',
+          ],
         },
       },
       {

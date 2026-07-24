@@ -1021,8 +1021,14 @@ async function caseRename({ win, log }) {
   }
 
   // Case 11: double-click the session label enters rename mode.
+  //
+  // The session name node moved off the old `span.truncate` markup in the
+  // shared-presentation refactor (commit 6e4aadb6): SessionRow now renders
+  // the name via the shared `SessionNavigatorItemBody`, which owns the
+  // `onDoubleClick` handler on a `.ccsm-session-navigator__session-name`
+  // span instead.
   {
-    const label = win.locator('li[data-session-id="s2"] span.truncate').first();
+    const label = win.locator('li[data-session-id="s2"] .ccsm-session-navigator__session-name').first();
     await label.dblclick();
     await win.waitForTimeout(150);
     const inputCount = await win.locator('li[data-session-id="s2"] input').count();
@@ -1065,7 +1071,10 @@ async function caseRename({ win, log }) {
     await win.waitForTimeout(150);
   }
   {
-    const label = win.locator('[data-group-header-id="g1"] span.truncate').first();
+    // Same shared-presentation migration as Case 11: GroupRow's label now
+    // renders via `SessionGroupHeaderBody` as
+    // `.ccsm-session-navigator__group-label`, not the old `span.truncate`.
+    const label = win.locator('[data-group-header-id="g1"] .ccsm-session-navigator__group-label').first();
     await label.dblclick();
     await win.waitForTimeout(150);
     const inputCount = await win.locator('[data-group-header-id="g1"] input').count();

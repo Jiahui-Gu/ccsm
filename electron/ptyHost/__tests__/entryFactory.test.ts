@@ -24,6 +24,7 @@ interface PtyFakeBus {
   watcherStop: ReturnType<typeof vi.fn>;
   ensureJsonl: ReturnType<typeof vi.fn>;
   emitData: ReturnType<typeof vi.fn>;
+  enqueueChunk: ReturnType<typeof vi.fn>;
   sourceJsonl: string | null;
   jsonlBySid?: Record<string, string | null>;
   ensureCopied: boolean;
@@ -105,6 +106,10 @@ vi.mock('../dataFanout', () => ({
   emitPtyData: (sid: string, chunk: string, seq: number) => bus().emitData(sid, chunk, seq),
 }));
 
+vi.mock('../terminalSyncCoordinator', () => ({
+  enqueueChunkPublication: (...args: unknown[]) => bus().enqueueChunk(...args),
+}));
+
 // The user-configured scrollback cap is now read at headless construction
 // time. Stub the prefs module so tests don't hit the SQLite-backed
 // loadState path; tests that care about the cap value flip
@@ -129,6 +134,7 @@ describe('entryFactory.makeEntry', () => {
       watcherStop: vi.fn(),
       ensureJsonl: vi.fn(),
       emitData: vi.fn(),
+      enqueueChunk: vi.fn(),
       sourceJsonl: null,
       jsonlBySid: {},
       ensureCopied: false,
@@ -223,6 +229,7 @@ describe('entryFactory.makeEntry', () => {
     expect(e.rows).toBe(40);
     expect(e.cwd).toBe('/work');
     expect(e.attached.size).toBe(0);
+    expect(e.terminalSyncQueue).toBeInstanceOf(Promise);
   });
 
   it('passes the user-configured scrollback cap into the headless Terminal constructor', () => {
@@ -334,6 +341,7 @@ describe('entryFactory.dispatchPtyChunk', () => {
       watcherStop: vi.fn(),
       ensureJsonl: vi.fn(),
       emitData: vi.fn(),
+      enqueueChunk: vi.fn(),
       sourceJsonl: null,
       ensureCopied: false,
       deferHeadlessWrite: false,
@@ -374,6 +382,9 @@ describe('entryFactory.dispatchPtyChunk', () => {
     expect(entry.seq).toBe(3);
     // dataFanout must also receive every chunk (notify pipeline depends on it).
     expect(b.emitData).toHaveBeenCalledTimes(3);
+    expect(b.enqueueChunk).toHaveBeenNthCalledWith(1, entry, 'sid-DW', 1, 'a');
+    expect(b.enqueueChunk).toHaveBeenNthCalledWith(2, entry, 'sid-DW', 2, 'b');
+    expect(b.enqueueChunk).toHaveBeenNthCalledWith(3, entry, 'sid-DW', 3, 'c');
   });
 
   it('warns once when pending headless writes cross BACKPRESSURE_WARN_THRESHOLD, no data dropped', async () => {

@@ -1,9 +1,10 @@
 import * as crypto from 'crypto';
 import * as http from 'http';
 import { renderMobilePage } from './mobilePage';
+import { navigationSignature, readRemoteNavigationModel } from './navigationSource';
 import { installPtyFanout } from './ptyFanout';
 import { HOST, parseRequestUrl, resolvePort, sendHtml, sendJson, sendText, tokenMatches } from './remoteHttp';
-import { handleClientMessage, listEntries, listSignature } from './remoteMessages';
+import { handleClientMessage, listEntries, listSignature, sendSessionCatalog } from './remoteMessages';
 import {
   buildUpgradeResponse,
   closeSocket,
@@ -104,7 +105,7 @@ export function startMobileRemoteServer(options?: {
     };
     clients.add(client);
     client.send({ type: 'auth.ok' });
-    client.send({ type: 'sessions.list', sessions: listEntries() });
+    sendSessionCatalog(client);
 
     socket.on('data', (chunk) => {
       client.pending = Buffer.concat([client.pending, chunk]);
@@ -144,13 +145,16 @@ export function startMobileRemoteServer(options?: {
   // set of sessions changes (by sid+cwd), so a phone that was on the page when
   // a new session started picks it up without a manual refresh.
   let lastListSig = listSignature(listEntries());
+  let lastNavigatorSig = navigationSignature(readRemoteNavigationModel());
   const listPollTimer = setInterval(() => {
     if (clients.size === 0) return;
     const entries = listEntries();
-    const sig = listSignature(entries);
-    if (sig === lastListSig) return;
-    lastListSig = sig;
-    for (const client of clients) client.send({ type: 'sessions.list', sessions: entries });
+    const listSig = listSignature(entries);
+    const navigatorSig = navigationSignature(readRemoteNavigationModel());
+    if (listSig === lastListSig && navigatorSig === lastNavigatorSig) return;
+    lastListSig = listSig;
+    lastNavigatorSig = navigatorSig;
+    for (const client of clients) sendSessionCatalog(client);
   }, 2000);
   listPollTimer.unref();
 

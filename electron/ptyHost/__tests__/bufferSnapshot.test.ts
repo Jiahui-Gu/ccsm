@@ -36,6 +36,7 @@ import { Terminal as HeadlessTerminal } from '@xterm/headless';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import { SCROLLBACK } from '../entryFactory';
 import {
+  captureEntrySnapshot,
   getBufferSnapshot,
   SNAPSHOT_CHUNK_LINES,
 } from '../lifecycle';
@@ -84,8 +85,12 @@ function fakeEntry(
     attached: new Map(),
     cols: 80,
     rows: 24,
+    geometryEpoch: 0,
     cwd: '/tmp',
     seq,
+    pendingHeadlessWrites: 0,
+    backpressureWarned: false,
+    terminalSyncQueue: Promise.resolve(),
   };
 }
 
@@ -141,9 +146,53 @@ describe('headless authoritative buffer (PR-A real wiring)', () => {
 });
 
 describe('lifecycle.getBufferSnapshot (PR-A async chunking + PR-B seq capture)', () => {
-  it('returns empty snapshot + seq 0 when the sid is not registered', async () => {
+  it('waits for active headless writes before atomically capturing snapshot + seq', async () => {
+    let finishDrain: (() => void) | undefined;
+    let rendered = '';
+    const entry = fakeEntry('', 7);
+    entry.headless = {
+      write: (_chunk: string, callback?: () => void) => {
+        finishDrain = () => {
+          rendered = 'fully parsed';
+          callback?.();
+        };
+      },
+    } as unknown as Entry['headless'];
+    entry.serialize = {
+      serialize: vi.fn(() => rendered),
+    } as unknown as Entry['serialize'];
+
+    const pending = captureEntrySnapshot(entry);
+    await Promise.resolve();
+    expect(entry.serialize.serialize).not.toHaveBeenCalled();
+
+    finishDrain?.();
+    await expect(pending).resolves.toEqual({
+      snapshot: 'fully parsed',
+      seq: 7,
+      geometry: { cols: 80, rows: 24, epoch: 0 },
+    });
+  });
+
+  it('returns empty snapshot + seq 0 + empty geometry when the sid is not registered', async () => {
     const sessions = new Map<string, Entry>();
-    expect(await getBufferSnapshot(sessions, 'missing')).toEqual({ snapshot: '', seq: 0 });
+    expect(await getBufferSnapshot(sessions, 'missing')).toEqual({
+      snapshot: '',
+      seq: 0,
+      geometry: { cols: 0, rows: 0, epoch: 0 },
+    });
+  });
+
+  it('returns canonical entry geometry with the snapshot payload', async () => {
+    const sessions = new Map<string, Entry>();
+    const entry = fakeEntry('x', 5);
+    entry.cols = 132;
+    entry.rows = 41;
+    entry.geometryEpoch = 9;
+    sessions.set('g1', entry);
+
+    const result = await getBufferSnapshot(sessions, 'g1');
+    expect(result.geometry).toEqual({ cols: 132, rows: 41, epoch: 9 });
   });
 
   it('returns the full snapshot + entry.seq when the buffer fits in one chunk (no yield needed)', async () => {
@@ -151,7 +200,11 @@ describe('lifecycle.getBufferSnapshot (PR-A async chunking + PR-B seq capture)',
     const small = Array.from({ length: 50 }, (_, i) => `row-${i}`).join('\n');
     sessions.set('s1', fakeEntry(small, 42));
     const result = await getBufferSnapshot(sessions, 's1');
-    expect(result).toEqual({ snapshot: small, seq: 42 });
+    expect(result).toEqual({
+      snapshot: small,
+      seq: 42,
+      geometry: { cols: 80, rows: 24, epoch: 0 },
+    });
   });
 
   it('chunked path preserves the full string verbatim across yields and returns entry.seq', async () => {
@@ -234,8 +287,12 @@ describe('lifecycle.getBufferSnapshot (PR-A async chunking + PR-B seq capture)',
       attached: new Map(),
       cols: 80,
       rows: 24,
+      geometryEpoch: 0,
       cwd: '/tmp',
       seq: 0,
+      pendingHeadlessWrites: 0,
+      backpressureWarned: false,
+      terminalSyncQueue: Promise.resolve(),
     } as Entry);
     const result = await getBufferSnapshot(sessions, 'real');
     // Sanity: the newest line must survive.
@@ -285,8 +342,12 @@ describe('lifecycle.getBufferSnapshot (PR-A async chunking + PR-B seq capture)',
       attached: new Map(),
       cols: 80,
       rows: 24,
+      geometryEpoch: 0,
       cwd: '/tmp',
       seq: 0,
+      pendingHeadlessWrites: 0,
+      backpressureWarned: false,
+      terminalSyncQueue: Promise.resolve(),
     } as Entry);
     const entry = sessions.get('burst')!;
 
@@ -318,4 +379,3 @@ describe('lifecycle.getBufferSnapshot (PR-A async chunking + PR-B seq capture)',
     expect(result.seq).toBe(N);
   });
 });
-

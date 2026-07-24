@@ -1,8 +1,15 @@
 // UT for src/components/ui/StateGlyph.tsx — purely-decorative diamond
-// SVG glyph used as a "waiting" inline marker. Coverage:
-//   * sizes (xs/sm/md) map to the documented px contract
-//   * decorative=true → aria-hidden, no role/label
-//   * decorative=false (default) → role=img + aria-label=waiting
+// SVG glyph used as a "waiting" inline marker. Since Task 4 (desktop
+// navigator adapter), StateGlyph delegates its rendering to the shared
+// `SessionStateGlyph` (src/shared/sessionNavigator) — the accessible
+// wrapper (role/aria-label/aria-hidden/data-state/className) now lives on
+// the outer `<span>` that component renders, not on the inner `<svg>`
+// itself. The public StateGlyph API (size/className/decorative) is
+// unchanged. Coverage:
+//   * sizes (xs/sm/md) map to the documented px contract on the <svg>
+//   * viewBox stays the shared 12x12 grid regardless of size
+//   * decorative=true → aria-hidden, no role/label (on the wrapper)
+//   * decorative=false (default) → role=img + aria-label=waiting (wrapper)
 //   * className passes through alongside base text-state-waiting class
 import React from 'react';
 import { describe, it, expect, afterEach } from 'vitest';
@@ -21,7 +28,9 @@ describe('<StateGlyph />', () => {
     const svg = container.querySelector('svg')!;
     expect(svg.getAttribute('width')).toBe(String(px));
     expect(svg.getAttribute('height')).toBe(String(px));
-    expect(svg.getAttribute('viewBox')).toBe(`0 0 ${px} ${px}`);
+    // The shared glyph vocabulary always draws on a 12x12 grid and scales
+    // via width/height — viewBox no longer tracks the requested pixel size.
+    expect(svg.getAttribute('viewBox')).toBe('0 0 12 12');
   });
 
   it('default size is sm (10px)', () => {
@@ -30,32 +39,32 @@ describe('<StateGlyph />', () => {
     expect(svg.getAttribute('width')).toBe('10');
   });
 
-  it('default (decorative=false) exposes role=img + aria-label=waiting', () => {
+  it('default (decorative=false) exposes role=img + aria-label=waiting on the wrapper', () => {
     const { container } = render(<StateGlyph />);
-    const svg = container.querySelector('svg')!;
-    expect(svg.getAttribute('role')).toBe('img');
-    expect(svg.getAttribute('aria-label')).toBe('waiting');
-    expect(svg.getAttribute('aria-hidden')).toBeNull();
+    const wrapper = container.firstElementChild!;
+    expect(wrapper.getAttribute('role')).toBe('img');
+    expect(wrapper.getAttribute('aria-label')).toBe('waiting');
+    expect(wrapper.getAttribute('aria-hidden')).toBeNull();
   });
 
-  it('decorative=true sets aria-hidden and omits role/label', () => {
+  it('decorative=true sets aria-hidden and omits role/label on the wrapper', () => {
     const { container } = render(<StateGlyph decorative />);
-    const svg = container.querySelector('svg')!;
-    expect(svg.getAttribute('aria-hidden')).toBe('true');
-    expect(svg.getAttribute('role')).toBeNull();
-    expect(svg.getAttribute('aria-label')).toBeNull();
+    const wrapper = container.firstElementChild!;
+    expect(wrapper.getAttribute('aria-hidden')).toBe('true');
+    expect(wrapper.getAttribute('role')).toBeNull();
+    expect(wrapper.getAttribute('aria-label')).toBeNull();
   });
 
-  it('always carries the text-state-waiting base class', () => {
+  it('always carries the text-state-waiting base class on the wrapper', () => {
     const { container } = render(<StateGlyph />);
-    const svg = container.querySelector('svg')!;
-    expect(svg.getAttribute('class')).toMatch(/text-state-waiting/);
+    const wrapper = container.firstElementChild!;
+    expect(wrapper.getAttribute('class')).toMatch(/text-state-waiting/);
   });
 
-  it('forwards extra className', () => {
+  it('forwards extra className onto the wrapper', () => {
     const { container } = render(<StateGlyph className="my-token" />);
-    const svg = container.querySelector('svg')!;
-    expect(svg.getAttribute('class')).toMatch(/my-token/);
+    const wrapper = container.firstElementChild!;
+    expect(wrapper.getAttribute('class')).toMatch(/my-token/);
   });
 
   it('renders a single rotated rect (the diamond) inside the svg', () => {

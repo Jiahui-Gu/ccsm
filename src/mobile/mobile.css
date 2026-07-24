@@ -1,21 +1,47 @@
+/* Phone PWA layout (mobile composer/terminal-sync plan, Task 5). Reuses the
+   shared `--ccsm-*` semantic tokens defined by
+   `shared/sessionNavigator/sessionNavigator.css` (imported transitively via
+   `SessionDrawer` -> `SessionNavigator`) so phone and desktop chrome share
+   one color language, with static fallbacks for the tokens that only exist
+   on the desktop renderer's Tailwind build.
+   --app-height / --app-offset-top are maintained by
+   `mobileTerminalAdapter.ts`'s `visualViewport` listener on
+   `document.documentElement`, NOT inferred here — this stylesheet only
+   consumes them to keep the whole shell inside the visible viewport when a
+   software keyboard (or any other visual-viewport shrink/pan) occurs. No
+   rule here labels or infers "keyboard open" state. */
+
 :root {
   color-scheme: dark;
-  --app-height: 100%;
+  --app-height: 100dvh;
+  --app-offset-top: 0px;
+  --ccsm-app: #0b1020;
+  --ccsm-topbar: #111827;
+  --ccsm-surface: #0f172a;
+  --ccsm-border: rgba(255, 255, 255, 0.12);
+  --ccsm-fg: #f3f4f6;
+  --ccsm-muted: #9ca3af;
+  --ccsm-success: #86efac;
+  --ccsm-warning: #fbbf24;
+  --ccsm-error: #fca5a5;
+  --ccsm-focus: #60a5fa;
+  --touch-target: 44px;
   font-family: Inter, system-ui, sans-serif;
 }
 
-* {
+*,
+*::before,
+*::after {
   box-sizing: border-box;
 }
 
 html,
-body,
-#app {
+body {
   height: 100%;
   margin: 0;
-  overflow: hidden;
-  background: #0b1020;
-  color: #e5e7eb;
+  background: var(--ccsm-app);
+  color: var(--ccsm-fg);
+  overscroll-behavior: none;
 }
 
 button {
@@ -23,109 +49,397 @@ button {
   font: inherit;
 }
 
-.phone-shell {
-  display: flex;
-  flex-direction: column;
-  height: var(--app-height);
-  overflow: hidden;
-}
-
-header {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  padding: calc(10px + env(safe-area-inset-top)) 12px 10px;
-  border-bottom: 1px solid #263042;
-  background: #111827;
-}
-
-#status,
-.muted {
-  color: #9ca3af;
-}
-
-#status[data-status='connected'] {
-  color: #86efac;
-}
-
-#status[data-status='update_required'],
-#status[data-status='authentication_failed'],
-#status[data-status='connection_error'] {
-  color: #fca5a5;
-}
-
-#sessions,
-#keybar {
-  display: flex;
-  flex: 0 0 auto;
-  gap: 7px;
-  overflow-x: auto;
-  background: #0f172a;
-  scrollbar-width: none;
-}
-
-#sessions {
-  min-height: 51px;
-  padding: 8px 12px;
-  border-bottom: 1px solid #1f2937;
-}
-
-#sessions button,
-#keybar button {
-  flex: 0 0 auto;
-  border: 1px solid #374151;
-  background: #1f2937;
-}
-
-#sessions button {
-  padding: 8px 12px;
-  border-radius: 10px;
-  white-space: nowrap;
-}
-
-#sessions button.active {
-  border-color: #60a5fa;
-  background: #1e3a8a;
-}
-
-#terminal {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: hidden;
-  padding: 6px;
-  background: #000;
-}
-
-#terminal .xterm {
-  height: 100%;
-}
-
-#keybar {
-  padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
-  border-top: 1px solid #1f2937;
-}
-
-#keybar button {
-  min-width: 44px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  font: 13px ui-monospace, Menlo, Consolas, monospace;
-}
-
-#keybar button:active {
-  background: #334155;
-}
-
-#keybar button.sticky {
-  border-color: #f59e0b;
-  background: #78350f;
-}
-
 .missing-pairing {
   max-width: 32rem;
   margin: 20vh auto;
   padding: 24px;
   text-align: center;
+}
+
+/* Shell root: pinned to the visual viewport (not the layout viewport), so
+   it shrinks/pans with `--app-height` / `--app-offset-top` instead of being
+   pushed off-screen by a software keyboard. Rows: auto top bar, optional
+   auto banner, a terminal row that takes all remaining space and can
+   shrink, and an auto controls row. */
+.phone-shell {
+  position: fixed;
+  inset: 0;
+  top: var(--app-offset-top);
+  height: var(--app-height);
+  width: 100%;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  /* Without an explicit column track, an implicit single grid column
+     defaults to `auto` sizing — its MAX-CONTENT width, not the container's
+     own width. Any row with unwrapped content (e.g. `.phone-topbar__cwd`'s
+     `white-space: nowrap`) then silently grows the whole grid wider than
+     the phone shell; `overflow: hidden` clips it instead of the intended
+     per-row ellipsis/scroll behavior ever engaging. `minmax(0, 1fr)`
+     forces the column to track the container's actual width exactly, the
+     same way the terminal row's own `minmax(0, 1fr)` already does. */
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    'topbar'
+    'banner'
+    'terminal'
+    'controls';
+  overflow: hidden;
+  background: var(--ccsm-app);
+  color: var(--ccsm-fg);
+}
+
+.phone-topbar {
+  grid-area: topbar;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: var(--touch-target);
+  /* Grid items default to `min-width: auto` (their content's min-content
+     size), which is a DIFFERENT constraint than the flex `min-width: 0`
+     already set on `.phone-topbar__session` below — that inner rule only
+     governs how space is split *among* this row's own flex children, not
+     how the grid treats this row as a whole. Without this, an unwrapped
+     `.phone-topbar__cwd` (`white-space: nowrap`) silently pushes this
+     entire row wider than the phone shell on a narrow viewport; the shell's
+     `overflow: hidden` then clips it instead of letting the cwd's own
+     `text-overflow: ellipsis` do its job. */
+  min-width: 0;
+  padding: calc(8px + env(safe-area-inset-top)) calc(10px + env(safe-area-inset-right)) 8px
+    calc(10px + env(safe-area-inset-left));
+  background: var(--ccsm-topbar);
+  border-bottom: 1px solid var(--ccsm-border);
+}
+
+.phone-topbar__menu {
+  flex: none;
+  width: var(--touch-target);
+  height: var(--touch-target);
+  border: 1px solid var(--ccsm-border);
+  border-radius: 10px;
+  background: transparent;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.phone-topbar__menu:active {
+  background: var(--ccsm-surface);
+}
+
+.phone-topbar__session {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+
+.phone-topbar__name {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.phone-topbar__group,
+.phone-topbar__cwd {
+  font-size: 0.75rem;
+  color: var(--ccsm-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.phone-topbar__connection {
+  flex: none;
+  font-size: 0.75rem;
+  color: var(--ccsm-muted);
+  white-space: nowrap;
+}
+
+.phone-topbar__connection[data-connection='connected'] {
+  color: var(--ccsm-success);
+}
+
+.phone-topbar__connection[data-connection='update_required'],
+.phone-topbar__connection[data-connection='authentication_failed'],
+.phone-topbar__connection[data-connection='connection_error'] {
+  color: var(--ccsm-error);
+}
+
+/* Non-modal: rendered alongside the terminal, never over/instead of it, so
+   the last known terminal contents stay visible while reconnecting. */
+.phone-banner {
+  grid-area: banner;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px calc(10px + env(safe-area-inset-right)) 8px calc(10px + env(safe-area-inset-left));
+  background: var(--ccsm-surface);
+  border-bottom: 1px solid var(--ccsm-border);
+  font-size: 0.8125rem;
+  color: var(--ccsm-warning);
+}
+
+.phone-banner--exited {
+  color: var(--ccsm-error);
+  box-shadow: inset 3px 0 0 var(--ccsm-error);
+}
+
+.phone-banner__retry {
+  flex: none;
+  min-width: var(--touch-target);
+  min-height: 36px;
+  padding: 6px 14px;
+  border: 1px solid var(--ccsm-border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ccsm-fg);
+}
+
+.phone-banner__retry:active {
+  background: var(--ccsm-topbar);
+}
+
+.mobile-terminal {
+  grid-area: terminal;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 24px;
+  overflow: hidden;
+  background: #000;
+  position: relative;
+}
+
+.mobile-terminal__viewport {
+  min-width: 0;
+  min-height: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior: contain;
+  touch-action: pan-x pan-y;
+  scrollbar-width: none;
+  position: relative;
+}
+
+.mobile-terminal__viewport::-webkit-scrollbar {
+  display: none;
+}
+
+.mobile-terminal__grid {
+  min-height: 100%;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.mobile-terminal .xterm,
+.mobile-terminal .xterm-screen {
+  height: 100%;
+}
+
+.mobile-terminal .xterm-viewport {
+  scrollbar-width: none;
+}
+
+.mobile-terminal .xterm-viewport::-webkit-scrollbar {
+  display: none;
+}
+
+.mobile-terminal-scrollbar {
+  width: 24px;
+  min-width: 24px;
+  touch-action: none;
+  display: flex;
+  justify-content: center;
+}
+
+.mobile-terminal-scrollbar__rail {
+  position: relative;
+  width: 24px;
+  height: 100%;
+  background: color-mix(in srgb, #0d0f12 80%, #1f2937 20%);
+}
+
+.mobile-terminal-scrollbar__thumb {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  border-radius: 999px;
+  min-height: 44px;
+  background: color-mix(in srgb, #9ca3af 55%, #f3f4f6 45%);
+}
+
+.mobile-terminal__left-edge-affordance {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 14px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 120ms ease;
+  background: linear-gradient(to right, rgba(96, 165, 250, 0.28), rgba(96, 165, 250, 0));
+}
+
+.mobile-terminal--left-edge-affordance-visible .mobile-terminal__left-edge-affordance {
+  opacity: 1;
+}
+
+@media (forced-colors: active) {
+  .mobile-terminal-scrollbar {
+    border-left: 1px solid CanvasText;
+  }
+
+  .mobile-terminal-scrollbar__thumb {
+    background: Highlight;
+    forced-color-adjust: none;
+  }
+}
+
+/* Temporary drawer overlay — same behavior at every breakpoint. Taken out
+   of the shell's grid flow by `position: fixed` so it never consumes a
+   grid row. */
+.session-drawer {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+}
+
+.session-drawer__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.session-drawer__panel {
+  position: absolute;
+  inset: 0 20% 0 0;
+  max-width: 320px;
+  display: flex;
+  flex-direction: column;
+  background: var(--ccsm-topbar);
+  border-right: 1px solid var(--ccsm-border);
+  padding: calc(10px + env(safe-area-inset-top)) 0 calc(10px + env(safe-area-inset-bottom));
+  overflow-y: auto;
+}
+
+.session-drawer__header {
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 10px 8px;
+}
+
+.session-drawer__close {
+  min-width: var(--touch-target);
+  min-height: var(--touch-target);
+  padding: 8px 14px;
+  border: 1px solid var(--ccsm-border);
+  border-radius: 8px;
+  background: transparent;
+}
+
+.session-drawer__close:active {
+  background: var(--ccsm-surface);
+}
+
+.session-drawer .ccsm-session-navigator {
+  padding: 0 10px;
+}
+
+/* Fixed, horizontally scrolling row of discrete control-key buttons. */
+.terminal-keybar {
+  flex: none;
+  display: flex;
+  gap: 6px;
+  padding: 8px calc(10px + env(safe-area-inset-right)) 8px calc(10px + env(safe-area-inset-left));
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  background: var(--ccsm-surface);
+  border-top: 1px solid var(--ccsm-border);
+}
+
+.terminal-keybar::-webkit-scrollbar {
+  display: none;
+}
+
+.terminal-key {
+  flex: none;
+  min-width: var(--touch-target);
+  min-height: var(--touch-target);
+  padding: 8px 12px;
+  border: 1px solid var(--ccsm-border);
+  border-radius: 8px;
+  background: var(--ccsm-topbar);
+  font: 13px ui-monospace, Menlo, Consolas, monospace;
+  white-space: nowrap;
+}
+
+.terminal-key:active {
+  background: color-mix(in srgb, var(--ccsm-focus) 30%, var(--ccsm-topbar));
+}
+
+.terminal-key:disabled,
+.phone-topbar__menu:disabled,
+.composer-send:disabled {
+  opacity: 0.45;
+}
+
+.phone-controls {
+  grid-area: controls;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+}
+
+.message-composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 8px calc(10px + env(safe-area-inset-right)) calc(10px + env(safe-area-inset-bottom))
+    calc(10px + env(safe-area-inset-left));
+  background: var(--ccsm-app);
+}
+
+.message-composer__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: var(--touch-target);
+  max-height: 30dvh;
+  padding: 10px 12px;
+  border: 1px solid var(--ccsm-border);
+  border-radius: 12px;
+  background: var(--ccsm-surface);
+  color: var(--ccsm-fg);
+  font: inherit;
+  resize: none;
+  overflow-y: auto;
+}
+
+.composer-send {
+  flex: none;
+  min-width: var(--touch-target);
+  min-height: var(--touch-target);
+  padding: 0 16px;
+  border: none;
+  border-radius: 12px;
+  background: var(--ccsm-focus);
+  color: #0b1020;
+  font-weight: 600;
+}
+
+.composer-send:disabled {
+  background: var(--ccsm-border);
+  color: var(--ccsm-muted);
+}
+
+.message-composer__error {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--ccsm-error);
+  font-size: 0.75rem;
 }

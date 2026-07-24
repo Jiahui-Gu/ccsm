@@ -27,6 +27,30 @@ import Module from 'node:module';
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const DIST_ELECTRON = path.join(REPO_ROOT, 'dist', 'electron');
+const DIST_SESSION_NAVIGATOR_MODEL_BARREL = path.join(
+  REPO_ROOT,
+  'dist',
+  'src',
+  'shared',
+  'sessionNavigator',
+  'index.js',
+);
+const DIST_SESSION_NAVIGATOR_PRESENTATION_ENTRY = path.join(
+  REPO_ROOT,
+  'dist',
+  'src',
+  'shared',
+  'sessionNavigator',
+  'presentation.js',
+);
+const DIST_SESSION_NAVIGATOR_COMPONENT = path.join(
+  REPO_ROOT,
+  'dist',
+  'src',
+  'shared',
+  'sessionNavigator',
+  'SessionNavigator.js',
+);
 const ELECTRON_STUB = path.join(REPO_ROOT, 'tests', 'fixtures', 'electronStub.cjs');
 
 // Modules to redirect at resolve-time. `electron` is unavailable outside
@@ -140,6 +164,24 @@ describe('electron-load-smoke — runtime/sink modules require cleanly (Task #76
     delete require.cache[require.resolve(absPath)];
     // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
     expect(() => require(absPath)).not.toThrow();
+  });
+
+  it('loads the built sessionNavigator model barrel without presentation exports', () => {
+    if (!fs.existsSync(DIST_SESSION_NAVIGATOR_MODEL_BARREL)) {
+      throw new Error(
+        `Expected dist file missing: ${DIST_SESSION_NAVIGATOR_MODEL_BARREL}. Did the TS layout change?`,
+      );
+    }
+    expect(fs.existsSync(DIST_SESSION_NAVIGATOR_PRESENTATION_ENTRY)).toBe(false);
+    expect(fs.existsSync(DIST_SESSION_NAVIGATOR_COMPONENT)).toBe(false);
+    delete require.cache[require.resolve(DIST_SESSION_NAVIGATOR_MODEL_BARREL)];
+    // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+    const exports = require(DIST_SESSION_NAVIGATOR_MODEL_BARREL) as Record<string, unknown>;
+    expect(exports.SESSION_NAVIGATOR_MESSAGE_VERSION).toBe(1);
+    expect(exports.buildSessionNavigatorModel).toBeTypeOf('function');
+    expect(exports).not.toHaveProperty('SessionNavigator');
+    expect(exports).not.toHaveProperty('SessionNavigatorItem');
+    expect(exports).not.toHaveProperty('SessionStateGlyph');
   });
 
   // Cleanup: restore the resolve hook so other tests in the run are

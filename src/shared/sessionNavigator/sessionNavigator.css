@@ -1,0 +1,174 @@
+:root {
+  --ccsm-app: var(--color-bg-app, #0b1020);
+  --ccsm-sidebar: var(--color-bg-sidebar, #111827);
+  --ccsm-active-row: var(--color-bg-active, rgba(255, 255, 255, 0.09));
+  --ccsm-border: var(--color-border-subtle, rgba(255, 255, 255, 0.1));
+  --ccsm-fg: var(--color-fg-primary, #f3f4f6);
+  --ccsm-muted: var(--color-fg-secondary, #9ca3af);
+  --ccsm-success: var(--color-state-success, #86efac);
+  --ccsm-warning: var(--color-state-waiting, #fbbf24);
+  --ccsm-error: var(--color-state-error, #fca5a5);
+  --ccsm-focus: var(--color-accent, #60a5fa);
+}
+
+.ccsm-session-navigator {
+  color: var(--ccsm-fg);
+}
+
+.ccsm-session-navigator__group + .ccsm-session-navigator__group {
+  margin-top: 0.5rem;
+}
+
+.ccsm-session-navigator__group-button,
+.ccsm-session-navigator__item {
+  width: 100%;
+  border: 1px solid transparent;
+  border-radius: 0.625rem;
+  background: transparent;
+  color: inherit;
+  outline: none;
+}
+
+.ccsm-session-navigator__group-button {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0 0.75rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ccsm-session-navigator__group-button:focus-visible,
+.ccsm-session-navigator__item:focus-visible {
+  border-color: var(--ccsm-focus);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ccsm-focus) 60%, transparent);
+}
+
+.ccsm-session-navigator__group-button:hover,
+.ccsm-session-navigator__item:hover {
+  background: color-mix(in srgb, var(--ccsm-active-row) 78%, transparent);
+}
+
+.ccsm-session-navigator__group-button[data-expanded='true'] {
+  background: color-mix(in srgb, var(--ccsm-active-row) 45%, transparent);
+}
+
+.ccsm-session-navigator__group-label,
+.ccsm-session-navigator__session-name,
+.ccsm-session-navigator__session-cwd {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ccsm-session-navigator__group-label {
+  flex: 1 1 auto;
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.ccsm-session-navigator__group-count {
+  flex: none;
+  color: var(--ccsm-muted);
+  font-size: 0.75rem;
+}
+
+.ccsm-session-navigator__chevron {
+  flex: none;
+  color: var(--ccsm-muted);
+  font-size: 0.75rem;
+  transition: transform 160ms ease;
+}
+
+.ccsm-session-navigator__group-button[data-expanded='true'] .ccsm-session-navigator__chevron {
+  transform: rotate(90deg);
+}
+
+/* Also rotate when data-expanded is set directly on the chevron itself, so
+   hosts that render SessionGroupHeaderBody inside their own button (rather
+   than the .group-button wrapper) still get the animation. */
+.ccsm-session-navigator__chevron[data-expanded='true'] {
+  transform: rotate(90deg);
+}
+
+.ccsm-session-navigator__list {
+  margin: 0.25rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ccsm-session-navigator__item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0 0.75rem 0 1rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.ccsm-session-navigator__item + .ccsm-session-navigator__item {
+  margin-top: 0.125rem;
+}
+
+.ccsm-session-navigator__item[data-selected='true'] {
+  background: var(--ccsm-active-row);
+  box-shadow: inset 3px 0 0 var(--ccsm-focus);
+}
+
+.ccsm-session-navigator__item[data-selected='true'] .ccsm-session-navigator__session-name {
+  font-weight: 600;
+}
+
+.ccsm-session-navigator__session-copy {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.ccsm-session-navigator__session-name {
+  font-size: 0.875rem;
+  line-height: 1.2;
+}
+
+.ccsm-session-navigator__session-cwd {
+  margin-top: 0.125rem;
+  color: var(--ccsm-muted);
+  font-size: 0.75rem;
+  line-height: 1.2;
+}
+
+.ccsm-session-navigator__glyph {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+}
+
+.ccsm-session-navigator__glyph[data-state='active'] {
+  color: var(--ccsm-success);
+}
+
+.ccsm-session-navigator__glyph[data-state='idle'] {
+  color: var(--ccsm-muted);
+}
+
+.ccsm-session-navigator__glyph[data-state='waiting'] {
+  color: var(--ccsm-warning);
+}
+
+.ccsm-session-navigator__glyph[data-state='exited'] {
+  color: var(--ccsm-error);
+}
+
+.ccsm-session-navigator__sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

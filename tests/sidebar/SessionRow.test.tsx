@@ -178,4 +178,71 @@ describe('<SessionRow /> (extracted)', () => {
       ).toBe('idle');
     });
   });
+
+  // Task 4 (mobile-remote-shared-ui plan) — SessionRow now composes the
+  // shared session-navigator presentation (SessionNavigatorItem's body +
+  // SessionStateGlyph) for typography/cwd/state-glyph, while keeping full
+  // ownership of the <li>, dnd-kit wiring, context menu, rename, etc.
+  describe('shared session-navigator presentation (Task 4)', () => {
+    it('option accessible name includes both the session name and cwd, and stays selected', () => {
+      const session: Session = {
+        id: 's1',
+        name: 'Session A',
+        state: 'idle',
+        cwd: 'C:\\work',
+        model: 'claude-sonnet-4',
+        groupId: 'g1',
+        agentType: 'claude-code',
+      };
+      const { getByRole } = renderRow(session, { selected: true, active: true });
+      expect(
+        getByRole('option', { name: /Session A.*C:\\work/ }),
+      ).toHaveAttribute('aria-selected', 'true');
+    });
+
+    it('renders the shared state glyph with data-state driven by active/crashed/session.state', () => {
+      const session: Session = {
+        id: 's1',
+        name: 'Session A',
+        state: 'idle',
+        cwd: 'C:\\work',
+        model: 'claude-sonnet-4',
+        groupId: 'g1',
+        agentType: 'claude-code',
+      };
+      const { getByRole } = renderRow(session, { active: true });
+      expect(getByRole('img', { name: /active/i })).toHaveAttribute('data-state', 'active');
+    });
+
+    it('maps a crashed session to the "exited" glyph state even when active', () => {
+      useStore.setState({
+        disconnectedSessions: { s1: { kind: 'crashed', detail: 'exit 1' } as never },
+      });
+      const session: Session = {
+        id: 's1',
+        name: 'Session A',
+        state: 'idle',
+        cwd: 'C:\\work',
+        model: 'claude-sonnet-4',
+        groupId: 'g1',
+        agentType: 'claude-code',
+      };
+      const { getByRole } = renderRow(session, { active: true });
+      expect(getByRole('img', { name: /exited/i })).toHaveAttribute('data-state', 'exited');
+    });
+
+    it('maps a non-active, non-crashed waiting session to the "waiting" glyph state', () => {
+      const session: Session = {
+        id: 's1',
+        name: 'Session A',
+        state: 'waiting',
+        cwd: 'C:\\work',
+        model: 'claude-sonnet-4',
+        groupId: 'g1',
+        agentType: 'claude-code',
+      };
+      const { getByRole } = renderRow(session);
+      expect(getByRole('img', { name: /waiting/i })).toHaveAttribute('data-state', 'waiting');
+    });
+  });
 });

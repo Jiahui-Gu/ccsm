@@ -2,7 +2,7 @@ import type { PairingIdentity } from '../../src/shared/mobileRemote';
 import { createEncryptedPeer, type EncryptedPeer } from './encryptedPeer';
 import { createPairingStore, type PairingStore } from './pairingStore';
 import { installPtyFanout } from './ptyFanout';
-import { handleClientMessage, listEntries } from './remoteMessages';
+import { handleClientMessage, sendSessionCatalog } from './remoteMessages';
 import type { RemotePeer } from './remotePeer';
 import { resolveRelayUrl } from './relayConfig';
 import {
@@ -90,7 +90,7 @@ export async function createMobileRemoteController(
       handleMessage: clientMessageHandler,
       onAuthenticated: () => {
         setStatus({ kind: 'ready', phoneConnected: true });
-        peer?.send({ type: 'sessions.list', sessions: listEntries() });
+        if (peer) sendSessionCatalog(peer);
       },
       onFailure: (reason) => setStatus({ kind: 'error', reason }),
     });

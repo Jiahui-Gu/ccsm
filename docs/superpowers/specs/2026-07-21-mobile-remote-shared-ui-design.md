@@ -14,7 +14,7 @@ The first release covers the high-frequency control path:
 
 - grouped live-session navigation;
 - session names, working directories, ordering, and runtime state;
-- terminal output and input;
+- terminal output, composed text input, and discrete control keys;
 - session switching;
 - touch-friendly terminal keys;
 - explicit connection, reconnect, authentication, version, and empty states.
@@ -152,19 +152,94 @@ action buttons remain desktop wrappers around the shared presentation.
   navigator;
 - selecting a session closes the drawer and requests its current terminal
   snapshot;
-- the bottom key bar provides Esc, Tab, sticky Ctrl, arrows, interrupt, and
-  Enter, with horizontal scrolling and safe-area padding;
-- xterm focus, `visualViewport`, orientation refit, and PWA standalone behavior
-  remain supported.
+- the bottom controls contain a horizontally scrollable key bar and a persistent
+  text composer, with safe-area padding;
+- `visualViewport`, orientation refit, and PWA standalone behavior remain
+  supported.
 
 The drawer is temporary in portrait mode. A later tablet breakpoint may pin it
 open, but v0.3.0 does not require a tablet-specific split view.
 
+## Phone input model
+
+The terminal is a read, scroll, select, and copy surface. Tapping it never
+focuses xterm's hidden textarea and never opens the software keyboard. The
+composer textarea is the phone's only software-keyboard entry point:
+
+- focusing the composer allows the operating system to show the keyboard;
+- blurring the composer or dismissing the keyboard allows it to close;
+- session output, connection changes, permission prompts, and
+  `AskUserQuestion` never call `focus()` or `blur()`;
+- Return inserts a local newline and the explicit Send button submits the
+  complete draft;
+- a successful submission clears the draft; a rejected submission preserves
+  it with a visible error;
+- changing sessions and transient disconnects preserve a separate local draft
+  for each session;
+- reconnect never submits or replays a draft automatically.
+
+The key bar sends discrete PTY control input without focusing the composer. It
+provides Esc, Tab, Up, Down, Left, Right, Space, digits 1 through 4, Ctrl+C, and
+Enter. These keys cover Claude's native permission and question selectors while
+keeping the underlying terminal UI visible.
+
+`AskUserQuestion` remains Claude's native PTY interface in v0.3.0. The user
+selects an option with the key bar. When an option requests free text, the user
+enters that text in the same composer and sends it. The phone does not parse
+terminal output, infer question state, create a separate form, or change
+keyboard focus automatically.
+
+Text submission uses a complete-draft protocol message rather than streaming
+IME composition events. The desktop validates the target session, normalizes
+CRLF to LF, applies the PTY's bracketed-paste mode when active, writes the
+complete draft, and then writes Enter. An empty draft is not submitted. The
+message is not recoverable or replayable by the relay, matching existing
+`session.input` safety semantics.
+
+Live slash-command and `@`-file completion, shell history search, Vim-style
+editing, and arbitrary raw-key streaming are deferred. Complete slash commands
+such as `/status` remain supported through the composer.
+
+## Terminal rendering and incremental synchronization
+
+The phone retains xterm.js as the ANSI/PTY rendering engine. React owns the
+terminal container and surrounding controls; a dedicated adapter owns one
+long-lived xterm instance, its addons, sizing, and relay writes. React renders
+no terminal rows and does not remount the terminal during ordinary state
+updates.
+
+The phone terminal is configured as a read-only display surface. Fit, Unicode,
+clipboard, and web-link behavior may use the existing xterm.js addons. Mobile
+CSS and event handling preserve touch scrolling and text selection while
+preventing xterm's hidden textarea from becoming a software-keyboard entry
+point.
+
+Each session's PTY chunks already carry a monotonic `seq`, and the desktop's
+headless xterm snapshot records the last sequence represented in that snapshot.
+The phone enforces the following synchronization contract:
+
+1. During steady state, only a chunk with `seq === lastSeq + 1` is written to
+   xterm.
+2. Chunks with `seq <= lastSeq` are duplicates or stale and are discarded.
+3. A chunk with `seq > lastSeq + 1` indicates a gap. Incremental writes pause
+   and the phone requests one authoritative snapshot.
+4. During session selection, initial connection, reconnect, and gap recovery,
+   live chunks are buffered by sequence while the snapshot is in flight.
+5. The snapshot is applied exactly once with `reset()` followed by its
+   serialized data. Buffered chunks at or below the snapshot sequence are
+   discarded, and newer contiguous chunks are written in order.
+6. A snapshot is never appended to an existing screen. Routine polling never
+   requests snapshots.
+
+This preserves ANSI cursor movement and in-place Claude TUI redraws without
+re-appending historical output. A terminal remount, sequence gap, or
+snapshot/live race cannot silently create duplicate lines.
+
 ## Connection and error states
 
 The phone keeps the last terminal frame visible during transient disconnects.
-It disables terminal input and shows a non-modal reconnect banner. Successful
-reconnect performs these steps in order:
+It disables Send and the key bar, preserves per-session drafts, and shows a
+non-modal reconnect banner. Successful reconnect performs these steps in order:
 
 1. authenticate the encrypted peer;
 2. fetch the latest navigation model;
@@ -195,8 +270,11 @@ automatic retries until the user rescans or updates.
 - status is conveyed through text and glyph shape in addition to color;
 - session rows expose selected and expanded states to assistive technology;
 - focus rings use the shared desktop token;
-- terminal controls account for bottom safe-area insets and the visible
-  viewport above the software keyboard.
+- terminal controls and the composer account for bottom safe-area insets and
+  the visible viewport above the software keyboard;
+- terminal selection and copy remain available without opening the keyboard;
+- the composer has an accessible label, and key-bar buttons expose their PTY
+  action rather than only their displayed symbol.
 
 ## Testing and acceptance
 
@@ -207,13 +285,45 @@ automatic retries until the user rescans or updates.
 - protocol contract tests for navigation messages and malformed metadata;
 - desktop regression tests for grouped navigation, selection, and runtime
   glyphs after extraction;
-- phone component tests for drawer behavior, session switching, reconnect
-  input gating, empty states, and keyboard controls;
+- phone component tests for drawer behavior, session switching, per-session
+  drafts, explicit submission, reconnect input gating, empty states, and
+  keyboard controls;
+- input contract tests for multiline and CJK IME drafts, CRLF normalization,
+  bracketed paste, successful clearing, failed-send preservation, and no replay
+  after reconnect;
+- synchronization tests for duplicate, stale, missing, out-of-order, and
+  snapshot-overlap frames, including exactly-once snapshot replacement and
+  ordered tail draining;
 - visual snapshots at representative portrait, landscape, and narrow desktop
   sizes;
 - public-relay Playwright E2E that scans/imports pairing, runs `/status` from
-  the phone page, switches sessions, interrupts input, rotates orientation,
-  disconnects and reconnects, and re-pairs in an existing tab.
+  the phone composer, copies terminal output without opening the keyboard,
+  answers selection and free-text `AskUserQuestion` paths, switches sessions,
+  interrupts input, rotates orientation, disconnects and reconnects with a
+  preserved unsent draft, and re-pairs in an existing tab.
+
+### Dogfood
+
+Release dogfood compares the phone's serialized xterm buffer with the desktop's
+authoritative headless xterm buffer after each scenario:
+
+1. a deterministic PTY fixture emits uniquely numbered lines, long wrapped
+   text, ANSI cursor rewrites, progress updates, clear-screen sequences, and
+   alternate-screen transitions;
+2. transport fault injection duplicates frames, interleaves a snapshot with
+   live output, drops a sequence, and disconnects during active output;
+3. the phone must recover to exact buffer parity with each sequence applied at
+   most once, with no duplicate lines, stale repaint, or reconnect flashback;
+4. a real Claude CLI session runs a long response, `/status`, and both
+   selection and free-text `AskUserQuestion` flows; permission confirmation is
+   N/A while `entryFactory.ts` unconditionally launches Claude with
+   `--dangerously-skip-permissions`;
+5. a physical phone verifies long-output scrolling, selection and copy,
+   portrait/landscape rotation, composer behavior, and software-keyboard
+   occlusion.
+
+Any final-buffer mismatch, duplicated historical content, unrecovered sequence
+gap, or visible snapshot/live replay blocks v0.3.0.
 
 ### Release gate
 
@@ -223,8 +333,10 @@ v0.3.0 is created only after:
    checks pass;
 2. the public Cloudflare deployment passes the real desktop + real Claude CLI
    E2E;
-3. a physical phone confirms readable navigation, reliable software-keyboard
-   input, no keybar occlusion, session switching, and reconnect recovery;
+3. a physical phone confirms readable navigation, terminal selection without
+   keyboard activation, reliable CJK and multiline composition, native
+   `AskUserQuestion` selection and free-text answers, no composer or key-bar
+   occlusion, session switching, and reconnect recovery without input replay;
 4. the desktop UI has no navigation or terminal regression.
 
 ## Rollout

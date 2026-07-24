@@ -41,6 +41,20 @@ describe('onPtyData / emitPtyData', () => {
     expect(cb).toHaveBeenCalledWith('sid-A', 'hello', 7);
   });
 
+  it('preserves the raw desktop/notification stream as one untagged delivery', () => {
+    const notificationSink = vi.fn();
+    track(notificationSink);
+
+    emitPtyData('sid-raw', 'osc-and-terminal-bytes', 12);
+
+    expect(notificationSink).toHaveBeenCalledTimes(1);
+    expect(notificationSink).toHaveBeenCalledWith(
+      'sid-raw',
+      'osc-and-terminal-bytes',
+      12,
+    );
+  });
+
   it('fans out the same chunk + seq to every subscriber', () => {
     const a = vi.fn();
     const b = vi.fn();

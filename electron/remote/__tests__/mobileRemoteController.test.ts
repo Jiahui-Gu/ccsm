@@ -1,4 +1,4 @@
-import { TextEncoder } from 'node:util';
+import { TextDecoder, TextEncoder } from 'node:util';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('electron', () => ({
@@ -18,6 +18,7 @@ import {
   createHandshakeProof,
   deriveSessionKeys,
   MOBILE_REMOTE_PROTOCOL_VERSION,
+  openEnvelope,
   sealEnvelope,
 } from '../../../src/shared/mobileRemote';
 import { createEncryptedPeer, handshakeTranscript } from '../encryptedPeer';
@@ -26,21 +27,37 @@ import { installPtyFanout } from '../ptyFanout';
 import type { RemotePeer } from '../remotePeer';
 import type { RelaySocket, RelaySocketStatus } from '../relaySocket';
 
-const ptyListeners: Array<(sid: string, chunk: string, seq: number) => void> = [];
+const mockedRemoteState = vi.hoisted(() => ({
+  loadState: vi.fn(),
+  listPtySessions: vi.fn(),
+}));
+const terminalSyncListeners: Array<(publication: Record<string, unknown>) => void> = [];
+vi.mock('../../db', () => ({
+  loadState: mockedRemoteState.loadState,
+}));
 vi.mock('../../ptyHost', () => ({
-  onPtyData: vi.fn((handler: (sid: string, chunk: string, seq: number) => void) => {
-    ptyListeners.push(handler);
-    return () => ptyListeners.splice(ptyListeners.indexOf(handler), 1);
+  onTerminalSyncPublication: vi.fn((handler: (publication: Record<string, unknown>) => void) => {
+    terminalSyncListeners.push(handler);
+    return () => terminalSyncListeners.splice(terminalSyncListeners.indexOf(handler), 1);
   }),
-  listPtySessions: vi.fn(() => []),
-  getBufferSnapshot: vi.fn(),
-  getPtySession: vi.fn(),
+  listPtySessions: mockedRemoteState.listPtySessions,
+  getCoordinatedSnapshot: vi.fn(),
   inputPtySession: vi.fn(),
   resizePtySession: vi.fn(),
 }));
 
 const firstIdentity = { roomId: 'B'.repeat(43), secret: 'A'.repeat(43) };
 const secondIdentity = { roomId: 'D'.repeat(43), secret: 'C'.repeat(43) };
+const textDecoder = new TextDecoder();
+
+function navigationSnapshot(sessionId = 's1'): string {
+  return JSON.stringify({
+    version: 1,
+    activeId: sessionId,
+    groups: [{ id: 'g1', name: 'Work', collapsed: false, kind: 'normal' }],
+    sessions: [{ id: sessionId, name: 'Live', cwd: '/work', groupId: 'g1', state: 'idle' }],
+  });
+}
 
 class FakeRelaySocket implements RelaySocket {
   readonly sent: string[] = [];
@@ -75,7 +92,18 @@ class FakeRelaySocket implements RelaySocket {
 
 describe('desktop mobile remote controller', () => {
   beforeEach(() => {
-    ptyListeners.splice(0);
+    terminalSyncListeners.splice(0);
+    mockedRemoteState.loadState.mockReset();
+    mockedRemoteState.listPtySessions.mockReset();
+    mockedRemoteState.loadState.mockReturnValue(navigationSnapshot());
+    mockedRemoteState.listPtySessions.mockReturnValue([{
+      sid: 's1',
+      cwd: '/work',
+      pid: 1,
+      geometry: { cols: 80, rows: 24, epoch: 0 },
+      cols: 80,
+      rows: 24,
+    }]);
   });
 
   it('never forwards application traffic after a failed phone proof', async () => {
@@ -262,6 +290,83 @@ describe('desktop mobile remote controller', () => {
     expect(handleMessage).not.toHaveBeenCalled();
   });
 
+  it('sends sessions.list and sessions.navigator after authentication', async () => {
+    const socket = new FakeRelaySocket();
+    const controller = await createMobileRemoteController({
+      relayUrl: 'https://relay.example.workers.dev',
+      pairingStore: {
+        loadOrCreate: vi.fn(async () => firstIdentity),
+        delete: vi.fn(),
+      },
+      createSocket: () => socket,
+    });
+
+    socket.emitStatus('open');
+    const desktopHello = JSON.parse(socket.sent[0]!) as {
+      type: 'handshake.hello';
+      version: 1;
+      role: 'desktop';
+      connectionId: string;
+      nonce: string;
+    };
+    const phoneHello = {
+      type: 'handshake.hello',
+      version: MOBILE_REMOTE_PROTOCOL_VERSION,
+      role: 'phone',
+      connectionId: firstIdentity.roomId,
+      nonce: 'G'.repeat(22),
+    } as const;
+    socket.emitMessage(phoneHello);
+    socket.emitMessage({
+      type: 'handshake.proof',
+      connectionId: firstIdentity.roomId,
+      proof: await createHandshakeProof(
+        firstIdentity.secret,
+        handshakeTranscript(desktopHello, phoneHello, 'phone'),
+      ),
+    });
+
+    await vi.waitFor(() =>
+      expect(
+        socket.sent.filter((message) => JSON.parse(message).type === 'encrypted'),
+      ).toHaveLength(2),
+    );
+
+    const phoneKeys = await deriveSessionKeys({
+      ...firstIdentity,
+      desktopNonce: desktopHello.nonce,
+      phoneNonce: phoneHello.nonce,
+      role: 'phone',
+    });
+    const sentApplicationMessages = await Promise.all(
+      socket.sent
+        .map((message) => JSON.parse(message) as { type: string })
+        .filter(
+          (message): message is {
+            type: 'encrypted';
+            version: 1;
+            connectionId: string;
+            sequence: number;
+            ciphertext: string;
+          } => message.type === 'encrypted',
+        )
+        .map(async (envelope) =>
+          JSON.parse(textDecoder.decode(await openEnvelope(phoneKeys.receive, envelope))),
+        ),
+    );
+
+    expect(sentApplicationMessages.slice(0, 2)).toEqual([
+      { type: 'sessions.list', sessions: expect.any(Array) },
+      {
+        type: 'sessions.navigator',
+        version: 1,
+        model: expect.objectContaining({ groups: expect.any(Array) }),
+      },
+    ]);
+
+    controller.close();
+  });
+
   it('fans PTY output only to peers subscribed to the emitting SID', () => {
     const matching: RemotePeer = {
       subscribedSid: 'sid-a',
@@ -273,13 +378,20 @@ describe('desktop mobile remote controller', () => {
     };
     const uninstall = installPtyFanout(new Set([matching, other]));
 
-    ptyListeners[0]?.('sid-a', 'chunk', 42);
+    terminalSyncListeners[0]?.({
+      type: 'chunk',
+      sid: 'sid-a',
+      chunk: 'chunk',
+      seq: 42,
+      geometryEpoch: 0,
+    });
 
     expect(matching.send).toHaveBeenCalledWith({
       type: 'pty.data',
       sid: 'sid-a',
       chunk: 'chunk',
       seq: 42,
+      geometryEpoch: 0,
     });
     expect(other.send).not.toHaveBeenCalled();
     uninstall();

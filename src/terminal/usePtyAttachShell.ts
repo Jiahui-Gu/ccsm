@@ -40,6 +40,9 @@ import {
   getShell,
   reconcileShellView,
   resetShellForReload,
+  commitVisibleDesktopResizeNow,
+  scheduleVisibleDesktopResize,
+  cancelVisibleDesktopResize,
   setMask,
   showShell,
   subscribeShellData,
@@ -142,10 +145,7 @@ async function runColdStartSuffix(
     /* best-effort */
   }
 
-  const snap = (await pty.getBufferSnapshot(sessionId)) as {
-    snapshot: string;
-    seq: number;
-  };
+  const snap = await pty.getBufferSnapshot(sessionId);
   try {
     shell.term.reset();
   } catch {
@@ -178,9 +178,7 @@ async function runColdStartSuffix(
     shell.fit.fit();
     const newCols = shell.term.cols;
     const newRows = shell.term.rows;
-    if (newCols !== res.cols || newRows !== res.rows) {
-      await pty.resize(sessionId, newCols, newRows).catch(() => {});
-    }
+    await commitVisibleDesktopResizeNow(sessionId, newCols, newRows);
   } catch (e) {
     warn('attach-shell', 'post-attach fit failed', e);
   }
@@ -313,7 +311,11 @@ export function usePtyAttachShell(
         showShell(sessionId);
         try {
           existing.fit.fit();
-          void pty.resize(sessionId, existing.term.cols, existing.term.rows).catch(() => {});
+          await commitVisibleDesktopResizeNow(
+            sessionId,
+            existing.term.cols,
+            existing.term.rows,
+          );
           existing.term.focus();
         } catch (e) {
           warn('attach-shell', 'visited path post-show ops failed', e);
@@ -385,7 +387,6 @@ export function usePtyAttachShell(
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
-    let debounce: ReturnType<typeof setTimeout> | null = null;
     let lastW = 0;
     let lastH = 0;
     let baseline = false;
@@ -396,7 +397,7 @@ export function usePtyAttachShell(
         shell.fit.fit();
         const cols = shell.term.cols;
         const rows = shell.term.rows;
-        window.ccsmPty?.resize(sessionId, cols, rows).catch(() => {});
+        scheduleVisibleDesktopResize(sessionId, cols, rows);
         // #82: a fit() that changed row geometry can leave the DOM
         // scrollTop lagging xterm's ydisp (same drift class as a reveal).
         // Force a viewport reconcile so the native scrollbar tracks.
@@ -419,12 +420,11 @@ export function usePtyAttachShell(
       if (w === lastW && h === lastH) return;
       lastW = w;
       lastH = h;
-      if (debounce) clearTimeout(debounce);
-      debounce = setTimeout(apply, 80);
+      apply();
     });
     ro.observe(host);
     return () => {
-      if (debounce) clearTimeout(debounce);
+      cancelVisibleDesktopResize(sessionId);
       ro.disconnect();
     };
   }, [sessionId, hostRef]);
