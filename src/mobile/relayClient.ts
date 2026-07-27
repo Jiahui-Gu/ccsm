@@ -13,7 +13,11 @@ import {
   type RandomValues,
   type SessionKeys,
 } from '../shared/mobileRemote';
-import type { MobileClientMessage, MobileServerMessage } from './phoneApp';
+import {
+  parseMirrorServerMessage,
+  type MirrorClientMessage,
+  type MirrorServerMessage,
+} from '../shared/mobileRemote/mirrorMessages';
 
 export type PhoneConnectionStatus =
   | 'connecting'
@@ -27,9 +31,9 @@ export type PhoneConnectionStatus =
 
 export type RelayClient = {
   connect(): void;
-  send(message: MobileClientMessage): Promise<void>;
+  send(message: MirrorClientMessage): Promise<void>;
   close(): void;
-  onMessage(handler: (message: MobileServerMessage) => void): () => void;
+  onMessage(handler: (message: MirrorServerMessage) => void): () => void;
   onStatus(handler: (status: PhoneConnectionStatus) => void): () => void;
 };
 
@@ -44,7 +48,7 @@ type SocketLike = {
 };
 
 type PendingMessage = {
-  message: MobileClientMessage;
+  message: MirrorClientMessage;
   waiters: Array<{
     resolve: () => void;
     reject: (error: unknown) => void;
@@ -52,8 +56,8 @@ type PendingMessage = {
 };
 
 type RecoveryMessage = Extract<
-  MobileClientMessage,
-  { type: 'sessions.list' | 'session.snapshot' | 'session.resize' }
+  MirrorClientMessage,
+  { type: 'mirror.start' }
 >;
 
 export type RelayClientOptions = {
@@ -70,7 +74,6 @@ export type RelayClientOptions = {
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 const OPEN = 1;
-const MAX_PENDING_RECOVERY_REQUESTS = 32;
 
 function defaultRandomValues(bytes: Uint8Array): Uint8Array {
   return globalThis.crypto.getRandomValues(bytes);
@@ -140,7 +143,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
   const seal = options.seal ?? sealEnvelope;
   const heartbeatIntervalMs = options.heartbeatIntervalMs ?? 15_000;
   const inactivityTimeoutMs = options.inactivityTimeoutMs ?? 45_000;
-  const messageHandlers = new Set<(message: MobileServerMessage) => void>();
+  const messageHandlers = new Set<(message: MirrorServerMessage) => void>();
   const statusHandlers = new Set<(status: PhoneConnectionStatus) => void>();
   const suppressedSockets = new WeakSet<object>();
   const pendingMessages: PendingMessage[] = [];
@@ -166,18 +169,8 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
     current.close(code, reason);
   }
 
-  function isRecoveryMessage(
-    message: MobileClientMessage,
-  ): message is RecoveryMessage {
-    return (
-      message.type === 'sessions.list' ||
-      message.type === 'session.snapshot' ||
-      message.type === 'session.resize'
-    );
-  }
-
-  function recoveryKey(message: RecoveryMessage): string {
-    return message.type === 'sessions.list' ? message.type : `${message.type}:${message.sid}`;
+  function isRecoveryMessage(message: MirrorClientMessage): message is RecoveryMessage {
+    return message.type === 'mirror.start';
   }
 
   function settlePending(pending: PendingMessage, error?: unknown): void {
@@ -199,19 +192,14 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
   function queueRecovery(pending: PendingMessage, front = false): boolean {
     const message = pending.message;
     if (!isRecoveryMessage(message)) return false;
-    const key = recoveryKey(message);
     const duplicate = pendingMessages.find(
-      (queued) => isRecoveryMessage(queued.message) && recoveryKey(queued.message) === key,
+      (queued) => isRecoveryMessage(queued.message),
     );
     if (duplicate) {
       if (!front) duplicate.message = message;
       duplicate.waiters.push(...pending.waiters);
       return true;
     }
-    const recoveryCount = pendingMessages.filter((queued) =>
-      isRecoveryMessage(queued.message),
-    ).length;
-    if (recoveryCount >= MAX_PENDING_RECOVERY_REQUESTS) return false;
     if (front) pendingMessages.unshift(pending);
     else pendingMessages.push(pending);
     return true;
@@ -245,7 +233,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
         return;
       }
       queueRecovery({
-        message: { type: 'sessions.list' },
+        message: { type: 'mirror.start' },
         waiters: [{ resolve: () => undefined, reject: () => undefined }],
       });
       void scheduleFlush();
@@ -394,7 +382,8 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
         const currentKeys = keys;
         const plaintext = await openEnvelope(currentKeys.receive, message);
         if (!isCurrent() || keys !== currentKeys) return;
-        const applicationMessage = JSON.parse(textDecoder.decode(plaintext)) as MobileServerMessage;
+        const applicationMessage = parseMirrorServerMessage(textDecoder.decode(plaintext));
+        if (!applicationMessage) throw new Error('invalid_mirror_message');
         for (const handler of messageHandlers) handler(applicationMessage);
       } catch {
         emitStatus('authentication_failed');

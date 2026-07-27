@@ -1,6 +1,5 @@
 /* global HTMLMetaElement, location */
 
-import '@xterm/xterm/css/xterm.css';
 import './mobile.css';
 
 import {

@@ -1,7 +1,7 @@
 import type { BrowserWindow } from 'electron';
 
 import type { PairingIdentity } from '../../src/shared/mobileRemote';
-import { parseMirrorClientMessage } from '../../src/shared/mobileRemote';
+import { parseMirrorClientMessage } from '../../src/shared/mobileRemote/mirrorMessages';
 import { createEncryptedPeer, type EncryptedPeer } from './encryptedPeer';
 import { createPairingStore, type PairingStore } from './pairingStore';
 import { resolveRelayUrl } from './relayConfig';

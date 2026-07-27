@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  MOBILE_REMOTE_PROTOCOL_VERSION,
   parseMirrorClientMessage,
   parseMirrorServerMessage,
-} from '../../src/shared/mobileRemote';
+} from '../../src/shared/mobileRemote/mirrorMessages';
+import { MOBILE_REMOTE_PROTOCOL_VERSION } from '../../src/shared/mobileRemote';
 
 describe('mobile mirror protocol', () => {
   it('uses protocol version 3', () => {

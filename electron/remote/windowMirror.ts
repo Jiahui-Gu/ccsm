@@ -9,7 +9,7 @@ import type {
   MirrorClientMessage,
   MirrorKey,
   MirrorServerMessage,
-} from '../../src/shared/mobileRemote';
+} from '../../src/shared/mobileRemote/mirrorMessages';
 
 const MAX_EDGE = 1152;
 const JPEG_QUALITY = 65;
