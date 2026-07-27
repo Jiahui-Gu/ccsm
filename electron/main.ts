@@ -219,7 +219,9 @@ async function startPublicMobileRemote(): Promise<void> {
   const generation = ++mobileRemoteStartupGeneration;
   try {
     const { createMobileRemoteController } = await import('./remote/mobileRemoteController');
-    const controller = await createMobileRemoteController();
+    const controller = await createMobileRemoteController({
+      getWindow: () => BrowserWindow.getAllWindows()[0] ?? null,
+    });
     if (generation !== mobileRemoteStartupGeneration || isQuitting) {
       controller.close();
       return;

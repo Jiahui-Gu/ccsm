@@ -1,6 +1,11 @@
 import { TextEncoder } from 'node:util';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const mirrorMocks = vi.hoisted(() => ({
+  handle: vi.fn(),
+  stop: vi.fn(),
+}));
+
 vi.mock('electron', () => ({
   app: {
     getAppPath: vi.fn(() => ''),
@@ -12,6 +17,13 @@ vi.mock('electron', () => ({
     encryptString: vi.fn(),
     decryptString: vi.fn(),
   },
+}));
+
+vi.mock('../windowMirror', () => ({
+  createWindowMirror: vi.fn(() => ({
+    handle: mirrorMocks.handle,
+    stop: mirrorMocks.stop,
+  })),
 }));
 
 import {
@@ -76,6 +88,8 @@ class FakeRelaySocket implements RelaySocket {
 describe('desktop mobile remote controller', () => {
   beforeEach(() => {
     ptyListeners.splice(0);
+    mirrorMocks.handle.mockReset();
+    mirrorMocks.stop.mockReset();
   });
 
   it('never forwards application traffic after a failed phone proof', async () => {
@@ -301,6 +315,68 @@ describe('desktop mobile remote controller', () => {
       reason: 'secure-storage-unavailable',
     });
     expect(createSocket).not.toHaveBeenCalled();
+  });
+
+  it('routes authenticated mirror commands and stops capture on reconnect', async () => {
+    const socket = new FakeRelaySocket();
+    const controller = await createMobileRemoteController({
+      relayUrl: 'https://relay.example.workers.dev',
+      pairingStore: {
+        loadOrCreate: vi.fn(async () => firstIdentity),
+        delete: vi.fn(),
+      },
+      createSocket: () => socket,
+      getWindow: () => null,
+    });
+    socket.emitStatus('open');
+    const desktopHello = JSON.parse(socket.sent[0]!) as {
+      type: 'handshake.hello';
+      version: typeof MOBILE_REMOTE_PROTOCOL_VERSION;
+      role: 'desktop';
+      connectionId: string;
+      nonce: string;
+    };
+    const phoneHello = {
+      type: 'handshake.hello',
+      version: MOBILE_REMOTE_PROTOCOL_VERSION,
+      role: 'phone',
+      connectionId: firstIdentity.roomId,
+      nonce: 'M'.repeat(22),
+    } as const;
+    socket.emitMessage(phoneHello);
+    socket.emitMessage({
+      type: 'handshake.proof',
+      connectionId: firstIdentity.roomId,
+      proof: await createHandshakeProof(
+        firstIdentity.secret,
+        handshakeTranscript(desktopHello, phoneHello, 'phone'),
+      ),
+    });
+    await vi.waitFor(() =>
+      expect(controller.getStatus()).toEqual({
+        kind: 'ready',
+        phoneConnected: true,
+      }),
+    );
+    const phoneKeys = await deriveSessionKeys({
+      ...firstIdentity,
+      desktopNonce: desktopHello.nonce,
+      phoneNonce: phoneHello.nonce,
+      role: 'phone',
+    });
+    socket.emitMessage(
+      await sealEnvelope(
+        phoneKeys.send,
+        new TextEncoder().encode('{"type":"mirror.start"}'),
+      ),
+    );
+
+    await vi.waitFor(() =>
+      expect(mirrorMocks.handle).toHaveBeenCalledWith({ type: 'mirror.start' }),
+    );
+    socket.emitStatus('reconnecting');
+    expect(mirrorMocks.stop).toHaveBeenCalled();
+    controller.close();
   });
 
   it('rotate closes the old socket, deletes credentials, and publishes a new pairing URL', async () => {
