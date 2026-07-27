@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import net from 'node:net';
 import path from 'node:path';
@@ -19,6 +19,14 @@ const wranglerOutput = [];
 let wrangler = null;
 let electronApp = null;
 let browser = null;
+
+const MOBILE_CONTENT_TYPES = {
+  '.css': 'text/css; charset=utf-8',
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
+};
 
 function reservePort() {
   return new Promise((resolve, reject) => {
@@ -114,6 +122,31 @@ async function stopExactChild(child) {
   ]);
 }
 
+async function serveLocalMobileAssets(context, relayUrl) {
+  const origin = new URL(relayUrl).origin;
+  const mobileDir = path.join(rootDir, 'dist', 'mobile');
+  assert.ok(existsSync(path.join(mobileDir, 'index.html')), 'run npm run build first');
+  await context.route(`${origin}/**`, async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname.startsWith('/relay/')) {
+      await route.continue();
+      return;
+    }
+    const relativePath = decodeURIComponent(url.pathname).replace(/^\/+/, '') || 'index.html';
+    const assetPath = path.resolve(mobileDir, relativePath);
+    if (!assetPath.startsWith(`${mobileDir}${path.sep}`) || !existsSync(assetPath)) {
+      await route.fulfill({ status: 404, body: 'Not Found' });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      body: readFileSync(assetPath),
+      contentType:
+        MOBILE_CONTENT_TYPES[path.extname(assetPath)] ?? 'application/octet-stream',
+    });
+  });
+}
+
 async function run() {
   const configuredRelayUrl = process.env.CCSM_RELAY_URL?.replace(/\/+$/, '');
   const relayUrl = configuredRelayUrl ?? (await startWrangler(await reservePort()));
@@ -172,6 +205,9 @@ async function run() {
     scrollContent.style.height = '800px';
     scrollContent.textContent = 'Scroll target';
     scrollTarget.append(scrollContent);
+    scrollTarget.addEventListener('click', () => {
+      document.body.dataset.mirrorScrollTap = 'yes';
+    });
     window.addEventListener(
       'wheel',
       (event) => {
@@ -189,7 +225,11 @@ async function run() {
     desktop.evaluate(() => window.ccsmMobileRemote?.getPairingUrl()),
   );
   browser = await chromium.launch({ headless: true });
-  const phone = await browser.newPage();
+  const phoneContext = await browser.newContext({ serviceWorkers: 'block' });
+  if (configuredRelayUrl) {
+    await serveLocalMobileAssets(phoneContext, relayUrl);
+  }
+  const phone = await phoneContext.newPage();
   await phone.goto(pairingUrl);
   await phone.locator('[data-remote-status]').filter({ hasText: 'Connected' }).waitFor();
   await phone.waitForFunction(() => {
@@ -229,13 +269,17 @@ async function run() {
     frameBounds.x + frameBounds.width * scrollPoint.x,
     frameBounds.y + frameBounds.height * scrollPoint.y,
   );
+  await desktop.waitForFunction(() => document.body.dataset.mirrorScrollTap === 'yes');
   await phone.locator('[data-scroll="360"]').click();
   await desktop.waitForFunction(() => Boolean(document.body.dataset.mirrorWheel));
-  const wheelResult = await desktop.evaluate(() => ({
-    wheel: document.body.dataset.mirrorWheel,
-    scrollTop: document.querySelector('#mirror-e2e-scroll')?.scrollTop ?? 0,
-  }));
-  assert.ok(wheelResult.scrollTop > 0, `scroll target did not move: ${wheelResult.wheel}`);
+  try {
+    await desktop.waitForFunction(
+      () => (document.querySelector('#mirror-e2e-scroll')?.scrollTop ?? 0) > 0,
+    );
+  } catch (error) {
+    const wheel = await desktop.evaluate(() => document.body.dataset.mirrorWheel);
+    throw new Error(`scroll target did not move: ${wheel}`, { cause: error });
+  }
 
   console.log(
     `[mobile-remote-relay] PASS real Electron mirror through ${configuredRelayUrl ? 'public' : 'local'} relay`,
