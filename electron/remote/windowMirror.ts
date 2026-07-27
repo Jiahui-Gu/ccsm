@@ -51,6 +51,8 @@ export function createWindowMirror(options: WindowMirrorOptions): WindowMirror {
   let captureAgain = false;
   let generation = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let lastInputX: number | null = null;
+  let lastInputY: number | null = null;
 
   const clearTimer = (): void => {
     if (timer) clearTimeout(timer);
@@ -103,11 +105,10 @@ export function createWindowMirror(options: WindowMirrorOptions): WindowMirror {
       }
     } finally {
       capturing = false;
-      if (!running || currentGeneration !== generation) return;
-      if (captureAgain) {
+      if (running && (captureAgain || currentGeneration !== generation)) {
         captureAgain = false;
         requestCapture();
-      } else {
+      } else if (running) {
         scheduleCapture();
       }
     }
@@ -132,14 +133,18 @@ export function createWindowMirror(options: WindowMirrorOptions): WindowMirror {
   const handleInput = (
     message: Exclude<MirrorClientMessage, { type: 'mirror.start' | 'mirror.stop' }>,
   ): void => {
+    if (!running) return;
     const window = options.getWindow();
     if (!window || window.isDestroyed()) return;
+    window.focus();
     if (message.type === 'mirror.tap') {
       const contentSize = window.getContentSize();
       const width = contentSize[0] ?? 0;
       const height = contentSize[1] ?? 0;
-      const x = Math.round(message.x * width);
-      const y = Math.round(message.y * height);
+      const x = Math.min(Math.max(0, Math.round(message.x * width)), Math.max(0, width - 1));
+      const y = Math.min(Math.max(0, Math.round(message.y * height)), Math.max(0, height - 1));
+      lastInputX = x;
+      lastInputY = y;
       sendInput({ type: 'mouseMove', x, y });
       sendInput({ type: 'mouseDown', button: 'left', clickCount: 1, x, y });
       sendInput({ type: 'mouseUp', button: 'left', clickCount: 1, x, y });
@@ -150,12 +155,13 @@ export function createWindowMirror(options: WindowMirrorOptions): WindowMirror {
       sendInput({ type: 'keyDown', ...input });
       sendInput({ type: 'keyUp', ...input });
     } else {
+      const contentSize = window.getContentSize();
       sendInput({
         type: 'mouseWheel',
-        x: 0,
-        y: 0,
+        x: lastInputX ?? Math.round((contentSize[0] ?? 0) / 2),
+        y: lastInputY ?? Math.round((contentSize[1] ?? 0) / 2),
         deltaX: 0,
-        deltaY: message.deltaY,
+        deltaY: -message.deltaY,
       });
     }
     requestCapture();

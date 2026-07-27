@@ -153,6 +153,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
   let manuallyClosed = false;
   let keys: SessionKeys | null = null;
   let peerVerified = false;
+  let mirrorActive = false;
   let phoneHello: HandshakeHello | null = null;
   let desktopHello: HandshakeHello | null = null;
   let flushChain = Promise.resolve();
@@ -232,11 +233,13 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
       ) {
         return;
       }
-      queueRecovery({
-        message: { type: 'mirror.start' },
-        waiters: [{ resolve: () => undefined, reject: () => undefined }],
-      });
-      void scheduleFlush();
+      if (mirrorActive) {
+        queueRecovery({
+          message: { type: 'mirror.start' },
+          waiters: [{ resolve: () => undefined, reject: () => undefined }],
+        });
+        void scheduleFlush();
+      }
     }, heartbeatIntervalMs);
   }
 
@@ -263,7 +266,13 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
             settlePending(pending, new Error('client_closed'));
             continue;
           }
-          if (isRecoveryMessage(pending.message) && queueRecovery(pending, true)) continue;
+          if (
+            mirrorActive &&
+            isRecoveryMessage(pending.message) &&
+            queueRecovery(pending, true)
+          ) {
+            continue;
+          }
           settlePending(pending, new Error('connection_changed'));
           continue;
         }
@@ -461,6 +470,8 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
     },
     send(message) {
       return new Promise<void>((resolve, reject) => {
+        if (message.type === 'mirror.start') mirrorActive = true;
+        if (message.type === 'mirror.stop') mirrorActive = false;
         const pending = { message, waiters: [{ resolve, reject }] };
         if (isRecoveryMessage(message)) {
           if (!queueRecovery(pending)) reject(new Error('offline_queue_full'));

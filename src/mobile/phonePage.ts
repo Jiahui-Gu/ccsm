@@ -1,3 +1,5 @@
+/* global HTMLFormElement, HTMLImageElement */
+
 import {
   MIRROR_KEYS,
   type MirrorClientMessage,

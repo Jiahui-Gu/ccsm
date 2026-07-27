@@ -257,4 +257,38 @@ describe('phone relay client', () => {
     expect(plaintexts).not.toContain('{"type":"mirror.text","text":"do not replay"}');
     client.close();
   });
+
+  it('does not restart a stopped mirror from heartbeat or reconnect', async () => {
+    const sockets: FakeWebSocket[] = [];
+    const client = createRelayClient({
+      relayUrl: 'https://relay.example',
+      pairing: { roomId: ROOM_ID, secret: SECRET },
+      createWebSocket: () => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      heartbeatIntervalMs: 100,
+    });
+    client.connect();
+    sockets[0]!.open();
+    await authenticate(client, sockets[0]!, 'G'.repeat(22));
+    await client.send({ type: 'mirror.start' });
+    await client.send({ type: 'mirror.stop' });
+    const encryptedBeforeHeartbeat = sent(sockets[0]!).filter(
+      (message) => message.type === 'encrypted',
+    ).length;
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(
+      sent(sockets[0]!).filter((message) => message.type === 'encrypted'),
+    ).toHaveLength(encryptedBeforeHeartbeat);
+
+    sockets[0]!.close();
+    await vi.advanceTimersByTimeAsync(500);
+    sockets[1]!.open();
+    await authenticate(client, sockets[1]!, 'H'.repeat(22));
+    expect(sent(sockets[1]!).filter((message) => message.type === 'encrypted')).toHaveLength(0);
+    client.close();
+  });
 });

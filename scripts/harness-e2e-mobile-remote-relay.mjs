@@ -156,14 +156,33 @@ async function run() {
     input.addEventListener('keydown', (event) => {
       document.body.dataset.mirrorKey = event.key;
     });
+    const scrollTarget = document.createElement('div');
+    scrollTarget.id = 'mirror-e2e-scroll';
+    Object.assign(scrollTarget.style, {
+      position: 'fixed',
+      right: '20px',
+      top: 'calc(50% - 80px)',
+      width: '120px',
+      height: '160px',
+      overflow: 'auto',
+      background: '#fff',
+      zIndex: '2147483647',
+    });
+    const scrollContent = document.createElement('div');
+    scrollContent.style.height = '800px';
+    scrollContent.textContent = 'Scroll target';
+    scrollTarget.append(scrollContent);
     window.addEventListener(
       'wheel',
       (event) => {
-        document.body.dataset.mirrorScroll = String(event.deltaY);
+        document.body.dataset.mirrorWheel = JSON.stringify({
+          deltaY: event.deltaY,
+          target: event.target instanceof Element ? event.target.id : '',
+        });
       },
-      { once: true },
+      { capture: true },
     );
-    document.body.append(tapTarget, input);
+    document.body.append(tapTarget, input, scrollTarget);
   });
 
   const pairingUrl = await waitFor('desktop pairing URL', () =>
@@ -196,10 +215,27 @@ async function run() {
   );
   await phone.locator('[data-key="Enter"]').click();
   await desktop.waitForFunction(() => document.body.dataset.mirrorKey === 'Enter');
+  const scrollPoint = await desktop.evaluate(() => {
+    const target = document.querySelector('#mirror-e2e-scroll');
+    const bounds = target?.getBoundingClientRect();
+    if (!bounds) return null;
+    return {
+      x: (bounds.left + bounds.width / 2) / document.documentElement.clientWidth,
+      y: (bounds.top + bounds.height / 2) / document.documentElement.clientHeight,
+    };
+  });
+  assert.ok(scrollPoint, 'scroll target must exist');
+  await phone.mouse.click(
+    frameBounds.x + frameBounds.width * scrollPoint.x,
+    frameBounds.y + frameBounds.height * scrollPoint.y,
+  );
   await phone.locator('[data-scroll="360"]').click();
-  await desktop.waitForFunction(() => Boolean(document.body.dataset.mirrorScroll));
-  const scrollDelta = await desktop.evaluate(() => document.body.dataset.mirrorScroll);
-  assert.equal(Math.abs(Number(scrollDelta)), 360);
+  await desktop.waitForFunction(() => Boolean(document.body.dataset.mirrorWheel));
+  const wheelResult = await desktop.evaluate(() => ({
+    wheel: document.body.dataset.mirrorWheel,
+    scrollTop: document.querySelector('#mirror-e2e-scroll')?.scrollTop ?? 0,
+  }));
+  assert.ok(wheelResult.scrollTop > 0, `scroll target did not move: ${wheelResult.wheel}`);
 
   console.log(
     `[mobile-remote-relay] PASS real Electron mirror through ${configuredRelayUrl ? 'public' : 'local'} relay`,

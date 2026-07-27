@@ -19,6 +19,7 @@ function image(width: number, height: number, bytes = Buffer.from('jpeg')) {
 function fakeWindow(capturePage: () => Promise<unknown>) {
   return {
     isDestroyed: vi.fn(() => false),
+    focus: vi.fn(),
     getContentSize: vi.fn(() => [1000, 500] as [number, number]),
     capturePage: vi.fn(capturePage),
     webContents: {
@@ -86,6 +87,50 @@ describe('window mirror', () => {
     mirror.stop();
   });
 
+  it('resumes capture when restarted while the old capture is pending', async () => {
+    const frame = image(800, 600);
+    let resolveFirst: ((value: unknown) => void) | undefined;
+    const window = fakeWindow(
+      vi
+        .fn()
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              resolveFirst = resolve;
+            }),
+        )
+        .mockResolvedValue(frame.source),
+    );
+    const mirror = createWindowMirror({
+      getWindow: () => window as never,
+      send: vi.fn(),
+    });
+
+    mirror.handle({ type: 'mirror.start' });
+    mirror.stop();
+    mirror.handle({ type: 'mirror.start' });
+    resolveFirst!(frame.source);
+
+    await vi.waitFor(() => expect(window.capturePage).toHaveBeenCalledTimes(2));
+    mirror.stop();
+  });
+
+  it('ignores input until capture starts and after it stops', () => {
+    const frame = image(800, 600);
+    const window = fakeWindow(async () => frame.source);
+    const mirror = createWindowMirror({
+      getWindow: () => window as never,
+      send: vi.fn(),
+    });
+
+    mirror.handle({ type: 'mirror.text', text: 'before' });
+    mirror.handle({ type: 'mirror.start' });
+    mirror.handle({ type: 'mirror.stop' });
+    mirror.handle({ type: 'mirror.text', text: 'after' });
+
+    expect(window.webContents.insertText).not.toHaveBeenCalled();
+  });
+
   it('maps tap, text, keys, and scroll to BrowserWindow input', () => {
     const frame = image(800, 600);
     const window = fakeWindow(async () => frame.source);
@@ -94,11 +139,13 @@ describe('window mirror', () => {
       send: vi.fn(),
     });
 
+    mirror.handle({ type: 'mirror.start' });
     mirror.handle({ type: 'mirror.tap', x: 0.25, y: 0.5 });
     mirror.handle({ type: 'mirror.text', text: 'hello' });
     mirror.handle({ type: 'mirror.key', key: 'Ctrl+C' });
     mirror.handle({ type: 'mirror.scroll', deltaY: -240 });
 
+    expect(window.focus).toHaveBeenCalledTimes(4);
     expect(window.webContents.insertText).toHaveBeenCalledWith('hello');
     expect(window.webContents.sendInputEvent.mock.calls).toEqual([
       [{ type: 'mouseMove', x: 250, y: 250 }],
@@ -106,8 +153,29 @@ describe('window mirror', () => {
       [{ type: 'mouseUp', button: 'left', clickCount: 1, x: 250, y: 250 }],
       [{ type: 'keyDown', keyCode: 'C', modifiers: ['control'] }],
       [{ type: 'keyUp', keyCode: 'C', modifiers: ['control'] }],
-      [{ type: 'mouseWheel', x: 0, y: 0, deltaX: 0, deltaY: -240 }],
+      [{ type: 'mouseWheel', x: 250, y: 250, deltaX: 0, deltaY: 240 }],
     ]);
+  });
+
+  it('keeps normalized edge taps inside the content bounds', () => {
+    const frame = image(800, 600);
+    const window = fakeWindow(async () => frame.source);
+    const mirror = createWindowMirror({
+      getWindow: () => window as never,
+      send: vi.fn(),
+    });
+
+    mirror.handle({ type: 'mirror.start' });
+    mirror.handle({ type: 'mirror.tap', x: 1, y: 1 });
+
+    expect(window.webContents.sendInputEvent).toHaveBeenCalledWith({
+      type: 'mouseUp',
+      button: 'left',
+      clickCount: 1,
+      x: 999,
+      y: 499,
+    });
+    mirror.stop();
   });
 
   it('drops oversized frames and sends a small error', async () => {
