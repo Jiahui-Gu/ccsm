@@ -72,18 +72,16 @@ CCSM does **not** make any HTTP calls to Anthropic itself. All API traffic goes 
 
 ## Mobile Remote
 
-Release builds can control live CCSM terminals from one phone browser through
+Release builds can mirror the current CCSM window to one phone browser through
 the end-to-end encrypted Cloudflare relay. Open **Settings → Mobile Remote**,
-then scan the QR code. The phone can list terminal sessions, view their current
-buffer, type commands, and use terminal shortcut keys; it does not control the
-rest of CCSM or the operating-system desktop.
+then scan the QR code. The phone receives low-frame-rate JPEG screenshots and
+supports pan, pinch-to-zoom, tap-to-click, text input, common keys, and scrolling.
 
-The initial scope is one user, one CCSM desktop, and one phone. **Pause remote
-control** disconnects the phone without discarding the pairing. **Refresh QR**
-rotates the pairing identity and rejects the old credential. The relay depends
-on the Cloudflare Workers and Durable Objects free tiers, so an unavailable or
-exhausted relay temporarily disables phone access without affecting local CCSM
-sessions.
+The initial scope is one CCSM desktop and one phone; it does not resize the
+desktop or expose the rest of the operating system. **Pause remote control**
+disconnects the phone without discarding the pairing. **Refresh QR** rotates the
+pairing identity and rejects the old credential. Relay interruptions stop the
+mirror while leaving local CCSM sessions unaffected.
 
 ## Data location
 

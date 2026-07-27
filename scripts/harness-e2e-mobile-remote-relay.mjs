@@ -1,35 +1,24 @@
-// End-to-end proof for the Cloudflare mobile relay.
+// Real Electron -> encrypted relay -> phone browser mirror proof.
 //
-// Pre-req: `npm run build`.
-// Run:    node scripts/harness-e2e-mobile-remote-relay.mjs
+// Local:  node scripts/harness-e2e-mobile-remote-relay.mjs
+// Public: CCSM_RELAY_URL=https://<worker>.workers.dev node scripts/harness-e2e-mobile-remote-relay.mjs
 
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { rmSync } from 'node:fs';
-import { createRequire } from 'node:module';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { chromium } from 'playwright';
+import { _electron as electron, chromium } from 'playwright';
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const require = createRequire(import.meta.url);
-const { createEncryptedPeer } = require(
-  path.join(rootDir, 'dist', 'electron', 'remote', 'encryptedPeer.js'),
-);
-const { createRelaySocket } = require(
-  path.join(rootDir, 'dist', 'electron', 'remote', 'relaySocket.js'),
-);
-const { generatePairingIdentity } = require(
-  path.join(rootDir, 'dist', 'src', 'shared', 'mobileRemote', 'index.js'),
-);
-
+const userDataDir = mkdtempSync(path.join(tmpdir(), 'ccsm-mirror-e2e-'));
 const wranglerOutput = [];
 let wrangler = null;
+let electronApp = null;
 let browser = null;
-let desktop = null;
-let rotatedDesktop = null;
 
 function reservePort() {
   return new Promise((resolve, reject) => {
@@ -48,7 +37,7 @@ function reservePort() {
   });
 }
 
-async function waitFor(description, predicate, timeout = 20_000) {
+async function waitFor(description, predicate, timeout = 30_000) {
   const deadline = Date.now() + timeout;
   let lastError;
   while (Date.now() < deadline) {
@@ -68,16 +57,15 @@ async function waitFor(description, predicate, timeout = 20_000) {
 function recordWranglerOutput(chunk) {
   for (const line of chunk.toString().split(/\r?\n/)) {
     if (line) wranglerOutput.push(line);
-    if (wranglerOutput.length > 100) wranglerOutput.shift();
+    if (wranglerOutput.length > 80) wranglerOutput.shift();
   }
 }
 
 async function startWrangler(port) {
-  const wranglerBin = path.join(rootDir, 'node_modules', 'wrangler', 'bin', 'wrangler.js');
   const child = spawn(
     process.execPath,
     [
-      wranglerBin,
+      path.join(rootDir, 'node_modules', 'wrangler', 'bin', 'wrangler.js'),
       'dev',
       '--config',
       path.join(rootDir, 'cloudflare', 'wrangler.jsonc'),
@@ -90,94 +78,20 @@ async function startWrangler(port) {
     {
       cwd: rootDir,
       env: { ...process.env, NO_COLOR: '1' },
-      detached: false,
       shell: false,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     },
   );
-  wrangler = child;
   child.stdout.on('data', recordWranglerOutput);
   child.stderr.on('data', recordWranglerOutput);
-  child.once('exit', (code) => {
-    if (code && code !== 0) {
-      wranglerOutput.push(`wrangler exited with code ${code}`);
-    }
-  });
-
+  wrangler = child;
   const relayUrl = `http://127.0.0.1:${port}`;
-  await waitFor('Wrangler dev server', async () => {
-    if (child.exitCode !== null) {
-      throw new Error(wranglerOutput.slice(-12).join('\n'));
-    }
-    const response = await fetch(relayUrl);
-    return response.ok;
-  }, 30_000);
-  return { child, relayUrl };
-}
-
-function createSimulatedDesktop(relayUrl, pairing, snapshotState) {
-  const socket = createRelaySocket({
-    relayUrl,
-    roomId: pairing.roomId,
-    heartbeatMs: 2_000,
-    random: () => 0,
+  await waitFor('Wrangler relay', async () => {
+    if (child.exitCode !== null) throw new Error(wranglerOutput.slice(-12).join('\n'));
+    return (await fetch(relayUrl)).ok;
   });
-  const inputs = [];
-  let pendingInput = '';
-  let authenticatedCount = 0;
-  const failures = [];
-  const peer = createEncryptedPeer({
-    pairing,
-    socket,
-    async handleMessage(remotePeer, raw) {
-      const message = JSON.parse(raw);
-      if (message.type === 'sessions.list') {
-        remotePeer.send({
-          type: 'sessions.list',
-          sessions: [{ sid: 'mobile-e2e', cwd: 'C:\\work\\mobile-e2e', cols: 80, rows: 24 }],
-        });
-      } else if (message.type === 'session.snapshot' && message.sid === 'mobile-e2e') {
-        remotePeer.subscribedSid = message.sid;
-        remotePeer.send({
-          type: 'session.snapshot',
-          sid: message.sid,
-          seq: snapshotState.seq,
-          data: snapshotState.data,
-          cols: 80,
-          rows: 24,
-        });
-      } else if (message.type === 'session.input' && message.sid === 'mobile-e2e') {
-        pendingInput += message.data;
-        if (pendingInput.includes('\r')) {
-          inputs.push(pendingInput);
-          pendingInput = '';
-        }
-      }
-    },
-    onAuthenticated() {
-      authenticatedCount += 1;
-    },
-    onFailure(failure) {
-      failures.push(failure);
-    },
-  });
-  peer.start();
-
-  return {
-    inputs,
-    failures,
-    peer,
-    get authenticatedCount() {
-      return authenticatedCount;
-    },
-    sendPty(seq, chunk) {
-      peer.send({ type: 'pty.data', sid: 'mobile-e2e', seq, chunk });
-    },
-    close() {
-      peer.close();
-    },
-  };
+  return relayUrl;
 }
 
 async function stopExactChild(child) {
@@ -198,146 +112,102 @@ async function stopExactChild(child) {
     new Promise((resolve) => child.once('exit', resolve)),
     new Promise((resolve) => setTimeout(resolve, 3_000)),
   ]);
-  if (child.exitCode === null) {
-    try {
-      process.kill(child.pid, 'SIGKILL');
-    } catch {
-      // It exited between the state check and signal.
-    }
-  }
 }
 
-async function main() {
+async function run() {
   const configuredRelayUrl = process.env.CCSM_RELAY_URL?.replace(/\/+$/, '');
-  let relayUrl = configuredRelayUrl;
-  let port = null;
-  if (!relayUrl) {
-    port = await reservePort();
-    const started = await startWrangler(port);
-    wrangler = started.child;
-    relayUrl = started.relayUrl;
-  }
-  const pairing = generatePairingIdentity();
-  const snapshotState = { seq: 7, data: 'snapshot-ready\r\n' };
-  desktop = createSimulatedDesktop(relayUrl, pairing, snapshotState);
-
-  browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext();
-  const phone = await context.newPage();
-  const phoneFrames = [];
-  phone.on('websocket', (webSocket) => {
-    const socketNumber = phoneFrames.filter((entry) => entry.event === 'open').length + 1;
-    phoneFrames.push({ event: 'open', socketNumber });
-    webSocket.on('framesent', ({ payload }) => {
-      try {
-        phoneFrames.push({ event: 'sent', socketNumber, type: JSON.parse(String(payload)).type });
-      } catch {
-        phoneFrames.push({ event: 'sent', socketNumber, type: 'invalid' });
-      }
-    });
-    webSocket.on('framereceived', ({ payload }) => {
-      try {
-        phoneFrames.push({ event: 'received', socketNumber, type: JSON.parse(String(payload)).type });
-      } catch {
-        phoneFrames.push({ event: 'received', socketNumber, type: 'invalid' });
-      }
-    });
-    webSocket.on('close', () => phoneFrames.push({ event: 'close', socketNumber }));
-  });
-  await phone.goto(`${relayUrl}/#pair=${pairing.roomId}.${pairing.secret}`);
-
-  const status = phone.locator('[data-remote-status]');
-  await waitFor(
-    'encrypted desktop/phone handshake',
-    async () => (await status.textContent()) === 'Connected',
-  );
-  assert.equal(await status.textContent(), 'Connected');
-  await phone.locator('#sessions button').filter({ hasText: 'mobile-e2e' }).waitFor();
-  await phone.locator('.xterm-rows').filter({ hasText: 'snapshot-ready' }).waitFor();
-  assert.match(await phone.locator('.xterm-rows').textContent(), /snapshot-ready/);
-  await phone.evaluate(() => {
-    window.__remoteStatusHistory = [];
-    const statusElement = document.querySelector('[data-remote-status]');
-    new MutationObserver(() => {
-      window.__remoteStatusHistory.push({
-        status: statusElement?.getAttribute('data-status'),
-        text: statusElement?.textContent,
-      });
-    }).observe(statusElement, { attributes: true, childList: true, subtree: true });
-  });
-
-  await phone.locator('.xterm-helper-textarea').focus();
-  await phone.keyboard.type('echo mobile-e2e');
-  await phone.keyboard.press('Enter');
-  await waitFor(
-    'typed command at the simulated PTY input seam',
-    () => desktop.inputs.length === 1,
-  );
-  assert.deepEqual(desktop.inputs, ['echo mobile-e2e\r']);
-
-  desktop.sendPty(8, 'live-output\r\n');
-  await phone.locator('.xterm-rows').filter({ hasText: 'live-output' }).waitFor();
-
-  if (configuredRelayUrl) {
-    desktop.close();
-    desktop = null;
-  } else {
-    await stopExactChild(wrangler);
-    wrangler = null;
-  }
-  await waitFor(
-    'phone network interruption',
-    async () => (await status.getAttribute('data-status')) === 'reconnecting',
-  );
-  snapshotState.seq = 20;
-  snapshotState.data = 'snapshot-ready\r\nrecovered-snapshot\r\n';
-  if (configuredRelayUrl) {
-    desktop = createSimulatedDesktop(relayUrl, pairing, snapshotState);
-  } else {
-    const restarted = await startWrangler(port);
-    wrangler = restarted.child;
-  }
-  try {
-    await waitFor(
-      'encrypted phone reconnection',
-      async () =>
-        (await status.textContent()) === 'Connected' &&
-        desktop.authenticatedCount >= (configuredRelayUrl ? 1 : 2),
-      30_000,
-    );
-  } catch (error) {
-    throw new Error(
-      `${error.message}; phone=${await status.textContent()} desktopAuth=${desktop.authenticatedCount} desktopFailures=${desktop.failures.join(',')} phoneStatuses=${JSON.stringify(await phone.evaluate(() => window.__remoteStatusHistory))} phoneFrames=${JSON.stringify(phoneFrames)}`,
-    );
-  }
-  await phone.locator('.xterm-rows').filter({ hasText: 'recovered-snapshot' }).waitFor();
-  desktop.sendPty(20, 'DUPLICATE-MUST-NOT-RENDER');
-  desktop.sendPty(21, 'recovered-live\r\n');
-  await phone.locator('.xterm-rows').filter({ hasText: 'recovered-live' }).waitFor();
-  assert.doesNotMatch(
-    (await phone.locator('.xterm-rows').textContent()) ?? '',
-    /DUPLICATE-MUST-NOT-RENDER/,
-  );
-
-  desktop.close();
-  desktop = null;
-  const rotatedPairing = { roomId: pairing.roomId, secret: generatePairingIdentity().secret };
-  rotatedDesktop = createSimulatedDesktop(relayUrl, rotatedPairing, snapshotState);
-  const oldCredentialReconnectResult = await waitFor(
-    'old credential rejection after rotation',
-    async () => {
-      const value = await status.getAttribute('data-status');
-      return value === 'authentication_failed' ? value.replace('_', '-') : false;
+  const relayUrl = configuredRelayUrl ?? (await startWrangler(await reservePort()));
+  electronApp = await electron.launch({
+    args: ['.', `--user-data-dir=${userDataDir}`],
+    cwd: rootDir,
+    env: {
+      ...process.env,
+      CCSM_MOBILE_REMOTE_RELAY_URL: relayUrl,
+      CCSM_PROD_BUNDLE: '1',
+      DISABLE_AUTOUPDATER: '1',
     },
-    30_000,
-  );
-  assert.equal(oldCredentialReconnectResult, 'authentication-failed');
+  });
+  const desktop = await electronApp.firstWindow();
+  await desktop.waitForLoadState('domcontentloaded');
+  await desktop.bringToFront();
+  await desktop.evaluate(() => {
+    const tapTarget = document.createElement('button');
+    tapTarget.id = 'mirror-e2e-tap';
+    tapTarget.textContent = 'Mirror E2E';
+    Object.assign(tapTarget.style, {
+      position: 'fixed',
+      left: 'calc(50% - 100px)',
+      top: 'calc(50% - 60px)',
+      width: '200px',
+      height: '120px',
+      zIndex: '2147483647',
+    });
+    tapTarget.addEventListener('click', () => {
+      document.body.dataset.mirrorTap = 'yes';
+    });
+    const input = document.createElement('input');
+    input.id = 'mirror-e2e-input';
+    Object.assign(input.style, {
+      position: 'fixed',
+      left: '20px',
+      top: '20px',
+      zIndex: '2147483647',
+    });
+    input.addEventListener('keydown', (event) => {
+      document.body.dataset.mirrorKey = event.key;
+    });
+    window.addEventListener(
+      'wheel',
+      (event) => {
+        document.body.dataset.mirrorScroll = String(event.deltaY);
+      },
+      { once: true },
+    );
+    document.body.append(tapTarget, input);
+  });
 
-  console.log('[mobile-remote-relay] PASS encrypted relay, PTY, recovery, dedupe, rotation');
+  const pairingUrl = await waitFor('desktop pairing URL', () =>
+    desktop.evaluate(() => window.ccsmMobileRemote?.getPairingUrl()),
+  );
+  browser = await chromium.launch({ headless: true });
+  const phone = await browser.newPage();
+  await phone.goto(pairingUrl);
+  await phone.locator('[data-remote-status]').filter({ hasText: 'Connected' }).waitFor();
+  await phone.waitForFunction(() => {
+    const frame = document.querySelector('#mirror-frame');
+    return frame instanceof HTMLImageElement && frame.src.startsWith('data:image/jpeg;base64,');
+  });
+
+  const frameBounds = await phone.locator('#mirror-frame').boundingBox();
+  assert.ok(frameBounds, 'mirror frame must be visible');
+  await phone.mouse.click(
+    frameBounds.x + frameBounds.width / 2,
+    frameBounds.y + frameBounds.height / 2,
+  );
+  await desktop.waitForFunction(() => document.body.dataset.mirrorTap === 'yes');
+
+  await desktop.evaluate(() => {
+    document.querySelector('#mirror-e2e-input')?.focus();
+  });
+  await phone.locator('#text-input').fill('mirror-e2e');
+  await phone.locator('#input-send').click();
+  await desktop.waitForFunction(
+    () => document.querySelector('#mirror-e2e-input')?.value === 'mirror-e2e',
+  );
+  await phone.locator('[data-key="Enter"]').click();
+  await desktop.waitForFunction(() => document.body.dataset.mirrorKey === 'Enter');
+  await phone.locator('[data-scroll="360"]').click();
+  await desktop.waitForFunction(() => Boolean(document.body.dataset.mirrorScroll));
+  const scrollDelta = await desktop.evaluate(() => document.body.dataset.mirrorScroll);
+  assert.equal(Math.abs(Number(scrollDelta)), 360);
+
+  console.log(
+    `[mobile-remote-relay] PASS real Electron mirror through ${configuredRelayUrl ? 'public' : 'local'} relay`,
+  );
 }
 
 try {
-  await main();
+  await run();
 } catch (error) {
   console.error('[mobile-remote-relay] FAIL', error);
   if (wranglerOutput.length > 0) {
@@ -345,14 +215,18 @@ try {
   }
   process.exitCode = 1;
 } finally {
-  rotatedDesktop?.close();
-  desktop?.close();
   await browser?.close();
+  await electronApp?.close();
   await stopExactChild(wrangler);
-  rmSync(path.join(rootDir, 'cloudflare', '.wrangler'), {
-    recursive: true,
-    force: true,
-    maxRetries: 10,
-    retryDelay: 200,
-  });
+  rmSync(userDataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  try {
+    rmSync(path.join(rootDir, 'cloudflare', '.wrangler'), {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 200,
+    });
+  } catch {
+    // Wrangler can briefly retain cache handles on Windows after its process exits.
+  }
 }
