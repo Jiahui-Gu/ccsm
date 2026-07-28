@@ -34,7 +34,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: node_modules
-          key: nm-windows-${{ runner.arch }}-node22-${{ hashFiles('package-lock.json') }}
+          key: nm-${{ runner.os }}-${{ runner.arch }}-node22-${{ hashFiles('package-lock.json') }}
 
       - name: Install deps
         if: steps.nm_cache.outputs.cache-hit != 'true'
