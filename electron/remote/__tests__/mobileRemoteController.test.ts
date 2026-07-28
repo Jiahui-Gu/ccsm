@@ -379,6 +379,73 @@ describe('desktop mobile remote controller', () => {
     controller.close();
   });
 
+  it('stops mirror capture when the relay socket reports closed with no reconnect', async () => {
+    const socket = new FakeRelaySocket();
+    const controller = await createMobileRemoteController({
+      relayUrl: 'https://relay.example.workers.dev',
+      pairingStore: {
+        loadOrCreate: vi.fn(async () => firstIdentity),
+        delete: vi.fn(),
+      },
+      createSocket: () => socket,
+      getWindow: () => null,
+    });
+    socket.emitStatus('open');
+    const desktopHello = JSON.parse(socket.sent[0]!) as {
+      type: 'handshake.hello';
+      version: typeof MOBILE_REMOTE_PROTOCOL_VERSION;
+      role: 'desktop';
+      connectionId: string;
+      nonce: string;
+    };
+    const phoneHello = {
+      type: 'handshake.hello',
+      version: MOBILE_REMOTE_PROTOCOL_VERSION,
+      role: 'phone',
+      connectionId: firstIdentity.roomId,
+      nonce: 'N'.repeat(22),
+    } as const;
+    socket.emitMessage(phoneHello);
+    socket.emitMessage({
+      type: 'handshake.proof',
+      connectionId: firstIdentity.roomId,
+      proof: await createHandshakeProof(
+        firstIdentity.secret,
+        handshakeTranscript(desktopHello, phoneHello, 'phone'),
+      ),
+    });
+    await vi.waitFor(() =>
+      expect(controller.getStatus()).toEqual({
+        kind: 'ready',
+        phoneConnected: true,
+      }),
+    );
+    const phoneKeys = await deriveSessionKeys({
+      ...firstIdentity,
+      desktopNonce: desktopHello.nonce,
+      phoneNonce: phoneHello.nonce,
+      role: 'phone',
+    });
+    socket.emitMessage(
+      await sealEnvelope(
+        phoneKeys.send,
+        new TextEncoder().encode('{"type":"mirror.start"}'),
+      ),
+    );
+
+    await vi.waitFor(() =>
+      expect(mirrorMocks.handle).toHaveBeenCalledWith({ type: 'mirror.start' }),
+    );
+    mirrorMocks.stop.mockClear();
+
+    // Simulates a post-authentication encrypted-peer failure that closes the
+    // socket with no reconnect (relaySocket emits 'closed' terminally).
+    socket.emitStatus('closed');
+
+    expect(mirrorMocks.stop).toHaveBeenCalled();
+    controller.close();
+  });
+
   it('rotate closes the old socket, deletes credentials, and publishes a new pairing URL', async () => {
     const identities = [firstIdentity, secondIdentity];
     const pairingStore = {

@@ -118,6 +118,8 @@ export async function createMobileRemoteController(
       } else if (socketStatus === 'open') {
         currentMirror.stop();
         setStatus({ kind: 'ready', phoneConnected: false });
+      } else if (socketStatus === 'closed') {
+        currentMirror.stop();
       }
     });
     currentPeer.start();
