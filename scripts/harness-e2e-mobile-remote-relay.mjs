@@ -167,12 +167,15 @@ async function run() {
     const tapTarget = document.createElement('button');
     tapTarget.id = 'mirror-e2e-tap';
     tapTarget.textContent = 'Mirror E2E';
+    // Deliberately off vertical center (near the top edge) so this proves the
+    // tap maps through real screen geometry rather than only through a
+    // symmetric-letterbox-safe center point.
     Object.assign(tapTarget.style, {
       position: 'fixed',
       left: 'calc(50% - 100px)',
-      top: 'calc(50% - 60px)',
+      top: '8%',
       width: '200px',
-      height: '120px',
+      height: '80px',
       zIndex: '2147483647',
     });
     tapTarget.addEventListener('click', () => {
@@ -225,7 +228,10 @@ async function run() {
     desktop.evaluate(() => window.ccsmMobileRemote?.getPairingUrl()),
   );
   browser = await chromium.launch({ headless: true });
-  const phoneContext = await browser.newContext({ serviceWorkers: 'block' });
+  const phoneContext = await browser.newContext({
+    serviceWorkers: 'block',
+    viewport: { width: 900, height: 700 },
+  });
   if (configuredRelayUrl) {
     await serveLocalMobileAssets(phoneContext, relayUrl);
   }
@@ -239,9 +245,44 @@ async function run() {
 
   const frameBounds = await phone.locator('#mirror-frame').boundingBox();
   assert.ok(frameBounds, 'mirror frame must be visible');
+
+  const tapPoint = await desktop.evaluate(() => {
+    const target = document.querySelector('#mirror-e2e-tap');
+    const bounds = target?.getBoundingClientRect();
+    if (!bounds) return null;
+    return {
+      x: (bounds.left + bounds.width / 2) / document.documentElement.clientWidth,
+      y: (bounds.top + bounds.height / 2) / document.documentElement.clientHeight,
+    };
+  });
+  assert.ok(tapPoint, 'tap target must exist');
+  // Guards the regression itself: a center point maps correctly even when the
+  // mirrored image box is letterboxed, so this must stay off vertical center.
+  assert.ok(
+    tapPoint.y < 0.4 || tapPoint.y > 0.6,
+    `tap target must be off vertical center to catch letterbox regressions, got y=${tapPoint.y}`,
+  );
+  // Click where the mirrored pixels are actually painted (object-fit: contain
+  // within the frame's box), not just a fraction of the element's own box.
+  // If the box does not preserve the source aspect ratio, this diverges from
+  // frameBounds-fraction math and exposes the letterbox/crop regression the
+  // same way a real finger tapping the visible screen would.
+  const paintedRect = await phone.evaluate(() => {
+    const frame = document.querySelector('#mirror-frame');
+    const box = frame.getBoundingClientRect();
+    const scale = Math.min(box.width / frame.naturalWidth, box.height / frame.naturalHeight);
+    const paintedWidth = frame.naturalWidth * scale;
+    const paintedHeight = frame.naturalHeight * scale;
+    return {
+      x: box.left + (box.width - paintedWidth) / 2,
+      y: box.top + (box.height - paintedHeight) / 2,
+      width: paintedWidth,
+      height: paintedHeight,
+    };
+  });
   await phone.mouse.click(
-    frameBounds.x + frameBounds.width / 2,
-    frameBounds.y + frameBounds.height / 2,
+    paintedRect.x + paintedRect.width * tapPoint.x,
+    paintedRect.y + paintedRect.height * tapPoint.y,
   );
   await desktop.waitForFunction(() => document.body.dataset.mirrorTap === 'yes');
 
