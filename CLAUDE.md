@@ -7,6 +7,9 @@ things" checklist. For the full architecture and module map, read
 
 ## Non-negotiable rules
 
+- **Windows only.** CCSM is a Windows-only product and development target.
+  Run product validation on Windows, and do not invest in macOS/Linux
+  compatibility or testing unless this policy is explicitly revisited.
 - **npm only — never run pnpm or yarn.** Native rebuild (`scripts/postinstall.mjs`)
   and electron-builder packaging depend on npm. Switching managers breaks the
   build.

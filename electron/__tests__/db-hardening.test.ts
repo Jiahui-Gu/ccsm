@@ -199,6 +199,14 @@ describe('db hardening: WAL durability across a non-graceful shutdown', () => {
   // `wal_checkpoint(PASSIVE)` added to `saveState` is load-bearing.
   const writer = path.join(__dirname, 'fixtures', 'wal-writer.cjs');
 
+  // Cold Windows CI runners can take much longer than a warm dev machine to
+  // even schedule the spawned child's first tick (see run 30338059545: the
+  // first forced-shutdown case in a suite blew past a hard-coded 10s deadline
+  // at 10073ms while the next two cases, same helper, passed in ~3.1-3.3s).
+  // 30s gives real cold-start scheduling room without masking a genuinely
+  // hung/broken writer forever.
+  const WRITER_READY_DEADLINE_MS = 30_000;
+
   async function runForcedShutdown(env: Record<string, string>): Promise<string | null> {
     const dir = fs.mkdtempSync(path.join(tmpRoot, 'wal-'));
     const file = path.join(dir, 'ccsm.db');
@@ -207,12 +215,33 @@ describe('db hardening: WAL durability across a non-graceful shutdown', () => {
       env: { ...process.env, DBFILE: file, STATE_VALUE: 'survive-the-restart', ...env },
       stdio: 'inherit',
     });
+
+    // Fail-fast lifecycle tracking. Listeners are attached immediately after
+    // spawn (before the readiness poll starts) so neither event can be
+    // missed to a race. `readySignalled` gates the `exit` handler so a
+    // NORMAL exit after the ready file has already appeared (e.g. the
+    // SIGKILL below) is never mistaken for an early failure.
+    let readySignalled = false;
+    let childFailure: string | null = null;
+    child.on('error', (spawnErr) => {
+      childFailure = `writer process failed to spawn: ${spawnErr.message}`;
+    });
+    child.on('exit', (code, signal) => {
+      if (!readySignalled && childFailure === null) {
+        childFailure = `writer process exited before signalling ready (code=${code}, signal=${signal})`;
+      }
+    });
+
     try {
       const start = Date.now();
       while (!fs.existsSync(ready)) {
-        if (Date.now() - start > 10000) throw new Error('writer never signalled ready');
+        if (childFailure !== null) throw new Error(childFailure);
+        if (Date.now() - start > WRITER_READY_DEADLINE_MS) {
+          throw new Error('writer never signalled ready');
+        }
         await new Promise((r) => setTimeout(r, 20));
       }
+      readySignalled = true;
       // Forced shutdown: no graceful close, no checkpoint-on-exit.
       child.kill('SIGKILL');
       await new Promise((r) => setTimeout(r, 100));
@@ -268,20 +297,20 @@ describe('db hardening: WAL durability across a non-graceful shutdown', () => {
     // Neither SYNC_FULL nor CHECKPOINT: byte-for-byte the buggy db.ts path.
     const value = await runForcedShutdown({});
     expect(value).not.toBe('survive-the-restart');
-  });
+  }, 45_000);
 
   it('synchronous=FULL alone is NOT enough — data still lost', async () => {
     // Proves FULL is necessary-but-insufficient: durability of WAL frames
     // doesn't help when the WAL itself is discarded un-checkpointed.
     const value = await runForcedShutdown({ SYNC_FULL: '1' });
     expect(value).not.toBe('survive-the-restart');
-  });
+  }, 45_000);
 
   it('survives when saveState checkpoints the WAL into the main DB', async () => {
     // The actual fix: fold the WAL into the main file on every write.
     const value = await runForcedShutdown({ SYNC_FULL: '1', CHECKPOINT: '1' });
     expect(value).toBe('survive-the-restart');
-  });
+  }, 45_000);
 });
 
 describe('db hardening: saveState/initDb wire up WAL durability', () => {

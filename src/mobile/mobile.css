@@ -1,6 +1,5 @@
 :root {
   color-scheme: dark;
-  --app-height: 100%;
   font-family: Inter, system-ui, sans-serif;
 }
 
@@ -11,39 +10,51 @@
 html,
 body,
 #app {
+  width: 100%;
   height: 100%;
   margin: 0;
   overflow: hidden;
-  background: #0b1020;
+  background: #080c16;
   color: #e5e7eb;
 }
 
-button {
+button,
+input {
   color: inherit;
   font: inherit;
 }
 
+button {
+  border: 1px solid #3a465b;
+  border-radius: 8px;
+  background: #1c2637;
+}
+
+button:disabled,
+input:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .phone-shell {
-  display: flex;
-  flex-direction: column;
-  height: var(--app-height);
-  overflow: hidden;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  height: 100%;
 }
 
 header {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  padding: calc(10px + env(safe-area-inset-top)) 12px 10px;
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: calc(9px + env(safe-area-inset-top)) 10px 9px;
   border-bottom: 1px solid #263042;
   background: #111827;
 }
 
-#status,
-.muted {
+#status {
   color: #9ca3af;
+  font-size: 13px;
 }
 
 #status[data-status='connected'] {
@@ -56,71 +67,91 @@ header {
   color: #fca5a5;
 }
 
-#sessions,
-#keybar {
+#fit {
+  padding: 6px 12px;
+}
+
+#mirror-viewport {
+  position: relative;
+  display: grid;
+  min-height: 0;
+  place-items: center;
+  overflow: hidden;
+  background: #000;
+  touch-action: none;
+  user-select: none;
+}
+
+#mirror-frame {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  transform-origin: center;
+  will-change: transform;
+  -webkit-user-drag: none;
+}
+
+#mirror-frame:not([src]) {
+  display: none;
+}
+
+#empty-frame {
+  position: absolute;
+  color: #6b7280;
+}
+
+.controls {
+  display: grid;
+  gap: 7px;
+  padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+  border-top: 1px solid #263042;
+  background: #0f172a;
+}
+
+#text-form {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 7px;
+}
+
+#text-input {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid #3a465b;
+  border-radius: 8px;
+  outline: none;
+  background: #111827;
+}
+
+#text-input:focus {
+  border-color: #60a5fa;
+}
+
+#input-send,
+#keybar button,
+#scrollbar button {
+  padding: 9px 12px;
+}
+
+#keybar,
+#scrollbar {
   display: flex;
-  flex: 0 0 auto;
   gap: 7px;
   overflow-x: auto;
-  background: #0f172a;
   scrollbar-width: none;
 }
 
-#sessions {
-  min-height: 51px;
-  padding: 8px 12px;
-  border-bottom: 1px solid #1f2937;
-}
-
-#sessions button,
-#keybar button {
+#keybar button,
+#scrollbar button {
   flex: 0 0 auto;
-  border: 1px solid #374151;
-  background: #1f2937;
-}
-
-#sessions button {
-  padding: 8px 12px;
-  border-radius: 10px;
-  white-space: nowrap;
-}
-
-#sessions button.active {
-  border-color: #60a5fa;
-  background: #1e3a8a;
-}
-
-#terminal {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: hidden;
-  padding: 6px;
-  background: #000;
-}
-
-#terminal .xterm {
-  height: 100%;
-}
-
-#keybar {
-  padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
-  border-top: 1px solid #1f2937;
-}
-
-#keybar button {
-  min-width: 44px;
-  padding: 10px 12px;
-  border-radius: 8px;
   font: 13px ui-monospace, Menlo, Consolas, monospace;
 }
 
-#keybar button:active {
-  background: #334155;
-}
-
-#keybar button.sticky {
-  border-color: #f59e0b;
-  background: #78350f;
+#scrollbar {
+  justify-content: center;
 }
 
 .missing-pairing {

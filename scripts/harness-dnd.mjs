@@ -236,7 +236,7 @@ await runHarness({
   // intercepts pointer events for the next drag in hidden mode. This
   // harness therefore launches with a visible window (~2s pop). The
   // other harnesses stay hidden during run-all-e2e batches.
-  launch: { env: { CCSM_E2E_HIDDEN: '0' } },
+  launch: { env: { CCSM_E2E_HIDDEN: '0', CCSM_E2E_NO_SINGLE_INSTANCE: '1' } },
   cases: [
     { id: 'dnd', run: caseDnd }
   ]

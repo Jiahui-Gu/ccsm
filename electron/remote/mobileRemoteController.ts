@@ -1,15 +1,16 @@
+import type { BrowserWindow } from 'electron';
+
 import type { PairingIdentity } from '../../src/shared/mobileRemote';
+import { parseMirrorClientMessage } from '../../src/shared/mobileRemote/mirrorMessages';
 import { createEncryptedPeer, type EncryptedPeer } from './encryptedPeer';
 import { createPairingStore, type PairingStore } from './pairingStore';
-import { installPtyFanout } from './ptyFanout';
-import { handleClientMessage, listEntries } from './remoteMessages';
-import type { RemotePeer } from './remotePeer';
 import { resolveRelayUrl } from './relayConfig';
 import {
   createRelaySocket,
   type RelaySocket,
   type RelaySocketOptions,
 } from './relaySocket';
+import { createWindowMirror, type WindowMirror } from './windowMirror';
 
 export type MobileRemoteStatus =
   | {
@@ -39,7 +40,7 @@ type ControllerOptions = {
   relayUrl?: string | null;
   pairingStore?: PairingStore;
   createSocket?: (options: RelaySocketOptions) => RelaySocket;
-  handleMessage?: (peer: RemotePeer, raw: string) => Promise<void> | void;
+  getWindow?: () => BrowserWindow | null;
 };
 
 export async function createMobileRemoteController(
@@ -48,16 +49,15 @@ export async function createMobileRemoteController(
   const relayUrl = options.relayUrl === undefined ? resolveRelayUrl() : options.relayUrl;
   const store = options.pairingStore ?? createPairingStore();
   const socketFactory = options.createSocket ?? createRelaySocket;
-  const clientMessageHandler = options.handleMessage ?? handleClientMessage;
+  const getWindow = options.getWindow ?? (() => null);
   const handlers = new Set<(status: MobileRemoteStatus) => void>();
-  const peers = new Set<RemotePeer>();
-  const offPtyData = installPtyFanout(peers);
   let status: MobileRemoteStatus = relayUrl
     ? { kind: 'connecting' }
     : { kind: 'unavailable', reason: 'relay-not-configured' };
   let pairing: PairingIdentity | null = null;
   let socket: RelaySocket | null = null;
   let peer: EncryptedPeer | null = null;
+  let mirror: WindowMirror | null = null;
   let offSocketStatus: (() => void) | null = null;
   let paused = false;
   let closed = false;
@@ -72,7 +72,8 @@ export async function createMobileRemoteController(
   const disconnect = (): void => {
     offSocketStatus?.();
     offSocketStatus = null;
-    if (peer) peers.delete(peer);
+    mirror?.stop();
+    mirror = null;
     peer?.close();
     peer = null;
     socket = null;
@@ -84,27 +85,44 @@ export async function createMobileRemoteController(
     setStatus({ kind: 'connecting' });
     socket = socketFactory({ relayUrl, roomId: pairing.roomId });
     const currentSocket = socket;
-    peer = createEncryptedPeer({
+    let currentPeer: EncryptedPeer | null = null;
+    const currentMirror = createWindowMirror({
+      getWindow,
+      send: (message) => currentPeer?.send(message),
+    });
+    currentPeer = createEncryptedPeer({
       pairing,
       socket: currentSocket,
-      handleMessage: clientMessageHandler,
+      handleMessage: (remotePeer, raw) => {
+        const message = parseMirrorClientMessage(raw);
+        if (!message) {
+          remotePeer.send({ type: 'mirror.error', message: 'invalid_message' });
+          return;
+        }
+        currentMirror.handle(message);
+      },
       onAuthenticated: () => {
         setStatus({ kind: 'ready', phoneConnected: true });
-        peer?.send({ type: 'sessions.list', sessions: listEntries() });
       },
       onFailure: (reason) => setStatus({ kind: 'error', reason }),
     });
-    peers.add(peer);
+    peer = currentPeer;
+    mirror = currentMirror;
     offSocketStatus = currentSocket.onStatus((socketStatus) => {
       if (socketStatus === 'unreachable') {
+        currentMirror.stop();
         setStatus({ kind: 'error', reason: 'relay-unreachable' });
       } else if (socketStatus === 'connecting' || socketStatus === 'reconnecting') {
+        currentMirror.stop();
         setStatus({ kind: 'connecting' });
       } else if (socketStatus === 'open') {
+        currentMirror.stop();
         setStatus({ kind: 'ready', phoneConnected: false });
+      } else if (socketStatus === 'closed') {
+        currentMirror.stop();
       }
     });
-    peer.start();
+    currentPeer.start();
   };
 
   if (relayUrl) {
@@ -165,7 +183,6 @@ export async function createMobileRemoteController(
       if (closed) return;
       closed = true;
       disconnect();
-      offPtyData();
       handlers.clear();
     },
   };

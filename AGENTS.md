@@ -11,6 +11,10 @@ user-facing product framing see [`README.md`](README.md).
 
 ## Hard constraints (read first)
 
+- **Windows only.** CCSM is a Windows-only product and development target.
+  CI, E2E validation, and future compatibility work target Windows. Do not
+  invest in macOS/Linux compatibility or testing unless this policy is
+  explicitly revisited.
 - **npm only — never pnpm or yarn.** The build relies on
   `scripts/postinstall.mjs` (native rebuild via `@electron/rebuild`) and
   electron-builder, and the package manager decision was deliberate. Using a

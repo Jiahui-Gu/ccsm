@@ -1,27 +1,11 @@
-import { FitAddon } from '@xterm/addon-fit';
-import { Terminal } from '@xterm/xterm';
+/* global HTMLFormElement, HTMLImageElement */
 
 import {
-  applyServerMessage,
-  controlInput,
-  emptyPhoneState,
-  selectSession,
-  type MobileClientMessage,
-  type PhoneState,
-} from './phoneApp';
+  MIRROR_KEYS,
+  type MirrorClientMessage,
+  type MirrorKey,
+} from '../shared/mobileRemote/mirrorMessages';
 import type { PhoneConnectionStatus, RelayClient } from './relayClient';
-
-const HARD_KEYS = [
-  { label: 'Esc', data: '\x1b' },
-  { label: 'Tab', data: '\t' },
-  { label: 'Ctrl', ctrl: true },
-  { label: '↑', data: '\x1b[A' },
-  { label: '↓', data: '\x1b[B' },
-  { label: '←', data: '\x1b[D' },
-  { label: '→', data: '\x1b[C' },
-  { label: '^C', data: '\x03' },
-  { label: 'Enter', data: '\r' },
-] as const;
 
 const STATUS_COPY: Record<PhoneConnectionStatus, string> = {
   connecting: 'Connecting…',
@@ -34,10 +18,12 @@ const STATUS_COPY: Record<PhoneConnectionStatus, string> = {
   closed: 'Disconnected',
 };
 
-function basename(path: string): string {
-  const parts = path.replace(/[\\/]+$/, '').split(/[\\/]/);
-  return parts.at(-1) || path;
-}
+type PointerState = {
+  x: number;
+  y: number;
+  startX: number;
+  startY: number;
+};
 
 export function renderMissingPairing(root: HTMLElement): void {
   root.innerHTML =
@@ -47,201 +33,182 @@ export function renderMissingPairing(root: HTMLElement): void {
 export function createPhonePage(root: HTMLElement, client: RelayClient): () => void {
   root.innerHTML = `
     <div class="phone-shell">
-      <header><strong>CCSM Mobile Remote</strong><span id="status" data-remote-status>Connecting…</span></header>
-      <nav id="sessions" aria-label="Terminal sessions"><span class="muted">Loading sessions…</span></nav>
-      <main id="terminal" aria-label="Terminal"></main>
-      <nav id="keybar" aria-label="Terminal keys"></nav>
+      <header>
+        <strong>CCSM Mobile Remote</strong>
+        <span id="status" data-remote-status>Connecting…</span>
+        <button id="fit" type="button" data-control disabled>Fit</button>
+      </header>
+      <main id="mirror-viewport" aria-label="CCSM desktop mirror">
+        <img id="mirror-frame" alt="Live CCSM desktop" draggable="false" />
+        <div id="empty-frame">Waiting for desktop…</div>
+      </main>
+      <section class="controls" aria-label="Remote controls">
+        <form id="text-form">
+          <input id="text-input" type="text" autocomplete="off" placeholder="Type text" disabled />
+          <button id="input-send" type="submit" data-control disabled>Input</button>
+        </form>
+        <nav id="keybar" aria-label="Keys"></nav>
+        <nav id="scrollbar" aria-label="Scroll">
+          <button type="button" data-control data-scroll="-360" disabled>Scroll ↑</button>
+          <button type="button" data-control data-scroll="360" disabled>Scroll ↓</button>
+        </nav>
+      </section>
     </div>`;
+
   const statusElement = root.querySelector<HTMLElement>('#status')!;
-  const sessionsElement = root.querySelector<HTMLElement>('#sessions')!;
-  const terminalElement = root.querySelector<HTMLElement>('#terminal')!;
-  const keybarElement = root.querySelector<HTMLElement>('#keybar')!;
-  const terminal = new Terminal({
-    convertEol: false,
-    disableStdin: false,
-    cursorBlink: true,
-    fontSize: 13,
-    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-    theme: { background: '#000000' },
-    scrollback: 5000,
-  });
-  const fitAddon = new FitAddon();
-  terminal.loadAddon(fitAddon);
-  terminal.open(terminalElement);
+  const viewport = root.querySelector<HTMLElement>('#mirror-viewport')!;
+  const frame = root.querySelector<HTMLImageElement>('#mirror-frame')!;
+  const emptyFrame = root.querySelector<HTMLElement>('#empty-frame')!;
+  const fitButton = root.querySelector<HTMLButtonElement>('#fit')!;
+  const textForm = root.querySelector<HTMLFormElement>('#text-form')!;
+  const textInput = root.querySelector<HTMLInputElement>('#text-input')!;
+  const keybar = root.querySelector<HTMLElement>('#keybar')!;
+  const pointers = new Map<number, PointerState>();
+  let connected = false;
+  let scale = 1;
+  let offsetX = 0;
+  let offsetY = 0;
+  let pinchDistance = 0;
+  let pinchScale = 1;
 
-  let state: PhoneState = emptyPhoneState();
-  let ctrlSticky = false;
-  let fitTimer: ReturnType<typeof setTimeout> | null = null;
-  let orientationTimer: ReturnType<typeof setTimeout> | null = null;
-  let lastSentCols = 0;
-  let lastSentRows = 0;
-
-  function send(message: MobileClientMessage): void {
+  function send(message: MirrorClientMessage): void {
+    if (!connected) return;
     void client.send(message).catch(() => undefined);
   }
 
-  function renderSessions(): void {
-    sessionsElement.textContent = '';
-    if (state.sessions.length === 0) {
-      const empty = document.createElement('span');
-      empty.className = 'muted';
-      empty.textContent = 'No live PTY sessions. Open a CCSM session on desktop first.';
-      sessionsElement.append(empty);
-      return;
-    }
-    for (const session of state.sessions) {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.textContent = basename(session.cwd) || session.sid.slice(0, 8);
-      button.classList.toggle('active', session.sid === state.activeSid);
-      button.addEventListener('click', () => {
-        const selection = selectSession(state, session.sid);
-        state = selection.state;
-        lastSentCols = 0;
-        lastSentRows = 0;
-        terminal.reset();
-        renderSessions();
-        send(selection.message);
-      });
-      sessionsElement.append(button);
+  function setControlsEnabled(enabled: boolean): void {
+    connected = enabled;
+    textInput.disabled = !enabled;
+    for (const control of root.querySelectorAll<HTMLButtonElement>('[data-control]')) {
+      control.disabled = !enabled;
     }
   }
 
-  function renderKeybar(): void {
-    keybarElement.textContent = '';
-    for (const key of HARD_KEYS) {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.textContent = key.label;
-      if ('ctrl' in key && key.ctrl && ctrlSticky) button.classList.add('sticky');
-      button.addEventListener('click', () => {
-        if ('ctrl' in key && key.ctrl) {
-          ctrlSticky = !ctrlSticky;
-          renderKeybar();
-          return;
-        }
-        if (!state.activeSid || !('data' in key)) return;
-        send({ type: 'session.input', sid: state.activeSid, data: key.data });
-      });
-      keybarElement.append(button);
-    }
+  function applyTransform(): void {
+    frame.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${scale})`;
   }
 
   function fit(): void {
-    let dimensions: { cols: number; rows: number } | undefined;
-    try {
-      dimensions = fitAddon.proposeDimensions();
-    } catch {
-      return;
+    scale = 1;
+    offsetX = 0;
+    offsetY = 0;
+    applyTransform();
+  }
+
+  function renderKeybar(): void {
+    for (const key of MIRROR_KEYS) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.dataset.control = '';
+      button.dataset.key = key;
+      button.disabled = true;
+      button.textContent = key
+        .replace('ArrowUp', '↑')
+        .replace('ArrowDown', '↓')
+        .replace('ArrowLeft', '←')
+        .replace('ArrowRight', '→');
+      button.addEventListener('click', () => {
+        send({ type: 'mirror.key', key: key as MirrorKey });
+      });
+      keybar.append(button);
     }
-    if (
-      !dimensions ||
-      !Number.isFinite(dimensions.cols) ||
-      !Number.isFinite(dimensions.rows) ||
-      dimensions.cols < 1 ||
-      dimensions.rows < 1
-    ) {
-      return;
+  }
+
+  function pointerDistance(): number {
+    const points = [...pointers.values()];
+    if (points.length < 2) return 0;
+    return Math.hypot(points[0]!.x - points[1]!.x, points[0]!.y - points[1]!.y);
+  }
+
+  function handlePointerDown(event: PointerEvent): void {
+    pointers.set(event.pointerId, {
+      x: event.clientX,
+      y: event.clientY,
+      startX: event.clientX,
+      startY: event.clientY,
+    });
+    viewport.setPointerCapture?.(event.pointerId);
+    if (pointers.size === 2) {
+      pinchDistance = pointerDistance();
+      pinchScale = scale;
     }
-    terminal.resize(dimensions.cols, dimensions.rows);
-    if (
-      !state.activeSid ||
-      (dimensions.cols === lastSentCols && dimensions.rows === lastSentRows)
-    ) {
-      return;
+  }
+
+  function handlePointerMove(event: PointerEvent): void {
+    const point = pointers.get(event.pointerId);
+    if (!point) return;
+    const previousX = point.x;
+    const previousY = point.y;
+    point.x = event.clientX;
+    point.y = event.clientY;
+    if (pointers.size === 1) {
+      offsetX += point.x - previousX;
+      offsetY += point.y - previousY;
+    } else if (pointers.size === 2 && pinchDistance > 0) {
+      scale = Math.max(1, Math.min(4, pinchScale * (pointerDistance() / pinchDistance)));
     }
-    lastSentCols = dimensions.cols;
-    lastSentRows = dimensions.rows;
-    send({
-      type: 'session.resize',
-      sid: state.activeSid,
-      cols: dimensions.cols,
-      rows: dimensions.rows,
+    applyTransform();
+  }
+
+  function handlePointerUp(event: PointerEvent): void {
+    const point = pointers.get(event.pointerId);
+    if (point && pointers.size === 1) {
+      const moved = Math.hypot(point.x - point.startX, point.y - point.startY);
+      const bounds = frame.getBoundingClientRect();
+      if (moved < 8 && bounds.width > 0 && bounds.height > 0) {
+        send({
+          type: 'mirror.tap',
+          x: Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width)),
+          y: Math.max(0, Math.min(1, (event.clientY - bounds.top) / bounds.height)),
+        });
+      }
+    }
+    pointers.delete(event.pointerId);
+    if (pointers.size < 2) pinchDistance = 0;
+  }
+
+  renderKeybar();
+  fitButton.addEventListener('click', fit);
+  textForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    if (!connected || textInput.value.length === 0) return;
+    send({ type: 'mirror.text', text: textInput.value });
+    textInput.value = '';
+  });
+  for (const button of root.querySelectorAll<HTMLButtonElement>('[data-scroll]')) {
+    button.addEventListener('click', () => {
+      send({ type: 'mirror.scroll', deltaY: Number(button.dataset.scroll) });
     });
   }
+  viewport.addEventListener('pointerdown', handlePointerDown);
+  viewport.addEventListener('pointermove', handlePointerMove);
+  viewport.addEventListener('pointerup', handlePointerUp);
+  viewport.addEventListener('pointercancel', handlePointerUp);
 
-  function scheduleFit(): void {
-    if (fitTimer) clearTimeout(fitTimer);
-    fitTimer = setTimeout(fit, 120);
-  }
-
-  function syncViewportHeight(): void {
-    if (!window.visualViewport) return;
-    document.documentElement.style.setProperty(
-      '--app-height',
-      `${window.visualViewport.height}px`,
-    );
-    scheduleFit();
-  }
-
-  function focusTerminal(): void {
-    terminal.focus();
-  }
-
-  const dataDisposable = terminal.onData((rawData) => {
-    if (!state.activeSid) return;
-    const input = controlInput(rawData, ctrlSticky);
-    ctrlSticky = input.ctrlSticky;
-    renderKeybar();
-    send({ type: 'session.input', sid: state.activeSid, data: input.data });
-  });
   const removeMessageHandler = client.onMessage((message) => {
-    const previousSid = state.activeSid;
-    state = applyServerMessage(state, message);
-    if (message.type === 'sessions.list') {
-      renderSessions();
-      if (!previousSid && state.sessions.length > 0) {
-        const selection = selectSession(state, state.sessions[0]!.sid);
-        state = selection.state;
-        renderSessions();
-        terminal.reset();
-        send(selection.message);
-      }
+    if (message.type === 'mirror.error') {
+      statusElement.textContent = message.message.replaceAll('_', ' ');
       return;
     }
-    if (state.terminalReset) terminal.reset();
-    for (const data of state.terminalWrites) terminal.write(data);
-    if (message.type === 'session.snapshot') scheduleFit();
+    frame.src = `data:image/jpeg;base64,${message.jpegBase64}`;
+    frame.width = message.width;
+    frame.height = message.height;
+    emptyFrame.hidden = true;
   });
   const removeStatusHandler = client.onStatus((status) => {
     statusElement.textContent = STATUS_COPY[status];
     statusElement.dataset.status = status;
-    if (status === 'connected') {
-      send({ type: 'sessions.list' });
-      if (state.activeSid) {
-        terminal.reset();
-        state = { ...state, snapshotSequence: -1 };
-        send({ type: 'session.snapshot', sid: state.activeSid });
-      }
-    }
+    setControlsEnabled(status === 'connected');
+    if (status === 'connected') send({ type: 'mirror.start' });
   });
-  const handleOrientation = () => {
-    scheduleFit();
-    if (orientationTimer) clearTimeout(orientationTimer);
-    orientationTimer = setTimeout(scheduleFit, 250);
-  };
-
-  window.addEventListener('resize', scheduleFit);
-  window.addEventListener('orientationchange', handleOrientation);
-  window.visualViewport?.addEventListener('resize', syncViewportHeight);
-  window.visualViewport?.addEventListener('scroll', syncViewportHeight);
-  terminalElement.addEventListener('touchend', focusTerminal);
-  terminalElement.addEventListener('click', focusTerminal);
-  renderKeybar();
-  syncViewportHeight();
 
   return () => {
     removeMessageHandler();
     removeStatusHandler();
-    dataDisposable.dispose();
-    terminal.dispose();
-    if (fitTimer) clearTimeout(fitTimer);
-    if (orientationTimer) clearTimeout(orientationTimer);
-    window.removeEventListener('resize', scheduleFit);
-    window.removeEventListener('orientationchange', handleOrientation);
-    window.visualViewport?.removeEventListener('resize', syncViewportHeight);
-    window.visualViewport?.removeEventListener('scroll', syncViewportHeight);
-    terminalElement.removeEventListener('touchend', focusTerminal);
-    terminalElement.removeEventListener('click', focusTerminal);
+    fitButton.removeEventListener('click', fit);
+    viewport.removeEventListener('pointerdown', handlePointerDown);
+    viewport.removeEventListener('pointermove', handlePointerMove);
+    viewport.removeEventListener('pointerup', handlePointerUp);
+    viewport.removeEventListener('pointercancel', handlePointerUp);
   };
 }

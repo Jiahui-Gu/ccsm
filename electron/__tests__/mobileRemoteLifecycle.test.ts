@@ -139,19 +139,20 @@ describe('mobile remote main lifecycle', () => {
   it('publishes the controller status immediately after startup', async () => {
     const send = vi.fn();
     h.windows.push({ webContents: { send } });
-    vi.doMock('../remote/mobileRemoteController', () => ({
-      createMobileRemoteController: vi.fn(async () => ({
-        getStatus: vi.fn(() => ({
-          kind: 'unavailable',
-          reason: 'secure-storage-unavailable',
-        })),
-        getPairingUrl: vi.fn(),
-        pause: vi.fn(),
-        resume: vi.fn(),
-        rotate: vi.fn(),
-        subscribe: vi.fn(() => vi.fn()),
-        close: vi.fn(),
+    const createController = vi.fn(async () => ({
+      getStatus: vi.fn(() => ({
+        kind: 'unavailable' as const,
+        reason: 'secure-storage-unavailable' as const,
       })),
+      getPairingUrl: vi.fn(),
+      pause: vi.fn(),
+      resume: vi.fn(),
+      rotate: vi.fn(),
+      subscribe: vi.fn(() => vi.fn()),
+      close: vi.fn(),
+    }));
+    vi.doMock('../remote/mobileRemoteController', () => ({
+      createMobileRemoteController: createController,
     }));
 
     await import('../main');
@@ -162,6 +163,8 @@ describe('mobile remote main lifecycle', () => {
         reason: 'secure-storage-unavailable',
       });
     });
+    const options = createController.mock.calls[0]?.[0];
+    expect(options?.getWindow()).toBe(h.windows[0]);
   });
 
   it('closes loopback and public controllers independently during shutdown', async () => {

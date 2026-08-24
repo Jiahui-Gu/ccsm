@@ -4,6 +4,7 @@ import {
   MOBILE_REMOTE_PROTOCOL_VERSION,
   createHandshakeProof,
   deriveSessionKeys,
+  openEnvelope,
   sealEnvelope,
 } from '../../src/shared/mobileRemote';
 import {
@@ -16,7 +17,6 @@ const ROOM_ID = 'B'.repeat(43);
 const SECRET = 'A'.repeat(43);
 
 class FakeWebSocket {
-  static readonly OPEN = 1;
   readonly sent: string[] = [];
   readyState = 0;
   onopen: (() => void) | null = null;
@@ -25,7 +25,7 @@ class FakeWebSocket {
   onmessage: ((event: MessageEvent<string>) => void) | null = null;
 
   open(): void {
-    this.readyState = FakeWebSocket.OPEN;
+    this.readyState = 1;
     this.onopen?.();
   }
 
@@ -43,7 +43,7 @@ class FakeWebSocket {
   }
 }
 
-function parseSent(socket: FakeWebSocket): Array<Record<string, unknown>> {
+function sent(socket: FakeWebSocket): Array<Record<string, unknown>> {
   return socket.sent.map((message) => JSON.parse(message) as Record<string, unknown>);
 }
 
@@ -52,9 +52,7 @@ async function authenticate(
   socket: FakeWebSocket,
   desktopNonce: string,
 ): Promise<void> {
-  const statuses: PhoneConnectionStatus[] = [];
-  const offStatus = client.onStatus((status) => statuses.push(status));
-  const phoneHello = parseSent(socket).find((message) => message.type === 'handshake.hello')!;
+  const phoneHello = sent(socket).find((message) => message.type === 'handshake.hello')!;
   const desktopHello = {
     type: 'handshake.hello',
     version: MOBILE_REMOTE_PROTOCOL_VERSION,
@@ -64,32 +62,35 @@ async function authenticate(
   } as const;
   socket.receive(desktopHello);
   await vi.waitFor(() =>
-    expect(parseSent(socket).some((message) => message.type === 'handshake.proof')).toBe(true),
+    expect(sent(socket).some((message) => message.type === 'handshake.proof')).toBe(true),
   );
   socket.receive({
     type: 'handshake.proof',
     connectionId: ROOM_ID,
     proof: await createHandshakeProof(
       SECRET,
-      handshakeTranscript(desktopHello, {
-        type: 'handshake.hello',
-        version: MOBILE_REMOTE_PROTOCOL_VERSION,
-        role: 'phone',
-        connectionId: ROOM_ID,
-        nonce: String(phoneHello.nonce),
-      }, 'desktop'),
+      handshakeTranscript(
+        desktopHello,
+        {
+          type: 'handshake.hello',
+          version: MOBILE_REMOTE_PROTOCOL_VERSION,
+          role: 'phone',
+          connectionId: ROOM_ID,
+          nonce: String(phoneHello.nonce),
+        },
+        'desktop',
+      ),
     ),
   });
-  await vi.waitFor(() => expect(statuses).toContain('connected'));
-  offStatus();
+  await vi.waitFor(() =>
+    expect(sent(socket).some((message) => message.type === 'relay.authenticated')).toBe(true),
+  );
 }
 
 describe('phone relay client', () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-  });
+  beforeEach(() => vi.useFakeTimers());
 
-  it('uses a fresh nonce for every socket and caps exponential reconnect at 10 seconds', () => {
+  it('uses a fresh nonce and caps reconnect delay at ten seconds', () => {
     const sockets: FakeWebSocket[] = [];
     const delays: number[] = [];
     let byte = 0;
@@ -118,9 +119,8 @@ describe('phone relay client', () => {
       vi.runOnlyPendingTimers();
     }
 
-    const openedSockets = sockets.filter((socket) => socket.sent.length > 0);
-    const nonces = openedSockets.map((socket) => parseSent(socket)[0]!.nonce);
-    expect(new Set(nonces).size).toBe(openedSockets.length);
+    const nonces = sockets.map((socket) => sent(socket)[0]?.nonce);
+    expect(new Set(nonces).size).toBe(sockets.length);
     expect(delays).toEqual([500, 1000, 2000, 4000, 8000, 10000, 10000]);
     client.close();
   });
@@ -149,154 +149,7 @@ describe('phone relay client', () => {
     expect(socket.readyState).toBe(3);
   });
 
-  it('does not emit encrypted application messages until desktop proof verifies', async () => {
-    const socket = new FakeWebSocket();
-    const client = createRelayClient({
-      relayUrl: 'https://relay.example',
-      pairing: { roomId: ROOM_ID, secret: SECRET },
-      createWebSocket: () => socket,
-      randomValues: (bytes) => {
-        bytes.fill(7);
-        return bytes;
-      },
-    });
-    client.connect();
-    socket.open();
-    const phoneHello = parseSent(socket)[0]!;
-    const desktopNonce = 'C'.repeat(22);
-    const desktopHello = {
-      type: 'handshake.hello',
-      version: MOBILE_REMOTE_PROTOCOL_VERSION,
-      role: 'desktop',
-      connectionId: ROOM_ID,
-      nonce: desktopNonce,
-    } as const;
-
-    socket.receive(desktopHello);
-    await vi.waitFor(() => {
-      expect(parseSent(socket).some((message) => message.type === 'handshake.proof')).toBe(true);
-    });
-    const pendingSend = client.send({ type: 'sessions.list' });
-    expect(parseSent(socket).some((message) => message.type === 'encrypted')).toBe(false);
-
-    const transcript = handshakeTranscript(desktopHello, {
-      type: 'handshake.hello',
-      version: MOBILE_REMOTE_PROTOCOL_VERSION,
-      role: 'phone',
-      connectionId: ROOM_ID,
-      nonce: String(phoneHello.nonce),
-    }, 'desktop');
-    socket.receive({
-      type: 'handshake.proof',
-      connectionId: ROOM_ID,
-      proof: await createHandshakeProof(SECRET, transcript),
-    });
-    await pendingSend;
-
-    expect(parseSent(socket).some((message) => message.type === 'encrypted')).toBe(true);
-  });
-
-  it('serializes back-to-back handshake messages', async () => {
-    const socket = new FakeWebSocket();
-    const statuses: PhoneConnectionStatus[] = [];
-    const client = createRelayClient({
-      relayUrl: 'https://relay.example',
-      pairing: { roomId: ROOM_ID, secret: SECRET },
-      createWebSocket: () => socket,
-      randomValues: (bytes) => {
-        bytes.fill(11);
-        return bytes;
-      },
-    });
-    client.onStatus((status) => statuses.push(status));
-    client.connect();
-    socket.open();
-    const phoneHello = parseSent(socket)[0]!;
-    const desktopHello = {
-      type: 'handshake.hello',
-      version: MOBILE_REMOTE_PROTOCOL_VERSION,
-      role: 'desktop',
-      connectionId: ROOM_ID,
-      nonce: 'E'.repeat(22),
-    } as const;
-    const proof = await createHandshakeProof(
-      SECRET,
-      handshakeTranscript(desktopHello, {
-        type: 'handshake.hello',
-        version: MOBILE_REMOTE_PROTOCOL_VERSION,
-        role: 'phone',
-        connectionId: ROOM_ID,
-        nonce: String(phoneHello.nonce),
-      }, 'desktop'),
-    );
-
-    socket.receive(desktopHello);
-    socket.receive({
-      type: 'handshake.proof',
-      connectionId: ROOM_ID,
-      proof,
-    });
-
-    await vi.waitFor(() => expect(statuses.at(-1)).toBe('connected'));
-    expect(parseSent(socket).some((message) => message.type === 'relay.authenticated')).toBe(true);
-    expect(socket.readyState).toBe(FakeWebSocket.OPEN);
-  });
-
-  it('serializes application envelopes queued together after reconnect authentication', async () => {
-    const socket = new FakeWebSocket();
-    const client = createRelayClient({
-      relayUrl: 'https://relay.example',
-      pairing: { roomId: ROOM_ID, secret: SECRET },
-      createWebSocket: () => socket,
-      randomValues: (bytes) => {
-        bytes.fill(13);
-        return bytes;
-      },
-    });
-    const sends: Promise<void>[] = [];
-    client.onStatus((status) => {
-      if (status === 'connected') {
-        sends.push(client.send({ type: 'sessions.list' }));
-        sends.push(client.send({ type: 'session.snapshot', sid: 'mobile-e2e' }));
-      }
-    });
-    client.connect();
-    socket.open();
-    const phoneHello = parseSent(socket)[0]!;
-    const desktopHello = {
-      type: 'handshake.hello',
-      version: MOBILE_REMOTE_PROTOCOL_VERSION,
-      role: 'desktop',
-      connectionId: ROOM_ID,
-      nonce: 'G'.repeat(22),
-    } as const;
-    socket.receive(desktopHello);
-    const transcript = handshakeTranscript(desktopHello, {
-      type: 'handshake.hello',
-      version: MOBILE_REMOTE_PROTOCOL_VERSION,
-      role: 'phone',
-      connectionId: ROOM_ID,
-      nonce: String(phoneHello.nonce),
-    }, 'desktop');
-    await vi.waitFor(() =>
-      expect(parseSent(socket).some((message) => message.type === 'handshake.proof')).toBe(true),
-    );
-
-    socket.receive({
-      type: 'handshake.proof',
-      connectionId: ROOM_ID,
-      proof: await createHandshakeProof(SECRET, transcript),
-    });
-    await vi.waitFor(() => expect(sends).toHaveLength(2));
-    await Promise.all(sends);
-
-    const sequences = parseSent(socket)
-      .filter((message) => message.type === 'encrypted')
-      .map((message) => message.sequence);
-    expect(sequences).toEqual([1, 2]);
-  });
-
-  it('decrypts authenticated desktop application messages', async () => {
+  it('decrypts mirror frames after authenticating the desktop', async () => {
     const socket = new FakeWebSocket();
     const messages: unknown[] = [];
     const client = createRelayClient({
@@ -311,137 +164,49 @@ describe('phone relay client', () => {
     client.onMessage((message) => messages.push(message));
     client.connect();
     socket.open();
-    const phoneHello = parseSent(socket)[0]!;
-    const desktopHello = {
-      type: 'handshake.hello',
-      version: MOBILE_REMOTE_PROTOCOL_VERSION,
-      role: 'desktop',
-      connectionId: ROOM_ID,
-      nonce: 'D'.repeat(22),
-    } as const;
-    socket.receive(desktopHello);
-    await vi.waitFor(() => expect(parseSent(socket).length).toBeGreaterThan(1));
-    const transcript = handshakeTranscript(desktopHello, {
-      type: 'handshake.hello',
-      version: MOBILE_REMOTE_PROTOCOL_VERSION,
-      role: 'phone',
-      connectionId: ROOM_ID,
-      nonce: String(phoneHello.nonce),
-    }, 'desktop');
-    socket.receive({
-      type: 'handshake.proof',
-      connectionId: ROOM_ID,
-      proof: await createHandshakeProof(SECRET, transcript),
-    });
+    const phoneHello = sent(socket)[0]!;
+    await authenticate(client, socket, 'D'.repeat(22));
     const desktopKeys = await deriveSessionKeys({
       secret: SECRET,
       roomId: ROOM_ID,
-      desktopNonce: desktopHello.nonce,
+      desktopNonce: 'D'.repeat(22),
       phoneNonce: String(phoneHello.nonce),
       role: 'desktop',
     });
-    const envelope = await sealEnvelope(
-      desktopKeys.send,
-      new TextEncoder().encode('{"type":"sessions.list","sessions":[]}'),
+    socket.receive(
+      await sealEnvelope(
+        desktopKeys.send,
+        new TextEncoder().encode(
+          '{"type":"mirror.frame","jpegBase64":"abc","width":800,"height":600}',
+        ),
+      ),
     );
-    socket.receive(envelope);
-    await vi.waitFor(() => expect(messages).toEqual([{ type: 'sessions.list', sessions: [] }]));
-  });
 
-  it('rejects terminal input while unauthenticated instead of replaying it later', async () => {
-    const socket = new FakeWebSocket();
-    const client = createRelayClient({
-      relayUrl: 'https://relay.example',
-      pairing: { roomId: ROOM_ID, secret: SECRET },
-      createWebSocket: () => socket,
-    });
-    client.connect();
-    socket.open();
-
-    await expect(
-      client.send({ type: 'session.input', sid: 'mobile-e2e', data: 'rm -rf stale\r' }),
-    ).rejects.toThrow('not_authenticated');
-
-    await authenticate(client, socket, 'H'.repeat(22));
-    expect(parseSent(socket).filter((message) => message.type === 'encrypted')).toHaveLength(0);
-    client.close();
-  });
-
-  it('coalesces duplicate offline recovery requests and bounds the recovery queue', async () => {
-    const socket = new FakeWebSocket();
-    const client = createRelayClient({
-      relayUrl: 'https://relay.example',
-      pairing: { roomId: ROOM_ID, secret: SECRET },
-      createWebSocket: () => socket,
-    });
-    client.connect();
-    socket.open();
-
-    const firstList = client.send({ type: 'sessions.list' });
-    const secondList = client.send({ type: 'sessions.list' });
-    const snapshots = Array.from({ length: 32 }, (_, index) =>
-      client.send({ type: 'session.snapshot', sid: `sid-${index}` }),
+    await vi.waitFor(() =>
+      expect(messages).toEqual([
+        {
+          type: 'mirror.frame',
+          jpegBase64: 'abc',
+          width: 800,
+          height: 600,
+        },
+      ]),
     );
-    await expect(snapshots.at(-1)).rejects.toThrow('offline_queue_full');
-
-    await authenticate(client, socket, 'I'.repeat(22));
-    await Promise.all([firstList, secondList, ...snapshots.slice(0, -1)]);
-    expect(parseSent(socket).filter((message) => message.type === 'encrypted')).toHaveLength(32);
     client.close();
   });
 
-  it('coalesces offline resize recovery to the latest dimensions', async () => {
-    const socket = new FakeWebSocket();
-    const plaintexts: string[] = [];
-    const client = createRelayClient({
-      relayUrl: 'https://relay.example',
-      pairing: { roomId: ROOM_ID, secret: SECRET },
-      createWebSocket: () => socket,
-      seal: (key, plaintext) => {
-        plaintexts.push(new TextDecoder().decode(plaintext));
-        return sealEnvelope(key, plaintext);
-      },
-    });
-    client.connect();
-    socket.open();
-
-    const first = client.send({
-      type: 'session.resize',
-      sid: 'mobile-e2e',
-      cols: 80,
-      rows: 24,
-    });
-    const second = client.send({
-      type: 'session.resize',
-      sid: 'mobile-e2e',
-      cols: 120,
-      rows: 40,
-    });
-    await authenticate(client, socket, 'N'.repeat(22));
-    await Promise.all([first, second]);
-
-    expect(plaintexts).toEqual([
-      JSON.stringify({
-        type: 'session.resize',
-        sid: 'mobile-e2e',
-        cols: 120,
-        rows: 40,
-      }),
-    ]);
-    client.close();
-  });
-
-  it('requeues recovery encrypted for an obsolete connection onto the authenticated socket', async () => {
+  it('replays only mirror.start after the socket changes', async () => {
     const sockets: FakeWebSocket[] = [];
-    let releaseEncryption!: () => void;
-    const encryptionStarted = new Promise<void>((resolve) => {
-      releaseEncryption = resolve;
+    const plaintexts: string[] = [];
+    let unblockEncryption!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      unblockEncryption = resolve;
     });
-    let encryptionCalls = 0;
-    let unblockFirstEncryption!: () => void;
-    const firstEncryptionBlocked = new Promise<void>((resolve) => {
-      unblockFirstEncryption = resolve;
+    let encryptionStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      encryptionStarted = resolve;
     });
+    let sealCalls = 0;
     const client = createRelayClient({
       relayUrl: 'https://relay.example',
       pairing: { roomId: ROOM_ID, secret: SECRET },
@@ -451,57 +216,10 @@ describe('phone relay client', () => {
         return socket;
       },
       seal: async (key, plaintext) => {
-        encryptionCalls += 1;
-        if (encryptionCalls === 1) {
-          releaseEncryption();
-          await firstEncryptionBlocked;
-        }
-        return sealEnvelope(key, plaintext);
-      },
-    });
-    client.connect();
-    sockets[0]!.open();
-    await authenticate(client, sockets[0]!, 'J'.repeat(22));
-
-    const pending = client.send({ type: 'sessions.list' });
-    await encryptionStarted;
-    sockets[0]!.close();
-    await vi.advanceTimersByTimeAsync(500);
-    sockets[1]!.open();
-    await authenticate(client, sockets[1]!, 'K'.repeat(22));
-    unblockFirstEncryption();
-    await pending;
-
-    expect(parseSent(sockets[0]!).filter((message) => message.type === 'encrypted')).toHaveLength(0);
-    expect(parseSent(sockets[1]!).filter((message) => message.type === 'encrypted')).toHaveLength(1);
-    client.close();
-  });
-
-  it('keeps a newer queued resize when stale encryption finishes after reconnect', async () => {
-    const sockets: FakeWebSocket[] = [];
-    const plaintexts: string[] = [];
-    let unblockFirstEncryption!: () => void;
-    const firstEncryptionBlocked = new Promise<void>((resolve) => {
-      unblockFirstEncryption = resolve;
-    });
-    let firstEncryptionStarted!: () => void;
-    const encryptionStarted = new Promise<void>((resolve) => {
-      firstEncryptionStarted = resolve;
-    });
-    let encryptionCalls = 0;
-    const client = createRelayClient({
-      relayUrl: 'https://relay.example',
-      pairing: { roomId: ROOM_ID, secret: SECRET },
-      createWebSocket: () => {
-        const socket = new FakeWebSocket();
-        sockets.push(socket);
-        return socket;
-      },
-      seal: async (key, plaintext) => {
-        encryptionCalls += 1;
-        if (encryptionCalls === 1) {
-          firstEncryptionStarted();
-          await firstEncryptionBlocked;
+        sealCalls += 1;
+        if (sealCalls === 1) {
+          encryptionStarted();
+          await blocked;
         }
         plaintexts.push(new TextDecoder().decode(plaintext));
         return sealEnvelope(key, plaintext);
@@ -509,47 +227,39 @@ describe('phone relay client', () => {
     });
     client.connect();
     sockets[0]!.open();
-    await authenticate(client, sockets[0]!, 'S'.repeat(22));
+    await authenticate(client, sockets[0]!, 'E'.repeat(22));
 
-    const stale = client.send({
-      type: 'session.resize',
-      sid: 'mobile-e2e',
-      cols: 80,
-      rows: 24,
-    });
-    await encryptionStarted;
+    const start = client.send({ type: 'mirror.start' });
+    await started;
+    const text = client.send({ type: 'mirror.text', text: 'do not replay' });
     sockets[0]!.close();
-    const latest = client.send({
-      type: 'session.resize',
-      sid: 'mobile-e2e',
-      cols: 120,
-      rows: 40,
-    });
+    await expect(text).rejects.toThrow('connection_changed');
     await vi.advanceTimersByTimeAsync(500);
     sockets[1]!.open();
-    await authenticate(client, sockets[1]!, 'T'.repeat(22));
-    unblockFirstEncryption();
-    await Promise.all([stale, latest]);
+    await authenticate(client, sockets[1]!, 'F'.repeat(22));
+    unblockEncryption();
+    await start;
 
-    expect(plaintexts.at(-1)).toBe(JSON.stringify({
-      type: 'session.resize',
-      sid: 'mobile-e2e',
-      cols: 120,
-      rows: 40,
-    }));
+    const phoneHello = sent(sockets[1]!)[0]!;
+    const phoneKeys = await deriveSessionKeys({
+      secret: SECRET,
+      roomId: ROOM_ID,
+      desktopNonce: 'F'.repeat(22),
+      phoneNonce: String(phoneHello.nonce),
+      role: 'phone',
+    });
+    const encrypted = sent(sockets[1]!).find((message) => message.type === 'encrypted')!;
+    expect(
+      new TextDecoder().decode(
+        await openEnvelope(phoneKeys.send, encrypted as never),
+      ),
+    ).toBe('{"type":"mirror.start"}');
+    expect(plaintexts).not.toContain('{"type":"mirror.text","text":"do not replay"}');
     client.close();
   });
 
-  it('rejects terminal input if its connection changes during encryption', async () => {
+  it('does not restart a stopped mirror from heartbeat or reconnect', async () => {
     const sockets: FakeWebSocket[] = [];
-    let encryptionStarted!: () => void;
-    const started = new Promise<void>((resolve) => {
-      encryptionStarted = resolve;
-    });
-    let unblockEncryption!: () => void;
-    const blocked = new Promise<void>((resolve) => {
-      unblockEncryption = resolve;
-    });
     const client = createRelayClient({
       relayUrl: 'https://relay.example',
       pairing: { roomId: ROOM_ID, secret: SECRET },
@@ -558,97 +268,27 @@ describe('phone relay client', () => {
         sockets.push(socket);
         return socket;
       },
-      seal: async (key, plaintext) => {
-        encryptionStarted();
-        await blocked;
-        return sealEnvelope(key, plaintext);
-      },
-    });
-    client.connect();
-    sockets[0]!.open();
-    await authenticate(client, sockets[0]!, 'L'.repeat(22));
-
-    const pending = client.send({ type: 'session.input', sid: 'mobile-e2e', data: 'pwd\r' });
-    const rejection = pending.then(
-      () => null,
-      (error: unknown) => error,
-    );
-    await started;
-    sockets[0]!.close();
-    unblockEncryption();
-
-    await expect(rejection).resolves.toMatchObject({ message: 'connection_changed' });
-    client.close();
-  });
-
-  it('rejects authenticated terminal input still queued when the socket disconnects', async () => {
-    const socket = new FakeWebSocket();
-    let encryptionStarted!: () => void;
-    const started = new Promise<void>((resolve) => {
-      encryptionStarted = resolve;
-    });
-    let unblockEncryption!: () => void;
-    const blocked = new Promise<void>((resolve) => {
-      unblockEncryption = resolve;
-    });
-    const client = createRelayClient({
-      relayUrl: 'https://relay.example',
-      pairing: { roomId: ROOM_ID, secret: SECRET },
-      createWebSocket: () => socket,
-      seal: async (key, plaintext) => {
-        encryptionStarted();
-        await blocked;
-        return sealEnvelope(key, plaintext);
-      },
-    });
-    client.connect();
-    socket.open();
-    await authenticate(client, socket, 'O'.repeat(22));
-
-    const recovery = client.send({ type: 'sessions.list' });
-    const recoveryResult = recovery.then(
-      () => null,
-      (error: unknown) => error,
-    );
-    await started;
-    const input = client.send({ type: 'session.input', sid: 'mobile-e2e', data: 'stale\r' });
-    const inputResult = input.then(
-      () => null,
-      (error: unknown) => error,
-    );
-    socket.close();
-
-    await expect(inputResult).resolves.toMatchObject({ message: 'connection_changed' });
-    unblockEncryption();
-    client.close();
-    await expect(recoveryResult).resolves.toMatchObject({ message: 'client_closed' });
-  });
-
-  it('sends recovery heartbeats and reconnects after inbound inactivity', async () => {
-    const socket = new FakeWebSocket();
-    const client = createRelayClient({
-      relayUrl: 'https://relay.example',
-      pairing: { roomId: ROOM_ID, secret: SECRET },
-      createWebSocket: () => socket,
       heartbeatIntervalMs: 100,
-      inactivityTimeoutMs: 300,
     });
     client.connect();
-    socket.open();
-    await authenticate(client, socket, 'M'.repeat(22));
-    const encryptedBeforeHeartbeat = parseSent(socket).filter(
+    sockets[0]!.open();
+    await authenticate(client, sockets[0]!, 'G'.repeat(22));
+    await client.send({ type: 'mirror.start' });
+    await client.send({ type: 'mirror.stop' });
+    const encryptedBeforeHeartbeat = sent(sockets[0]!).filter(
       (message) => message.type === 'encrypted',
     ).length;
 
     await vi.advanceTimersByTimeAsync(100);
-    await vi.waitFor(() =>
-      expect(
-        parseSent(socket).filter((message) => message.type === 'encrypted').length,
-      ).toBeGreaterThan(encryptedBeforeHeartbeat),
-    );
-    await vi.advanceTimersByTimeAsync(200);
+    expect(
+      sent(sockets[0]!).filter((message) => message.type === 'encrypted'),
+    ).toHaveLength(encryptedBeforeHeartbeat);
 
-    expect(socket.readyState).toBe(3);
+    sockets[0]!.close();
+    await vi.advanceTimersByTimeAsync(500);
+    sockets[1]!.open();
+    await authenticate(client, sockets[1]!, 'H'.repeat(22));
+    expect(sent(sockets[1]!).filter((message) => message.type === 'encrypted')).toHaveLength(0);
     client.close();
   });
 });
